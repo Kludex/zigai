@@ -1,0 +1,81 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://openai.test/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-test"
+        input:
+          - type: "message"
+            role: "system"
+            content: "You are concise."
+          - type: "message"
+            role: "user"
+            content: "What is the weather?"
+        tools:
+          - type: "function"
+            name: "weather"
+            description: "Get weather."
+            parameters:
+              type: "object"
+        stream: true
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        event: response.function_call_arguments.delta
+        data: {"type":"response.function_call_arguments.delta","item_id":"call-weather","delta":"{\"city\":"}
+
+        event: response.function_call_arguments.done
+        data: {"type":"response.function_call_arguments.done","item_id":"call-weather","name":"weather","arguments":"{\"city\":\"Madrid\"}"}
+
+        data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":4}}}
+
+        data: [DONE]
+- request:
+    method: POST
+    uri: "https://openai.test/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-test"
+        input:
+          - type: "message"
+            role: "system"
+            content: "You are concise."
+          - type: "message"
+            role: "user"
+            content: "What is the weather?"
+          - type: "function_call"
+            call_id: "call-weather"
+            name: "weather"
+            arguments: "{\"city\":\"Madrid\"}"
+          - type: "function_call_output"
+            call_id: "call-weather"
+            output: "{\"temperature_c\":31}"
+        tools:
+          - type: "function"
+            name: "weather"
+            description: "Get weather."
+            parameters:
+              type: "object"
+        stream: true
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        data: {"type":"response.output_text.delta","delta":"It is sunny "}
+
+        data: {"type":"response.output_text.delta","delta":"in Madrid."}
+
+        data: {"type":"response.completed","response":{"usage":{"input_tokens":18,"output_tokens":6}}}
+
+        data: [DONE]

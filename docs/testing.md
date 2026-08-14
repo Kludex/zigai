@@ -26,19 +26,23 @@ smoke tests with `./scripts/test-live`. It makes one minimal request to both;
 when `GEMINI_API_KEY` is also present, it checks Google too. Live requests
 complement cassettes; they never replace deterministic tests.
 
-For an intentional live capture, set `ZIGAI_CASSETTE_PATH` while running any
-provider CLI. The recorder omits all headers and atomically replaces the target
-after a complete write. Request and response bodies are not redacted by
-default, so every new cassette still requires human review before commit.
-Tests cover recursive JSON field filtering and custom streamed-body filters.
+Provider cassettes live in `tests/cassettes/`. Their codec, recorder, replay
+transport, and body filters live in `tests/support/`; none are exported by the
+library or compiled into the command-line clients.
+
+The files follow Cassetter v1 YAML. JSON bodies are nested YAML values, streamed
+responses use literal text blocks, and binary bodies are explicit. Headers are
+omitted by default. Review request and response content before committing a new
+cassette.
 
 ## Coverage policy
 
 The gate is 100% line coverage for every Zig file under `src/`, excluding Zig's
-standard library, generated files, and one exact `Agent` type-declaration line
-that LLVM/kcov reports as code despite having no executable semantics. Coverage
-comes primarily from public, high-level behavior; a line-only unit test should
-exist only when a high-level scenario would obscure the behavior being tested.
+standard library, generated files, two type-declaration lines, and the timeout
+sleep expression that LLVM/kcov cannot trace inside Zig's concurrent I/O task.
+Coverage comes primarily from public, high-level behavior; a line-only unit test
+should exist only when a high-level scenario would obscure the behavior being
+tested.
 
 Run `./scripts/coverage` on Linux. It compiles with LLVM debug information,
 runs unit, cassette, agent, real-transport, CLI-success, and CLI-error paths,
@@ -46,4 +50,4 @@ merges their reports, checks that every source file is represented, and fails
 unless the final line rate is exactly 100%. CI runs the same command. macOS
 `kcov` requires extra debugger signing, so coverage remains a Linux-only gate.
 
-Current verified baseline: 2309 of 2309 executable lines (100.00%).
+Current verified baseline: 2077 of 2077 executable lines (100.00%).

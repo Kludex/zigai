@@ -3,7 +3,12 @@
     .version = "0.1.0",
     .fingerprint = 0x367ee945241e1ad8,
     .minimum_zig_version = "0.16.0",
-    .dependencies = .{},
+    .dependencies = .{
+        .yaml = .{
+            .url = "git+https://github.com/ncode/yaml#87fc70008a6c20e1df62c9b20633d331ec35c4d0",
+            .hash = "yaml-0.0.0-J3O1ExZjHgBlLWwLwvVDMaxW027GdqwlH5gmWscq_YKg",
+        },
+    },
     .paths = .{
         "build.zig",
         "build.zig.zon",

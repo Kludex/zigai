@@ -4,7 +4,6 @@ pub const model = @import("model.zig");
 pub const agent = @import("agent.zig");
 pub const testing = @import("testing.zig");
 pub const transport = @import("transport.zig");
-pub const vcr = @import("vcr.zig");
 pub const json_schema = @import("json_schema.zig");
 pub const reflect = @import("reflect.zig");
 pub const providers = @import("providers.zig");
@@ -33,7 +32,6 @@ test {
     _ = @import("model.zig");
     _ = @import("testing.zig");
     _ = @import("transport.zig");
-    _ = @import("vcr.zig");
     _ = @import("json_schema.zig");
     _ = @import("reflect.zig");
     _ = @import("providers.zig");

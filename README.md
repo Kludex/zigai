@@ -26,7 +26,7 @@ conversation.
 - Static, dynamic, and run-specific instructions.
 - JSON-object and JSON Schema output modes.
 - Timeouts, cancellation, retries, backoff, and usage limits.
-- Strict, secret-free HTTP cassettes for deterministic tests.
+- Readable YAML cassettes for deterministic provider tests.
 - Small command-line clients for every first-party provider.
 
 ## Quick start
@@ -221,17 +221,8 @@ The coverage gate is **100% of executable lines**.
 
 Provider tests replay checked-in HTTP cassettes. They exercise the real agent,
 provider adapter, tool loop, usage accounting, and error paths without calling
-paid APIs.
-
-To record a live interaction:
-
-```console
-ZIGAI_CASSETTE_PATH=tests/cassettes/openai_smoke.json \
-  OPENAI_API_KEY=... zig-out/bin/zigai-openai "Reply with exactly: pong"
-```
-
-Headers are never recorded. Prompts and responses are, so review every new
-cassette before committing it.
+paid APIs. Cassettes use Cassetter-compatible YAML and stay under `tests/`;
+they are not part of the library or command-line clients.
 
 Read [Testing](docs/testing.md) for coverage and cassette details.
 

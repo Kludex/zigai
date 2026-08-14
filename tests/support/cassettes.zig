@@ -1,33 +1,16 @@
 //! Deterministic HTTP cassette replay for high-level provider tests.
 //!
-//! Cassettes contain request and response bodies, but never authentication
-//! headers. Requests are matched in order and byte-for-byte so an API wire
-//! format change is visible in review instead of silently accepted.
+//! The on-disk format follows Cassetter v1: YAML with typed bodies and
+//! structured JSON content. Authentication headers are never recorded.
 
 const std = @import("std");
-const http = @import("transport.zig");
+const http = @import("zigai").transport;
+const format = @import("cassettes/format.zig");
 
-pub const Cassette = struct {
-    version: u8,
-    interactions: []const Interaction,
-};
-
-pub const Interaction = struct {
-    request: RecordedRequest,
-    response: RecordedResponse,
-};
-
-pub const RecordedRequest = struct {
-    method: http.Method,
-    url: []const u8,
-    body: []const u8,
-};
-
-pub const RecordedResponse = struct {
-    status: u16,
-    body: []const u8,
-    metadata: http.ResponseMetadata = .{},
-};
+pub const Cassette = format.Cassette;
+pub const Interaction = format.Interaction;
+pub const RecordedRequest = format.RecordedRequest;
+pub const RecordedResponse = format.RecordedResponse;
 
 pub const BodyFilter = struct {
     context: *const anyopaque,
@@ -88,18 +71,11 @@ fn containsField(field_names: []const []const u8, candidate: []const u8) bool {
 }
 
 pub const ReplayTransport = struct {
-    parsed: std.json.Parsed(Cassette),
+    parsed: format.ParsedCassette,
     next_interaction: usize = 0,
 
-    pub fn init(allocator: std.mem.Allocator, cassette_json: []const u8) !ReplayTransport {
-        const parsed = try std.json.parseFromSlice(Cassette, allocator, cassette_json, .{
-            .ignore_unknown_fields = false,
-        });
-        if (parsed.value.version != 1) {
-            parsed.deinit();
-            return error.UnsupportedCassetteVersion;
-        }
-        return .{ .parsed = parsed };
+    pub fn init(allocator: std.mem.Allocator, cassette_yaml: []const u8) !ReplayTransport {
+        return .{ .parsed = try format.parse(allocator, cassette_yaml) };
     }
 
     pub fn deinit(self: *ReplayTransport) void {
@@ -186,24 +162,23 @@ pub const RecordingTransport = struct {
         return .{ .context = self, .sendFn = send, .streamLinesFn = streamLines };
     }
 
-    pub fn cassetteJson(self: RecordingTransport, allocator: std.mem.Allocator) ![]u8 {
-        return std.json.Stringify.valueAlloc(allocator, Cassette{
+    pub fn cassetteYaml(self: RecordingTransport, allocator: std.mem.Allocator) ![]u8 {
+        return format.stringify(allocator, Cassette{
             .version = 1,
             .interactions = self.interactions.items,
-        }, .{ .whitespace = .indent_2 });
+        });
     }
 
     /// Serializes the current recording and atomically replaces `path` only
     /// after the complete cassette has been flushed and synced.
     pub fn writeCassetteAtomic(self: RecordingTransport, allocator: std.mem.Allocator, io: std.Io, dir: std.Io.Dir, path: []const u8) !void {
-        const json = try self.cassetteJson(allocator);
-        defer allocator.free(json);
+        const yaml = try self.cassetteYaml(allocator);
+        defer allocator.free(yaml);
         var atomic = try dir.createFileAtomic(io, path, .{ .make_path = true, .replace = true });
         defer atomic.deinit(io);
         var buffer: [4096]u8 = undefined;
         var writer = atomic.file.writer(io, &buffer);
-        try writer.interface.writeAll(json);
-        try writer.interface.writeByte('\n');
+        try writer.interface.writeAll(yaml);
         try writer.interface.flush();
         try atomic.file.sync(io);
         try atomic.replace(io);
@@ -290,10 +265,25 @@ const StreamCapture = struct {
 };
 
 test "cassette replays and verifies an interaction" {
-    const json =
-        \\{"version":1,"interactions":[{"request":{"method":"POST","url":"https://example.test/v1","body":"{}"},"response":{"status":200,"body":"{\"ok\":true}"}}]}
+    const cassette =
+        \\version: 1
+        \\interactions:
+        \\- request:
+        \\    method: POST
+        \\    uri: https://example.test/v1
+        \\    headers: {}
+        \\    body:
+        \\      type: json
+        \\      content: {}
+        \\  response:
+        \\    status: 200
+        \\    headers: {}
+        \\    body:
+        \\      type: json
+        \\      content:
+        \\        ok: true
     ;
-    var replay = try ReplayTransport.init(std.testing.allocator, json);
+    var replay = try ReplayTransport.init(std.testing.allocator, cassette);
     defer replay.deinit();
     const response = try replay.transport().send(std.testing.allocator, .{
         .method = .POST,
@@ -311,10 +301,22 @@ test "cassette replays and verifies an interaction" {
 }
 
 test "cassette rejects a request whose body changed" {
-    const json =
-        \\{"version":1,"interactions":[{"request":{"method":"POST","url":"https://example.test","body":"old"},"response":{"status":200,"body":"ok"}}]}
+    const cassette =
+        \\version: 1
+        \\interactions:
+        \\- request:
+        \\    method: POST
+        \\    uri: https://example.test
+        \\    body:
+        \\      type: text
+        \\      content: old
+        \\  response:
+        \\    status: 200
+        \\    body:
+        \\      type: text
+        \\      content: ok
     ;
-    var replay = try ReplayTransport.init(std.testing.allocator, json);
+    var replay = try ReplayTransport.init(std.testing.allocator, cassette);
     defer replay.deinit();
     try std.testing.expectError(error.CassetteMismatch, replay.transport().send(std.testing.allocator, .{
         .method = .POST,
@@ -324,8 +326,23 @@ test "cassette rejects a request whose body changed" {
 }
 
 test "cassette streaming replay and recording preserve lines" {
-    const json =
-        \\{"version":1,"interactions":[{"request":{"method":"POST","url":"https://stream.test","body":"request"},"response":{"status":200,"body":"data: one\n\ndata: two\n"}}]}
+    const cassette =
+        \\version: 1
+        \\interactions:
+        \\- request:
+        \\    method: POST
+        \\    uri: https://stream.test
+        \\    body:
+        \\      type: text
+        \\      content: request
+        \\  response:
+        \\    status: 200
+        \\    body:
+        \\      type: text
+        \\      content: |+
+        \\        data: one
+        \\
+        \\        data: two
     ;
     const Capture = struct {
         starts: usize = 0,
@@ -340,7 +357,7 @@ test "cassette streaming replay and recording preserve lines" {
             self.lines += 1;
         }
     };
-    var replay = try ReplayTransport.init(std.testing.allocator, json);
+    var replay = try ReplayTransport.init(std.testing.allocator, cassette);
     defer replay.deinit();
     var recorder = RecordingTransport.init(std.testing.allocator, replay.transport());
     defer recorder.deinit();
@@ -379,11 +396,12 @@ test "recorder creates a replayable cassette without headers" {
     });
     defer std.testing.allocator.free(response.body);
 
-    const cassette_json = try recorder.cassetteJson(std.testing.allocator);
-    defer std.testing.allocator.free(cassette_json);
-    try std.testing.expect(std.mem.indexOf(u8, cassette_json, "secret-key") == null);
+    const cassette_yaml = try recorder.cassetteYaml(std.testing.allocator);
+    defer std.testing.allocator.free(cassette_yaml);
+    try std.testing.expect(std.mem.indexOf(u8, cassette_yaml, "secret-key") == null);
+    try std.testing.expect(std.mem.indexOf(u8, cassette_yaml, "type: text") != null);
 
-    var replay = try ReplayTransport.init(std.testing.allocator, cassette_json);
+    var replay = try ReplayTransport.init(std.testing.allocator, cassette_yaml);
     defer replay.deinit();
     const replayed = try replay.transport().send(std.testing.allocator, .{
         .method = .POST,
@@ -445,10 +463,23 @@ test "stream recordings apply configured body filters" {
             return .{ .context = self, .filterFn = apply };
         }
     };
-    const json =
-        \\{"version":1,"interactions":[{"request":{"method":"POST","url":"https://stream.test","body":"request"},"response":{"status":200,"body":"data: original\n"}}]}
+    const cassette =
+        \\version: 1
+        \\interactions:
+        \\- request:
+        \\    method: POST
+        \\    uri: https://stream.test
+        \\    body:
+        \\      type: text
+        \\      content: request
+        \\  response:
+        \\    status: 200
+        \\    body:
+        \\      type: text
+        \\      content: |+
+        \\        data: original
     ;
-    var replay = try ReplayTransport.init(std.testing.allocator, json);
+    var replay = try ReplayTransport.init(std.testing.allocator, cassette);
     defer replay.deinit();
     const request_filter = Replace{ .replacement = "stable request" };
     const response_filter = Replace{ .replacement = "stable response" };
@@ -487,9 +518,9 @@ test "recorder atomically writes and replaces a cassette" {
 
     var temporary = std.testing.tmpDir(.{});
     defer temporary.cleanup();
-    try recorder.writeCassetteAtomic(std.testing.allocator, std.testing.io, temporary.dir, "nested/cassette.json");
-    try recorder.writeCassetteAtomic(std.testing.allocator, std.testing.io, temporary.dir, "nested/cassette.json");
-    const written = try temporary.dir.readFileAlloc(std.testing.io, "nested/cassette.json", std.testing.allocator, .limited(16 * 1024));
+    try recorder.writeCassetteAtomic(std.testing.allocator, std.testing.io, temporary.dir, "nested/cassette.yaml");
+    try recorder.writeCassetteAtomic(std.testing.allocator, std.testing.io, temporary.dir, "nested/cassette.yaml");
+    const written = try temporary.dir.readFileAlloc(std.testing.io, "nested/cassette.yaml", std.testing.allocator, .limited(16 * 1024));
     defer std.testing.allocator.free(written);
     try std.testing.expect(std.mem.indexOf(u8, written, "https://example.test") != null);
     try std.testing.expect(written[written.len - 1] == '\n');
@@ -498,7 +529,7 @@ test "recorder atomically writes and replaces a cassette" {
 test "unsupported cassette versions are rejected" {
     try std.testing.expectError(error.UnsupportedCassetteVersion, ReplayTransport.init(
         std.testing.allocator,
-        "{\"version\":2,\"interactions\":[]}",
+        "version: 2\ninteractions: []\n",
     ));
 }
 
@@ -527,10 +558,23 @@ test "recorder cleans up every allocation failure" {
 }
 
 fn recordStreamWithAllocator(allocator: std.mem.Allocator) !void {
-    const json =
-        \\{"version":1,"interactions":[{"request":{"method":"POST","url":"https://stream.test","body":"request"},"response":{"status":200,"body":"data: one\n"}}]}
+    const cassette =
+        \\version: 1
+        \\interactions:
+        \\- request:
+        \\    method: POST
+        \\    uri: https://stream.test
+        \\    body:
+        \\      type: text
+        \\      content: request
+        \\  response:
+        \\    status: 200
+        \\    body:
+        \\      type: text
+        \\      content: |+
+        \\        data: one
     ;
-    var replay = try ReplayTransport.init(std.testing.allocator, json);
+    var replay = try ReplayTransport.init(std.testing.allocator, cassette);
     defer replay.deinit();
     var recorder = RecordingTransport.init(allocator, replay.transport());
     defer recorder.deinit();

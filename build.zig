@@ -3,6 +3,8 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const yaml_dependency = b.dependency("yaml", .{ .target = target, .optimize = optimize });
+    const yaml = yaml_dependency.module("yaml");
 
     const zigai = b.addModule("zigai", .{
         .root_source_file = b.path("src/root.zig"),
@@ -48,7 +50,10 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("tests/provider_cassettes.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{.{ .name = "zigai", .module = zigai }},
+            .imports = &.{
+                .{ .name = "zigai", .module = zigai },
+                .{ .name = "yaml", .module = yaml },
+            },
         }),
     });
     const run_cassette_tests = b.addRunArtifact(cassette_tests);

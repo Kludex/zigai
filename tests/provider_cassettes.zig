@@ -1,5 +1,6 @@
 const std = @import("std");
 const zigai = @import("zigai");
+const cassettes = @import("support/cassettes.zig");
 
 const weather_definition: zigai.model.ToolDefinition = .{
     .name = "weather",
@@ -23,7 +24,7 @@ fn weatherTool(state: *u8) zigai.Tool {
 }
 
 test "OpenAI cassette covers the complete agent tool loop" {
-    var cassette = try zigai.vcr.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/openai_tool_loop.json"));
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/openai_tool_loop.yaml"));
     defer cassette.deinit();
     var client = zigai.openai.Client{
         .model_name = "gpt-test",
@@ -46,7 +47,7 @@ test "OpenAI cassette covers the complete agent tool loop" {
 }
 
 test "Anthropic cassette covers the complete agent tool loop" {
-    var cassette = try zigai.vcr.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/anthropic_tool_loop.json"));
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/anthropic_tool_loop.yaml"));
     defer cassette.deinit();
     var client = zigai.anthropic.Client{
         .model_name = "claude-test",
@@ -70,7 +71,7 @@ test "Anthropic cassette covers the complete agent tool loop" {
 }
 
 test "Google cassette covers the complete agent tool loop" {
-    var cassette = try zigai.vcr.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/google_tool_loop.json"));
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/google_tool_loop.yaml"));
     defer cassette.deinit();
     var client = zigai.google.Client{
         .model_name = "gemini-test",
@@ -93,7 +94,7 @@ test "Google cassette covers the complete agent tool loop" {
 }
 
 test "OpenAI-compatible cassette covers the complete Chat Completions tool loop" {
-    var cassette = try zigai.vcr.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/openai_compatible_tool_loop.json"));
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/openai_compatible_tool_loop.yaml"));
     defer cassette.deinit();
     var client = zigai.openai_compatible.Client{
         .model_name = "compat-test",
@@ -116,7 +117,7 @@ test "OpenAI-compatible cassette covers the complete Chat Completions tool loop"
 }
 
 test "OpenAI streaming cassette covers deltas and the complete agent tool loop" {
-    var cassette = try zigai.vcr.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/openai_stream_tool_loop.json"));
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/openai_stream_tool_loop.yaml"));
     defer cassette.deinit();
     var client = zigai.openai.Client{
         .model_name = "gpt-test",
@@ -165,7 +166,7 @@ test "OpenAI streaming cassette covers deltas and the complete agent tool loop" 
 }
 
 test "Anthropic streaming cassette covers fragmented tools and text" {
-    var cassette = try zigai.vcr.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/anthropic_stream_tool_loop.json"));
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/anthropic_stream_tool_loop.yaml"));
     defer cassette.deinit();
     var client = zigai.anthropic.Client{
         .model_name = "claude-test",
@@ -215,7 +216,7 @@ test "Anthropic streaming cassette covers fragmented tools and text" {
 }
 
 test "Google streaming cassette covers chunked text and the tool loop" {
-    var cassette = try zigai.vcr.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/google_stream_tool_loop.json"));
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/google_stream_tool_loop.yaml"));
     defer cassette.deinit();
     var client = zigai.google.Client{
         .model_name = "gemini-test",
@@ -262,7 +263,7 @@ test "Google streaming cassette covers chunked text and the tool loop" {
 }
 
 test "OpenAI-compatible streaming cassette covers fragmented Chat Completions tools" {
-    var cassette = try zigai.vcr.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/openai_compatible_stream_tool_loop.json"));
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/openai_compatible_stream_tool_loop.yaml"));
     defer cassette.deinit();
     var client = zigai.openai_compatible.Client{
         .model_name = "compat-test",

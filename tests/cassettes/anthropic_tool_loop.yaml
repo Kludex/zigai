@@ -1,0 +1,85 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://anthropic.test/v1/messages"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "claude-test"
+        max_tokens: 256
+        system:
+          - type: "text"
+            text: "You are concise."
+        messages:
+          - role: "user"
+            content:
+              - type: "text"
+                text: "What is the weather?"
+        tools:
+          - name: "weather"
+            description: "Get weather."
+            input_schema:
+              type: "object"
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        content:
+          - type: "tool_use"
+            id: "call-weather"
+            name: "weather"
+            input:
+              city: "Madrid"
+        usage:
+          input_tokens: 10
+          output_tokens: 4
+- request:
+    method: POST
+    uri: "https://anthropic.test/v1/messages"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "claude-test"
+        max_tokens: 256
+        system:
+          - type: "text"
+            text: "You are concise."
+        messages:
+          - role: "user"
+            content:
+              - type: "text"
+                text: "What is the weather?"
+          - role: "assistant"
+            content:
+              - type: "tool_use"
+                id: "call-weather"
+                name: "weather"
+                input:
+                  city: "Madrid"
+          - role: "user"
+            content:
+              - type: "tool_result"
+                tool_use_id: "call-weather"
+                content: "{\"temperature_c\":31}"
+        tools:
+          - name: "weather"
+            description: "Get weather."
+            input_schema:
+              type: "object"
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        content:
+          - type: "text"
+            text: "It is sunny in Madrid."
+        usage:
+          input_tokens: 18
+          output_tokens: 6

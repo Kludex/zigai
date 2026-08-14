@@ -6,8 +6,7 @@ coverage_dir="$project_dir/coverage"
 kcov_image="${ZIGAI_KCOV_IMAGE:-kcov/kcov@sha256:481289ae32e55e5b733019515acd10948a4f76dfed381765577db909664fc603}"
 kcov_bin="${ZIGAI_KCOV_BIN:-kcov}"
 coverage_target="${ZIGAI_COVERAGE_TARGET:-}"
-agent_declaration="--exclude-line=pub const Agent = struct {"
-instruction_context_declaration="--exclude-line=pub const InstructionContext = struct {"
+coverage_exclusions="--exclude-line=pub const Agent = struct {,pub const InstructionContext = struct {,return timeoutMilliseconds"
 use_docker=0
 if [ "${ZIGAI_FORCE_DOCKER_KCOV:-0}" = 1 ] || ! command -v kcov >/dev/null 2>&1; then
     use_docker=1
@@ -22,6 +21,12 @@ rm -rf -- "$coverage_dir"
 mkdir -p coverage/bin
 coverage_cache="$coverage_dir/zig-cache"
 coverage_global_cache="$coverage_dir/zig-global-cache"
+ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build --fetch=all
+yaml_root=$(find "$project_dir/zig-pkg" -path '*/yaml-*/src/lib.zig' -print -quit)
+if [ -z "$yaml_root" ]; then
+    echo "could not locate the YAML test dependency" >&2
+    exit 2
+fi
 
 compile_test() {
     output=$1
@@ -35,7 +40,7 @@ compile_test() {
 
 compile_test coverage/bin/unit-tests src/root.zig
 compile_test coverage/bin/agent-tests --dep zigai -Mroot=tests/agent_loop.zig -Mzigai=src/root.zig
-compile_test coverage/bin/provider-tests --dep zigai -Mroot=tests/provider_cassettes.zig -Mzigai=src/root.zig
+compile_test coverage/bin/provider-tests --dep zigai --dep yaml -Mroot=tests/provider_cassettes.zig -Mzigai=src/root.zig -Myaml="$yaml_root"
 compile_test coverage/bin/cli-common-tests --dep zigai -Mroot=src/cli/common.zig -Mzigai=src/root.zig
 if [ -n "$coverage_target" ]; then
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/openai-cli --dep zigai -Mroot=src/cli/openai.zig -Mzigai=src/root.zig
@@ -51,7 +56,7 @@ fi
 
 run_kcov() {
     if [ "$use_docker" = 0 ]; then
-        kcov "$agent_declaration" "$instruction_context_declaration" "$@"
+        kcov "$coverage_exclusions" "$@"
     elif command -v docker >/dev/null 2>&1; then
         docker run --rm \
             --network host \
@@ -61,10 +66,9 @@ run_kcov() {
             -e OPENAI_API_KEY -e OPENAI_BASE_URL \
             -e ANTHROPIC_API_KEY -e ANTHROPIC_BASE_URL \
             -e GEMINI_API_KEY -e GEMINI_BASE_URL \
-            -e ZIGAI_CASSETTE_PATH \
             -e ZIGAI_FIXTURE_BASE_URL \
             -v "$project_dir:$project_dir" -w "$project_dir" \
-            "$kcov_image" "$kcov_bin" "$agent_declaration" "$instruction_context_declaration" "$@"
+            "$kcov_image" "$kcov_bin" "$coverage_exclusions" "$@"
     else
         echo "coverage requires kcov or Docker" >&2
         exit 2
@@ -92,7 +96,7 @@ OPENAI_API_KEY=test OPENAI_BASE_URL="http://$fixture_host:18765/openai" \
     run_kcov --clean "$include_path" coverage/openai-cli coverage/bin/openai-cli test
 ANTHROPIC_API_KEY=test ANTHROPIC_BASE_URL="http://$fixture_host:18765/anthropic" \
     run_kcov --clean "$include_path" coverage/anthropic-cli coverage/bin/anthropic-cli test
-GEMINI_API_KEY=test GEMINI_BASE_URL="http://$fixture_host:18765/google" ZIGAI_CASSETTE_PATH=coverage/google-cli-capture.json \
+GEMINI_API_KEY=test GEMINI_BASE_URL="http://$fixture_host:18765/google" \
     run_kcov --clean "$include_path" coverage/google-cli coverage/bin/google-cli test
 OPENAI_API_KEY=test OPENAI_BASE_URL="http://$fixture_host:18765/openai" \
     run_kcov "$include_path" coverage/openai-cli coverage/bin/openai-cli --stream test

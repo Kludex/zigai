@@ -1,35 +1,6 @@
 const std = @import("std");
 const zigai = @import("zigai");
 
-pub const Recording = struct {
-    allocator: std.mem.Allocator,
-    path: ?[]const u8,
-    recorder: ?zigai.vcr.RecordingTransport = null,
-
-    pub fn init(allocator: std.mem.Allocator, inner: zigai.transport.Transport, path: ?[]const u8) Recording {
-        return .{
-            .allocator = allocator,
-            .path = path,
-            .recorder = if (path == null) null else zigai.vcr.RecordingTransport.init(allocator, inner),
-        };
-    }
-
-    pub fn deinit(self: *Recording) void {
-        if (self.recorder) |*recorder| recorder.deinit();
-        self.* = undefined;
-    }
-
-    pub fn transport(self: *Recording, fallback: zigai.transport.Transport) zigai.transport.Transport {
-        if (self.recorder) |*recorder| return recorder.transport();
-        return fallback;
-    }
-
-    pub fn finish(self: *Recording, io: std.Io) !void {
-        const path = self.path orelse return;
-        try self.recorder.?.writeCassetteAtomic(self.allocator, io, .cwd(), path);
-    }
-};
-
 pub const Input = struct {
     prompt: []const u8,
     api_key: []const u8,

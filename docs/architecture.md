@@ -92,17 +92,18 @@ The default `HttpTransport` uses only Zig's standard library.
 
 ## Cassettes
 
-`ReplayTransport` implements the same transport interface. It loads a versioned
-JSON cassette, matches requests in order, and returns recorded responses.
-Authentication headers are deliberately outside the cassette schema.
+Cassette tooling is test support, not library code. It lives under
+`tests/support/`, while recordings live under `tests/cassettes/`. The production
+module graph and command-line clients do not depend on it.
 
-`RecordingTransport` wraps a live transport and captures successful request and
-response bodies. It does not copy headers at all, which is stronger and easier
-to audit than maintaining a list of sensitive header names.
+`ReplayTransport` implements the normal transport interface. It loads
+Cassetter-compatible YAML, matches requests in order, and returns recorded
+responses. JSON bodies remain structured YAML; streamed text uses literal
+blocks. Authentication headers are deliberately outside the cassette schema.
 
-Optional body filters run only on recorded copies. The built-in JSON field
-filter recursively omits configured volatile keys; custom filters support
-other formats.
+The test-only `RecordingTransport` captures successful request and response
+bodies. Optional filters run only on recorded copies; the JSON field filter
+recursively omits configured volatile keys.
 
 Strict body matching is a feature. A provider wire-format change should be an
 intentional cassette update, not an invisible test success.
