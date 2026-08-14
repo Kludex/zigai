@@ -529,6 +529,38 @@ test "streamable HTTP extracts SSE responses and preserves sessions" {
     try std.testing.expectEqual(@as(usize, 2), stub.calls);
 }
 
+test "streamable HTTP validates response statuses and SSE ids" {
+    const Stub = struct {
+        status: u16,
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, _: http.Request) !http.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return .{ .status = self.status, .body = try allocator.dupe(u8, "error") };
+        }
+    };
+    var stub = Stub{ .status = 202 };
+    var streamable = StreamableHttpTransport.init(
+        std.testing.io,
+        .{ .context = &stub, .sendFn = Stub.send },
+        "https://example.test/mcp",
+    );
+    try std.testing.expectError(error.McpHttpRequestFailed, streamable.transport().send(
+        std.testing.allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":1}",
+        true,
+    ));
+    stub.status = 400;
+    try std.testing.expectError(error.McpHttpRequestFailed, streamable.transport().send(
+        std.testing.allocator,
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}",
+        false,
+    ));
+    try std.testing.expectError(error.MissingMcpSseResponse, extractSseResponse(
+        std.testing.allocator,
+        "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n",
+        "{\"jsonrpc\":\"2.0\",\"id\":1}",
+    ));
+}
+
 test "MCP client discovers paginated tools and calls them through a toolset" {
     const Stub = struct {
         step: usize = 0,
@@ -595,6 +627,7 @@ test "MCP client discovers paginated tools and calls them through a toolset" {
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings("Sunny in Madrid", result);
     try std.testing.expectEqual(@as(usize, 5), stub.step);
+    try std.testing.expectError(error.InvalidMcpToolArguments, tools[0].tool.execute(std.testing.allocator, "{"));
 }
 
 test "MCP tool results retain non-text content and error state" {
@@ -610,6 +643,40 @@ test "MCP tool results retain non-text content and error state" {
     defer std.testing.allocator.free(rendered);
     try std.testing.expect(std.mem.startsWith(u8, rendered, "MCP tool error: "));
     try std.testing.expect(std.mem.indexOf(u8, rendered, "\"image\"") != null);
+
+    const mixed = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        "{\"content\":[42],\"structuredContent\":{\"ignored\":true}}",
+        .{},
+    );
+    const mixed_rendered = try renderToolResult(std.testing.allocator, try requiredObject(mixed));
+    defer std.testing.allocator.free(mixed_rendered);
+    try std.testing.expectEqualStrings("42", mixed_rendered);
+
+    const structured = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        "{\"structuredContent\":{\"answer\":42}}",
+        .{},
+    );
+    const structured_rendered = try renderToolResult(std.testing.allocator, try requiredObject(structured));
+    defer std.testing.allocator.free(structured_rendered);
+    try std.testing.expectEqualStrings("{\"answer\":42}", structured_rendered);
+
+    const invalid = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"content\":false}", .{});
+    try std.testing.expectError(
+        error.InvalidMcpResponse,
+        renderToolResult(std.testing.allocator, try requiredObject(invalid)),
+    );
+}
+
+test "JSON-RPC ids support strings and reject unsupported types" {
+    const string_id = try JsonRpcId.parse(std.testing.allocator, "{\"id\":\"request-1\"}");
+    defer string_id.deinit(std.testing.allocator);
+    try std.testing.expect(string_id.matches(.{ .string = "request-1" }));
+    try std.testing.expect(!string_id.matches(.{ .integer = 1 }));
+    try std.testing.expectError(error.InvalidMcpMessage, JsonRpcId.parse(std.testing.allocator, "{\"id\":false}"));
 }
 
 test "stdio transport runs an MCP tool server child process" {
@@ -619,7 +686,13 @@ test "stdio transport runs an MCP tool server child process" {
         \\  case "$line" in
         \\    *'"method":"initialize"'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{},"serverInfo":{"name":"fixture","version":"1"}}}' ;;
         \\    *'"method":"notifications/initialized"'*) ;;
-        \\    *'"method":"tools/list"'*) printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":"Echo text","inputSchema":{"type":"object"}}]}}' ;;
+        \\    *'"method":"tools/list"'*)
+        \\      printf '%s\n' '1'
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":99,"method":"server/ping"}'
+        \\      printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/progress"}'
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":999,"result":{}}'
+        \\      printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":"Echo text","inputSchema":{"type":"object"}}]}}'
+        \\      ;;
         \\    *'"method":"tools/call"'*) printf '%s\n' '{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"echoed"}]}}' ;;
         \\  esac
         \\done

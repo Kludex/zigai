@@ -387,6 +387,16 @@ test "response metadata parses retry and provider rate-limit headers" {
     try std.testing.expectEqual(@as(?u64, 3), metadata.retry_after_seconds);
     try std.testing.expectEqual(@as(?u64, 0), metadata.rate_limit_remaining_requests);
     try std.testing.expectEqual(@as(?u64, 12), metadata.rate_limit_remaining_tokens);
+
+    const long_session = [_]u8{'x'} ** 257;
+    const oversized_head_text = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "HTTP/1.1 200 OK\r\nmcp-session-id: {s}\r\n\r\n",
+        .{&long_session},
+    );
+    defer std.testing.allocator.free(oversized_head_text);
+    const oversized_head = try std.http.Client.Response.Head.parse(oversized_head_text);
+    try std.testing.expect(responseMetadata(oversized_head).mcp_session_id == null);
 }
 
 test "decompression buffers cover every supported encoding" {
