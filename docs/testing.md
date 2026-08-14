@@ -36,8 +36,9 @@ Provider cassettes live in `tests/cassettes/`. Their codec, recorder, replay
 transport, and body filters live in `tests/support/`; none are exported by the
 library or compiled into the command-line clients.
 
-`tests/cassettes/models/` contains real tool-loop recordings for four current
-models from each first-party provider. The matrix is defined once in
+`tests/cassettes/models/` contains real tool-loop recordings for eight models
+from each first-party provider. The matrix spans multiple model generations and
+size tiers. It is defined once in
 `tests/support/model_matrix.zig` and drives both recording and replay.
 
 `tests/cassettes/native/` contains real provider-managed web-tool recordings:

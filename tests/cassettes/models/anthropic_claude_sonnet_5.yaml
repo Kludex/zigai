@@ -1,0 +1,145 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.anthropic.com/v1/messages"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "claude-sonnet-5"
+        max_tokens: 128
+        system:
+          - type: "text"
+            text: "Always use the weather tool before answering."
+        messages:
+          - role: "user"
+            content:
+              - type: "text"
+                text: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - name: "weather"
+            description: "Get the current weather for a city."
+            input_schema:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "19999"
+      x-ratelimit-remaining-tokens:
+      - "12000000"
+    body:
+      type: json
+      content:
+        model: "claude-sonnet-5"
+        id: "msg_011Ce39Uizx8CLzT5SppTvPP"
+        type: "message"
+        role: "assistant"
+        content:
+          - type: "thinking"
+            thinking: ""
+            signature: "EpQCCokBCBAYAipAgQMKs7LmQPEtPu81lIqXsti2g6WrZehJwQQ1SNaBN4WpnmIvHydcDH+fdvN+bh0FKviNN5n+zrZEsDr93upcszIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ0NGFlNjc2Yy05NThmLTRkNjgtOTEwOC1lYWU5ZGU3YjM2NmISDPEKSTLkL39glUhEBBoMtVN7JnJad+NZ/s8HIjAl+3QPbDf+HDyWyb1lg6oXp++IHbW6NQoaaqcVH9j6kDKEx92eJH9FjCEjGBzDRB8qOKnYy5PZ5Y4HSsbTplRCNRgsT62HWg9peVePyUTHz9Lk04RCmpMiboc7JUnW/u909DCBvj5/UTz5GAE="
+          - type: "tool_use"
+            id: "toolu_01N3gkLBDZnEG6YmHBZA65BB"
+            name: "weather"
+            input:
+              city: "Madrid"
+            caller:
+              type: "direct"
+        stop_reason: "tool_use"
+        stop_sequence: null
+        stop_details: null
+        usage:
+          input_tokens: 482
+          cache_creation_input_tokens: 0
+          cache_read_input_tokens: 0
+          cache_creation:
+            ephemeral_5m_input_tokens: 0
+            ephemeral_1h_input_tokens: 0
+          output_tokens: 66
+          output_tokens_details:
+            thinking_tokens: 16
+          service_tier: "standard"
+          inference_geo: "global"
+- request:
+    method: POST
+    uri: "https://api.anthropic.com/v1/messages"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "claude-sonnet-5"
+        max_tokens: 128
+        system:
+          - type: "text"
+            text: "Always use the weather tool before answering."
+        messages:
+          - role: "user"
+            content:
+              - type: "text"
+                text: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "assistant"
+            content:
+              - type: "thinking"
+                thinking: ""
+                signature: "EpQCCokBCBAYAipAgQMKs7LmQPEtPu81lIqXsti2g6WrZehJwQQ1SNaBN4WpnmIvHydcDH+fdvN+bh0FKviNN5n+zrZEsDr93upcszIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ0NGFlNjc2Yy05NThmLTRkNjgtOTEwOC1lYWU5ZGU3YjM2NmISDPEKSTLkL39glUhEBBoMtVN7JnJad+NZ/s8HIjAl+3QPbDf+HDyWyb1lg6oXp++IHbW6NQoaaqcVH9j6kDKEx92eJH9FjCEjGBzDRB8qOKnYy5PZ5Y4HSsbTplRCNRgsT62HWg9peVePyUTHz9Lk04RCmpMiboc7JUnW/u909DCBvj5/UTz5GAE="
+              - type: "tool_use"
+                id: "toolu_01N3gkLBDZnEG6YmHBZA65BB"
+                name: "weather"
+                input:
+                  city: "Madrid"
+          - role: "user"
+            content:
+              - type: "tool_result"
+                tool_use_id: "toolu_01N3gkLBDZnEG6YmHBZA65BB"
+                content: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - name: "weather"
+            description: "Get the current weather for a city."
+            input_schema:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "19999"
+      x-ratelimit-remaining-tokens:
+      - "12000000"
+    body:
+      type: json
+      content:
+        model: "claude-sonnet-5"
+        id: "msg_011Ce39UvEsWqqnG3ecXRDTZ"
+        type: "message"
+        role: "assistant"
+        content:
+          - type: "text"
+            text: "It's sunny in Madrid with a temperature of 31°C."
+        stop_reason: "end_turn"
+        stop_sequence: null
+        stop_details: null
+        usage:
+          input_tokens: 573
+          cache_creation_input_tokens: 0
+          cache_read_input_tokens: 0
+          cache_creation:
+            ephemeral_5m_input_tokens: 0
+            ephemeral_1h_input_tokens: 0
+          output_tokens: 23
+          output_tokens_details:
+            thinking_tokens: 0
+          service_tier: "standard"
+          inference_geo: "global"

@@ -1,0 +1,264 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.openai.com/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-5-mini"
+        input:
+          - type: "message"
+            role: "system"
+            content: "Always use the weather tool before answering."
+          - type: "message"
+            role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - type: "function"
+            name: "weather"
+            description: "Get the current weather for a city."
+            parameters:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "29999"
+      x-ratelimit-remaining-tokens:
+      - "180000000"
+    body:
+      type: json
+      content:
+        id: "resp_0caceaa1c2f986ee006a7f6409bae481a0af50780450a1256d"
+        object: "response"
+        created_at: 1786733577
+        status: "completed"
+        background: false
+        billing:
+          payer: "developer"
+        completed_at: 1786733579
+        error: null
+        frequency_penalty: 0
+        incomplete_details: null
+        instructions: null
+        max_output_tokens: null
+        max_tool_calls: null
+        model: "gpt-5-mini-2025-08-07"
+        moderation: null
+        output:
+          - id: "rs_0caceaa1c2f986ee006a7f640a76e081a086362d7c80f4fecf"
+            type: "reasoning"
+            content: []
+            encrypted_content: |-
+              gAAAAABqf2QLONs_v7xWHbxR8Tffcmw3GBFtC2rRjMmX3X9IoV9ThAkmSF5oU2ve6abRQQEtGaDERIhsp-QwuJaRlhM5jUpOSKwSfVJ_IKvksuneZToMbtd7ZfoTixEuTNcSD_XgZgMHaS5qb77PnqjjJhZa_Zwot6nuZ_4_Jng-b0OzSDnI9NUrq7CTpO4PKpp2reFkOivjzlLRO_q_X_4vxZ2BOd7MCuv0Y4j1CCJbpp_BHmrtN_qq4xdYStqJnoxq5TekcS32Vq4H0-qjy3gllqvFjY1SCEZyzTAWn1S7QA3wJ6RIFRhVO_mzfBJ5uF8nbh9xq5dPJlM39cUB06-NQh_Y5doyPbZ8qUsw0glUTLBeVLcXeqQort61jPkxanvo1Ir2P7dwKhA_nRniCiEj8YOIfF1qHW6uy9LsWTAW_pEPKIV5At91UdQcLYsCiE2Has7L5YcCm47UajL6tBaPz5Pmgy9ldPEXBaNEK8wZqIrEFiAQsXKpK54tHzCQufagR43FtDQRSN-L2X6Cv8rBWoaqhIUWVpN-v9HQfhphaCxiKOsLYgsjsQraFgnFYYoLk0wK9H7ILum8BDmMyOnHCWYWLWVruTLffLDA5B9WJzHpJzXZwsOrglh-GC0yUM2KUUNovoJmrS5No9SdM81SC4H91o8I8Z40S_e_7CL4leFI57XahjcNfYDvi-Hd8WgU29_uzp088VvfB_OaUsUsX3XxgxHFb9HtbH7C0r8r4wVK_AdGH7-4pdKmjzpF2MhNhOefYWDTPHZ9qkmiNuHHfbBJ3gI3FdhL_uKE2zlVvATFXausvkEqM7UmM2U2pjZjAqDi_csEIODxV5xQOlVbG-rxNgJ_oIA7KVYvp3RbptAInvkqa-U0Els96bTYuLbEkuACLHXEIdq3jeksjFJhRMoTG-5tmF5ctMJV0e11Ph2BMiDoh9FpzN1P-XJcNR9Dg_BDEzwohQJdVzcM6QH-PKqcaGInZEk8wrdkC-sqMfiLv3NHtQ1ISZvXS6I_mR6rYxzXFQPAZx5DSBD5S_yqB_YCy_RDhzzwnBSXwSfi2HIZCBUVHH2K9QwsSIrihxXSYDYzka4CFOVHa0fA18fPAyqYWprSMDw5IPnSxi9qmmf3vjGI91mXCwmpr69q4kKg0U6lsnWPKQg1pNCE1-0WjxmkuFfw59TYxpRxLaGk5NUey8kVs_V0i3Qjh6NG8uTel8jBRJtcjLaXMmyOG4SVeV7y_fYnYw5MBeC7ivoWPJPA4wnhEPv0mTj9G0hodEDLyRBk4TfuVDHLsvOQbZn1lg80OLdc6oDsC35wA4AtZBhEBbEO1jS10PkGb1Agxd45m5JhxytuXEP5sbEj-h4V4bvo8vmXigyJON5Bj14G-lTS3tZOOilyHDzJ-W4RQ1lgGZqwb5yO6iWG2y_2oDOLtvow2LgPds-zEw1lU5pKVZdfBt-2JZ7M9t8sqWbLIEc2EV3DHCZnWYATmslg0RJwc3gSKn0PMpuqhbiHQ6dEBMzhHSBUAltTkUFYjn3ZZsa1Q4kJaHlMsuJJ9Nf11wXgYDvgaW5C9bpy1_tALmdOAgqunwSjTu67lesKjKveVfwFtSIzNl4Z24_pXgW5Abr6_fVqyTemFIr47kFGV4C1oALRsx_CVk69CJdInIlJQDGzkG_jgT3UvvTNacv5WgIg284Dm8pVh4yAkG_0xeCap5M9ZBrxFGTusVchqH0-wdw5EBd4FXCw-1m2wAcv6ivPL7ahZatBcJihbbGOesi51QNaYVr_MlTw-pFBDR2V0emTkxbtQjtvkbj6naUdePbKTY79acZ9xA==
+            summary: []
+          - id: "fc_0caceaa1c2f986ee006a7f640b28d481a0a207b2260d98f342"
+            type: "function_call"
+            status: "completed"
+            arguments: "{\"city\":\"Madrid\"}"
+            call_id: "call_tK4a1fQNXVFYMZ1Eb1QlsS4x"
+            name: "weather"
+        parallel_tool_calls: true
+        presence_penalty: 0
+        previous_response_id: null
+        prompt_cache_key: null
+        prompt_cache_retention: "in_memory"
+        reasoning:
+          context: "current_turn"
+          effort: "medium"
+          mode: "standard"
+          summary: null
+        safety_identifier: null
+        service_tier: "default"
+        store: true
+        temperature: 1
+        text:
+          format:
+            type: "text"
+          verbosity: "medium"
+        tool_choice: "auto"
+        tool_usage:
+          image_gen:
+            input_tokens: 0
+            input_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            output_tokens: 0
+            output_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            total_tokens: 0
+          web_search:
+            num_requests: 0
+        tools:
+          - type: "function"
+            description: "Get the current weather for a city."
+            name: "weather"
+            output_schema: null
+            parameters:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+            strict: true
+        top_logprobs: 0
+        top_p: 1
+        truncation: "disabled"
+        usage:
+          input_tokens: 72
+          input_tokens_details:
+            cache_write_tokens: 0
+            cached_tokens: 0
+          output_tokens: 109
+          output_tokens_details:
+            reasoning_tokens: 64
+          total_tokens: 181
+        user: null
+        metadata: {}
+- request:
+    method: POST
+    uri: "https://api.openai.com/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-5-mini"
+        input:
+          - type: "message"
+            role: "system"
+            content: "Always use the weather tool before answering."
+          - type: "message"
+            role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - type: "function_call"
+            call_id: "call_tK4a1fQNXVFYMZ1Eb1QlsS4x"
+            name: "weather"
+            arguments: "{\"city\":\"Madrid\"}"
+          - type: "function_call_output"
+            call_id: "call_tK4a1fQNXVFYMZ1Eb1QlsS4x"
+            output: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            name: "weather"
+            description: "Get the current weather for a city."
+            parameters:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "29999"
+      x-ratelimit-remaining-tokens:
+      - "180000000"
+    body:
+      type: json
+      content:
+        id: "resp_0014f2a799b4f638006a7f640bda8087d299da5dba62a58448"
+        object: "response"
+        created_at: 1786733579
+        status: "completed"
+        background: false
+        billing:
+          payer: "developer"
+        completed_at: 1786733581
+        error: null
+        frequency_penalty: 0
+        incomplete_details: null
+        instructions: null
+        max_output_tokens: null
+        max_tool_calls: null
+        model: "gpt-5-mini-2025-08-07"
+        moderation: null
+        output:
+          - id: "rs_0014f2a799b4f638006a7f640c630087d2965161704c123403"
+            type: "reasoning"
+            content: []
+            encrypted_content: |-
+              gAAAAABqf2QNoi60vw1JlJf_1owMelh5ZsTlZa8jKc-bGgWEBNVZ38aehPE9jCiSc02zJQZlokCop9uN1xKQz2ekwIm2C9DnkPdkwCN3WZk62VtR6U10EwdsYhoOQ8wW72J9pSVSxnokv_c8KJAlyTzGcKdaZb7stNRACRGkd0b_bpnROc0biRXo1UKHTkpQdDlQNum0aQnrPBeSiueak5aT_R_dHLemn15uBbOuJpljLYfNQzUyKZdLRfPNs-75_mSAOXLfHnWd0dIeGAaRavy-EgKP8Vb3Ka7BaPfEF1jP1kwEwWNzUltjtPKUnXL18Iz_8m9IcDEKW0xo7ngAxeR_Tydh01JgnA2fAHbFSw3h6h8zI_cmF9JytYRf7vjqCKY6Zl6y4tgpeHAlp8VnPZLsPZiA-jrR2b15Mk_rO0jwFnS3zO9ovxblAKDBC68oIsWPP7wYCfj1NOdl8P4TmIrH7KqHXZt4GHsaTgC4qD2VqbiYToMDegVydlyYGbPCWdyQ9Ai2qgZS2i-sXie_9aNsEgk4tNY3gR3gchUXn_cXtKbD3SuNOGj1t8JHX8uthLkmOIppYiUiUV2skdSED7_TGYQZ-W3279t76hVMHKsBSZI2NVgkI1sOqfTSq4YrnQJygBsPHmqePoh7i0I4LXK7BDC2ZCfxeYkA1kMMh0sFFVHM26gj2b8QmdWAHEOutdgQrrhu5zB2tHRbIgMANfyX3ZXQ_rkeSqyx8jNkfRrcWEpfolrDcTaVt0Fb95lfTJ3JPuCi41XXSh8Z4zixuQhjDHy1TU27ngwmGTXnoExOEXK_gpB0vHBY9E0OvQghuq-VYeAXSlBRruZN-kxoUNqHqSJACkt0kmiFmAW9PmOKcU-m1cZzIj9HYkayewmbGgXiiCch8sU_hrtHZDxqP1vDovVuf7_qnIpk0Ox2ZKbdK6rRITVwrb1MyLC_mU7xQ9qQX5Wiz9Rafb9-l8dhhdJhoWeESg0uEYaLO_4ozNSsZWOLF1LmLwhO_Vtsohr5QXaIG5I_B3LVZLnfS9dVefoZgjI1sXsbzj2AXYtNZzuRDU9ZKJ7HQl5NK5acoDYoBTlXpmkdEWzzkAhHZBG4vkvgAZvs_HZFAUMLoRV-UPYHoj44SisuxGH7mZT4dGYIOB8RXR8ElqwPkJ7sd5wqtty-qNs5g8JYBieJVpamA0na20Ob981PTy7WFhPyYlI_dG76n_qEcHkneZF9e8CFHnE9_kLBUULtNEaXh9IVS0s4zPFpIROe_JLYlRQPeG61lo0_NBcA8d6faEsujtsqn_C3Jh-uJyTmGcz_rvLRsXShJbEmSkO1wwHoq83HBuLuu-LsCEHPed-UNVOuwxqGWCDyQCMMSBQz3jOddL4yijwNNiVimr5YqKannJ55PICyyV8YM-cIEXbxRnDr8-xvnjl3ltpXDHQjK0Ap98QqbEyug22QjtUg_69fG5xUku6IrE9DiPF-AhCFKhkPiinbjsArcgV2BwV0dYiN0R09P0yQ3elKqp76u6IXVr_IwUGt3DWxemJG_fNDNr4aDzJRqm1eozFCawovhElJpjzoIoXofDA8XUSiNN4zGd6sy9RLSiG5Gjnz82BKfx-YYuK63G5GO7s48W3dUsg3SSY560HntJKFcshGBnTuo2_X_SJm9ZGoOMhE4uYUPFnoy8sA5fDRn7bfc8L82-UnyW728puHdgNQypHFJ5q2OliC8zVMafd0wLxIbrCVf40OlaNu6z7BtDg-KR15CvJYQMt_NZQuMjByBEcwI4gfoayDN8xyxhNwrCPq1lWocJdEazKj_9ha02TUM3Qqqu0GmX9bIczpS4pRkPylOUwDz_w5hftpUZ19819eoLjo-3pSO1ET2T93B-zckEpDdrABFWrCzXjLCBAfaCylfn_u9CyPPRMycLw1iRd-dA_ulX6LJRi40ZNCe_Mt8WYNdmPZh9I1-J4i-J_yFZNIsQo=
+            summary: []
+          - id: "msg_0014f2a799b4f638006a7f640d684087d2a1499a5def7b76cb"
+            type: "message"
+            status: "completed"
+            content:
+              - type: "output_text"
+                annotations: []
+                logprobs: []
+                text: "It's sunny and 31°C in Madrid."
+            role: "assistant"
+        parallel_tool_calls: true
+        presence_penalty: 0
+        previous_response_id: null
+        prompt_cache_key: null
+        prompt_cache_retention: "in_memory"
+        reasoning:
+          context: "current_turn"
+          effort: "medium"
+          mode: "standard"
+          summary: null
+        safety_identifier: null
+        service_tier: "default"
+        store: true
+        temperature: 1
+        text:
+          format:
+            type: "text"
+          verbosity: "medium"
+        tool_choice: "auto"
+        tool_usage:
+          image_gen:
+            input_tokens: 0
+            input_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            output_tokens: 0
+            output_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            total_tokens: 0
+          web_search:
+            num_requests: 0
+        tools:
+          - type: "function"
+            description: "Get the current weather for a city."
+            name: "weather"
+            output_schema: null
+            parameters:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+            strict: true
+        top_logprobs: 0
+        top_p: 1
+        truncation: "disabled"
+        usage:
+          input_tokens: 107
+          input_tokens_details:
+            cache_write_tokens: 0
+            cached_tokens: 0
+          output_tokens: 140
+          output_tokens_details:
+            reasoning_tokens: 64
+          total_tokens: 247
+        user: null
+        metadata: {}

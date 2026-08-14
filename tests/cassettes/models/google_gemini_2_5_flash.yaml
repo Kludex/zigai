@@ -1,0 +1,123 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    headers: {}
+    body:
+      type: json
+      content:
+        systemInstruction:
+          parts:
+            - text: "Always use the weather tool before answering."
+        contents:
+          - role: "user"
+            parts:
+              - text: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - functionDeclarations:
+              - name: "weather"
+                description: "Get the current weather for a city."
+                parameters:
+                  type: "object"
+                  properties:
+                    city:
+                      type: "string"
+                  required:
+                    - "city"
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        candidates:
+          - content:
+              parts:
+                - functionCall:
+                    name: "weather"
+                    args:
+                      city: "Madrid"
+                  thoughtSignature: |-
+                    Cp8DARFNMg9IaymJ6MNegG53+/gUMVBBEv1STZmIrknmaYBXsZEHod8uA8ikCVUJ9aJoNpSzjzTEZRCKZyoJUpMHDriZJNasHnSx8ClD52W1UmP6flYbICxsJifKgSo2gJZKDn78zEeL95tag4scNPQEjzMhRXLKAK7L6PG1LgEeW1qcYRbONG7T3iGNonNMzVnejPYDJ5m4ZgA+g9F5br2C4ly8vG5TXfoXOllZ31oiy9XhmA8nJBVmTeYZsM6eMamIDTia64j9iAvEuXEvU0a8G2O6tbXo5Uf85aT1Eq6TQbLShmC9Sc7QZBeqFfL8fXbgESEFJs2YLiPU8ntgN4LONecotkkzRoF94PaIz5oYny1eMOw+9M/d6obXqk70D9TDJm3FSpv+OO8AI4qoIbvkFCQ5AhHz16pIiYO8kjrfAAFtEh9BaWuscOeYCLL5wB1CqP6VwurQs4cibModhIb77JMIDzwJVcRby/L3DCayRp0qiEDdYmwxkxUqaQWGbo3z5gDgOawt17nbJno0pptOqwTbYrUfESLpBgBLUYAtlg==
+              role: "model"
+            finishReason: "STOP"
+            index: 0
+            finishMessage: "Model generated function call(s)."
+        usageMetadata:
+          promptTokenCount: 64
+          candidatesTokenCount: 13
+          totalTokenCount: 165
+          promptTokensDetails:
+            - modality: "TEXT"
+              tokenCount: 64
+          thoughtsTokenCount: 88
+          serviceTier: "standard"
+        modelVersion: "gemini-2.5-flash"
+        responseId: "L2R_avjnN8fkxN8PwaLLmAU"
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    headers: {}
+    body:
+      type: json
+      content:
+        systemInstruction:
+          parts:
+            - text: "Always use the weather tool before answering."
+        contents:
+          - role: "user"
+            parts:
+              - text: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "model"
+            parts:
+              - functionCall:
+                  name: "weather"
+                  args:
+                    city: "Madrid"
+                  id: "google-call-0"
+                thoughtSignature: |-
+                  Cp8DARFNMg9IaymJ6MNegG53+/gUMVBBEv1STZmIrknmaYBXsZEHod8uA8ikCVUJ9aJoNpSzjzTEZRCKZyoJUpMHDriZJNasHnSx8ClD52W1UmP6flYbICxsJifKgSo2gJZKDn78zEeL95tag4scNPQEjzMhRXLKAK7L6PG1LgEeW1qcYRbONG7T3iGNonNMzVnejPYDJ5m4ZgA+g9F5br2C4ly8vG5TXfoXOllZ31oiy9XhmA8nJBVmTeYZsM6eMamIDTia64j9iAvEuXEvU0a8G2O6tbXo5Uf85aT1Eq6TQbLShmC9Sc7QZBeqFfL8fXbgESEFJs2YLiPU8ntgN4LONecotkkzRoF94PaIz5oYny1eMOw+9M/d6obXqk70D9TDJm3FSpv+OO8AI4qoIbvkFCQ5AhHz16pIiYO8kjrfAAFtEh9BaWuscOeYCLL5wB1CqP6VwurQs4cibModhIb77JMIDzwJVcRby/L3DCayRp0qiEDdYmwxkxUqaQWGbo3z5gDgOawt17nbJno0pptOqwTbYrUfESLpBgBLUYAtlg==
+          - role: "user"
+            parts:
+              - functionResponse:
+                  name: "weather"
+                  response:
+                    result:
+                      temperature_c: 31
+                      condition: "sunny"
+                  id: "google-call-0"
+        tools:
+          - functionDeclarations:
+              - name: "weather"
+                description: "Get the current weather for a city."
+                parameters:
+                  type: "object"
+                  properties:
+                    city:
+                      type: "string"
+                  required:
+                    - "city"
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        candidates:
+          - content:
+              parts:
+                - text: "The weather in Madrid is sunny with a temperature of 31 degrees Celsius."
+              role: "model"
+            finishReason: "STOP"
+            index: 0
+        usageMetadata:
+          promptTokenCount: 102
+          candidatesTokenCount: 16
+          totalTokenCount: 118
+          promptTokensDetails:
+            - modality: "TEXT"
+              tokenCount: 102
+          serviceTier: "standard"
+        modelVersion: "gemini-2.5-flash"
+        responseId: "MWR_aobiBb-LvdIP9JzM0AQ"
