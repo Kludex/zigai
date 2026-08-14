@@ -2339,6 +2339,7 @@ test "agent private helpers cover ownership settings retries and rich content" {
         Agent.Error.InvalidContentRole,
         ensurePartsSupported(selected_model, .system, &.{.{ .binary = content }}),
     );
+    try ensurePartsSupported(selected_model, .user, &.{.{ .binary = content }});
     try std.testing.expectError(
         Agent.Error.ModelDoesNotSupportThinking,
         ensurePartsSupported(.{

@@ -618,6 +618,7 @@ test "covers Responses API refusal, incomplete, and malformed edges" {
         .status = 200,
     };
     try StreamState.line(&refusal, "data: {\"type\":\"response.refusal.delta\"}");
+    try refusal.sink.emit(.{ .text_delta = "covered" });
     try std.testing.expectEqual(model_types.FinishReason.Kind.content_filter, refusal.finish_reason.?.kind);
 
     var incomplete = StreamState{

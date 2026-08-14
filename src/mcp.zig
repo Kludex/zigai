@@ -164,7 +164,6 @@ pub const StdioTransport = struct {
             const line = try readLine(allocator, self.io, self.child.stdout orelse return error.McpProcessClosed);
             errdefer allocator.free(line);
             const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
-                allocator.free(line);
                 return error.InvalidMcpMessage;
             };
             defer parsed.deinit();
@@ -713,4 +712,51 @@ test "stdio transport runs an MCP tool server child process" {
     const result = try tools[0].tool.execute(std.testing.allocator, "{}");
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings("echoed", result);
+}
+
+test "stdio transport releases malformed and interrupted messages" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const malformed_script =
+        \\read -r line
+        \\printf '%s\n' 'not-json'
+    ;
+    var malformed = try StdioTransport.init(std.testing.io, &.{ "/bin/sh", "-c", malformed_script });
+    defer malformed.deinit();
+    try std.testing.expectError(error.InvalidMcpMessage, malformed.transport().send(
+        std.testing.allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}",
+        true,
+    ));
+
+    const interrupted_script =
+        \\read -r line
+        \\exec 0<&-
+        \\printf '%s\n' '{"jsonrpc":"2.0","id":99,"method":"server/ping"}'
+        \\sleep 1
+    ;
+    var interrupted = try StdioTransport.init(std.testing.io, &.{ "/bin/sh", "-c", interrupted_script });
+    defer interrupted.deinit();
+    if (interrupted.transport().send(
+        std.testing.allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}",
+        true,
+    )) |body| {
+        std.testing.allocator.free(body);
+        return error.ExpectedMcpWriteFailure;
+    } else |_| {}
+
+    const partial_script =
+        \\read -r line
+        \\printf 'partial'
+    ;
+    var partial = try StdioTransport.init(std.testing.io, &.{ "/bin/sh", "-c", partial_script });
+    defer partial.deinit();
+    if (partial.transport().send(
+        std.testing.allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}",
+        true,
+    )) |body| {
+        std.testing.allocator.free(body);
+        return error.ExpectedMcpReadFailure;
+    } else |_| {}
 }

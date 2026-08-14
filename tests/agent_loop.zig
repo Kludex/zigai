@@ -1731,6 +1731,23 @@ test "parallel tools handle validation and terminal execution failures" {
         .tools = &.{ fatal, slow },
         .io = threaded.io(),
     }).run(std.testing.allocator, "Run both."));
+
+    const limited_calls = [_]zigai.model.Part{
+        .{ .tool_call = .{ .id = "slow-one", .name = "slow-one", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "slow-two", .name = "slow-two", .arguments_json = "{}" } },
+    };
+    var limited_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &limited_calls }} };
+    var slow_one = slow;
+    slow_one.definition.name = "slow-one";
+    var slow_two = slow;
+    slow_two.definition.name = "slow-two";
+    var limited = std.Io.Threaded.init(std.testing.allocator, .{ .concurrent_limit = .limited(1) });
+    defer limited.deinit();
+    try std.testing.expectError(zigai.Agent.Error.ToolConcurrencyUnavailable, (zigai.Agent{
+        .model = limited_model.model(),
+        .tools = &.{ slow_one, slow_two },
+        .io = limited.io(),
+    }).run(std.testing.allocator, "Exceed concurrency."));
 }
 
 test "agent reports unknown tools and exhausts a bounded tool loop" {

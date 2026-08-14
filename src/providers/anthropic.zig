@@ -714,11 +714,14 @@ test "Anthropic streaming preserves thinking deltas and signatures" {
     try StreamState.line(&state, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}");
     try StreamState.line(&state, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"private\"}}");
     try StreamState.line(&state, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"signed\"}}");
+    try StreamState.line(&state, "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"redacted\"}}");
     try StreamState.line(&state, "data: {\"type\":\"content_block_stop\",\"index\":0}");
-    try std.testing.expectEqual(@as(usize, 1), state.parts.items.len);
-    try std.testing.expectEqualStrings("private", state.parts.items[0].thinking.content);
-    try std.testing.expectEqualStrings("signed", state.parts.items[0].thinking.signature.?);
-    try std.testing.expectEqual(@as(usize, 1), leadingThinkingCount(state.parts.items));
+    try state.sink.emit(.{ .text_delta = "covered" });
+    try std.testing.expectEqual(@as(usize, 2), state.parts.items.len);
+    try std.testing.expectEqualStrings("redacted", state.parts.items[0].thinking.signature.?);
+    try std.testing.expectEqualStrings("private", state.parts.items[1].thinking.content);
+    try std.testing.expectEqualStrings("signed", state.parts.items[1].thinking.signature.?);
+    try std.testing.expectEqual(@as(usize, 2), leadingThinkingCount(state.parts.items));
 }
 
 test "covers Anthropic rich and streaming response edges" {

@@ -675,3 +675,36 @@ test "compatible responses classify malformed buffered and streamed tools" {
         "data: {\"choices\":[false]}",
     ));
 }
+
+fn checkBufferedToolAllocationFailure(allocator: std.mem.Allocator) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    _ = try decodeResponse(
+        arena.allocator(),
+        "{\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"call\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]}}]}",
+    );
+}
+
+fn checkStreamedToolAllocationFailure(allocator: std.mem.Allocator) !void {
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+    };
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    var unused: u8 = 0;
+    var state = StreamState{
+        .allocator = arena.allocator(),
+        .sink = .{ .context = &unused, .eventFn = Sink.emit },
+        .status = 200,
+    };
+    defer state.deinit();
+    try StreamState.line(
+        &state,
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}",
+    );
+}
+
+test "compatible tool parsing propagates allocation failures" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkBufferedToolAllocationFailure, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkStreamedToolAllocationFailure, .{});
+}

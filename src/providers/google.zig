@@ -726,6 +726,7 @@ test "rejects malformed Gemini responses" {
         "{\"candidates\":[{\"content\":{\"parts\":[false]}}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":false}]}}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"x\",\"thought\":1}]}}]}",
+        "{\"candidates\":[{\"content\":{\"parts\":[{\"inlineData\":false}]}}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[{\"fileData\":false}]}}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":false}]}}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"x\"}}]}}]}",
