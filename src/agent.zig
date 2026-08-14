@@ -233,7 +233,10 @@ pub fn parseResumeDecisions(
         arena.allocator(),
         source,
         .{ .ignore_unknown_fields = false, .allocate = .alloc_always },
-    ) catch return Agent.Error.InvalidDeferredState;
+    ) catch |failure| switch (failure) {
+        error.OutOfMemory => return failure,
+        else => return Agent.Error.InvalidDeferredState,
+    };
     if (parsed.version != 1) return Agent.Error.InvalidDeferredState;
     return .{ .arena = arena, .decisions = parsed.decisions };
 }
@@ -711,11 +714,7 @@ pub const Agent = struct {
         );
         return switch (outcome) {
             .complete => |result| result,
-            .paused => |paused_value| {
-                var paused = paused_value;
-                paused.deinit();
-                return Error.ToolCallRequiresDeferredRun;
-            },
+            .paused => unreachable,
         };
     }
 
@@ -2245,4 +2244,127 @@ test "cancellation tokens and retry hooks expose stable state" {
         .model_requests = 1,
     });
     try std.testing.expect(capture.called);
+}
+
+fn checkResumeDecisionAllocationFailure(allocator: std.mem.Allocator) !void {
+    var decisions = try parseResumeDecisions(
+        allocator,
+        "{\"version\":1,\"decisions\":[{\"call_id\":\"call\",\"action\":\"approve\"}]}",
+    );
+    defer decisions.deinit();
+}
+
+test "agent private helpers cover ownership settings retries and rich content" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkResumeDecisionAllocationFailure, .{});
+
+    try std.testing.expectError(
+        Agent.Error.ModelDoesNotSupportMaxTokens,
+        requireModelSettings(.{ .supports_max_tokens = false }, .{ .max_tokens = 1 }),
+    );
+    try std.testing.expectError(
+        Agent.Error.ModelDoesNotSupportStopSequences,
+        requireModelSettings(.{ .supports_stop_sequences = false }, .{ .stop_sequences = &.{"stop"} }),
+    );
+
+    var locked = LockedAllocator{ .child = std.testing.allocator, .io = std.testing.io };
+    const concurrent = locked.allocator();
+    var bytes = try concurrent.alloc(u8, 64);
+    if (concurrent.resize(bytes, 32)) bytes = bytes[0..32];
+    if (concurrent.remap(bytes, 16)) |remapped| bytes = remapped;
+    concurrent.free(bytes);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const copied = [_]Part{
+        try copyPart(allocator, .{ .audio = .{ .source = .{ .bytes = "audio" }, .media_type = "audio/mpeg" } }),
+        try copyPart(allocator, .{ .document = .{
+            .source = .{ .url = "https://example.test/doc" },
+            .media_type = "application/pdf",
+        } }),
+        try copyPart(allocator, .{ .binary = .{
+            .source = .{ .provider_file = .{ .id = "file", .provider = "provider" } },
+            .media_type = "application/octet-stream",
+        } }),
+        try copyPart(allocator, .{ .thinking = .{ .content = "private", .signature = "signed" } }),
+    };
+    try std.testing.expectEqualStrings("audio", copied[0].audio.source.bytes);
+    try std.testing.expectEqualStrings("https://example.test/doc", copied[1].document.source.url);
+    try std.testing.expectEqualStrings("file", copied[2].binary.source.provider_file.id);
+    try std.testing.expectEqualStrings("signed", copied[3].thinking.signature.?);
+
+    const Stub = struct {
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            return .{ .parts = &.{} };
+        }
+    };
+    var unused: u8 = 0;
+    const selected_model = model_types.Model{
+        .context = &unused,
+        .profile = .{ .content_types = model_types.ModelProfile.ContentTypeSet.initMany(&.{
+            .image,
+            .audio,
+            .document,
+            .binary,
+            .thinking,
+        }) },
+        .provider_name = "provider",
+        .requestFn = Stub.request,
+    };
+    _ = try selected_model.request(allocator, .{ .messages = &.{} });
+    var messages: std.ArrayList(Message) = .empty;
+    try std.testing.expectError(Agent.Error.InvalidToolFollowUpMessage, appendToolFollowUps(
+        selected_model,
+        allocator,
+        &messages,
+        &.{.{ .role = .user, .parts = &.{.{ .tool_call = .{ .id = "call", .name = "tool", .arguments_json = "{}" } }} }},
+    ));
+
+    var tracker = ToolRetryTracker{ .allocator = allocator };
+    try tracker.restore(&.{.{ .name = "first", .count = 1 }});
+    try std.testing.expect(try tracker.consume("first", 3));
+    try std.testing.expect(try tracker.consume("second", 1));
+    try std.testing.expect(!try tracker.consume("missing", 0));
+
+    try std.testing.expectError(
+        Agent.Error.ModelDoesNotSupportWebSearch,
+        ensureBuiltinToolsSupported(.{}, &.{.{ .web_search = .{} }}),
+    );
+    const content = model_types.Content{ .source = .{ .bytes = "x" }, .media_type = "application/octet-stream" };
+    try std.testing.expectError(
+        Agent.Error.InvalidContentRole,
+        ensurePartsSupported(selected_model, .tool, &.{.{ .document = content }}),
+    );
+    try std.testing.expectError(
+        Agent.Error.InvalidContentRole,
+        ensurePartsSupported(selected_model, .system, &.{.{ .binary = content }}),
+    );
+    try std.testing.expectError(
+        Agent.Error.ModelDoesNotSupportThinking,
+        ensurePartsSupported(.{
+            .context = &unused,
+            .profile = .{},
+            .requestFn = Stub.request,
+        }, .assistant, &.{.{ .thinking = .{ .content = "private" } }}),
+    );
+    const unsupported_model = model_types.Model{ .context = &unused, .profile = .{}, .requestFn = Stub.request };
+    try std.testing.expectError(Agent.Error.ModelDoesNotSupportImages, ensureContentPartSupported(unsupported_model, .image, content));
+    try std.testing.expectError(Agent.Error.ModelDoesNotSupportDocuments, ensureContentPartSupported(unsupported_model, .document, content));
+    try std.testing.expectError(Agent.Error.ModelDoesNotSupportBinaryContent, ensureContentPartSupported(unsupported_model, .binary, content));
+    try std.testing.expectError(Agent.Error.ModelDoesNotSupportThinking, ensureContentPartSupported(unsupported_model, .thinking, content));
+}
+
+test "typed result decoding releases invalid untyped results" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    const output = try arena.allocator().dupe(u8, "not-json");
+    const messages = try arena.allocator().alloc(Message, 0);
+    const result = Agent.Result{
+        .arena = arena,
+        .output = output,
+        .messages = messages,
+        .usage = .{},
+        .model_requests = 1,
+        .finish_reason = null,
+    };
+    try std.testing.expectError(Agent.Error.InvalidTypedOutput, decodeTypedResult(struct { value: u8 }, result));
 }
