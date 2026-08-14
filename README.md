@@ -90,7 +90,9 @@ pub fn main(init: std.process.Init) !void {
 
 `reflect.tool` derives the JSON Schema, decodes the model's arguments, calls
 the Zig function, and encodes its result. You can also build tools manually
-when you need complete control.
+when you need complete control. Invalid arguments and recoverable failures are
+returned to the model as error results, bounded independently for each tool by
+`Tool.max_retries` or the agent's `max_tool_retries` default.
 
 ## Providers
 

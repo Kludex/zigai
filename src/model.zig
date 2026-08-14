@@ -52,6 +52,8 @@ pub const ToolDefinition = struct {
 pub const Tool = struct {
     definition: ToolDefinition,
     context: *anyopaque,
+    /// Overrides `Agent.max_tool_retries` for this tool when non-null.
+    max_retries: ?usize = null,
     executeFn: *const fn (context: *anyopaque, allocator: std.mem.Allocator, arguments_json: []const u8) anyerror![]const u8,
     executeWithContextFn: ?*const fn (
         context: *anyopaque,
@@ -59,6 +61,9 @@ pub const Tool = struct {
         run_context: ToolRunContext,
         arguments_json: []const u8,
     ) anyerror![]const u8 = null,
+    /// Classifies failures that are safe to show to the model for correction.
+    /// By default, only allocation and cancellation failures are fatal.
+    isRecoverableFn: ?*const fn (context: *anyopaque, failure: anyerror) bool = null,
 
     pub fn execute(self: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) ![]const u8 {
         return self.executeFn(self.context, allocator, arguments_json);
@@ -67,6 +72,15 @@ pub const Tool = struct {
     pub fn executeWithContext(self: Tool, allocator: std.mem.Allocator, run_context: ToolRunContext, arguments_json: []const u8) ![]const u8 {
         const contextual = self.executeWithContextFn orelse return self.execute(allocator, arguments_json);
         return contextual(self.context, allocator, run_context, arguments_json);
+    }
+
+    /// Returns whether `failure` can be safely exposed to the model.
+    pub fn isRecoverable(self: Tool, failure: anyerror) bool {
+        if (self.isRecoverableFn) |classify| return classify(self.context, failure);
+        return switch (failure) {
+            error.OutOfMemory, error.Cancelled, error.RequestCancelled => false,
+            else => true,
+        };
     }
 };
 

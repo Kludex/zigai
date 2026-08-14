@@ -52,7 +52,11 @@ loop, while `Result.messages` contains only reusable conversation history.
 An agent may carry an opaque per-run dependency pointer. Contextual tools use
 `ToolRunContext.dependency(T)` to recover their application type and can also
 inspect cumulative token usage and model-request count. Existing simple tool
-callbacks remain context-free.
+callbacks remain context-free. Invalid arguments and recoverable tool failures
+become error tool results so the model can repair its call. Retry counts are
+kept separately for each tool, with a per-tool override, and do not consume the
+structured-output retry budget. Allocation and cancellation failures remain
+fatal; custom tools can override failure classification.
 
 Cancellation is checked at loop boundaries and propagated through the model
 request so the standard HTTP transport can interrupt in-flight buffered and

@@ -528,6 +528,93 @@ test "agent reports unknown tools and exhausts a bounded tool loop" {
     try std.testing.expectEqual(@as(u8, 1), calls);
 }
 
+test "invalid tool arguments are returned to the model for correction" {
+    const invalid_call = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "bad",
+        .name = "double",
+        .arguments_json = "{}",
+    } }};
+    const valid_call = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "good",
+        .name = "double",
+        .arguments_json = "{\"value\":21}",
+    } }};
+    const final_parts = [_]zigai.model.Part{.{ .text = "42" }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
+            if (index == 0) return;
+            const result = request.messages[request.messages.len - 1].parts[0].tool_result;
+            if (index == 1) {
+                try std.testing.expect(result.is_error);
+                try std.testing.expect(std.mem.indexOf(u8, result.content, "InvalidToolArguments") != null);
+            } else {
+                try std.testing.expect(!result.is_error);
+                try std.testing.expectEqualStrings("42", result.content);
+            }
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{
+            .{ .parts = &invalid_call },
+            .{ .parts = &valid_call },
+            .{ .parts = &final_parts },
+        },
+        .inspectFn = Inspector.inspect,
+    };
+    var double = zigai.reflect.tool("double", "Double an integer.", struct {
+        fn call(arguments: struct { value: u8 }) !u8 {
+            return arguments.value * 2;
+        }
+    }.call);
+    double.max_retries = 1;
+
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .tools = &.{double},
+    }).run(std.testing.allocator, "Double 21.");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("42", result.output);
+    try std.testing.expectEqual(@as(usize, 3), result.model_requests);
+}
+
+test "recoverable tool failures are returned as error results" {
+    const call_parts = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "one",
+        .name = "lookup",
+        .arguments_json = "{}",
+    } }};
+    const final_parts = [_]zigai.model.Part{.{ .text = "No data is available." }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
+            if (index == 0) return;
+            const result = request.messages[2].parts[0].tool_result;
+            try std.testing.expect(result.is_error);
+            try std.testing.expect(std.mem.indexOf(u8, result.content, "BackendUnavailable") != null);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &call_parts }, .{ .parts = &final_parts } },
+        .inspectFn = Inspector.inspect,
+    };
+    var unused: u8 = 0;
+    const tool = zigai.Tool{
+        .definition = .{ .name = "lookup", .description = "", .parameters_json_schema = "{}" },
+        .context = &unused,
+        .max_retries = 1,
+        .executeFn = struct {
+            fn execute(_: *anyopaque, _: std.mem.Allocator, _: []const u8) ![]const u8 {
+                return error.BackendUnavailable;
+            }
+        }.execute,
+    };
+    var result = try (zigai.Agent{ .model = scripted.model(), .tools = &.{tool} }).run(
+        std.testing.allocator,
+        "Look it up.",
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("No data is available.", result.output);
+}
+
 test "agent propagates tool failures" {
     const call_parts = [_]zigai.model.Part{.{ .tool_call = .{
         .id = "one",
@@ -540,6 +627,7 @@ test "agent propagates tool failures" {
     const tool = zigai.Tool{
         .definition = .{ .name = "fails", .description = "", .parameters_json_schema = "{}" },
         .context = &unused,
+        .max_retries = 0,
         .executeFn = struct {
             fn execute(_: *anyopaque, _: std.mem.Allocator, _: []const u8) ![]const u8 {
                 return error.ToolFailed;

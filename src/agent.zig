@@ -168,6 +168,8 @@ pub const Agent = struct {
     validate_output_locally: bool = false,
     /// Number of invalid final responses returned to the model for correction.
     max_output_retries: usize = 2,
+    /// Default number of failures returned to the model for each tool.
+    max_tool_retries: usize = 2,
     limits: UsageLimits = .{},
     retry_policy: RetryPolicy = .{},
     provider_error_observer: ?model_types.ProviderErrorObserver = null,
@@ -328,6 +330,8 @@ pub const Agent = struct {
         var definitions: std.ArrayList(model_types.ToolDefinition) = .empty;
         var total_usage: model_types.Usage = .{};
         var provider_errors = ProviderErrorCapture{ .target = self.provider_error_observer };
+        const tool_retries = try memory.alloc(usize, self.tools.len);
+        @memset(tool_retries, 0);
 
         if (self.system_prompt) |system_prompt| {
             try appendTextMessage(memory, &messages, .system, system_prompt);
@@ -428,16 +432,30 @@ pub const Agent = struct {
             for (response.parts) |part| switch (part) {
                 .tool_call => |call| {
                     try checkCancellation(self.cancellation);
-                    const tool = findTool(self.tools, call.name) orelse return Error.UnknownTool;
-                    const content = try tool.executeWithContext(memory, .{
+                    const tool_index = findToolIndex(self.tools, call.name) orelse return Error.UnknownTool;
+                    const tool = self.tools[tool_index];
+                    var is_error = false;
+                    const content = tool.executeWithContext(memory, .{
                         .dependencies = dependencies,
                         .usage = total_usage,
                         .model_requests = model_requests,
-                    }, call.arguments_json);
+                    }, call.arguments_json) catch |err| failure: {
+                        if (!tool.isRecoverable(err)) return err;
+                        const retry_limit = tool.max_retries orelse self.max_tool_retries;
+                        if (tool_retries[tool_index] >= retry_limit) return err;
+                        tool_retries[tool_index] += 1;
+                        is_error = true;
+                        break :failure try std.fmt.allocPrint(
+                            memory,
+                            "Tool {s} failed with {s}. Correct the arguments or approach and try again.",
+                            .{ call.name, @errorName(err) },
+                        );
+                    };
                     result_parts[result_index] = .{ .tool_result = .{
                         .call_id = call.id,
                         .name = call.name,
                         .content = content,
+                        .is_error = is_error,
                     } };
                     if (stream_sink) |sink| try sink.emit(.{ .tool_result = result_parts[result_index].tool_result });
                     result_index += 1;
@@ -654,9 +672,12 @@ fn resolveInstructions(
 }
 
 fn findTool(tools: []const model_types.Tool, name: []const u8) ?model_types.Tool {
-    for (tools) |tool| {
-        if (std.mem.eql(u8, tool.definition.name, name)) return tool;
-    }
+    const index = findToolIndex(tools, name) orelse return null;
+    return tools[index];
+}
+
+fn findToolIndex(tools: []const model_types.Tool, name: []const u8) ?usize {
+    for (tools, 0..) |tool, index| if (std.mem.eql(u8, tool.definition.name, name)) return index;
     return null;
 }
 
