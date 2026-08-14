@@ -1263,6 +1263,20 @@ test "server discovers capabilities and validates modern envelopes" {
     try std.testing.expect(std.mem.indexOf(u8, response.body.?, protocol_version) != null);
     try std.testing.expect(std.mem.indexOf(u8, response.body.?, "serverInfo") != null);
 
+    const list_request = try buildRequest(
+        std.testing.allocator,
+        2,
+        methods.list_tools,
+        "{}",
+        "client",
+        "1",
+        "{}",
+    );
+    defer std.testing.allocator.free(list_request);
+    const listed = try server.handle(std.testing.allocator, list_request, null);
+    defer listed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 200), listed.status);
+
     const invalid = try server.handle(std.testing.allocator, discover_request, .{ .headers = &.{} });
     defer invalid.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 400), invalid.status);
@@ -1316,4 +1330,390 @@ test "stdio transport runs a modern MCP tool server child process" {
     const result = try tools[0].tool.execute(std.testing.allocator, "{}");
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings("echoed", result);
+}
+
+test "HTTP transport handles SSE, notifications, and status failures" {
+    const Stub = struct {
+        status: u16 = 200,
+        body: []const u8,
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, _: http.Request) !http.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return .{ .status = self.status, .body = try allocator.dupe(u8, self.body) };
+        }
+    };
+    const Events = struct {
+        count: usize = 0,
+        fn emit(context: *anyopaque, _: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.count += 1;
+        }
+    };
+    var stub = Stub{ .body = "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n" };
+    var events: Events = .{};
+    var streamable = StreamableHttpTransport.init(
+        std.testing.io,
+        .{ .context = &stub, .sendFn = Stub.send },
+        "https://example.test/mcp",
+    );
+    const request = WireRequest{
+        .message = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\"}",
+        .method = methods.discover,
+        .events = .{ .context = &events, .eventFn = Events.emit },
+    };
+    const response = try streamable.transport().send(std.testing.allocator, request);
+    defer std.testing.allocator.free(response);
+    try std.testing.expectEqual(@as(usize, 1), events.count);
+
+    stub.status = 503;
+    stub.body = "unavailable";
+    try std.testing.expectError(
+        error.McpHttpRequestFailed,
+        streamable.transport().send(std.testing.allocator, request),
+    );
+    try std.testing.expectError(error.McpHttpRequestFailed, streamable.transport().send(
+        std.testing.allocator,
+        .{ .message = "{}", .method = methods.cancelled, .expects_response = false },
+    ));
+    stub.status = 200;
+    stub.body = "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n";
+    try std.testing.expectError(
+        error.MissingMcpSseResponse,
+        streamable.transport().send(std.testing.allocator, request),
+    );
+}
+
+test "generic client helpers cover every core request shape" {
+    const Stub = struct {
+        calls: usize = 0,
+        notifications: usize = 0,
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            if (!request.expects_response) {
+                self.notifications += 1;
+                return allocator.alloc(u8, 0);
+            }
+            const parsed = try std.json.parseFromSlice(std.json.Value, allocator, request.message, .{});
+            defer parsed.deinit();
+            const id = (try requiredObject(parsed.value)).get("id").?;
+            return std.json.Stringify.valueAlloc(allocator, .{
+                .jsonrpc = "2.0",
+                .id = id,
+                .result = .{ .resultType = "complete" },
+            }, .{});
+        }
+        fn event(_: *anyopaque, _: []const u8) !void {}
+    };
+    var stub: Stub = .{};
+    var client = Client{ .transport = .{ .context = &stub, .sendFn = Stub.send } };
+    const calls = [_][]u8{
+        try client.discover(std.testing.allocator),
+        try client.listTools(std.testing.allocator, "next"),
+        try client.listResources(std.testing.allocator, null),
+        try client.listResourceTemplates(std.testing.allocator, "next"),
+        try client.readResource(std.testing.allocator, "file:///tmp/a"),
+        try client.listPrompts(std.testing.allocator, null),
+        try client.getPrompt(std.testing.allocator, "{\"name\":\"review\"}"),
+        try client.complete(std.testing.allocator, "{}"),
+        try client.listen(
+            std.testing.allocator,
+            "{\"toolsListChanged\":true}",
+            .{ .context = &stub, .eventFn = Stub.event },
+        ),
+    };
+    defer for (calls) |value| std.testing.allocator.free(value);
+    try client.cancel(std.testing.allocator, 9, "done");
+    try client.notify(std.testing.allocator, "com.example/changed", "{}");
+    try std.testing.expectEqual(@as(usize, 2), stub.notifications);
+    try std.testing.expectError(
+        error.InvalidMcpToolArguments,
+        client.callTool(std.testing.allocator, "bad", "[]"),
+    );
+    try std.testing.expectError(
+        error.InvalidMcpToolArguments,
+        client.callTool(std.testing.allocator, "bad", "{"),
+    );
+    try std.testing.expectError(
+        error.InvalidMcpMessage,
+        client.notify(std.testing.allocator, "bad", "{"),
+    );
+    try Stub.event(&stub, "{}");
+
+    var no_handler = Client{ .transport = .{ .context = &stub, .sendFn = struct {
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, _: WireRequest) ![]const u8 {
+            return allocator.dupe(
+                u8,
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"input_required\"}}",
+            );
+        }
+    }.send } };
+    try std.testing.expectError(
+        error.InputRequired,
+        no_handler.request(std.testing.allocator, methods.call_tool, "{}"),
+    );
+    no_handler.max_round_trips = 0;
+    try std.testing.expectError(
+        error.TooManyMcpRoundTrips,
+        no_handler.request(std.testing.allocator, methods.call_tool, "{}"),
+    );
+}
+
+test "toolset paginates, mirrors headers, and renders rich results" {
+    const Stub = struct {
+        calls: usize = 0,
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            return switch (self.calls) {
+                1 => allocator.dupe(
+                    u8,
+                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"tools\":[{\"name\":\"weather\",\"description\":\"Weather\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\",\"x-mcp-header\":\"City\"}}}}],\"nextCursor\":\"two\",\"ttlMs\":0,\"cacheScope\":\"private\"}}",
+                ),
+                2 => allocator.dupe(
+                    u8,
+                    "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resultType\":\"complete\",\"tools\":[{\"name\":\"invalid\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"object\",\"x-mcp-header\":\"X\"}}}}],\"ttlMs\":0,\"cacheScope\":\"private\"}}",
+                ),
+                3 => blk: {
+                    try std.testing.expectEqualStrings("Madrid", findHeader(request.headers, "mcp-param-city").?);
+                    break :blk allocator.dupe(
+                        u8,
+                        "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resultType\":\"complete\",\"content\":[{\"type\":\"text\",\"text\":\"sunny\"},{\"type\":\"image\",\"data\":\"abc\"}]}}",
+                    );
+                },
+                else => error.InvalidMcpResponse,
+            };
+        }
+    };
+    var stub: Stub = .{};
+    var client = Client{ .transport = .{ .context = &stub, .sendFn = Stub.send } };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tools = try client.toolset().prepare(arena.allocator(), .{
+        .messages = &.{},
+        .usage = .{},
+        .model_requests = 0,
+        .dependencies = null,
+    });
+    try std.testing.expectEqual(@as(usize, 1), tools.len);
+    const output = try tools[0].tool.execute(std.testing.allocator, "{\"city\":\"Madrid\"}");
+    defer std.testing.allocator.free(output);
+    try std.testing.expect(std.mem.indexOf(u8, output, "sunny") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output, "image") != null);
+}
+
+test "server returns specified errors and validates tool parameter headers" {
+    const Handler = struct {
+        fail: bool = false,
+        fn handle(context: *anyopaque, allocator: std.mem.Allocator, _: []const u8, _: []const u8) ![]u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.fail) return error.Failed;
+            return allocator.dupe(u8, "{\"content\":[]}");
+        }
+        fn schema(_: *anyopaque, name: []const u8) ?[]const u8 {
+            if (!std.mem.eql(u8, name, "weather")) return null;
+            return "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\",\"x-mcp-header\":\"City\"}}}";
+        }
+    };
+    var handler: Handler = .{};
+    var server = Server{
+        .handler = .{ .context = &handler, .handleFn = Handler.handle },
+        .tool_schemas = .{ .context = &handler, .schemaFn = Handler.schema },
+    };
+    const invalid_json = try server.handle(std.testing.allocator, "{", null);
+    defer invalid_json.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 400), invalid_json.status);
+    const invalid_rpc = try server.handle(std.testing.allocator, "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"x\"}", null);
+    defer invalid_rpc.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 400), invalid_rpc.status);
+    const missing_meta = try server.handle(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"x\",\"params\":{}}", null);
+    defer missing_meta.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 400), missing_meta.status);
+    const wrong_version = try server.handle(
+        std.testing.allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"x\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"old\",\"io.modelcontextprotocol/clientCapabilities\":{}}}}",
+        null,
+    );
+    defer wrong_version.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, wrong_version.body.?, "-32022") != null);
+
+    const call = try buildRequest(
+        std.testing.allocator,
+        1,
+        methods.call_tool,
+        "{\"name\":\"weather\",\"arguments\":{\"city\":\"Madrid\"}}",
+        "test",
+        "1",
+        "{}",
+    );
+    defer std.testing.allocator.free(call);
+    const headers = [_]http.Header{
+        .{ .name = "MCP-Protocol-Version", .value = protocol_version },
+        .{ .name = "Mcp-Method", .value = methods.call_tool },
+        .{ .name = "Mcp-Name", .value = "weather" },
+        .{ .name = "Mcp-Param-City", .value = "Madrid" },
+    };
+    const ok = try server.handle(std.testing.allocator, call, .{ .headers = &headers });
+    defer ok.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 200), ok.status);
+    const mismatch = try server.handle(std.testing.allocator, call, .{ .headers = headers[0..3] });
+    defer mismatch.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 400), mismatch.status);
+
+    const notification = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{}}";
+    const accepted = try server.handle(std.testing.allocator, notification, null);
+    defer accepted.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 202), accepted.status);
+    handler.fail = true;
+    const ignored_failure = try server.handle(std.testing.allocator, notification, null);
+    defer ignored_failure.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 202), ignored_failure.status);
+    const failed = try server.handle(std.testing.allocator, call, null);
+    defer failed.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 500), failed.status);
+}
+
+test "header schemas cover primitives, invalid definitions, and mismatches" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const invalid_schemas = [_][]const u8{
+        "{\"properties\":{\"x\":{\"type\":\"object\",\"x-mcp-header\":\"X\"}}}",
+        "{\"properties\":{\"x\":{\"type\":\"string\",\"x-mcp-header\":\"bad name\"}}}",
+        "{\"properties\":{\"x\":{\"type\":\"string\",\"x-mcp-header\":\"X\"},\"y\":{\"type\":\"string\",\"x-mcp-header\":\"x\"}}}",
+    };
+    for (invalid_schemas) |schema| {
+        try std.testing.expect(!validToolHeaderSchema(try parseResponse(arena.allocator(), schema)));
+    }
+    const schema =
+        "{\"properties\":{" ++
+        "\"integer\":{\"type\":\"integer\",\"x-mcp-header\":\"Integer\"}," ++
+        "\"number\":{\"type\":\"number\",\"x-mcp-header\":\"Number\"}," ++
+        "\"boolean\":{\"type\":\"boolean\",\"x-mcp-header\":\"Boolean\"}," ++
+        "\"sentinel\":{\"type\":\"string\",\"x-mcp-header\":\"Sentinel\"}}}";
+    const arguments = try parseResponse(
+        arena.allocator(),
+        "{\"integer\":42,\"number\":1.5,\"boolean\":true,\"sentinel\":\"=?base64?x?=\"}",
+    );
+    const headers = try toolArgumentHeaders(arena.allocator(), schema, arguments);
+    try std.testing.expectEqual(@as(usize, 4), headers.len);
+    try std.testing.expect(std.mem.startsWith(u8, headers[3].value, "=?base64?"));
+    const non_ascii = try encodeHeaderValue(arena.allocator(), "\x7f");
+    try std.testing.expect(std.mem.startsWith(u8, non_ascii, "=?base64?"));
+    const too_large = std.json.Value{ .integer = 9_007_199_254_740_992 };
+    try std.testing.expectError(
+        error.InvalidMcpToolArguments,
+        primitiveHeaderValue(arena.allocator(), too_large),
+    );
+
+    const params = try requiredObject(try parseResponse(
+        arena.allocator(),
+        "{\"arguments\":{\"integer\":42,\"number\":1.5,\"boolean\":true,\"sentinel\":\"=?base64?x?=\"}}",
+    ));
+    try std.testing.expect(try validateToolHeaders(arena.allocator(), headers, schema, params));
+    try std.testing.expect(!try validateToolHeaders(arena.allocator(), headers[0..3], schema, params));
+    const absent_params = try requiredObject(try parseResponse(arena.allocator(), "{\"arguments\":{}}"));
+    try std.testing.expect(!try validateToolHeaders(arena.allocator(), headers, schema, absent_params));
+
+    try std.testing.expectEqualStrings("file:///a", routingName(
+        methods.read_resource,
+        try requiredObject(try parseResponse(arena.allocator(), "{\"uri\":\"file:///a\"}")),
+    ).?);
+    try std.testing.expect(routingName("custom/method", std.json.ObjectMap{}) == null);
+    try std.testing.expect(findHeader(&.{}, "missing") == null);
+
+    try std.testing.expectError(error.InvalidMcpMessage, buildRequest(
+        std.testing.allocator,
+        1,
+        "x",
+        "{}",
+        "client",
+        "1",
+        "{",
+    ));
+}
+
+test "JSON-RPC string ids and tool result variants are preserved" {
+    const id = try JsonRpcId.parse(std.testing.allocator, "{\"id\":\"request-1\"}");
+    defer id.deinit(std.testing.allocator);
+    try std.testing.expect(id.matches(.{ .string = "request-1" }));
+    try std.testing.expect(!id.matches(.{ .integer = 1 }));
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const values = [_]struct { json: []const u8, expected: []const u8 }{
+        .{ .json = "{\"isError\":true,\"content\":[42]}", .expected = "MCP tool error: 42" },
+        .{ .json = "{\"structuredContent\":{\"ok\":true}}", .expected = "{\"ok\":true}" },
+    };
+    for (values) |value| {
+        const rendered = try renderToolResult(
+            std.testing.allocator,
+            try requiredObject(try parseResponse(arena.allocator(), value.json)),
+        );
+        defer std.testing.allocator.free(rendered);
+        try std.testing.expectEqualStrings(value.expected, rendered);
+    }
+    try std.testing.expectError(error.InvalidMcpResponse, renderToolResult(
+        std.testing.allocator,
+        try requiredObject(try parseResponse(arena.allocator(), "{\"content\":false}")),
+    ));
+}
+
+test "stdio transport filters interleaved modern and legacy messages" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const script =
+        \\read -r line
+        \\printf '%s\n' '1'
+        \\printf '%s\n' '{"jsonrpc":"2.0","id":99,"method":"legacy/request"}'
+        \\printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/progress"}'
+        \\printf '%s\n' '{}'
+        \\printf '%s\n' '{"jsonrpc":"2.0","id":999,"result":{}}'
+        \\printf '%s\n' '{"jsonrpc":"2.0","id":"request-1","result":{}}'
+        \\read -r rejection
+    ;
+    const Events = struct {
+        count: usize = 0,
+        fn emit(context: *anyopaque, _: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.count += 1;
+        }
+    };
+    var events: Events = .{};
+    var stdio = try StdioTransport.init(std.testing.io, &.{ "/bin/sh", "-c", script });
+    defer stdio.deinit();
+    const response = try stdio.transport().send(std.testing.allocator, .{
+        .message = "{\"jsonrpc\":\"2.0\",\"id\":\"request-1\",\"method\":\"server/discover\"}",
+        .method = methods.discover,
+        .events = .{ .context = &events, .eventFn = Events.emit },
+    });
+    defer std.testing.allocator.free(response);
+    try std.testing.expectEqual(@as(usize, 1), events.count);
+}
+
+test "stdio transport releases malformed and partial messages" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const request = WireRequest{
+        .message = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\"}",
+        .method = methods.discover,
+    };
+    const malformed_script =
+        \\read -r line
+        \\printf '%s\n' 'not-json'
+    ;
+    var malformed = try StdioTransport.init(std.testing.io, &.{ "/bin/sh", "-c", malformed_script });
+    defer malformed.deinit();
+    try std.testing.expectError(
+        error.InvalidMcpMessage,
+        malformed.transport().send(std.testing.allocator, request),
+    );
+
+    const partial_script =
+        \\read -r line
+        \\printf 'partial'
+    ;
+    var partial = try StdioTransport.init(std.testing.io, &.{ "/bin/sh", "-c", partial_script });
+    defer partial.deinit();
+    try std.testing.expectError(
+        error.EndOfStream,
+        partial.transport().send(std.testing.allocator, request),
+    );
 }
