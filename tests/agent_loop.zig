@@ -630,6 +630,190 @@ test "capability composition rejects duplicate tool names" {
     try std.testing.expectEqual(@as(usize, 0), scripted.request_count);
 }
 
+test "static and dynamic toolsets prepare namespaced tools for each model step" {
+    const Dependencies = struct { tenant: []const u8 };
+    const State = struct {
+        prepare_calls: usize = 0,
+        execution_calls: usize = 0,
+        metadata_checks: usize = 0,
+
+        fn execute(context: *anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.execution_calls += 1;
+            return allocator.dupe(u8, "ok");
+        }
+
+        fn prepare(
+            context: ?*anyopaque,
+            allocator: std.mem.Allocator,
+            run: zigai.ToolsetContext,
+            tools: []const zigai.Tool,
+        ) ![]const zigai.ToolsetEntry {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            const dependencies = run.dependency(Dependencies) orelse return error.MissingDependencies;
+            try std.testing.expectEqualStrings("acme", dependencies.tenant);
+            try std.testing.expectEqual(self.prepare_calls, run.model_requests);
+            try std.testing.expectEqual(@as(usize, 1 + self.prepare_calls * 2), run.messages.len);
+            if (self.prepare_calls == 0) {
+                try std.testing.expectEqual(@as(u64, 0), run.usage.input_tokens);
+            } else if (self.prepare_calls == 1) {
+                try std.testing.expectEqual(@as(u64, 2), run.usage.input_tokens);
+            } else {
+                try std.testing.expectEqual(@as(u64, 5), run.usage.input_tokens);
+            }
+
+            const entries = try allocator.alloc(zigai.ToolsetEntry, tools.len);
+            entries[0] = .{
+                .tool = tools[0],
+                .enabled = self.prepare_calls == 0,
+                .metadata = &.{
+                    .{ .key = "scope", .value = "entry" },
+                    .{ .key = "phase", .value = "alpha" },
+                },
+            };
+            entries[1] = .{
+                .tool = tools[1],
+                .enabled = self.prepare_calls == 1,
+                .metadata = &.{
+                    .{ .key = "scope", .value = "entry" },
+                    .{ .key = "phase", .value = "beta" },
+                },
+            };
+            self.prepare_calls += 1;
+            return entries;
+        }
+
+        fn hook(context: *anyopaque, event: zigai.LifecycleEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const tool = switch (event) {
+                .tool_validation_end => |value| value.tool,
+                else => return,
+            };
+            var saw_original = false;
+            var saw_shared = false;
+            var saw_scope = false;
+            var saw_phase = false;
+            for (tool.metadata) |metadata| {
+                if (std.mem.eql(u8, metadata.key, "original")) {
+                    saw_original = std.mem.eql(u8, metadata.value, "yes");
+                } else if (std.mem.eql(u8, metadata.key, "shared")) {
+                    saw_shared = std.mem.eql(u8, metadata.value, "yes");
+                } else if (std.mem.eql(u8, metadata.key, "scope")) {
+                    saw_scope = std.mem.eql(u8, metadata.value, "entry");
+                } else if (std.mem.eql(u8, metadata.key, "phase")) {
+                    saw_phase = true;
+                }
+            }
+            try std.testing.expect(saw_original and saw_shared and saw_scope and saw_phase);
+            self.metadata_checks += 1;
+        }
+    };
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
+            if (index == 0) {
+                try std.testing.expectEqual(@as(usize, 2), request.tools.len);
+                try std.testing.expectEqualStrings("utility__always", request.tools[0].name);
+                try std.testing.expectEqualStrings("db__alpha", request.tools[1].name);
+            } else if (index == 1) {
+                try std.testing.expectEqual(@as(usize, 2), request.tools.len);
+                try std.testing.expectEqualStrings("utility__always", request.tools[0].name);
+                try std.testing.expectEqualStrings("db__beta", request.tools[1].name);
+                try std.testing.expectEqualStrings("db__alpha", request.messages[2].parts[0].tool_result.name);
+            } else {
+                try std.testing.expectEqual(@as(usize, 1), request.tools.len);
+                try std.testing.expectEqualStrings("utility__always", request.tools[0].name);
+                try std.testing.expectEqualStrings("db__beta", request.messages[4].parts[0].tool_result.name);
+            }
+        }
+    };
+
+    const alpha_call = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "alpha-call",
+        .name = "db__alpha",
+        .arguments_json = "{}",
+    } }};
+    const beta_call = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "beta-call",
+        .name = "db__beta",
+        .arguments_json = "{}",
+    } }};
+    const final = [_]zigai.model.Part{.{ .text = "done" }};
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{
+            .{ .parts = &alpha_call, .usage = .{ .input_tokens = 2 } },
+            .{ .parts = &beta_call, .usage = .{ .input_tokens = 3 } },
+            .{ .parts = &final },
+        },
+        .inspectFn = Inspector.inspect,
+    };
+    var state: State = .{};
+    var dependencies = Dependencies{ .tenant = "acme" };
+    const base_metadata = [_]zigai.ToolMetadata{
+        .{ .key = "original", .value = "yes" },
+        .{ .key = "scope", .value = "tool" },
+    };
+    const dynamic_tools = [_]zigai.Tool{
+        .{
+            .definition = .{ .name = "alpha", .description = "", .parameters_json_schema = "{}" },
+            .metadata = &base_metadata,
+            .context = &state,
+            .executeFn = State.execute,
+        },
+        .{
+            .definition = .{ .name = "beta", .description = "", .parameters_json_schema = "{}" },
+            .metadata = &base_metadata,
+            .context = &state,
+            .executeFn = State.execute,
+        },
+    };
+    const always = zigai.Tool{
+        .definition = .{ .name = "always", .description = "", .parameters_json_schema = "{}" },
+        .context = &state,
+        .executeFn = State.execute,
+    };
+    const toolsets = [_]zigai.Toolset{
+        .{ .tools = &.{always}, .namespace = "utility" },
+        .{
+            .tools = &dynamic_tools,
+            .namespace = "db",
+            .metadata = &.{
+                .{ .key = "shared", .value = "yes" },
+                .{ .key = "scope", .value = "toolset" },
+            },
+            .context = &state,
+            .prepareFn = State.prepare,
+        },
+    };
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .toolsets = &toolsets,
+        .hooks = &.{.{ .context = &state, .eventFn = State.hook }},
+        .dependencies = &dependencies,
+    }).run(std.testing.allocator, "work");
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("done", result.output);
+    try std.testing.expectEqual(@as(usize, 3), state.prepare_calls);
+    try std.testing.expectEqual(@as(usize, 2), state.execution_calls);
+    try std.testing.expectEqual(@as(usize, 2), state.metadata_checks);
+}
+
+test "prepared toolsets reject duplicate names before requesting" {
+    var unused: u8 = 0;
+    const tool = successfulTool(&unused);
+    const toolsets = [_]zigai.Toolset{
+        .{ .tools = &.{tool}, .namespace = "same" },
+        .{ .tools = &.{tool}, .namespace = "same" },
+    };
+    const final = [_]zigai.model.Part{.{ .text = "unused" }};
+    var scripted = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &final }} };
+    try std.testing.expectError(zigai.Agent.Error.DuplicateToolName, (zigai.Agent{
+        .model = scripted.model(),
+        .toolsets = &toolsets,
+    }).run(std.testing.allocator, "work"));
+    try std.testing.expectEqual(@as(usize, 0), scripted.request_count);
+}
+
 test "lifecycle hooks observe ordered agent phases" {
     const Answer = struct { answer: u32 };
     const call_parts = [_]zigai.model.Part{.{ .tool_call = .{

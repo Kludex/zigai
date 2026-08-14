@@ -23,6 +23,7 @@ conversation.
 - One agent API across supported providers.
 - Buffered and streaming responses.
 - Tool calls, including parallel calls and typed Zig functions.
+- Static and per-step dynamic toolsets with namespaces and metadata.
 - Static, dynamic, and run-specific instructions.
 - Typed output plus JSON-object and JSON Schema modes.
 - Preserved finish reasons with distinct truncation, filtering, and incomplete-call errors.
@@ -169,6 +170,27 @@ const agent = zigai.Agent{
 A capability can contribute tools, instructions, hooks, model settings, and a
 model selector. Multiple capabilities apply from left to right. Duplicate tool
 names fail before the first model request.
+
+## Toolsets
+
+Toolsets group tools that belong together:
+
+```zig
+const database = zigai.Toolset{
+    .tools = &.{search, fetch},
+    .namespace = "db",
+};
+
+const agent = zigai.Agent{
+    .model = model,
+    .toolsets = &.{database},
+};
+```
+
+The model sees `db__search` and `db__fetch`. A `prepareFn` can enable or disable
+tools before each model step using the current messages, usage, request count,
+and typed dependencies. Tool, toolset, and prepared-entry metadata is available
+to lifecycle hooks, but is not sent to the provider.
 
 ## Lifecycle hooks
 

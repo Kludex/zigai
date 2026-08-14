@@ -49,8 +49,16 @@ pub const ToolDefinition = struct {
     parameters_json_schema: []const u8,
 };
 
+/// Application metadata carried with a tool and exposed to lifecycle hooks.
+pub const ToolMetadata = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
 pub const Tool = struct {
     definition: ToolDefinition,
+    /// Metadata for application policy and observability; providers do not receive it.
+    metadata: []const ToolMetadata = &.{},
     context: *anyopaque,
     /// Overrides `Agent.max_tool_retries` for this tool when non-null.
     max_retries: ?usize = null,

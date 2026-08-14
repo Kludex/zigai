@@ -159,6 +159,49 @@ pub const CapabilityContext = struct {
     model: model_types.Model,
 };
 
+/// Current run state available while preparing tools for the next model step.
+pub const ToolsetContext = struct {
+    messages: []const Message,
+    usage: model_types.Usage,
+    model_requests: usize,
+    dependencies: ?*anyopaque,
+
+    pub fn dependency(self: ToolsetContext, comptime T: type) ?*T {
+        const pointer = self.dependencies orelse return null;
+        return @ptrCast(@alignCast(pointer));
+    }
+};
+
+/// One prepared tool plus its step-specific availability and metadata.
+pub const ToolsetEntry = struct {
+    tool: model_types.Tool,
+    enabled: bool = true,
+    metadata: []const model_types.ToolMetadata = &.{},
+};
+
+/// A static tool collection or a collection prepared dynamically for each model step.
+pub const Toolset = struct {
+    tools: []const model_types.Tool = &.{},
+    namespace: ?[]const u8 = null,
+    metadata: []const model_types.ToolMetadata = &.{},
+    context: ?*anyopaque = null,
+    prepareFn: ?*const fn (
+        context: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        run: ToolsetContext,
+        tools: []const model_types.Tool,
+    ) anyerror![]const ToolsetEntry = null,
+
+    pub fn prepare(self: Toolset, allocator: std.mem.Allocator, run: ToolsetContext) ![]const ToolsetEntry {
+        const prepare_tools = self.prepareFn orelse {
+            const entries = try allocator.alloc(ToolsetEntry, self.tools.len);
+            for (self.tools, entries) |tool, *entry| entry.* = .{ .tool = tool };
+            return entries;
+        };
+        return prepare_tools(self.context, allocator, run, self.tools);
+    }
+};
+
 pub const LifecycleEvent = union(enum) {
     run_start: RunStart,
     run_end: RunEnd,
@@ -259,6 +302,7 @@ pub const LifecycleHook = struct {
 /// A reusable feature bundle applied in `Agent.capabilities` order.
 pub const Capability = struct {
     tools: []const model_types.Tool = &.{},
+    toolsets: []const Toolset = &.{},
     instructions: []const Instruction = &.{},
     hooks: []const LifecycleHook = &.{},
     model_settings: model_types.ModelSettings = .{},
@@ -297,6 +341,7 @@ pub const Agent = struct {
     capabilities: []const Capability = &.{},
     hooks: []const LifecycleHook = &.{},
     tools: []const model_types.Tool = &.{},
+    toolsets: []const Toolset = &.{},
     system_prompt: ?[]const u8 = null,
     instructions: []const Instruction = &.{},
     output: model_types.OutputFormat = .text,
@@ -446,6 +491,9 @@ pub const Agent = struct {
         var instructions: std.ArrayList(Instruction) = .empty;
         defer instructions.deinit(allocator);
         try instructions.appendSlice(allocator, self.instructions);
+        var toolsets: std.ArrayList(Toolset) = .empty;
+        defer toolsets.deinit(allocator);
+        try toolsets.appendSlice(allocator, self.toolsets);
         var hooks: std.ArrayList(LifecycleHook) = .empty;
         defer hooks.deinit(allocator);
         try hooks.appendSlice(allocator, self.hooks);
@@ -455,6 +503,7 @@ pub const Agent = struct {
         var capability_settings: model_types.ModelSettings = .{};
         for (self.capabilities) |capability| {
             try tools.appendSlice(allocator, capability.tools);
+            try toolsets.appendSlice(allocator, capability.toolsets);
             try instructions.appendSlice(allocator, capability.instructions);
             try hooks.appendSlice(allocator, capability.hooks);
             capability_settings = capability_settings.overrideWith(capability.model_settings);
@@ -469,6 +518,7 @@ pub const Agent = struct {
         var configured = self;
         configured.model = model;
         configured.tools = tools.items;
+        configured.toolsets = toolsets.items;
         configured.instructions = instructions.items;
         configured.model_settings = capability_settings.overrideWith(self.model_settings);
         configured.capabilities = &.{};
@@ -491,9 +541,6 @@ pub const Agent = struct {
         if (stream_sink != null and !self.model.profile.supports_streaming) return Error.ModelDoesNotSupportStreaming;
         if (self.system_prompt != null and !self.model.profile.supports_system_messages) {
             return Error.ModelDoesNotSupportSystemMessages;
-        }
-        if (self.tools.len > 0 and !self.model.profile.supports_tools) {
-            return Error.ModelDoesNotSupportTools;
         }
         switch (self.output) {
             .text => {},
@@ -527,20 +574,30 @@ pub const Agent = struct {
         var definitions: std.ArrayList(model_types.ToolDefinition) = .empty;
         var total_usage: model_types.Usage = .{};
         var provider_errors = ProviderErrorCapture{ .target = self.provider_error_observer };
-        const tool_retries = try memory.alloc(usize, self.tools.len);
-        @memset(tool_retries, 0);
+        var tool_retries = ToolRetryTracker{ .allocator = memory };
 
         if (self.system_prompt) |system_prompt| {
             try appendTextMessage(memory, &messages, .system, system_prompt);
         }
         for (options.message_history) |message| try appendMessageCopy(memory, &messages, message);
         try appendTextMessage(memory, &messages, .user, prompt);
-        for (self.tools) |tool| try definitions.append(memory, tool.definition);
 
         var model_requests: usize = 0;
         var output_retries: usize = 0;
         var total_tool_calls: usize = 0;
         while (true) {
+            const available_tools = try prepareTools(memory, self.tools, self.toolsets, .{
+                .messages = messages.items,
+                .usage = total_usage,
+                .model_requests = model_requests,
+                .dependencies = dependencies,
+            });
+            try ensureUniqueToolNames(available_tools);
+            if (available_tools.len > 0 and !self.model.profile.supports_tools) {
+                return Error.ModelDoesNotSupportTools;
+            }
+            definitions.clearRetainingCapacity();
+            for (available_tools) |tool| try definitions.append(memory, tool.definition);
             var retries: usize = 0;
             const response = request: while (true) {
                 try checkCancellation(self.cancellation);
@@ -674,10 +731,11 @@ pub const Agent = struct {
 
             const result_parts = try executeToolCalls(
                 self,
+                available_tools,
                 memory,
                 response.parts,
                 tool_call_count,
-                tool_retries,
+                &tool_retries,
                 .{
                     .dependencies = dependencies,
                     .usage = total_usage,
@@ -768,10 +826,11 @@ const ExecutedTool = struct {
 
 fn executeToolCalls(
     agent: Agent,
+    tools: []const model_types.Tool,
     allocator: std.mem.Allocator,
     response_parts: []const Part,
     call_count: usize,
-    tool_retries: []usize,
+    tool_retries: *ToolRetryTracker,
     run_context: model_types.ToolRunContext,
     hooks: []const LifecycleHook,
 ) ![]Part {
@@ -780,7 +839,7 @@ fn executeToolCalls(
     for (response_parts) |part| switch (part) {
         .tool_call => |call| {
             try emitLifecycle(hooks, .{ .tool_validation_start = .{ .call = call } });
-            const tool_index = findToolIndex(agent.tools, call.name) orelse {
+            const tool_index = findToolIndex(tools, call.name) orelse {
                 try emitLifecycle(hooks, .{ .tool_validation_error = .{
                     .call = call,
                     .failure = Agent.Error.UnknownTool,
@@ -791,7 +850,7 @@ fn executeToolCalls(
                 .call = call,
                 .tool_index = tool_index,
             };
-            agent.tools[tool_index].validate(allocator, call.arguments_json) catch |err| {
+            tools[tool_index].validate(allocator, call.arguments_json) catch |err| {
                 work[work_index].validation_failure = err;
                 try emitLifecycle(hooks, .{ .tool_validation_error = .{
                     .call = call,
@@ -802,7 +861,7 @@ fn executeToolCalls(
             };
             try emitLifecycle(hooks, .{ .tool_validation_end = .{
                 .call = call,
-                .tool = agent.tools[tool_index],
+                .tool = tools[tool_index],
             } });
             work_index += 1;
         },
@@ -817,19 +876,20 @@ fn executeToolCalls(
         else execute: {
             try emitLifecycle(hooks, .{ .tool_execution_start = .{
                 .call = work[0].call,
-                .tool = agent.tools[work[0].tool_index],
+                .tool = tools[work[0].tool_index],
             } });
             const executed = executeTool(
-                agent.tools[work[0].tool_index],
+                tools[work[0].tool_index],
                 allocator,
                 run_context,
                 work[0].call.arguments_json,
             );
-            try emitToolOutcome(hooks, agent.tools[work[0].tool_index], work[0].call, executed);
+            try emitToolOutcome(hooks, tools[work[0].tool_index], work[0].call, executed);
             break :execute executed;
         };
         result_parts[0] = .{ .tool_result = try toolResult(
             agent,
+            tools,
             allocator,
             work[0],
             tool_retries,
@@ -853,10 +913,10 @@ fn executeToolCalls(
         }
         try emitLifecycle(hooks, .{ .tool_execution_start = .{
             .call = item.call,
-            .tool = agent.tools[item.tool_index],
+            .tool = tools[item.tool_index],
         } });
         futures[spawned] = io.concurrent(executeTool, .{
-            agent.tools[item.tool_index],
+            tools[item.tool_index],
             concurrent_allocator,
             run_context,
             item.call.arguments_json,
@@ -880,13 +940,13 @@ fn executeToolCalls(
             outcomes[awaited] = future.await(io);
             try emitToolOutcome(
                 hooks,
-                agent.tools[work[awaited].tool_index],
+                tools[work[awaited].tool_index],
                 work[awaited].call,
                 outcomes[awaited],
             );
         }
         if (outcomes[awaited] == .failure and
-            !agent.tools[work[awaited].tool_index].isRecoverable(outcomes[awaited].failure))
+            !tools[work[awaited].tool_index].isRecoverable(outcomes[awaited].failure))
         {
             return outcomes[awaited].failure;
         }
@@ -896,6 +956,7 @@ fn executeToolCalls(
     for (work, outcomes, result_parts) |item, outcome, *result_part| {
         result_part.* = .{ .tool_result = try toolResult(
             agent,
+            tools,
             allocator,
             item,
             tool_retries,
@@ -939,19 +1000,19 @@ fn executeTool(
 
 fn toolResult(
     agent: Agent,
+    tools: []const model_types.Tool,
     allocator: std.mem.Allocator,
     work: ToolWork,
-    tool_retries: []usize,
+    tool_retries: *ToolRetryTracker,
     outcome: ToolOutcome,
 ) !model_types.ToolResult {
-    const tool = agent.tools[work.tool_index];
+    const tool = tools[work.tool_index];
     const executed: ExecutedTool = switch (outcome) {
         .success => |content| .{ .content = content, .is_error = false },
         .failure => |failure| recover: {
             if (!tool.isRecoverable(failure)) return failure;
             const retry_limit = tool.max_retries orelse agent.max_tool_retries;
-            if (tool_retries[work.tool_index] >= retry_limit) return failure;
-            tool_retries[work.tool_index] += 1;
+            if (!try tool_retries.consume(work.call.name, retry_limit)) return failure;
             break :recover .{
                 .content = try std.fmt.allocPrint(
                     allocator,
@@ -1213,6 +1274,83 @@ fn emitStreamEvent(hooks: []const LifecycleHook, sink: AgentStreamSink, event: A
     try sink.emit(event);
     try emitLifecycle(hooks, .{ .stream_event = .{ .stage = .after, .event = event } });
 }
+
+fn prepareTools(
+    allocator: std.mem.Allocator,
+    direct_tools: []const model_types.Tool,
+    toolsets: []const Toolset,
+    context: ToolsetContext,
+) ![]const model_types.Tool {
+    var prepared: std.ArrayList(model_types.Tool) = .empty;
+    try prepared.appendSlice(allocator, direct_tools);
+
+    for (toolsets) |toolset| {
+        const entries = try toolset.prepare(allocator, context);
+        for (entries) |entry| {
+            if (!entry.enabled) continue;
+            var tool = entry.tool;
+            if (toolset.namespace) |namespace| {
+                if (namespace.len > 0) {
+                    tool.definition.name = try std.fmt.allocPrint(
+                        allocator,
+                        "{s}__{s}",
+                        .{ namespace, tool.definition.name },
+                    );
+                }
+            }
+            tool.metadata = try mergeToolMetadata(
+                allocator,
+                tool.metadata,
+                toolset.metadata,
+                entry.metadata,
+            );
+            try prepared.append(allocator, tool);
+        }
+    }
+    return prepared.toOwnedSlice(allocator);
+}
+
+fn mergeToolMetadata(
+    allocator: std.mem.Allocator,
+    tool: []const model_types.ToolMetadata,
+    toolset: []const model_types.ToolMetadata,
+    entry: []const model_types.ToolMetadata,
+) ![]const model_types.ToolMetadata {
+    var merged: std.ArrayList(model_types.ToolMetadata) = .empty;
+    for ([_][]const model_types.ToolMetadata{ tool, toolset, entry }) |layer| {
+        for (layer) |metadata| {
+            for (merged.items) |*existing| {
+                if (std.mem.eql(u8, existing.key, metadata.key)) {
+                    existing.* = metadata;
+                    break;
+                }
+            } else try merged.append(allocator, metadata);
+        }
+    }
+    return merged.toOwnedSlice(allocator);
+}
+
+const ToolRetryTracker = struct {
+    allocator: std.mem.Allocator,
+    entries: std.ArrayList(Entry) = .empty,
+
+    const Entry = struct {
+        name: []const u8,
+        count: usize,
+    };
+
+    fn consume(self: *ToolRetryTracker, name: []const u8, limit: usize) !bool {
+        if (limit == 0) return false;
+        for (self.entries.items) |*entry| {
+            if (!std.mem.eql(u8, entry.name, name)) continue;
+            if (entry.count >= limit) return false;
+            entry.count += 1;
+            return true;
+        }
+        try self.entries.append(self.allocator, .{ .name = name, .count = 1 });
+        return true;
+    }
+};
 
 fn ensureUniqueToolNames(tools: []const model_types.Tool) Agent.Error!void {
     for (tools, 0..) |tool, index| {

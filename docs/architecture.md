@@ -28,10 +28,17 @@ wire boundary.
 
 Capabilities are ordered feature bundles. The agent starts with its direct
 tools and instructions, then appends each capability's contributions from left
-to right. Capability settings override earlier capabilities; direct agent and
-run settings remain higher precedence. Model selectors receive the model chosen
-so far, and capability lifecycle hooks run in the same stable order. Duplicate
-tool names are rejected before any provider call.
+to right. Capabilities can contribute toolsets as well. Capability settings
+override earlier capabilities; direct agent and run settings remain higher
+precedence. Model selectors receive the model chosen so far, and capability
+lifecycle hooks run in the same stable order.
+
+Toolsets group static tools or prepare them again before each model step. A
+preparer can inspect messages, usage, request count, and typed dependencies,
+then enable or disable individual tools. Namespaces become provider-safe
+`namespace__tool` names. Metadata merges from tool to toolset to prepared entry
+and remains application-only. Duplicate prepared names are rejected before the
+provider request.
 
 Lifecycle hooks form one synchronous ordered stream. Direct agent hooks run
 first, followed by capability hooks. Each provider request, tool dispatch,
@@ -66,10 +73,11 @@ applications copy only the detail they need to retain.
 
 1. Resolve static, dynamic, and run-specific instructions.
 2. Copy message history, then add the current user message.
-3. Request a model response.
-4. Return its text if there are no tool calls.
-5. Otherwise execute every requested tool and append the results in call order.
-6. Repeat until the model answers or the configured request limit is reached.
+3. Prepare the tools available for this model step.
+4. Request a model response.
+5. Return its text if there are no tool calls.
+6. Otherwise execute every requested tool and append the results in call order.
+7. Repeat until the model answers or the configured request limit is reached.
 
 Instructions belong to the current run. Static instructions are resolved
 before dynamic ones, and run-specific instructions come last. Empty values are
