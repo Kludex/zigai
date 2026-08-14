@@ -248,7 +248,44 @@ test "agent optionally validates structured output before returning it" {
         .model = invalid.model(),
         .output = schema,
         .validate_output_locally = true,
+        .max_output_retries = 0,
     }).run(std.testing.allocator, "answer"));
+}
+
+test "invalid structured output is returned to the model for correction" {
+    const invalid_parts = [_]zigai.model.Part{.{ .text = "{\"answer\":\"no\"}" }};
+    const valid_parts = [_]zigai.model.Part{.{ .text = "{\"answer\":42}" }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
+            if (index == 0) return;
+            try std.testing.expectEqual(@as(usize, 3), request.messages.len);
+            try std.testing.expectEqual(zigai.model.Role.assistant, request.messages[1].role);
+            try std.testing.expectEqualStrings("{\"answer\":\"no\"}", request.messages[1].parts[0].text);
+            try std.testing.expectEqual(zigai.model.Role.user, request.messages[2].role);
+            try std.testing.expectEqualStrings(
+                "The previous response did not match the required output schema. " ++
+                    "Return only valid JSON matching the schema.",
+                request.messages[2].parts[0].text,
+            );
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &invalid_parts }, .{ .parts = &valid_parts } },
+        .inspectFn = Inspector.inspect,
+        .profile = .{ .supports_json_schema_output = true },
+    };
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .output = .{ .json_schema = .{
+            .name = "answer",
+            .schema = "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"integer\"}},\"required\":[\"answer\"],\"additionalProperties\":false}",
+        } },
+        .validate_output_locally = true,
+        .max_output_retries = 1,
+    }).run(std.testing.allocator, "answer");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("{\"answer\":42}", result.output);
+    try std.testing.expectEqual(@as(usize, 2), result.model_requests);
 }
 
 test "typed agent output derives its schema and owns decoded data" {
@@ -297,8 +334,29 @@ test "typed agent output reports decoding errors without leaking" {
     };
     try std.testing.expectError(
         zigai.Agent.Error.InvalidTypedOutput,
-        (zigai.Agent{ .model = scripted.model() }).runTyped(Answer, std.testing.allocator, "Answer."),
+        (zigai.Agent{ .model = scripted.model(), .max_output_retries = 0 }).runTyped(
+            Answer,
+            std.testing.allocator,
+            "Answer.",
+        ),
     );
+}
+
+test "typed agent output retries invalid JSON" {
+    const Answer = struct { answer: u32 };
+    const invalid_parts = [_]zigai.model.Part{.{ .text = "{\"answer\":\"no\"}" }};
+    const valid_parts = [_]zigai.model.Part{.{ .text = "{\"answer\":42}" }};
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &invalid_parts }, .{ .parts = &valid_parts } },
+        .profile = .{ .supports_json_schema_output = true },
+    };
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .max_output_retries = 1,
+    }).runTyped(Answer, std.testing.allocator, "Answer.");
+    defer result.deinit();
+    try std.testing.expectEqual(@as(u32, 42), result.output.answer);
+    try std.testing.expectEqual(@as(usize, 2), result.model_requests);
 }
 
 test "typed agent output is available after streaming completes" {
@@ -351,6 +409,7 @@ test "streaming validation suppresses the final event for invalid output" {
         .model = scripted.model(),
         .output = .json_object,
         .validate_output_locally = true,
+        .max_output_retries = 0,
     }).runStream(std.testing.allocator, "answer", .{ .context = &capture, .eventFn = Capture.event }));
     try std.testing.expectEqual(@as(usize, 0), capture.finals);
 }

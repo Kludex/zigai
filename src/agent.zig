@@ -84,6 +84,15 @@ pub const AgentStreamSink = struct {
     }
 };
 
+const OutputValidator = struct {
+    context: *anyopaque,
+    validateFn: *const fn (context: *anyopaque, allocator: std.mem.Allocator, output: []const u8) anyerror!void,
+
+    fn validate(self: OutputValidator, allocator: std.mem.Allocator, output: []const u8) !void {
+        return self.validateFn(self.context, allocator, output);
+    }
+};
+
 pub const InstructionContext = struct {
     dependencies: ?*anyopaque = null,
     prompt: []const u8,
@@ -157,6 +166,8 @@ pub const Agent = struct {
     /// Re-check structured provider output locally before returning it. This is
     /// intentionally opt-in because JSON Schema support is a documented subset.
     validate_output_locally: bool = false,
+    /// Number of invalid final responses returned to the model for correction.
+    max_output_retries: usize = 2,
     limits: UsageLimits = .{},
     retry_policy: RetryPolicy = .{},
     provider_error_observer: ?model_types.ProviderErrorObserver = null,
@@ -208,7 +219,13 @@ pub const Agent = struct {
         options: RunOptions,
     ) !TypedResult(Output) {
         const configured = withTypedOutput(self, Output);
-        return decodeTypedResult(Output, try configured.runWithOptions(allocator, prompt, options));
+        return decodeTypedResult(Output, try configured.runInternal(
+            allocator,
+            prompt,
+            options,
+            null,
+            typedOutputValidator(Output),
+        ));
     }
 
     /// Runs with message history, run-specific instructions, or dependencies.
@@ -218,7 +235,7 @@ pub const Agent = struct {
         prompt: []const u8,
         options: RunOptions,
     ) !Result {
-        return self.runInternal(allocator, prompt, options, null);
+        return self.runInternal(allocator, prompt, options, null, null);
     }
 
     pub fn runStream(self: Agent, allocator: std.mem.Allocator, prompt: []const u8, sink: AgentStreamSink) !Result {
@@ -246,7 +263,13 @@ pub const Agent = struct {
         sink: AgentStreamSink,
     ) !TypedResult(Output) {
         const configured = withTypedOutput(self, Output);
-        return decodeTypedResult(Output, try configured.runStreamWithOptions(allocator, prompt, options, sink));
+        return decodeTypedResult(Output, try configured.runInternal(
+            allocator,
+            prompt,
+            options,
+            sink,
+            typedOutputValidator(Output),
+        ));
     }
 
     /// Streams a run with message history, run-specific instructions, or dependencies.
@@ -257,7 +280,7 @@ pub const Agent = struct {
         options: RunOptions,
         sink: AgentStreamSink,
     ) !Result {
-        return self.runInternal(allocator, prompt, options, sink);
+        return self.runInternal(allocator, prompt, options, sink, null);
     }
 
     fn runInternal(
@@ -266,6 +289,7 @@ pub const Agent = struct {
         prompt: []const u8,
         options: RunOptions,
         stream_sink: ?AgentStreamSink,
+        output_validator: ?OutputValidator,
     ) !Result {
         try checkCancellation(self.cancellation);
         if (stream_sink != null and !self.model.profile.supports_streaming) return Error.ModelDoesNotSupportStreaming;
@@ -313,6 +337,7 @@ pub const Agent = struct {
         for (self.tools) |tool| try definitions.append(memory, tool.definition);
 
         var model_requests: usize = 0;
+        var output_retries: usize = 0;
         while (true) {
             var retries: usize = 0;
             const response = request: while (true) {
@@ -376,7 +401,14 @@ pub const Agent = struct {
 
             if (tool_call_count == 0) {
                 const output = try collectText(memory, response.parts);
-                if (self.validate_output_locally) try json_schema.validate(memory, self.output, output);
+                validateFinalOutput(self, memory, output, output_validator) catch |err| {
+                    if (err == error.OutOfMemory) return err;
+                    if (output_retries >= self.max_output_retries) return err;
+                    output_retries += 1;
+                    try appendTextMessage(memory, &messages, .user, "The previous response did not match the required output schema. " ++
+                        "Return only valid JSON matching the schema.");
+                    continue;
+                };
                 if (stream_sink) |sink| try sink.emit(.{ .final_output = output });
                 return .{
                     .arena = arena,
@@ -426,12 +458,41 @@ fn withTypedOutput(agent: Agent, comptime Output: type) Agent {
     return configured;
 }
 
+fn typedOutputValidator(comptime Output: type) OutputValidator {
+    const Wrapper = struct {
+        var placeholder: u8 = 0;
+
+        fn validate(_: *anyopaque, allocator: std.mem.Allocator, output: []const u8) !void {
+            _ = std.json.parseFromSliceLeaky(Output, allocator, output, .{
+                .ignore_unknown_fields = false,
+            }) catch |err| return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => Agent.Error.InvalidTypedOutput,
+            };
+        }
+    };
+    return .{ .context = &Wrapper.placeholder, .validateFn = Wrapper.validate };
+}
+
+fn validateFinalOutput(
+    agent: Agent,
+    allocator: std.mem.Allocator,
+    output: []const u8,
+    output_validator: ?OutputValidator,
+) !void {
+    if (agent.validate_output_locally) try json_schema.validate(allocator, agent.output, output);
+    if (output_validator) |validator| try validator.validate(allocator, output);
+}
+
 fn decodeTypedResult(comptime Output: type, untyped: Agent.Result) !TypedResult(Output) {
     var owned = untyped;
     errdefer owned.deinit();
     const output = std.json.parseFromSliceLeaky(Output, owned.arena.allocator(), owned.output, .{
         .ignore_unknown_fields = false,
-    }) catch return Agent.Error.InvalidTypedOutput;
+    }) catch |err| return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => Agent.Error.InvalidTypedOutput,
+    };
     return .{
         .arena = owned.arena,
         .output = output,

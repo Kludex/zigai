@@ -21,9 +21,11 @@ profile mismatch fails before network I/O.
 `Agent.runTyped` derives that schema from a Zig output type and decodes the
 final JSON into the same type. Its typed value, original JSON, and message
 history share one result arena and one `deinit` ownership boundary. Buffered
-and streaming typed runs use the same path. Applications using `run` directly
-can still opt into provider-independent local schema validation. Streaming
-deltas remain provisional, and the agent emits `final_output` only after local
+and streaming typed runs use the same path. Invalid output is appended to
+history with a correction request, bounded by `max_output_retries`.
+Applications using `run` directly can still opt into provider-independent
+local schema validation and receive the same correction behavior. Streaming
+deltas remain provisional, and the agent emits `final_output` only after
 validation succeeds.
 
 Provider failures keep two layers separate. Stable error categories drive agent

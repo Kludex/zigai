@@ -166,7 +166,8 @@ std.debug.print("{s}: {d} C\n", .{
 The decoded value, original JSON in `result.output_json`, and message history
 share one result arena. Keep them only until `result.deinit()`. Use
 `runTypedWithOptions`, `runTypedStream`, or `runTypedStreamWithOptions` for the
-corresponding run modes.
+corresponding run modes. Invalid output is returned to the model for up to
+`max_output_retries` correction attempts.
 
 ## Streaming and resilience
 
