@@ -731,6 +731,7 @@ test "history processors trim compact and summarize in order" {
 
 test "history rejects malformed field and metadata types" {
     const invalid = [_][]const u8{
+        "{",
         "{\"version\":1,\"messages\":[{\"role\":1,\"parts\":[]}]}",
         "{\"version\":1,\"messages\":[{\"role\":\"assistant\",\"parts\":[{\"type\":\"thinking\",\"content\":\"x\",\"signature\":false}]}]}",
         "{\"version\":1,\"messages\":[{\"role\":\"user\",\"parts\":[],\"metadata\":[1]}]}",

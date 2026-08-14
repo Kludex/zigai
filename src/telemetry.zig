@@ -507,6 +507,8 @@ test "telemetry records captured prompts and lifecycle failures" {
         .model_name = "errors",
         .requestFn = Stub.request,
     };
+    const stub_response = try model.request(std.testing.allocator, .{ .messages = &.{} });
+    try std.testing.expectEqual(@as(usize, 0), stub_response.parts.len);
     var run = (OpenTelemetry{
         .io = std.testing.io,
         .exporter = .{ .context = &capture, .spanFn = Capture.span, .metricFn = Capture.metric },

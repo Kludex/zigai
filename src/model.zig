@@ -565,4 +565,11 @@ test "tool execution adapters preserve rich outputs" {
     );
     defer std.testing.allocator.free(rich.content);
     try std.testing.expectEqualStrings("9", rich.content);
+
+    const missing = Tool{
+        .definition = .{ .name = "missing", .description = "", .parameters_json_schema = "{}" },
+        .context = &context,
+    };
+    try std.testing.expectError(error.MissingToolExecutor, missing.execute(std.testing.allocator, "{}"));
+    try std.testing.expectError(error.MissingToolExecutor, missing.executeWithContext(std.testing.allocator, .{}, "{}"));
 }

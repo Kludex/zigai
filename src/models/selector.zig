@@ -151,4 +151,5 @@ test "selector routes streaming requests and merges settings" {
     try std.testing.expectEqual(@as(usize, 1), route.calls);
     try std.testing.expectEqual(@as(usize, 1), selected.calls);
     try std.testing.expectEqual(@as(usize, 1), sink.events);
+    try std.testing.expectError(error.Unused, route.model_value.request(std.testing.allocator, .{ .messages = &.{} }));
 }
