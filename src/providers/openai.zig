@@ -81,7 +81,11 @@ pub const Client = struct {
             return common.statusError(response.status);
         }
         if (state.text.items.len > 0) try state.parts.insert(allocator, 0, .{ .text = try state.text.toOwnedSlice(allocator) });
-        return .{ .parts = try state.parts.toOwnedSlice(allocator), .usage = state.usage };
+        return .{
+            .parts = try state.parts.toOwnedSlice(allocator),
+            .usage = state.usage,
+            .finish_reason = state.finish_reason,
+        };
     }
 };
 
@@ -100,6 +104,8 @@ const StreamState = struct {
     parts: std.ArrayList(model_types.Part) = .empty,
     error_body: std.ArrayList(u8) = .empty,
     usage: model_types.Usage = .{},
+    finish_reason: ?model_types.FinishReason = null,
+    saw_tool_call_delta: bool = false,
 
     fn lineSink(self: *StreamState) http.LineSink {
         return .{ .context = self, .startFn = start, .lineFn = line };
@@ -130,6 +136,7 @@ const StreamState = struct {
             try self.text.appendSlice(self.allocator, delta);
             try self.sink.emit(.{ .text_delta = delta });
         } else if (std.mem.eql(u8, kind, "response.function_call_arguments.delta")) {
+            self.saw_tool_call_delta = true;
             const delta = try common.objectString(object, "delta");
             try self.sink.emit(.{ .tool_call_delta = .{
                 .id = try common.objectString(object, "item_id"),
@@ -143,14 +150,39 @@ const StreamState = struct {
             };
             try self.parts.append(self.allocator, .{ .tool_call = call });
             try self.sink.emit(.{ .tool_call = call });
-        } else if (std.mem.eql(u8, kind, "response.completed")) {
+        } else if (std.mem.eql(u8, kind, "response.refusal.delta")) {
+            self.finish_reason = .{ .kind = .content_filter, .raw = "refusal" };
+        } else if (std.mem.eql(u8, kind, "response.completed") or
+            std.mem.eql(u8, kind, "response.incomplete") or
+            std.mem.eql(u8, kind, "response.failed"))
+        {
             const response = try common.requiredObject(root, "response");
-            const usage = try common.requiredObject(.{ .object = response }, "usage");
-            self.usage = .{
-                .input_tokens = try common.objectInteger(usage, "input_tokens"),
-                .output_tokens = try common.objectInteger(usage, "output_tokens"),
-            };
-            try self.sink.emit(.{ .usage = self.usage });
+            if (self.finish_reason == null or self.finish_reason.?.kind != .content_filter) {
+                self.finish_reason = try decodeFinishReason(
+                    response,
+                    hasToolCalls(self.parts.items),
+                    self.saw_tool_call_delta and !hasToolCalls(self.parts.items),
+                ) orelse .{
+                    .kind = if (std.mem.eql(u8, kind, "response.completed"))
+                        if (hasToolCalls(self.parts.items)) .tool_calls else .stop
+                    else if (std.mem.eql(u8, kind, "response.incomplete"))
+                        if (self.saw_tool_call_delta) .incomplete_tool_call else .other
+                    else
+                        .other,
+                    .raw = kind,
+                };
+            }
+            if (response.get("usage")) |usage_value| {
+                const usage = switch (usage_value) {
+                    .object => |usage_object| usage_object,
+                    else => return error.InvalidProviderResponse,
+                };
+                self.usage = .{
+                    .input_tokens = try common.objectInteger(usage, "input_tokens"),
+                    .output_tokens = try common.objectInteger(usage, "output_tokens"),
+                };
+                try self.sink.emit(.{ .usage = self.usage });
+            }
         }
     }
 };
@@ -256,8 +288,14 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
 
 pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_types.ModelResponse {
     const root = try std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{});
+    const root_object = switch (root) {
+        .object => |value| value,
+        else => return error.InvalidProviderResponse,
+    };
     const output_items = try common.requiredArray(root, "output");
     var parts: std.ArrayList(model_types.Part) = .empty;
+    var content_filtered = false;
+    var incomplete_tool_call = false;
     for (output_items.items) |item| {
         const object = switch (item) {
             .object => |value| value,
@@ -278,9 +316,17 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
                 const content_type = try common.objectString(content_object, "type");
                 if (std.mem.eql(u8, content_type, "output_text")) {
                     try parts.append(allocator, .{ .text = try common.objectString(content_object, "text") });
+                } else if (std.mem.eql(u8, content_type, "refusal")) {
+                    content_filtered = true;
                 }
             }
         } else if (std.mem.eql(u8, kind, "function_call")) {
+            if (try common.optionalObjectString(object, "status")) |status| {
+                if (std.mem.eql(u8, status, "incomplete")) {
+                    incomplete_tool_call = true;
+                    continue;
+                }
+            }
             try parts.append(allocator, .{ .tool_call = .{
                 .id = try common.objectString(object, "call_id"),
                 .name = try common.objectString(object, "name"),
@@ -302,12 +348,61 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
             .output_tokens = try common.objectInteger(usage_object, "output_tokens"),
         };
     }
-    return .{ .parts = try parts.toOwnedSlice(allocator), .usage = usage };
+    const finish_reason = if (content_filtered)
+        model_types.FinishReason{ .kind = .content_filter, .raw = "refusal" }
+    else
+        try decodeFinishReason(root_object, hasToolCalls(parts.items), incomplete_tool_call);
+    return .{
+        .parts = try parts.toOwnedSlice(allocator),
+        .usage = usage,
+        .finish_reason = finish_reason,
+    };
+}
+
+fn decodeFinishReason(
+    object: std.json.ObjectMap,
+    has_tool_calls: bool,
+    incomplete_tool_call: bool,
+) !?model_types.FinishReason {
+    const status = try common.optionalObjectString(object, "status") orelse return null;
+    if (std.mem.eql(u8, status, "completed")) return .{
+        .kind = if (has_tool_calls) .tool_calls else .stop,
+        .raw = status,
+    };
+    if (std.mem.eql(u8, status, "incomplete")) {
+        const details_value = object.get("incomplete_details") orelse return .{
+            .kind = if (incomplete_tool_call) .incomplete_tool_call else .other,
+            .raw = status,
+        };
+        const details = switch (details_value) {
+            .object => |value| value,
+            else => return error.InvalidProviderResponse,
+        };
+        const reason = try common.optionalObjectString(details, "reason") orelse status;
+        const kind: model_types.FinishReason.Kind = if (incomplete_tool_call)
+            .incomplete_tool_call
+        else if (std.mem.eql(u8, reason, "max_output_tokens"))
+            .length
+        else if (std.mem.eql(u8, reason, "content_filter"))
+            .content_filter
+        else
+            .incomplete_tool_call;
+        return .{ .kind = kind, .raw = reason };
+    }
+    return .{ .kind = .other, .raw = status };
+}
+
+fn hasToolCalls(parts: []const model_types.Part) bool {
+    for (parts) |part| switch (part) {
+        .tool_call => return true,
+        else => {},
+    };
+    return false;
 }
 
 test "decodes text, function calls, and usage" {
     const body =
-        \\{"output":[{"type":"message","content":[{"type":"output_text","text":"thinking"}]},{"type":"function_call","call_id":"call_1","name":"weather","arguments":"{\"city\":\"Madrid\"}"}],"usage":{"input_tokens":11,"output_tokens":7}}
+        \\{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"thinking"}]},{"type":"function_call","call_id":"call_1","name":"weather","arguments":"{\"city\":\"Madrid\"}"}],"usage":{"input_tokens":11,"output_tokens":7}}
     ;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -316,6 +411,19 @@ test "decodes text, function calls, and usage" {
     try std.testing.expectEqualStrings("thinking", response.parts[0].text);
     try std.testing.expectEqualStrings("weather", response.parts[1].tool_call.name);
     try std.testing.expectEqual(@as(u64, 11), response.usage.input_tokens);
+    try std.testing.expectEqual(model_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
+    try std.testing.expectEqualStrings("completed", response.finish_reason.?.raw);
+}
+
+test "maps incomplete Responses API reasons" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const response = try decodeResponse(
+        arena.allocator(),
+        "{\"status\":\"incomplete\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"output\":[]}",
+    );
+    try std.testing.expectEqual(model_types.FinishReason.Kind.length, response.finish_reason.?.kind);
+    try std.testing.expectEqualStrings("max_output_tokens", response.finish_reason.?.raw);
 }
 
 test "rejects malformed nested content and usage" {

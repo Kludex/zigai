@@ -24,7 +24,8 @@ conversation.
 - Buffered and streaming responses.
 - Tool calls, including parallel calls and typed Zig functions.
 - Static, dynamic, and run-specific instructions.
-- JSON-object and JSON Schema output modes.
+- Typed output plus JSON-object and JSON Schema modes.
+- Preserved finish reasons with distinct truncation, filtering, and incomplete-call errors.
 - Timeouts, cancellation, retries, backoff, and usage limits.
 - Readable YAML cassettes for deterministic provider tests.
 - Small command-line clients for every first-party provider.

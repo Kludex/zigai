@@ -13,6 +13,12 @@ independently from the transport: tools, parallel calls, system messages,
 structured JSON, and thinking. The agent rejects unsupported requested
 features before sending a paid request.
 
+Every model response keeps a normalized finish category and the provider's raw
+reason. Successful agent results expose the final reason. Truncation, content
+filtering, and incomplete tool calls fail with distinct agent errors before the
+generic empty-response check, so an empty successful response remains a
+separate condition.
+
 Structured output is provider neutral at the agent boundary. JSON-object mode
 and named, strict JSON Schema mode are encoded as `text.format` for OpenAI and
 `output_config.format` for Anthropic, and `generationConfig` for Google. A

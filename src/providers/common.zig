@@ -94,6 +94,16 @@ pub fn objectInteger(object: std.json.ObjectMap, field: []const u8) !u64 {
     return @intCast(value.integer);
 }
 
+/// Reads a nullable or absent string field while rejecting other JSON types.
+pub fn optionalObjectString(object: std.json.ObjectMap, field: []const u8) !?[]const u8 {
+    const value = object.get(field) orelse return null;
+    return switch (value) {
+        .string => |text| text,
+        .null => null,
+        else => error.InvalidProviderResponse,
+    };
+}
+
 pub fn appendTextParts(writer: *std.json.Stringify, parts: []const model_types.Part) !void {
     for (parts) |part| switch (part) {
         .text => |text| try writer.write(text),

@@ -124,6 +124,21 @@ pub const Usage = struct {
     }
 };
 
+/// Why a provider ended generation, normalized without discarding its raw value.
+pub const FinishReason = struct {
+    kind: Kind,
+    raw: []const u8,
+
+    pub const Kind = enum {
+        stop,
+        tool_calls,
+        length,
+        content_filter,
+        incomplete_tool_call,
+        other,
+    };
+};
+
 /// Stable error categories emitted by provider adapters. Agents can make retry
 /// decisions from these without depending on a provider's private error JSON.
 pub const ProviderRequestError = error{
@@ -182,6 +197,8 @@ pub const OutputFormat = union(enum) {
 pub const ModelResponse = struct {
     parts: []const Part,
     usage: Usage = .{},
+    /// Normalized termination category and the provider's original value.
+    finish_reason: ?FinishReason = null,
 };
 
 pub const ToolCallDelta = struct {

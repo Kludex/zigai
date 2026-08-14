@@ -97,7 +97,11 @@ pub const Client = struct {
         }
         try state.finalizeCalls();
         if (state.text.items.len > 0) try state.parts.insert(allocator, 0, .{ .text = try state.text.toOwnedSlice(allocator) });
-        return .{ .parts = try state.parts.toOwnedSlice(allocator), .usage = state.usage };
+        return .{
+            .parts = try state.parts.toOwnedSlice(allocator),
+            .usage = state.usage,
+            .finish_reason = state.finish_reason,
+        };
     }
 };
 
@@ -256,6 +260,10 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
         else => return error.InvalidProviderResponse,
     };
     const message = try common.requiredObject(.{ .object = choice }, "message");
+    var finish_reason = if (try common.optionalObjectString(choice, "finish_reason")) |reason|
+        compatibleFinishReason(reason)
+    else
+        null;
     var parts: std.ArrayList(model_types.Part) = .empty;
     if (message.get("content")) |content| switch (content) {
         .string => |text| if (text.len > 0) try parts.append(allocator, .{ .text = text }),
@@ -273,14 +281,43 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
                 else => return error.InvalidProviderResponse,
             };
             const function = try common.requiredObject(.{ .object = call }, "function");
+            const arguments = try common.objectString(function, "arguments");
+            _ = std.json.parseFromSliceLeaky(std.json.Value, allocator, arguments, .{}) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    finish_reason = .{
+                        .kind = .incomplete_tool_call,
+                        .raw = if (finish_reason) |reason| reason.raw else "malformed_tool_arguments",
+                    };
+                    continue;
+                },
+            };
             try parts.append(allocator, .{ .tool_call = .{
                 .id = try common.objectString(call, "id"),
                 .name = try common.objectString(function, "name"),
-                .arguments_json = try common.objectString(function, "arguments"),
+                .arguments_json = arguments,
             } });
         }
     }
-    return .{ .parts = try parts.toOwnedSlice(allocator), .usage = try decodeUsage(root) };
+    return .{
+        .parts = try parts.toOwnedSlice(allocator),
+        .usage = try decodeUsage(root),
+        .finish_reason = finish_reason,
+    };
+}
+
+fn compatibleFinishReason(raw: []const u8) model_types.FinishReason {
+    const kind: model_types.FinishReason.Kind = if (std.mem.eql(u8, raw, "stop"))
+        .stop
+    else if (std.mem.eql(u8, raw, "tool_calls") or std.mem.eql(u8, raw, "function_call"))
+        .tool_calls
+    else if (std.mem.eql(u8, raw, "length"))
+        .length
+    else if (std.mem.eql(u8, raw, "content_filter"))
+        .content_filter
+    else
+        .other;
+    return .{ .kind = kind, .raw = raw };
 }
 
 fn decodeUsage(root: std.json.Value) !model_types.Usage {
@@ -323,6 +360,7 @@ const StreamState = struct {
     pending: std.ArrayList(PendingCall) = .empty,
     error_body: std.ArrayList(u8) = .empty,
     usage: model_types.Usage = .{},
+    finish_reason: ?model_types.FinishReason = null,
 
     fn deinit(self: *StreamState) void {
         self.text.deinit(self.allocator);
@@ -379,7 +417,10 @@ const StreamState = struct {
             };
             for (calls.items) |call_value| try self.appendCallDelta(call_value);
         }
-        if (choice.get("finish_reason")) |finish| if (finish == .string and std.mem.eql(u8, finish.string, "tool_calls")) try self.finalizeCalls();
+        if (try common.optionalObjectString(choice, "finish_reason")) |reason| {
+            self.finish_reason = compatibleFinishReason(reason);
+            if (self.finish_reason.?.kind == .tool_calls) try self.finalizeCalls();
+        }
     }
 
     fn appendCallDelta(self: *StreamState, value: std.json.Value) !void {
@@ -419,7 +460,25 @@ const StreamState = struct {
     fn finalizeCalls(self: *StreamState) !void {
         for (self.pending.items) |*pending| {
             if (pending.finalized) continue;
-            if (pending.id.items.len == 0 or pending.name.items.len == 0) return error.InvalidProviderResponse;
+            if (pending.id.items.len == 0 or pending.name.items.len == 0 or pending.arguments.items.len == 0) {
+                self.finish_reason = .{
+                    .kind = .incomplete_tool_call,
+                    .raw = if (self.finish_reason) |reason| reason.raw else "incomplete_tool_call",
+                };
+                pending.finalized = true;
+                continue;
+            }
+            _ = std.json.parseFromSliceLeaky(std.json.Value, self.allocator, pending.arguments.items, .{}) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => {
+                    self.finish_reason = .{
+                        .kind = .incomplete_tool_call,
+                        .raw = if (self.finish_reason) |reason| reason.raw else "malformed_tool_arguments",
+                    };
+                    pending.finalized = true;
+                    continue;
+                },
+            };
             const call = model_types.ToolCall{
                 .id = try pending.id.toOwnedSlice(self.allocator),
                 .name = try pending.name.toOwnedSlice(self.allocator),
@@ -472,14 +531,23 @@ test "stream request usage collection is configurable" {
     try std.testing.expect(std.mem.indexOf(u8, without_usage, "stream_options") == null);
 }
 
-test "decodes Chat Completions text, tools, and usage" {
+test "decodes Chat Completions text, tools, usage, and finish reason" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const response = try decodeResponse(arena.allocator(), "{\"choices\":[{\"message\":{\"content\":\"hello\",\"tool_calls\":[{\"id\":\"call\",\"function\":{\"name\":\"weather\",\"arguments\":\"{}\"}}]}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}");
+    const response = try decodeResponse(arena.allocator(), "{\"choices\":[{\"message\":{\"content\":\"hello\",\"tool_calls\":[{\"id\":\"call\",\"function\":{\"name\":\"weather\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}");
     try std.testing.expectEqual(@as(usize, 2), response.parts.len);
     try std.testing.expectEqualStrings("hello", response.parts[0].text);
     try std.testing.expectEqualStrings("weather", response.parts[1].tool_call.name);
     try std.testing.expectEqual(@as(u64, 5), response.usage.totalTokens());
+    try std.testing.expectEqual(model_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
+}
+
+test "maps compatible truncation and content filtering" {
+    try std.testing.expectEqual(model_types.FinishReason.Kind.length, compatibleFinishReason("length").kind);
+    try std.testing.expectEqual(
+        model_types.FinishReason.Kind.content_filter,
+        compatibleFinishReason("content_filter").kind,
+    );
 }
 
 test "rejects malformed Chat Completions choices, content, calls, and usage" {

@@ -10,7 +10,9 @@ const Part = model_types.Part;
 
 const AgentError = error{
     Cancelled,
+    ContentFiltered,
     EmptyModelResponse,
+    IncompleteToolCall,
     InputTokenLimitExceeded,
     InvalidTypedOutput,
     MaxModelRequestsExceeded,
@@ -19,6 +21,7 @@ const AgentError = error{
     ModelDoesNotSupportJsonObjectOutput,
     ModelDoesNotSupportJsonSchemaOutput,
     ModelDoesNotSupportStreaming,
+    ModelOutputTruncated,
     OutputTokenLimitExceeded,
     ParallelToolCallsNotSupported,
     TotalTokenLimitExceeded,
@@ -149,6 +152,7 @@ pub fn TypedResult(comptime Output: type) type {
         messages: []const Message,
         usage: model_types.Usage,
         model_requests: usize,
+        finish_reason: ?model_types.FinishReason,
 
         pub fn deinit(self: *@This()) void {
             self.arena.deinit();
@@ -190,6 +194,7 @@ pub const Agent = struct {
         messages: []const Message,
         usage: model_types.Usage,
         model_requests: usize,
+        finish_reason: ?model_types.FinishReason,
 
         pub fn deinit(self: *Result) void {
             self.arena.deinit();
@@ -393,6 +398,7 @@ pub const Agent = struct {
             };
             total_usage.add(response.usage);
             try enforceUsageLimits(total_usage, self.limits);
+            try enforceFinishReason(response.finish_reason);
             if (response.parts.len == 0) return Error.EmptyModelResponse;
 
             try messages.append(memory, .{ .role = .assistant, .parts = response.parts });
@@ -420,6 +426,7 @@ pub const Agent = struct {
                     .messages = try messages.toOwnedSlice(memory),
                     .usage = total_usage,
                     .model_requests = model_requests,
+                    .finish_reason = response.finish_reason,
                 };
             }
             if (!self.model.profile.supports_tools) return Error.ModelDoesNotSupportTools;
@@ -518,6 +525,7 @@ fn decodeTypedResult(comptime Output: type, untyped: Agent.Result) !TypedResult(
         .messages = owned.messages,
         .usage = owned.usage,
         .model_requests = owned.model_requests,
+        .finish_reason = owned.finish_reason,
     };
 }
 
@@ -620,6 +628,16 @@ fn enforceUsageLimits(usage: model_types.Usage, limits: Agent.UsageLimits) Agent
     if (limits.max_total_tokens) |maximum| {
         if (usage.totalTokens() > maximum) return Agent.Error.TotalTokenLimitExceeded;
     }
+}
+
+fn enforceFinishReason(reason: ?model_types.FinishReason) Agent.Error!void {
+    const value = reason orelse return;
+    return switch (value.kind) {
+        .length => Agent.Error.ModelOutputTruncated,
+        .content_filter => Agent.Error.ContentFiltered,
+        .incomplete_tool_call => Agent.Error.IncompleteToolCall,
+        else => {},
+    };
 }
 
 fn appendTextMessage(allocator: std.mem.Allocator, messages: *std.ArrayList(Message), role: model_types.Role, text: []const u8) !void {

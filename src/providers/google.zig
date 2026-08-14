@@ -75,7 +75,11 @@ pub const Client = struct {
             common.notifyProviderError(allocator, value.error_observer, "google", response.status, state.error_body.items, response.metadata);
             return common.statusError(response.status);
         }
-        return .{ .parts = try state.parts.toOwnedSlice(allocator), .usage = state.usage };
+        return .{
+            .parts = try state.parts.toOwnedSlice(allocator),
+            .usage = state.usage,
+            .finish_reason = state.finish_reason,
+        };
     }
 };
 
@@ -86,6 +90,7 @@ const StreamState = struct {
     parts: std.ArrayList(model_types.Part) = .empty,
     error_body: std.ArrayList(u8) = .empty,
     usage: model_types.Usage = .{},
+    finish_reason: ?model_types.FinishReason = null,
 
     fn lineSink(self: *StreamState) http.LineSink {
         return .{ .context = self, .startFn = start, .lineFn = line };
@@ -119,6 +124,7 @@ const StreamState = struct {
             self.usage = chunk.usage;
             try self.sink.emit(.{ .usage = self.usage });
         }
+        if (chunk.finish_reason != null) self.finish_reason = chunk.finish_reason;
     }
 };
 
@@ -246,43 +252,63 @@ fn writeGenerationConfig(json: *std.json.Stringify, schema: ?[]const u8) !void {
 
 pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_types.ModelResponse {
     const root = try std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{});
-    const candidates = try common.requiredArray(root, "candidates");
-    if (candidates.items.len == 0) return error.InvalidProviderResponse;
+    const root_object = switch (root) {
+        .object => |value| value,
+        else => return error.InvalidProviderResponse,
+    };
+    const candidates = if (root_object.get("candidates")) |value| switch (value) {
+        .array => |items| items,
+        else => return error.InvalidProviderResponse,
+    } else {
+        const feedback = try common.requiredObject(root, "promptFeedback");
+        const block_reason = try common.objectString(feedback, "blockReason");
+        return .{ .parts = &.{}, .finish_reason = .{ .kind = .content_filter, .raw = block_reason } };
+    };
+    if (candidates.items.len == 0) {
+        const feedback = try common.requiredObject(root, "promptFeedback");
+        const block_reason = try common.objectString(feedback, "blockReason");
+        return .{ .parts = &.{}, .finish_reason = .{ .kind = .content_filter, .raw = block_reason } };
+    }
     const candidate = switch (candidates.items[0]) {
         .object => |value| value,
         else => return error.InvalidProviderResponse,
     };
-    const content_value = candidate.get("content") orelse return error.InvalidProviderResponse;
-    const parts_value = try common.requiredArray(content_value, "parts");
+    var finish_reason = if (try common.optionalObjectString(candidate, "finishReason")) |reason|
+        googleFinishReason(reason)
+    else
+        null;
     var parts: std.ArrayList(model_types.Part) = .empty;
-    for (parts_value.items, 0..) |part_value, index| {
-        const object = switch (part_value) {
-            .object => |value| value,
-            else => return error.InvalidProviderResponse,
-        };
-        if (object.get("text")) |text_value| {
-            const value = switch (text_value) {
-                .string => |text| text,
-                else => return error.InvalidProviderResponse,
-            };
-            try parts.append(allocator, .{ .text = value });
-        } else if (object.get("functionCall")) |call_value| {
-            const call = switch (call_value) {
+    if (candidate.get("content")) |content_value| {
+        const parts_value = try common.requiredArray(content_value, "parts");
+        for (parts_value.items, 0..) |part_value, index| {
+            const object = switch (part_value) {
                 .object => |value| value,
                 else => return error.InvalidProviderResponse,
             };
-            const args = call.get("args") orelse return error.InvalidProviderResponse;
-            const id = if (call.get("id")) |id_value| switch (id_value) {
-                .string => |value| value,
-                else => return error.InvalidProviderResponse,
-            } else try std.fmt.allocPrint(allocator, "google-call-{d}", .{index});
-            try parts.append(allocator, .{ .tool_call = .{
-                .id = id,
-                .name = try common.objectString(call, "name"),
-                .arguments_json = try std.json.Stringify.valueAlloc(allocator, args, .{}),
-            } });
+            if (object.get("text")) |text_value| {
+                const value = switch (text_value) {
+                    .string => |text| text,
+                    else => return error.InvalidProviderResponse,
+                };
+                try parts.append(allocator, .{ .text = value });
+            } else if (object.get("functionCall")) |call_value| {
+                const call = switch (call_value) {
+                    .object => |value| value,
+                    else => return error.InvalidProviderResponse,
+                };
+                const args = call.get("args") orelse return error.InvalidProviderResponse;
+                const id = if (call.get("id")) |id_value| switch (id_value) {
+                    .string => |value| value,
+                    else => return error.InvalidProviderResponse,
+                } else try std.fmt.allocPrint(allocator, "google-call-{d}", .{index});
+                try parts.append(allocator, .{ .tool_call = .{
+                    .id = id,
+                    .name = try common.objectString(call, "name"),
+                    .arguments_json = try std.json.Stringify.valueAlloc(allocator, args, .{}),
+                } });
+            }
         }
-    }
+    } else if (finish_reason == null) return error.InvalidProviderResponse;
 
     var usage: model_types.Usage = .{};
     if (switch (root) {
@@ -298,7 +324,37 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
             .output_tokens = try common.objectInteger(object, "candidatesTokenCount"),
         };
     }
-    return .{ .parts = try parts.toOwnedSlice(allocator), .usage = usage };
+    if (finish_reason) |*reason| {
+        if (reason.kind == .stop and hasToolCalls(parts.items)) reason.kind = .tool_calls;
+    }
+    return .{ .parts = try parts.toOwnedSlice(allocator), .usage = usage, .finish_reason = finish_reason };
+}
+
+fn googleFinishReason(raw: []const u8) model_types.FinishReason {
+    const kind: model_types.FinishReason.Kind = if (std.mem.eql(u8, raw, "STOP"))
+        .stop
+    else if (std.mem.eql(u8, raw, "MAX_TOKENS"))
+        .length
+    else if (std.mem.eql(u8, raw, "SAFETY") or
+        std.mem.eql(u8, raw, "RECITATION") or
+        std.mem.eql(u8, raw, "BLOCKLIST") or
+        std.mem.eql(u8, raw, "PROHIBITED_CONTENT") or
+        std.mem.eql(u8, raw, "SPII"))
+        .content_filter
+    else if (std.mem.eql(u8, raw, "MALFORMED_FUNCTION_CALL") or
+        std.mem.eql(u8, raw, "UNEXPECTED_TOOL_CALL"))
+        .incomplete_tool_call
+    else
+        .other;
+    return .{ .kind = kind, .raw = raw };
+}
+
+fn hasToolCalls(parts: []const model_types.Part) bool {
+    for (parts) |part| switch (part) {
+        .tool_call => return true,
+        else => {},
+    };
+    return false;
 }
 
 test "encodes Gemini system, tool, result, error, and structured output parts" {
@@ -327,7 +383,7 @@ test "encodes Gemini system, tool, result, error, and structured output parts" {
 
 test "decodes Gemini text, calls with and without ids, and usage" {
     const body =
-        \\{"candidates":[{"content":{"parts":[{"text":"checking"},{"functionCall":{"id":"call_1","name":"weather","args":{"city":"Madrid"}}},{"functionCall":{"name":"other","args":{}}}]}}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":3}}
+        \\{"candidates":[{"content":{"parts":[{"text":"checking"},{"functionCall":{"id":"call_1","name":"weather","args":{"city":"Madrid"}}},{"functionCall":{"name":"other","args":{}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":3}}
     ;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -337,6 +393,28 @@ test "decodes Gemini text, calls with and without ids, and usage" {
     try std.testing.expectEqualStrings("call_1", response.parts[1].tool_call.id);
     try std.testing.expectEqualStrings("google-call-2", response.parts[2].tool_call.id);
     try std.testing.expectEqual(@as(u64, 8), response.usage.input_tokens);
+    try std.testing.expectEqual(model_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
+    try std.testing.expectEqualStrings("STOP", response.finish_reason.?.raw);
+}
+
+test "maps Gemini safety and malformed call reasons" {
+    try std.testing.expectEqual(model_types.FinishReason.Kind.content_filter, googleFinishReason("SAFETY").kind);
+    try std.testing.expectEqual(
+        model_types.FinishReason.Kind.incomplete_tool_call,
+        googleFinishReason("MALFORMED_FUNCTION_CALL").kind,
+    );
+}
+
+test "decodes blocked Gemini prompts without candidates" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const response = try decodeResponse(
+        arena.allocator(),
+        "{\"promptFeedback\":{\"blockReason\":\"PROHIBITED_CONTENT\"}}",
+    );
+    try std.testing.expectEqual(@as(usize, 0), response.parts.len);
+    try std.testing.expectEqual(model_types.FinishReason.Kind.content_filter, response.finish_reason.?.kind);
+    try std.testing.expectEqualStrings("PROHIBITED_CONTENT", response.finish_reason.?.raw);
 }
 
 test "rejects malformed Gemini responses" {

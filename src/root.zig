@@ -23,6 +23,7 @@ pub const RunOptions = agent.RunOptions;
 pub const TypedResult = agent.TypedResult;
 pub const Model = model.Model;
 pub const ModelProfile = model.ModelProfile;
+pub const FinishReason = model.FinishReason;
 pub const Tool = model.Tool;
 pub const ToolRunContext = model.ToolRunContext;
 pub const ModelStreamEvent = model.ModelStreamEvent;

@@ -473,6 +473,59 @@ test "agent rejects empty and textless final responses" {
     );
 }
 
+test "agent distinguishes provider finish reasons from empty responses" {
+    const partial_parts = [_]zigai.model.Part{.{ .text = "partial" }};
+    const Cases = struct {
+        fn expectFailure(
+            expected: anyerror,
+            reason: zigai.FinishReason,
+            parts: []const zigai.model.Part,
+        ) !void {
+            var scripted = zigai.testing.ScriptedModel{
+                .responses = &.{.{ .parts = parts, .finish_reason = reason }},
+            };
+            try std.testing.expectError(
+                expected,
+                (zigai.Agent{ .model = scripted.model() }).run(std.testing.allocator, "hi"),
+            );
+        }
+    };
+    try Cases.expectFailure(
+        zigai.Agent.Error.ModelOutputTruncated,
+        .{ .kind = .length, .raw = "max_tokens" },
+        &partial_parts,
+    );
+    try Cases.expectFailure(
+        zigai.Agent.Error.ContentFiltered,
+        .{ .kind = .content_filter, .raw = "SAFETY" },
+        &.{},
+    );
+    try Cases.expectFailure(
+        zigai.Agent.Error.IncompleteToolCall,
+        .{ .kind = .incomplete_tool_call, .raw = "MALFORMED_FUNCTION_CALL" },
+        &.{},
+    );
+    try Cases.expectFailure(
+        zigai.Agent.Error.EmptyModelResponse,
+        .{ .kind = .stop, .raw = "stop" },
+        &.{},
+    );
+}
+
+test "agent result preserves the provider finish reason" {
+    const parts = [_]zigai.model.Part{.{ .text = "done" }};
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{.{
+            .parts = &parts,
+            .finish_reason = .{ .kind = .other, .raw = "provider_custom_stop" },
+        }},
+    };
+    var result = try (zigai.Agent{ .model = scripted.model() }).run(std.testing.allocator, "hi");
+    defer result.deinit();
+    try std.testing.expectEqual(zigai.FinishReason.Kind.other, result.finish_reason.?.kind);
+    try std.testing.expectEqualStrings("provider_custom_stop", result.finish_reason.?.raw);
+}
+
 test "agent enforces model request and parallel tool limits" {
     var never_called = zigai.testing.ScriptedModel{ .responses = &.{} };
     try std.testing.expectError(

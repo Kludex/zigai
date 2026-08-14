@@ -79,7 +79,11 @@ pub const Client = struct {
             return common.statusError(response.status);
         }
         if (state.text.items.len > 0) try state.parts.insert(allocator, 0, .{ .text = try state.text.toOwnedSlice(allocator) });
-        return .{ .parts = try state.parts.toOwnedSlice(allocator), .usage = state.usage };
+        return .{
+            .parts = try state.parts.toOwnedSlice(allocator),
+            .usage = state.usage,
+            .finish_reason = state.finish_reason,
+        };
     }
 };
 
@@ -106,6 +110,7 @@ const StreamState = struct {
     pending: std.ArrayList(PendingCall) = .empty,
     error_body: std.ArrayList(u8) = .empty,
     usage: model_types.Usage = .{},
+    finish_reason: ?model_types.FinishReason = null,
 
     fn deinit(self: *StreamState) void {
         self.text.deinit(self.allocator);
@@ -177,6 +182,15 @@ const StreamState = struct {
                 try self.sink.emit(.{ .tool_call = call });
             }
         } else if (std.mem.eql(u8, kind, "message_delta")) {
+            if (object.get("delta")) |delta_value| {
+                const delta = switch (delta_value) {
+                    .object => |item| item,
+                    else => return error.InvalidProviderResponse,
+                };
+                if (try common.optionalObjectString(delta, "stop_reason")) |reason| {
+                    self.finish_reason = anthropicFinishReason(reason);
+                }
+            }
             const usage = try common.requiredObject(root, "usage");
             self.usage.output_tokens = try common.objectInteger(usage, "output_tokens");
             try self.sink.emit(.{ .usage = self.usage });
@@ -318,6 +332,10 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
 
 pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_types.ModelResponse {
     const root = try std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{});
+    const root_object = switch (root) {
+        .object => |value| value,
+        else => return error.InvalidProviderResponse,
+    };
     const content = try common.requiredArray(root, "content");
     var parts: std.ArrayList(model_types.Part) = .empty;
     for (content.items) |item| {
@@ -352,12 +370,32 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
             .output_tokens = try common.objectInteger(object, "output_tokens"),
         };
     }
-    return .{ .parts = try parts.toOwnedSlice(allocator), .usage = usage };
+    const finish_reason = if (try common.optionalObjectString(root_object, "stop_reason")) |reason|
+        anthropicFinishReason(reason)
+    else
+        null;
+    return .{ .parts = try parts.toOwnedSlice(allocator), .usage = usage, .finish_reason = finish_reason };
+}
+
+fn anthropicFinishReason(raw: []const u8) model_types.FinishReason {
+    const kind: model_types.FinishReason.Kind = if (std.mem.eql(u8, raw, "end_turn") or
+        std.mem.eql(u8, raw, "stop_sequence"))
+        .stop
+    else if (std.mem.eql(u8, raw, "tool_use"))
+        .tool_calls
+    else if (std.mem.eql(u8, raw, "max_tokens") or
+        std.mem.eql(u8, raw, "model_context_window_exceeded"))
+        .length
+    else if (std.mem.eql(u8, raw, "refusal"))
+        .content_filter
+    else
+        .other;
+    return .{ .kind = kind, .raw = raw };
 }
 
 test "decodes Anthropic tool use" {
     const body =
-        \\{"content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{"city":"Madrid"}}],"usage":{"input_tokens":8,"output_tokens":3}}
+        \\{"content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{"city":"Madrid"}}],"stop_reason":"tool_use","usage":{"input_tokens":8,"output_tokens":3}}
     ;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -365,6 +403,12 @@ test "decodes Anthropic tool use" {
     try std.testing.expectEqualStrings("toolu_1", response.parts[0].tool_call.id);
     try std.testing.expectEqualStrings("{\"city\":\"Madrid\"}", response.parts[0].tool_call.arguments_json);
     try std.testing.expectEqual(@as(u64, 3), response.usage.output_tokens);
+    try std.testing.expectEqual(model_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
+}
+
+test "maps Anthropic length and refusal reasons" {
+    try std.testing.expectEqual(model_types.FinishReason.Kind.length, anthropicFinishReason("max_tokens").kind);
+    try std.testing.expectEqual(model_types.FinishReason.Kind.content_filter, anthropicFinishReason("refusal").kind);
 }
 
 test "encodes instructions, tool errors, and requests without system content" {
