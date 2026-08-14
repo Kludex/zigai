@@ -1599,14 +1599,14 @@ fn executeToolCalls(
                 .call = item.call,
                 .tool = tools[item.tool_index],
             } });
-            future.* = io.async(executeToolControlled, .{
+            future.* = io.concurrent(executeToolControlled, .{
                 @as(?std.Io, io),
                 tools[item.tool_index],
                 limits,
                 concurrent_allocator,
                 run_context,
                 item.call.arguments_json,
-            });
+            }) catch return Agent.Error.ToolConcurrencyUnavailable;
             state.* = .running;
             running += 1;
         }
@@ -1730,7 +1730,7 @@ fn executeToolControlled(
     arguments_json: []const u8,
 ) ToolOutcome {
     if (limits.max_concurrency == 0) return .{ .failure = Agent.Error.ToolQueueOverflow };
-    if (maybe_io == null and limits.timeout_ms == null and run_context.cancellation == null)
+    if (limits.timeout_ms == null and run_context.cancellation == null)
         return executeTool(tool, limits, allocator, run_context, arguments_json);
     const io = maybe_io orelse return .{ .failure = Agent.Error.ToolIsolationRequiresIo };
     var buffer: [3]ToolControlOutcome = undefined;

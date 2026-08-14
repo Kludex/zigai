@@ -1926,6 +1926,18 @@ test "tool isolation cancels in-flight work and requires IO for timeouts" {
         }).run(std.testing.allocator, "Run."),
     );
 
+    var unavailable_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &call }} };
+    var no_concurrency = std.Io.Threaded.init(std.testing.allocator, .{ .concurrent_limit = .nothing });
+    defer no_concurrency.deinit();
+    try std.testing.expectError(
+        zigai.Agent.Error.ToolConcurrencyUnavailable,
+        (zigai.Agent{
+            .model = unavailable_model.model(),
+            .tools = &.{timed_tool},
+            .io = no_concurrency.io(),
+        }).run(std.testing.allocator, "Run."),
+    );
+
     var cancelled_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &call }} };
     var token: zigai.CancellationToken = .{};
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
