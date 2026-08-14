@@ -271,6 +271,86 @@ test "denied approval becomes an error tool result" {
     try std.testing.expectEqual(@as(u8, 0), executions);
 }
 
+test "resuming mixed deferred calls handles every decision path" {
+    const calls = [_]zigai.model.Part{
+        .{ .tool_call = .{ .id = "immediate", .name = "immediate", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "approval", .name = "approval", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "external", .name = "external", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "invalid", .name = "validated", .arguments_json = "{}" } },
+    };
+    const final = [_]zigai.model.Part{.{ .text = "Finished." }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
+            if (index == 0) return;
+            const results = request.messages[2].parts;
+            try std.testing.expectEqual(@as(usize, 4), results.len);
+            try std.testing.expectEqualStrings("executed", results[0].tool_result.content);
+            try std.testing.expectEqualStrings("supplied", results[1].tool_result.content);
+            try std.testing.expect(results[2].tool_result.is_error);
+            try std.testing.expectEqualStrings("denied", results[2].tool_result.content);
+            try std.testing.expect(results[3].tool_result.is_error);
+            try std.testing.expect(std.mem.indexOf(u8, results[3].tool_result.content, "InvalidToolArguments") != null);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &calls }, .{ .parts = &final } },
+        .inspectFn = Inspector.inspect,
+    };
+    const Executor = struct {
+        fn execute(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]const u8 {
+            return allocator.dupe(u8, "executed");
+        }
+    };
+    var unused: u8 = 0;
+    const immediate = zigai.Tool{
+        .definition = .{ .name = "immediate", .description = "", .parameters_json_schema = "{}" },
+        .context = &unused,
+        .executeFn = Executor.execute,
+    };
+    const approval = zigai.Tool{
+        .definition = .{ .name = "approval", .description = "", .parameters_json_schema = "{}" },
+        .execution = .requires_approval,
+        .context = &unused,
+        .executeFn = Executor.execute,
+    };
+    const external = zigai.Tool{
+        .definition = .{ .name = "external", .description = "", .parameters_json_schema = "{}" },
+        .execution = .external,
+        .context = &unused,
+        .executeFn = Executor.execute,
+    };
+    var validated = zigai.reflect.tool("validated", "", struct {
+        fn execute(args: struct { value: u8 }) !u8 {
+            return args.value;
+        }
+    }.execute);
+    validated.execution = .requires_approval;
+    validated.max_retries = 1;
+    const tools = [_]zigai.Tool{ immediate, approval, external, validated };
+    const agent = zigai.Agent{ .model = scripted.model(), .tools = &tools };
+    var first = try agent.runUntilPause(std.testing.allocator, "Run mixed calls.");
+    defer first.deinit();
+    const state = switch (first) {
+        .complete => return error.ExpectedPausedRun,
+        .paused => |paused| paused.state_json,
+    };
+    try std.testing.expectError(zigai.Agent.Error.UnexpectedDeferredToolDecision, agent.resumeRun(
+        std.testing.allocator,
+        state,
+        &.{
+            .{ .call_id = "approval", .action = .result, .content = "supplied" },
+            .{ .call_id = "approval", .action = .approve },
+        },
+    ));
+    var resumed = try agent.resumeRun(std.testing.allocator, state, &.{
+        .{ .call_id = "approval", .action = .result, .content = "supplied" },
+        .{ .call_id = "external", .action = .deny, .content = "denied" },
+        .{ .call_id = "invalid", .action = .approve },
+    });
+    defer resumed.deinit();
+    try std.testing.expect(resumed == .complete);
+}
+
 test "agent joins final text parts" {
     const parts = [_]zigai.model.Part{ .{ .text = "hello " }, .{ .text = "world" } };
     const responses = [_]zigai.model.ModelResponse{.{ .parts = &parts }};

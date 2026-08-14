@@ -2368,3 +2368,40 @@ test "typed result decoding releases invalid untyped results" {
     };
     try std.testing.expectError(Agent.Error.InvalidTypedOutput, decodeTypedResult(struct { value: u8 }, result));
 }
+
+test "paused state serializes retries and rejects mismatched calls" {
+    var unused: u8 = 0;
+    const approval = model_types.Tool{
+        .definition = .{ .name = "approval", .description = "", .parameters_json_schema = "{}" },
+        .execution = .requires_approval,
+        .context = &unused,
+    };
+    const call = Part{ .tool_call = .{ .id = "call", .name = "approval", .arguments_json = "{}" } };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    var paused = try createPausedRun(
+        &arena,
+        arena.allocator(),
+        "prompt",
+        &.{.{ .role = .assistant, .parts = &.{call} }},
+        &.{"instruction"},
+        .{},
+        1,
+        1,
+        0,
+        &.{.{ .name = "approval", .count = 1 }},
+        &.{approval},
+        &.{call},
+    );
+    defer paused.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, paused.state_json, "\"tool_retries\":[{\"name\":\"approval\",\"count\":1}]") != null);
+    try std.testing.expectError(Agent.Error.InvalidDeferredState, validateDeferredCalls(
+        &.{approval},
+        &.{call},
+        &.{.{
+            .call_id = "different",
+            .name = "approval",
+            .arguments_json = "{}",
+            .execution = .requires_approval,
+        }},
+    ));
+}
