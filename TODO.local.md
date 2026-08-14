@@ -13,7 +13,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add configurable HTTP safety limits. Cap decompressed buffered responses
   and individual streaming lines, return stable `ResponseTooLarge` and
   `StreamLineTooLarge` errors, and test exact boundaries through real sockets.
-- [ ] Bound every untrusted JSON boundary. Add documented limits for history,
+- [x] Bound every untrusted JSON boundary. Add documented limits for history,
   paused state, resume decisions, provider responses, tool arguments/results,
   MCP messages, nesting depth, and collection counts before allocation.
 - [ ] Isolate tool execution. Support per-tool timeouts, cancellation,

@@ -4,6 +4,7 @@ const std = @import("std");
 const model_types = @import("../model.zig");
 const http = @import("../transport.zig");
 const common = @import("common.zig");
+const json_limits = @import("../json.zig");
 
 pub const api_base = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -205,7 +206,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
                     .document => |value| try writeRichContent(allocator, &json, value),
                     .binary => |value| try writeRichContent(allocator, &json, value),
                 },
-                .tool_return => |result| try writeToolReturn(&json, result),
+                .tool_return => |result| try writeToolReturn(allocator, &json, result),
             },
             .response => |response| for (response.parts) |part| switch (part) {
                 .text => |text| try writeTextPart(&json, text),
@@ -232,7 +233,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
                     try json.objectField("name");
                     try json.write(call.name);
                     try json.objectField("args");
-                    try common.rawJson(&json, call.arguments_json);
+                    try common.rawJson(allocator, &json, call.arguments_json, json_limits.defaults.tool_payload);
                     try json.objectField("id");
                     try json.write(call.id);
                     try json.endObject();
@@ -288,14 +289,21 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
     };
     const json_output = request.output != .text;
     if (json_output or hasGenerationSettings(request.settings)) {
-        try writeGenerationConfig(&json, schema, json_output, request.settings);
+        try writeGenerationConfig(allocator, &json, schema, json_output, request.settings);
     }
     try json.endObject();
     return output.toOwnedSlice();
 }
 
 fn writeToolSchema(allocator: std.mem.Allocator, json: *std.json.Stringify, source: []const u8) !void {
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, source, .{}) catch return error.InvalidRequestEncoding;
+    const parsed = try json_limits.parse(
+        std.json.Value,
+        allocator,
+        source,
+        json_limits.defaults.schema,
+        .{},
+        error.InvalidRequestEncoding,
+    );
     defer parsed.deinit();
     return writeToolSchemaValue(json, parsed.value);
 }
@@ -331,7 +339,7 @@ fn messageHasGoogleContent(message: model_types.Message) bool {
     };
 }
 
-fn writeToolReturn(json: *std.json.Stringify, result: model_types.ToolResult) !void {
+fn writeToolReturn(allocator: std.mem.Allocator, json: *std.json.Stringify, result: model_types.ToolResult) !void {
     try json.beginObject();
     try json.objectField("functionResponse");
     try json.beginObject();
@@ -340,7 +348,7 @@ fn writeToolReturn(json: *std.json.Stringify, result: model_types.ToolResult) !v
     try json.objectField("response");
     try json.beginObject();
     try json.objectField(if (result.is_error) "error" else "result");
-    try common.rawJson(json, result.content);
+    try common.rawJson(allocator, json, result.content, json_limits.defaults.tool_payload);
     try json.endObject();
     try json.objectField("id");
     try json.write(result.call_id);
@@ -405,6 +413,7 @@ fn hasGenerationSettings(settings: model_types.ModelSettings) bool {
 }
 
 fn writeGenerationConfig(
+    allocator: std.mem.Allocator,
     json: *std.json.Stringify,
     schema: ?[]const u8,
     json_output: bool,
@@ -418,7 +427,7 @@ fn writeGenerationConfig(
     }
     if (schema) |value| {
         try json.objectField("responseJsonSchema");
-        try common.rawJson(json, value);
+        try common.rawJson(allocator, json, value, json_limits.defaults.schema);
     }
     if (settings.temperature) |temperature| {
         try json.objectField("temperature");
@@ -453,7 +462,14 @@ fn writeGenerationConfig(
 }
 
 pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_types.ModelResponse {
-    const root = try std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{});
+    const root = try json_limits.parseLeaky(
+        std.json.Value,
+        allocator,
+        body,
+        json_limits.defaults.provider_response,
+        .{},
+        error.InvalidProviderResponse,
+    );
     const root_object = switch (root) {
         .object => |value| value,
         else => return error.InvalidProviderResponse,
@@ -778,4 +794,9 @@ test "rejects malformed Gemini responses" {
         defer arena.deinit();
         try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(arena.allocator(), body));
     }
+}
+
+test "Google rejects provider responses beyond the JSON nesting limit" {
+    const source = "[" ** 129 ++ "0" ++ "]" ** 129;
+    try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(std.testing.allocator, source));
 }

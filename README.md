@@ -554,6 +554,11 @@ defer http.deinit();
 Oversized input returns `error.ResponseTooLarge` or
 `error.StreamLineTooLarge` before it can grow the response allocation further.
 
+Untrusted JSON is also preflighted before decoding. History, deferred state,
+provider responses, tools, MCP, schemas, and CLI manifests each use a reviewed
+`zigai.json.Limits` profile for document size, value size, nesting, and
+collection length.
+
 ## Command-line clients
 
 `zig build` installs three small clients:

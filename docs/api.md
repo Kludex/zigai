@@ -35,6 +35,7 @@ Use these namespaces for the rest of the API:
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
 | `zigai.transport` | Pluggable buffered and line-streaming HTTP transport |
+| `zigai.json` | Pre-allocation validation and boundary-specific JSON limits |
 | `zigai.testing` | Deterministic scripted models for application tests |
 
 Provider `Client.model()` values borrow their client. Keep the client and its
@@ -89,6 +90,39 @@ The public named error categories are:
 `transport.Error.ResponseTooLarge` and `transport.Error.StreamLineTooLarge`
 are stable policy failures. They apply to decompressed bytes, so compression
 cannot bypass the configured allocation boundary.
+
+## JSON limits
+
+`zigai.json.validate` scans one complete document without retaining a value
+graph. It checks the encoded document size, decoded string or encoded number
+size, container depth, and the number of fields or elements in each collection.
+Its stable `ValidationError` distinguishes each limit from malformed JSON.
+`json.parse` and `json.parseLeaky` combine that preflight with owned or
+arena-owned decoding and map invalid input to a caller-selected stable error.
+`json.validateAs` provides the same mapping without building a value graph,
+while `json.isValid` is useful for boolean validation such as evals.
+
+ZigAI applies these reviewed defaults before its own decoders allocate:
+
+| Boundary | Document | Value | Depth | Items per collection |
+| --- | ---: | ---: | ---: | ---: |
+| History | 16 MiB | 1 MiB | 64 | 65,536 |
+| Paused state | 32 MiB | 16 MiB | 64 | 65,536 |
+| Resume decisions | 4 MiB | 1 MiB | 32 | 16,384 |
+| Provider response | 16 MiB | 4 MiB | 128 | 65,536 |
+| Tool payload | 1 MiB | 1 MiB | 64 | 4,096 |
+| MCP message | 4 MiB | 1 MiB | 64 | 16,384 |
+| JSON Schema | 2 MiB | 512 KiB | 64 | 16,384 |
+| CLI manifest | 1 MiB | 256 KiB | 32 | 4,096 |
+
+The named profiles live under `zigai.json.defaults`. Applications can use a
+custom `json.Limits` value when validating their own untrusted JSON entry
+points.
+
+Every `Tool` execution and validation entry point requires `arguments_json` to
+contain one complete JSON document within the tool-payload profile. Invalid or
+oversized arguments return `error.InvalidToolArguments` before the callback is
+invoked.
 
 Public operations intentionally use inferred error unions. Allocator, network,
 process, application callback, tool, hook, exporter, and custom model errors

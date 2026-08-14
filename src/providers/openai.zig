@@ -4,6 +4,7 @@ const std = @import("std");
 const model_types = @import("../model.zig");
 const http = @import("../transport.zig");
 const common = @import("common.zig");
+const json_limits = @import("../json.zig");
 
 pub const api_base = "https://api.openai.com/v1";
 
@@ -146,7 +147,14 @@ const StreamState = struct {
         if (!std.mem.startsWith(u8, value, "data:")) return;
         const data = std.mem.trim(u8, value[5..], " ");
         if (data.len == 0 or std.mem.eql(u8, data, "[DONE]")) return;
-        const root = try std.json.parseFromSliceLeaky(std.json.Value, self.allocator, data, .{});
+        const root = try json_limits.parseLeaky(
+            std.json.Value,
+            self.allocator,
+            data,
+            json_limits.defaults.provider_response,
+            .{},
+            error.InvalidProviderResponse,
+        );
         const object = switch (root) {
             .object => |item| item,
             else => return error.InvalidProviderResponse,
@@ -267,7 +275,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
             try json.objectField("description");
             try json.write(tool.description);
             try json.objectField("parameters");
-            try common.rawJson(&json, tool.parameters_json_schema);
+            try common.rawJson(allocator, &json, tool.parameters_json_schema, json_limits.defaults.schema);
             try json.endObject();
         }
         try json.endArray();
@@ -308,7 +316,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
             try json.objectField("strict");
             try json.write(format.strict);
             try json.objectField("schema");
-            try common.rawJson(&json, format.schema);
+            try common.rawJson(allocator, &json, format.schema, json_limits.defaults.schema);
             try json.endObject();
             try json.endObject();
         },
@@ -404,7 +412,14 @@ fn writeToolReturn(json: *std.json.Stringify, result: model_types.ToolResult) !v
 }
 
 pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_types.ModelResponse {
-    const root = try std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{});
+    const root = try json_limits.parseLeaky(
+        std.json.Value,
+        allocator,
+        body,
+        json_limits.defaults.provider_response,
+        .{},
+        error.InvalidProviderResponse,
+    );
     const root_object = switch (root) {
         .object => |value| value,
         else => return error.InvalidProviderResponse,
@@ -709,4 +724,9 @@ test "covers Responses API refusal, incomplete, and malformed edges" {
     try std.testing.expectEqual(model_types.FinishReason.Kind.incomplete_tool_call, incomplete_call.finish_reason.?.kind);
     const unknown = try decodeResponse(arena.allocator(), "{\"status\":\"paused\",\"output\":[]}");
     try std.testing.expectEqual(model_types.FinishReason.Kind.other, unknown.finish_reason.?.kind);
+}
+
+test "OpenAI rejects provider responses beyond the JSON nesting limit" {
+    const source = "[" ** 129 ++ "0" ++ "]" ** 129;
+    try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(std.testing.allocator, source));
 }

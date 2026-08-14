@@ -4,6 +4,7 @@ const std = @import("std");
 const model_types = @import("../model.zig");
 const http = @import("../transport.zig");
 const common = @import("common.zig");
+const json_limits = @import("../json.zig");
 
 pub const api_base = "https://api.anthropic.com/v1";
 pub const api_version = "2023-06-01";
@@ -217,7 +218,14 @@ const StreamState = struct {
         if (!std.mem.startsWith(u8, value, "data:")) return;
         const data = std.mem.trim(u8, value[5..], " ");
         if (data.len == 0) return;
-        const root = try std.json.parseFromSliceLeaky(std.json.Value, self.allocator, data, .{});
+        const root = try json_limits.parseLeaky(
+            std.json.Value,
+            self.allocator,
+            data,
+            json_limits.defaults.provider_response,
+            .{},
+            error.InvalidProviderResponse,
+        );
         const object = switch (root) {
             .object => |item| item,
             else => return error.InvalidProviderResponse,
@@ -428,7 +436,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
                     try json.objectField("name");
                     try json.write(call.name);
                     try json.objectField("input");
-                    try common.rawJson(&json, call.arguments_json);
+                    try common.rawJson(allocator, &json, call.arguments_json, json_limits.defaults.tool_payload);
                     try json.endObject();
                 },
             },
@@ -466,7 +474,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
             try json.objectField("description");
             try json.write(tool.description);
             try json.objectField("input_schema");
-            try common.rawJson(&json, tool.parameters_json_schema);
+            try common.rawJson(allocator, &json, tool.parameters_json_schema, json_limits.defaults.schema);
             try json.endObject();
         }
         try json.endArray();
@@ -489,7 +497,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
             try json.objectField("type");
             try json.write("json_schema");
             try json.objectField("schema");
-            try common.rawJson(&json, schema_value);
+            try common.rawJson(allocator, &json, schema_value, json_limits.defaults.schema);
             try json.endObject();
         }
         try json.endObject();
@@ -567,7 +575,14 @@ fn writeRichContent(
 }
 
 pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_types.ModelResponse {
-    const root = try std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{});
+    const root = try json_limits.parseLeaky(
+        std.json.Value,
+        allocator,
+        body,
+        json_limits.defaults.provider_response,
+        .{},
+        error.InvalidProviderResponse,
+    );
     const root_object = switch (root) {
         .object => |value| value,
         else => return error.InvalidProviderResponse,
@@ -864,4 +879,9 @@ test "covers Anthropic rich and streaming response edges" {
     );
     try std.testing.expectEqual(model_types.FinishReason.Kind.stop, state.finish_reason.?.kind);
     try std.testing.expectEqual(@as(usize, 1), sink.events);
+}
+
+test "Anthropic rejects provider responses beyond the JSON nesting limit" {
+    const source = "[" ** 129 ++ "0" ++ "]" ** 129;
+    try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(std.testing.allocator, source));
 }

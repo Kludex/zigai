@@ -1,4 +1,5 @@
 const std = @import("std");
+const json_limits = @import("json.zig");
 
 pub const CancellationToken = struct {
     cancelled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -215,43 +216,61 @@ pub const Tool = struct {
     /// By default, only allocation and cancellation failures are fatal.
     isRecoverableFn: ?*const fn (context: *anyopaque, failure: anyerror) bool = null,
 
+    /// Validates one JSON argument document, then executes this tool.
     pub fn execute(self: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) ![]const u8 {
+        try validateToolArgumentsJson(allocator, arguments_json);
+        return self.executePrepared(allocator, arguments_json);
+    }
+
+    fn executePrepared(self: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) ![]const u8 {
         if (self.executeFn) |execute_fn| return execute_fn(self.context, allocator, arguments_json);
         if (self.executeOutputFn) |execute_output|
             return (try execute_output(self.context, allocator, arguments_json)).content;
         return error.MissingToolExecutor;
     }
 
+    /// Validates one bounded JSON argument document and any tool-specific rules.
     pub fn validate(self: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) !void {
+        try validateToolArgumentsJson(allocator, arguments_json);
         const validate_arguments = self.validateFn orelse return;
         return validate_arguments(self.context, allocator, arguments_json);
     }
 
+    /// Validates and executes this tool with the current agent run context.
     pub fn executeWithContext(self: Tool, allocator: std.mem.Allocator, run_context: ToolRunContext, arguments_json: []const u8) ![]const u8 {
+        try validateToolArgumentsJson(allocator, arguments_json);
         if (self.executeWithContextFn) |contextual|
             return contextual(self.context, allocator, run_context, arguments_json);
         if (self.executeOutputWithContextFn) |execute_output|
             return (try execute_output(self.context, allocator, run_context, arguments_json)).content;
-        return self.execute(allocator, arguments_json);
+        return self.executePrepared(allocator, arguments_json);
     }
 
+    /// Validates and executes this tool while preserving rich output metadata.
     pub fn executeOutput(self: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) !ToolOutput {
-        if (self.executeOutputFn) |execute_output| return execute_output(self.context, allocator, arguments_json);
-        return .{ .content = try self.execute(allocator, arguments_json) };
+        try validateToolArgumentsJson(allocator, arguments_json);
+        return self.executeOutputPrepared(allocator, arguments_json);
     }
 
+    fn executeOutputPrepared(self: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) !ToolOutput {
+        if (self.executeOutputFn) |execute_output| return execute_output(self.context, allocator, arguments_json);
+        return .{ .content = try self.executePrepared(allocator, arguments_json) };
+    }
+
+    /// Validates and executes this contextual tool with rich output metadata.
     pub fn executeOutputWithContext(
         self: Tool,
         allocator: std.mem.Allocator,
         run_context: ToolRunContext,
         arguments_json: []const u8,
     ) !ToolOutput {
+        try validateToolArgumentsJson(allocator, arguments_json);
         if (self.executeOutputWithContextFn) |execute_output|
             return execute_output(self.context, allocator, run_context, arguments_json);
         if (self.executeWithContextFn) |execute_context| return .{
             .content = try execute_context(self.context, allocator, run_context, arguments_json),
         };
-        return self.executeOutput(allocator, arguments_json);
+        return self.executeOutputPrepared(allocator, arguments_json);
     }
 
     /// Returns whether `failure` can be safely exposed to the model.
@@ -263,6 +282,10 @@ pub const Tool = struct {
         };
     }
 };
+
+fn validateToolArgumentsJson(allocator: std.mem.Allocator, arguments_json: []const u8) !void {
+    try json_limits.validateAs(allocator, arguments_json, json_limits.defaults.tool_payload, error.InvalidToolArguments);
+}
 
 /// Per-run state made available to contextual tools. `dependency` provides a
 /// checked-at-the-call-site cast while keeping Agent itself non-generic.
@@ -585,9 +608,12 @@ test "tool execution adapters preserve rich outputs" {
         .context = &context,
         .executeOutputFn = Executor.output,
     };
-    const plain = try output_tool.execute(std.testing.allocator, "result");
+    const plain = try output_tool.execute(std.testing.allocator, "\"result\"");
     defer std.testing.allocator.free(plain);
-    try std.testing.expectEqualStrings("result", plain);
+    try std.testing.expectEqualStrings("\"result\"", plain);
+    try std.testing.expectError(error.InvalidToolArguments, output_tool.execute(std.testing.allocator, "result"));
+    const deeply_nested = "[" ** 65 ++ "0" ++ "]" ** 65;
+    try std.testing.expectError(error.InvalidToolArguments, output_tool.execute(std.testing.allocator, deeply_nested));
 
     const contextual_tool = Tool{
         .definition = .{ .name = "contextual", .description = "", .parameters_json_schema = "{}" },

@@ -10,6 +10,7 @@ const builtin = @import("builtin");
 const agent = @import("agent.zig");
 const model = @import("model.zig");
 const http = @import("transport.zig");
+const json_limits = @import("json.zig");
 
 /// Latest stable MCP protocol revision supported by ZigAI.
 pub const protocol_version = "2026-07-28";
@@ -113,6 +114,7 @@ pub const StreamableHttpTransport = struct {
 
     fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
         const self: *StreamableHttpTransport = @ptrCast(@alignCast(context));
+        try validateMcpMessage(allocator, request.message);
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
@@ -143,7 +145,10 @@ pub const StreamableHttpTransport = struct {
             return error.McpHttpRequestFailed;
         }
         if (!request.expects_response or response.body.len == 0) return response.body;
-        if (response.body[0] == '{' or response.body[0] == '[') return response.body;
+        if (response.body[0] == '{' or response.body[0] == '[') {
+            try validateMcpResponse(allocator, response.body);
+            return response.body;
+        }
 
         const extracted = try extractSseResponse(allocator, response.body, request.message, request.events);
         allocator.free(response.body);
@@ -183,6 +188,7 @@ pub const StdioTransport = struct {
 
     fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
         const self: *StdioTransport = @ptrCast(@alignCast(context));
+        try validateMcpMessage(allocator, request.message);
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const stdin = self.child.stdin orelse return error.McpProcessClosed;
@@ -195,9 +201,14 @@ pub const StdioTransport = struct {
         while (true) {
             const line = try readLine(allocator, self.io, self.child.stdout orelse return error.McpProcessClosed);
             errdefer allocator.free(line);
-            const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
-                return error.InvalidMcpMessage;
-            };
+            const parsed = try json_limits.parse(
+                std.json.Value,
+                allocator,
+                line,
+                json_limits.defaults.mcp_message,
+                .{},
+                error.InvalidMcpMessage,
+            );
             defer parsed.deinit();
             const object = requiredObject(parsed.value) catch {
                 allocator.free(line);
@@ -426,8 +437,14 @@ pub const Client = struct {
     ) ![]u8 {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
-        const arguments = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), arguments_json, .{}) catch
-            return error.InvalidMcpToolArguments;
+        const arguments = try json_limits.parseLeaky(
+            std.json.Value,
+            arena.allocator(),
+            arguments_json,
+            json_limits.defaults.tool_payload,
+            .{},
+            error.InvalidMcpToolArguments,
+        );
         if (arguments != .object) return error.InvalidMcpToolArguments;
         const params = try std.json.Stringify.valueAlloc(allocator, .{ .name = name, .arguments = arguments }, .{});
         defer allocator.free(params);
@@ -589,8 +606,17 @@ pub const Server = struct {
     ) !ServerResponse {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
-        const root = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), message_json, .{}) catch
-            return self.errorResponse(allocator, .null, error_codes.parse_error, "Invalid JSON", 400);
+        const root = json_limits.parseLeaky(
+            std.json.Value,
+            arena.allocator(),
+            message_json,
+            json_limits.defaults.mcp_message,
+            .{},
+            error.InvalidMcpMessage,
+        ) catch |failure| switch (failure) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return self.errorResponse(allocator, .null, error_codes.parse_error, "Invalid JSON", 400),
+        };
         const object = requiredObject(root) catch
             return self.errorResponse(allocator, .null, error_codes.invalid_request, "Invalid JSON-RPC request", 400);
         const id = object.get("id") orelse .null;
@@ -688,11 +714,13 @@ pub const Server = struct {
     fn discoveryResult(self: *Server, allocator: std.mem.Allocator) ![]u8 {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
-        const capabilities = try std.json.parseFromSliceLeaky(
+        const capabilities = try json_limits.parseLeaky(
             std.json.Value,
             arena.allocator(),
             self.capabilities_json,
+            json_limits.defaults.mcp_message,
             .{},
+            error.InvalidMcpMessage,
         );
         return std.json.Stringify.valueAlloc(allocator, .{
             .resultType = "complete",
@@ -707,7 +735,14 @@ pub const Server = struct {
     fn resultResponse(self: *Server, allocator: std.mem.Allocator, id: std.json.Value, result_json: []const u8) ![]u8 {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
-        var result = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), result_json, .{});
+        var result = try json_limits.parseLeaky(
+            std.json.Value,
+            arena.allocator(),
+            result_json,
+            json_limits.defaults.mcp_message,
+            .{},
+            error.InvalidMcpResponse,
+        );
         var object = try requiredObject(result);
         const memory = arena.allocator();
         if (object.get("resultType") == null) try object.put(memory, "resultType", .{ .string = "complete" });
@@ -773,11 +808,23 @@ fn buildRequest(
 ) ![]u8 {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    var params_value = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), params_json, .{}) catch
-        return error.InvalidMcpMessage;
+    var params_value = try json_limits.parseLeaky(
+        std.json.Value,
+        arena.allocator(),
+        params_json,
+        json_limits.defaults.mcp_message,
+        .{},
+        error.InvalidMcpMessage,
+    );
     var params = try requiredObject(params_value);
-    const capabilities = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), capabilities_json, .{}) catch
-        return error.InvalidMcpMessage;
+    const capabilities = try json_limits.parseLeaky(
+        std.json.Value,
+        arena.allocator(),
+        capabilities_json,
+        json_limits.defaults.mcp_message,
+        .{},
+        error.InvalidMcpMessage,
+    );
     if (capabilities != .object) return error.InvalidMcpMessage;
     const memory = arena.allocator();
     var client_info: std.json.ObjectMap = .{};
@@ -807,8 +854,14 @@ fn buildNotification(
 ) ![]u8 {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const params = std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), params_json, .{}) catch
-        return error.InvalidMcpMessage;
+    const params = try json_limits.parseLeaky(
+        std.json.Value,
+        arena.allocator(),
+        params_json,
+        json_limits.defaults.mcp_message,
+        .{},
+        error.InvalidMcpMessage,
+    );
     if (params != .object) return error.InvalidMcpMessage;
     return std.json.Stringify.valueAlloc(allocator, .{
         .jsonrpc = "2.0",
@@ -825,13 +878,27 @@ fn paginatedParams(allocator: std.mem.Allocator, cursor: ?[]const u8) ![]u8 {
 }
 
 fn parameterString(allocator: std.mem.Allocator, params_json: []const u8, key: []const u8) ![]const u8 {
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, params_json, .{});
+    const parsed = try json_limits.parse(
+        std.json.Value,
+        allocator,
+        params_json,
+        json_limits.defaults.mcp_message,
+        .{},
+        error.InvalidMcpMessage,
+    );
     defer parsed.deinit();
     return allocator.dupe(u8, try requiredString(try requiredObject(parsed.value), key));
 }
 
 fn isInputRequired(allocator: std.mem.Allocator, result_json: []const u8) bool {
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, result_json, .{}) catch return false;
+    const parsed = json_limits.parse(
+        std.json.Value,
+        allocator,
+        result_json,
+        json_limits.defaults.mcp_message,
+        .{},
+        error.InvalidMcpResponse,
+    ) catch return false;
     defer parsed.deinit();
     const object = requiredObject(parsed.value) catch return false;
     return std.mem.eql(u8, optionalString(object, "resultType") orelse "complete", "input_required");
@@ -885,6 +952,10 @@ fn extractSseResponse(
         if (!std.mem.startsWith(u8, line, "data:")) continue;
         const data = std.mem.trimStart(u8, line[5..], " ");
         if (data.len == 0) continue;
+        validateMcpMessage(allocator, data) catch |failure| switch (failure) {
+            error.OutOfMemory, error.McpMessageTooLarge => return failure,
+            else => continue,
+        };
         const parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch continue;
         defer parsed.deinit();
         const object = requiredObject(parsed.value) catch continue;
@@ -919,7 +990,7 @@ fn readLine(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) ![]u8 {
         if (read == 0) return error.EndOfStream;
         if (byte[0] == '\n') return result.toOwnedSlice(allocator);
         if (byte[0] != '\r') try result.append(allocator, byte[0]);
-        if (result.items.len > 8 * 1024 * 1024) return error.McpMessageTooLarge;
+        if (result.items.len > json_limits.defaults.mcp_message.max_document_bytes) return error.McpMessageTooLarge;
     }
 }
 
@@ -928,7 +999,14 @@ const JsonRpcId = union(enum) {
     string: []u8,
 
     fn parse(allocator: std.mem.Allocator, message: []const u8) !JsonRpcId {
-        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, message, .{});
+        const parsed = try json_limits.parse(
+            std.json.Value,
+            allocator,
+            message,
+            json_limits.defaults.mcp_message,
+            .{},
+            error.InvalidMcpMessage,
+        );
         defer parsed.deinit();
         const value = (try requiredObject(parsed.value)).get("id") orelse return error.InvalidMcpMessage;
         return switch (value) {
@@ -954,8 +1032,27 @@ const JsonRpcId = union(enum) {
 };
 
 fn parseResponse(allocator: std.mem.Allocator, body: []const u8) !std.json.Value {
-    return std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{ .allocate = .alloc_always }) catch
-        error.InvalidMcpResponse;
+    return json_limits.parseLeaky(
+        std.json.Value,
+        allocator,
+        body,
+        json_limits.defaults.mcp_message,
+        .{ .allocate = .alloc_always },
+        error.InvalidMcpResponse,
+    );
+}
+
+fn validateMcpMessage(allocator: std.mem.Allocator, source: []const u8) !void {
+    try validateMcpDocument(allocator, source, error.InvalidMcpMessage);
+}
+
+fn validateMcpResponse(allocator: std.mem.Allocator, source: []const u8) !void {
+    try validateMcpDocument(allocator, source, error.InvalidMcpResponse);
+}
+
+fn validateMcpDocument(allocator: std.mem.Allocator, source: []const u8, comptime invalid_error: anytype) !void {
+    if (source.len > json_limits.defaults.mcp_message.max_document_bytes) return error.McpMessageTooLarge;
+    try json_limits.validateAs(allocator, source, json_limits.defaults.mcp_message, invalid_error);
 }
 
 fn responseResult(root: std.json.Value, expected_id: u64) !std.json.Value {
@@ -1042,7 +1139,14 @@ fn toolArgumentHeaders(
     schema_json: []const u8,
     arguments: std.json.Value,
 ) ![]const http.Header {
-    const schema = try parseResponse(allocator, schema_json);
+    const schema = try json_limits.parseLeaky(
+        std.json.Value,
+        allocator,
+        schema_json,
+        json_limits.defaults.schema,
+        .{ .allocate = .alloc_always },
+        error.InvalidMcpHeaderAnnotation,
+    );
     if (!validToolHeaderSchema(schema)) return error.InvalidMcpHeaderAnnotation;
     const properties = switch ((try requiredObject(schema)).get("properties") orelse return &.{}) {
         .object => |value| value,
@@ -1188,6 +1292,32 @@ test "client emits self-describing requests and HTTP routing headers" {
     try std.testing.expect(std.mem.indexOf(u8, result, "sunny") != null);
 }
 
+test "client bounds request response and tool-argument JSON before dispatch" {
+    const State = struct {
+        response: []const u8,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, _: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return allocator.dupe(u8, self.response);
+        }
+    };
+    const deep_message = "[" ** 65 ++ "0" ++ "]" ** 65;
+    var state = State{ .response = deep_message };
+    var client = Client{ .transport = .{ .context = &state, .sendFn = State.send } };
+    try std.testing.expectError(
+        error.InvalidMcpMessage,
+        client.request(std.testing.allocator, "extension/test", deep_message),
+    );
+    try std.testing.expectError(
+        error.InvalidMcpResponse,
+        client.request(std.testing.allocator, "extension/test", "{}"),
+    );
+    try std.testing.expectError(
+        error.InvalidMcpToolArguments,
+        client.callTool(std.testing.allocator, "tool", deep_message),
+    );
+}
+
 test "client completes multi round-trip input requests" {
     const Stub = struct {
         calls: usize = 0,
@@ -1281,6 +1411,25 @@ test "server discovers capabilities and validates modern envelopes" {
     defer invalid.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 400), invalid.status);
     try std.testing.expect(std.mem.indexOf(u8, invalid.body.?, "-32020") != null);
+}
+
+test "server releases partial state on every allocation failure" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const Handler = struct {
+                fn handle(_: *anyopaque, gpa: std.mem.Allocator, _: []const u8, _: []const u8) ![]u8 {
+                    return gpa.dupe(u8, "{}");
+                }
+            };
+            var unused: u8 = 0;
+            var server = Server{ .handler = .{ .context = &unused, .handleFn = Handler.handle } };
+            const request = try buildRequest(allocator, 1, "extension/check", "{}", "client", "1", "{}");
+            defer allocator.free(request);
+            const response = try server.handle(allocator, request, null);
+            defer response.deinit(allocator);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
 }
 
 test "streamable HTTP emits subscription notifications before the result" {
@@ -1379,6 +1528,20 @@ test "HTTP transport handles SSE, notifications, and status failures" {
     stub.body = "data: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}\n";
     try std.testing.expectError(
         error.MissingMcpSseResponse,
+        streamable.transport().send(std.testing.allocator, request),
+    );
+
+    const prefix = "data: ";
+    const oversized = try std.testing.allocator.alloc(
+        u8,
+        prefix.len + json_limits.defaults.mcp_message.max_document_bytes + 1,
+    );
+    defer std.testing.allocator.free(oversized);
+    @memcpy(oversized[0..prefix.len], prefix);
+    @memset(oversized[prefix.len..], '0');
+    stub.body = oversized;
+    try std.testing.expectError(
+        error.McpMessageTooLarge,
         streamable.transport().send(std.testing.allocator, request),
     );
 }

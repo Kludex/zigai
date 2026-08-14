@@ -1,6 +1,7 @@
 const std = @import("std");
 const model_types = @import("../model.zig");
 const http = @import("../transport.zig");
+const json_limits = @import("../json.zig");
 
 pub fn statusError(status: u16) model_types.ProviderRequestError {
     if (status == 429) return error.ProviderRateLimited;
@@ -25,16 +26,15 @@ pub fn notifyProviderError(
             status: ?[]const u8 = null,
         },
     };
-    const parsed = std.json.parseFromSlice(Envelope, allocator, body, .{ .ignore_unknown_fields = true }) catch {
-        target.observe(.{
-            .provider = provider,
-            .status = status,
-            .message = body,
-            .body = body,
-            .retry_after_seconds = metadata.retry_after_seconds,
-            .rate_limit_remaining_requests = metadata.rate_limit_remaining_requests,
-            .rate_limit_remaining_tokens = metadata.rate_limit_remaining_tokens,
-        });
+    const parsed = json_limits.parse(
+        Envelope,
+        allocator,
+        body,
+        json_limits.defaults.provider_response,
+        .{ .ignore_unknown_fields = true },
+        error.InvalidProviderResponse,
+    ) catch {
+        observeRawProviderError(target, provider, status, body, metadata);
         return;
     };
     defer parsed.deinit();
@@ -60,7 +60,31 @@ pub fn notifyProviderError(
     });
 }
 
-pub fn rawJson(writer: *std.json.Stringify, value: []const u8) !void {
+fn observeRawProviderError(
+    observer: model_types.ProviderErrorObserver,
+    provider: []const u8,
+    status: u16,
+    body: []const u8,
+    metadata: http.ResponseMetadata,
+) void {
+    observer.observe(.{
+        .provider = provider,
+        .status = status,
+        .message = body,
+        .body = body,
+        .retry_after_seconds = metadata.retry_after_seconds,
+        .rate_limit_remaining_requests = metadata.rate_limit_remaining_requests,
+        .rate_limit_remaining_tokens = metadata.rate_limit_remaining_tokens,
+    });
+}
+
+pub fn rawJson(
+    allocator: std.mem.Allocator,
+    writer: *std.json.Stringify,
+    value: []const u8,
+    limits: json_limits.Limits,
+) !void {
+    try json_limits.validateAs(allocator, value, limits, error.InvalidRequestEncoding);
     try writer.beginWriteRaw();
     try writer.writer.writeAll(value);
     writer.endWriteRaw();

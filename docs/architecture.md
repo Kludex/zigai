@@ -176,6 +176,14 @@ responses allocate and release one line at a time under
 `Limits.max_stream_line_bytes`. Exact-limit payloads remain valid, while the
 first excess byte maps to a stable transport error before provider decoding.
 
+Every JSON decoder then uses the shared bounded parsing API. Its preflight pass
+scans syntax, decoded value length, nesting depth, and per-collection item
+counts while retaining no value graph. Only a successful document reaches the
+typed or dynamic parser, and both passes map invalid input to the subsystem's
+stable error while preserving allocation failure. Named profiles keep history,
+deferred state, provider, tool, MCP, schema, and CLI boundaries consistent
+without making a leaf parser depend on an agent or provider.
+
 ## MCP toolsets
 
 `mcp.Client` implements the stateless MCP `2026-07-28` envelope. Every request

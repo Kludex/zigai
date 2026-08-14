@@ -3,6 +3,7 @@
 const std = @import("std");
 const agent_types = @import("agent.zig");
 const model_types = @import("model.zig");
+const json_limits = @import("json.zig");
 
 /// Evaluation failures defined by ZigAI. Agent, evaluator callback, and
 /// allocation errors are intentionally allowed to propagate alongside these.
@@ -164,11 +165,8 @@ fn containsExpectedEvaluate(_: *anyopaque, _: std.mem.Allocator, run: Context) !
 }
 
 fn validJsonEvaluate(_: *anyopaque, allocator: std.mem.Allocator, run: Context) !Evaluation {
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, run.output, .{}) catch |failure| switch (failure) {
-        error.OutOfMemory => return failure,
-        else => return .{ .passed = false, .score = 0, .reason = "output was not valid JSON" },
-    };
-    parsed.deinit();
+    if (!try json_limits.isValid(allocator, run.output, json_limits.defaults.tool_payload))
+        return .{ .passed = false, .score = 0, .reason = "output was not valid JSON" };
     return .{ .passed = true, .score = 1 };
 }
 

@@ -6,6 +6,7 @@ const json_schema = @import("json_schema.zig");
 const reflect = @import("reflect.zig");
 const history = @import("history.zig");
 const telemetry_types = @import("telemetry.zig");
+const json_limits = @import("json.zig");
 
 const Message = model_types.Message;
 const PromptPart = model_types.PromptPart;
@@ -231,15 +232,14 @@ pub fn parseResumeDecisions(
 ) !OwnedResumeDecisions {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
-    const parsed = std.json.parseFromSliceLeaky(
+    const parsed = try json_limits.parseLeaky(
         SerializedResume,
         arena.allocator(),
         source,
+        json_limits.defaults.resume_decisions,
         .{ .ignore_unknown_fields = false, .allocate = .alloc_always },
-    ) catch |failure| switch (failure) {
-        error.OutOfMemory => return failure,
-        else => return Agent.Error.InvalidDeferredState,
-    };
+        Agent.Error.InvalidDeferredState,
+    );
     if (parsed.version != 1) return Agent.Error.InvalidDeferredState;
     return .{ .arena = arena, .decisions = parsed.decisions };
 }
@@ -623,9 +623,14 @@ pub const Agent = struct {
         decisions: []const ResumeDecision,
         options: RunOptions,
     ) !RunOutcome {
-        const parsed = std.json.parseFromSlice(SerializedPause, allocator, state_json, .{
-            .ignore_unknown_fields = false,
-        }) catch return Error.InvalidDeferredState;
+        const parsed = try json_limits.parse(
+            SerializedPause,
+            allocator,
+            state_json,
+            json_limits.defaults.paused_state,
+            .{ .ignore_unknown_fields = false },
+            Error.InvalidDeferredState,
+        );
         defer parsed.deinit();
         if (parsed.value.version != 1) return Error.InvalidDeferredState;
         var owned_history = history.parse(allocator, parsed.value.history_json) catch
@@ -1368,12 +1373,14 @@ fn typedOutputValidator(comptime Output: type) OutputValidator {
         var placeholder: u8 = 0;
 
         fn validate(_: *anyopaque, allocator: std.mem.Allocator, output: []const u8) !void {
-            _ = std.json.parseFromSliceLeaky(Output, allocator, output, .{
-                .ignore_unknown_fields = false,
-            }) catch |err| return switch (err) {
-                error.OutOfMemory => error.OutOfMemory,
-                else => Agent.Error.InvalidTypedOutput,
-            };
+            _ = try json_limits.parseLeaky(
+                Output,
+                allocator,
+                output,
+                json_limits.defaults.tool_payload,
+                .{ .ignore_unknown_fields = false },
+                Agent.Error.InvalidTypedOutput,
+            );
         }
     };
     return .{ .context = &Wrapper.placeholder, .validateFn = Wrapper.validate };
@@ -1392,12 +1399,14 @@ fn validateFinalOutput(
 fn decodeTypedResult(comptime Output: type, untyped: Agent.Result) !TypedResult(Output) {
     var owned = untyped;
     errdefer owned.deinit();
-    const output = std.json.parseFromSliceLeaky(Output, owned.arena.allocator(), owned.output, .{
-        .ignore_unknown_fields = false,
-    }) catch |err| return switch (err) {
-        error.OutOfMemory => error.OutOfMemory,
-        else => Agent.Error.InvalidTypedOutput,
-    };
+    const output = try json_limits.parseLeaky(
+        Output,
+        owned.arena.allocator(),
+        owned.output,
+        json_limits.defaults.tool_payload,
+        .{ .ignore_unknown_fields = false },
+        Agent.Error.InvalidTypedOutput,
+    );
     return .{
         .arena = owned.arena,
         .output = output,

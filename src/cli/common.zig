@@ -62,12 +62,18 @@ pub const LoadedTools = struct {
 
     pub fn load(allocator: std.mem.Allocator, io: std.Io, path: ?[]const u8) !LoadedTools {
         const manifest_path = path orelse return .{ .arena = .init(allocator), .tools = &.{} };
-        const json = try std.Io.Dir.cwd().readFileAlloc(io, manifest_path, allocator, .limited(1024 * 1024));
+        const json = try std.Io.Dir.cwd().readFileAlloc(
+            io,
+            manifest_path,
+            allocator,
+            .limited(zigai.json.defaults.cli_config.max_document_bytes),
+        );
         defer allocator.free(json);
         return fromJson(allocator, io, json);
     }
 
     fn fromJson(allocator: std.mem.Allocator, io: std.Io, json: []const u8) !LoadedTools {
+        try zigai.json.validate(allocator, json, zigai.json.defaults.cli_config);
         var loaded = LoadedTools{ .arena = .init(allocator), .tools = &.{} };
         errdefer loaded.deinit();
         const memory = loaded.arena.allocator();
@@ -196,4 +202,21 @@ test "tool manifests create executable provider-neutral tools" {
     var failing = try LoadedTools.fromJson(std.testing.allocator, std.testing.io, "[{\"name\":\"fail\",\"parameters\":{},\"command\":[\"/usr/bin/false\"]}]");
     defer failing.deinit();
     try std.testing.expectError(error.ToolCommandFailed, failing.tools[0].execute(arena.allocator(), "{}"));
+}
+
+test "tool manifest loading enforces the CLI JSON nesting limit" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const source = "[" ** 33 ++ "]" ** 33;
+    try temporary.dir.writeFile(std.testing.io, .{ .sub_path = "tools.json", .data = source });
+    const path = try std.fmt.allocPrint(
+        std.testing.allocator,
+        ".zig-cache/tmp/{s}/tools.json",
+        .{temporary.sub_path},
+    );
+    defer std.testing.allocator.free(path);
+    try std.testing.expectError(
+        error.NestingTooDeep,
+        LoadedTools.load(std.testing.allocator, std.testing.io, path),
+    );
 }

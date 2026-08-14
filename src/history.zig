@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const model = @import("model.zig");
+const json_limits = @import("json.zig");
 
 pub const Error = error{
     InvalidHistory,
@@ -320,10 +321,14 @@ fn writeOptionalRawJson(
     source: ?[]const u8,
 ) !void {
     const raw = source orelse return;
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, raw, .{}) catch |failure| switch (failure) {
-        error.OutOfMemory => return failure,
-        else => return Error.InvalidHistory,
-    };
+    const parsed = try json_limits.parse(
+        std.json.Value,
+        allocator,
+        raw,
+        json_limits.defaults.history,
+        .{},
+        Error.InvalidHistory,
+    );
     defer parsed.deinit();
     try json.objectField(name);
     try json.write(parsed.value);
@@ -340,12 +345,14 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Owned {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const memory = arena.allocator();
-    const root = std.json.parseFromSliceLeaky(std.json.Value, memory, source, .{
-        .allocate = .alloc_always,
-    }) catch |failure| switch (failure) {
-        error.OutOfMemory => return failure,
-        else => return Error.InvalidHistory,
-    };
+    const root = try json_limits.parseLeaky(
+        std.json.Value,
+        memory,
+        source,
+        json_limits.defaults.history,
+        .{ .allocate = .alloc_always },
+        Error.InvalidHistory,
+    );
     const object = try asObject(root);
     const version = try jsonInteger(object, "version");
     const values = try jsonArray(object, "messages");
@@ -845,11 +852,7 @@ fn findCall(parts: []const model.ResponsePart, id: []const u8) ?model.ToolCall {
 }
 
 fn validJson(allocator: std.mem.Allocator, source: []const u8) !bool {
-    _ = std.json.parseFromSliceLeaky(std.json.Value, allocator, source, .{}) catch |failure| switch (failure) {
-        error.OutOfMemory => return failure,
-        else => return false,
-    };
-    return true;
+    return json_limits.isValid(allocator, source, json_limits.defaults.history);
 }
 
 fn asObject(value: std.json.Value) !std.json.ObjectMap {
@@ -1164,6 +1167,11 @@ test "history rejects malformed documents and invalid raw provider JSON" {
     for (malformed) |document| {
         try std.testing.expectError(Error.InvalidHistory, parse(std.testing.allocator, document));
     }
+}
+
+test "history rejects documents beyond its JSON nesting limit" {
+    const source = "[" ** 65 ++ "0" ++ "]" ** 65;
+    try std.testing.expectError(Error.InvalidHistory, parse(std.testing.allocator, source));
 }
 
 fn checkParseAllocationFailure(allocator: std.mem.Allocator) !void {

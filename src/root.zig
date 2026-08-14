@@ -5,6 +5,7 @@ pub const agent = @import("agent.zig");
 pub const testing = @import("testing.zig");
 pub const transport = @import("transport.zig");
 pub const json_schema = @import("json_schema.zig");
+pub const json = @import("json.zig");
 pub const reflect = @import("reflect.zig");
 pub const history = @import("history.zig");
 pub const evals = @import("evals.zig");
@@ -98,6 +99,7 @@ test {
     _ = @import("testing.zig");
     _ = @import("transport.zig");
     _ = @import("json_schema.zig");
+    _ = @import("json.zig");
     _ = @import("reflect.zig");
     _ = @import("history.zig");
     _ = @import("evals.zig");

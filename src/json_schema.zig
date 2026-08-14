@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const model_types = @import("model.zig");
+const json_limits = @import("json.zig");
 
 pub const Error = error{
     InvalidJsonOutput,
@@ -13,14 +14,35 @@ pub fn validate(allocator: std.mem.Allocator, output_format: model_types.OutputF
     switch (output_format) {
         .text => return,
         .json_object => {
-            const parsed_output = std.json.parseFromSlice(std.json.Value, allocator, output, .{}) catch return Error.InvalidJsonOutput;
+            const parsed_output = try json_limits.parse(
+                std.json.Value,
+                allocator,
+                output,
+                json_limits.defaults.tool_payload,
+                .{},
+                Error.InvalidJsonOutput,
+            );
             defer parsed_output.deinit();
             if (parsed_output.value != .object) return Error.OutputSchemaValidationFailed;
         },
         .json_schema => |format| {
-            const parsed_output = std.json.parseFromSlice(std.json.Value, allocator, output, .{}) catch return Error.InvalidJsonOutput;
+            const parsed_output = try json_limits.parse(
+                std.json.Value,
+                allocator,
+                output,
+                json_limits.defaults.tool_payload,
+                .{},
+                Error.InvalidJsonOutput,
+            );
             defer parsed_output.deinit();
-            const parsed_schema = std.json.parseFromSlice(std.json.Value, allocator, format.schema, .{}) catch return Error.InvalidJsonSchema;
+            const parsed_schema = try json_limits.parse(
+                std.json.Value,
+                allocator,
+                format.schema,
+                json_limits.defaults.schema,
+                .{},
+                Error.InvalidJsonSchema,
+            );
             defer parsed_schema.deinit();
             if (!matches(parsed_schema.value, parsed_output.value)) return Error.OutputSchemaValidationFailed;
         },
@@ -194,6 +216,11 @@ test "reports invalid JSON, schemas, and object mode" {
     try std.testing.expectError(Error.OutputSchemaValidationFailed, validate(std.testing.allocator, .json_object, "[]"));
     try std.testing.expectError(Error.InvalidJsonSchema, validate(std.testing.allocator, .{ .json_schema = .{ .name = "bad", .schema = "no" } }, "{}"));
     try std.testing.expectError(Error.OutputSchemaValidationFailed, validate(std.testing.allocator, .{ .json_schema = .{ .name = "bad", .schema = "[]" } }, "{}"));
+}
+
+test "structured output rejects JSON beyond its nesting limit" {
+    const source = "[" ** 65 ++ "0" ++ "]" ** 65;
+    try std.testing.expectError(Error.InvalidJsonOutput, validate(std.testing.allocator, .json_object, source));
 }
 
 test "schema matcher covers boolean schemas, type arrays, and enum equality" {

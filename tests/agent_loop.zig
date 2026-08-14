@@ -1572,8 +1572,8 @@ test "agent enforces model request and parallel tool limits" {
 
 test "parallel tools overlap and keep model call order" {
     const call_parts = [_]zigai.model.Part{
-        .{ .tool_call = .{ .id = "slow-id", .name = "slow", .arguments_json = "slow" } },
-        .{ .tool_call = .{ .id = "fast-id", .name = "fast", .arguments_json = "fast" } },
+        .{ .tool_call = .{ .id = "slow-id", .name = "slow", .arguments_json = "\"slow\"" } },
+        .{ .tool_call = .{ .id = "fast-id", .name = "fast", .arguments_json = "\"fast\"" } },
     };
     const final_parts = [_]zigai.model.Part{.{ .text = "done" }};
     const Inspector = struct {
@@ -1602,15 +1602,16 @@ test "parallel tools overlap and keep model call order" {
             arguments: []const u8,
         ) ![]const u8 {
             const self: *@This() = @ptrCast(@alignCast(context));
+            const value = arguments[1 .. arguments.len - 1];
             if (self.active.fetchAdd(1, .seq_cst) > 0) self.overlapped.store(true, .seq_cst);
             defer _ = self.active.fetchSub(1, .seq_cst);
             const io = run_context.io orelse return error.MissingIo;
             (std.Io.Timeout{ .duration = .{
-                .raw = .fromMilliseconds(if (std.mem.eql(u8, arguments, "slow")) 40 else 5),
+                .raw = .fromMilliseconds(if (std.mem.eql(u8, value, "slow")) 40 else 5),
                 .clock = .awake,
             } }).sleep(io) catch return error.ToolCancelled;
             try std.testing.expect(run_context.cancellation == null);
-            return allocator.dupe(u8, arguments);
+            return allocator.dupe(u8, value);
         }
     };
     var state: State = .{};
