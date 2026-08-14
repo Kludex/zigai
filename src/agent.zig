@@ -5,6 +5,7 @@ const model_types = @import("model.zig");
 const json_schema = @import("json_schema.zig");
 const reflect = @import("reflect.zig");
 const history = @import("history.zig");
+const telemetry_types = @import("telemetry.zig");
 
 const Message = model_types.Message;
 const Part = model_types.Part;
@@ -366,6 +367,8 @@ pub const Agent = struct {
     cancellation: ?*const CancellationToken = null,
     request_timeout_ms: ?u64 = null,
     io: ?std.Io = null,
+    /// Optional per-run OpenTelemetry spans and metrics.
+    telemetry: ?telemetry_types.OpenTelemetry = null,
 
     pub const UsageLimits = AgentUsageLimits;
     pub const RetryPolicy = AgentRetryPolicy;
@@ -483,10 +486,20 @@ pub const Agent = struct {
         stream_sink: ?AgentStreamSink,
         output_validator: ?OutputValidator,
     ) !Result {
+        var telemetry_run: ?telemetry_types.Run = if (self.telemetry) |configured|
+            configured.start(allocator)
+        else
+            null;
+        defer if (telemetry_run) |*instrumentation| instrumentation.deinit();
+
         if (self.capabilities.len == 0) {
             try ensureUniqueToolNames(self.tools);
-            return self.runConfigured(allocator, prompt, options, stream_sink, output_validator, self.hooks) catch |err| {
-                try emitLifecycle(self.hooks, .{ .run_error = .{ .failure = err } });
+            var hooks: std.ArrayList(LifecycleHook) = .empty;
+            defer hooks.deinit(allocator);
+            try hooks.appendSlice(allocator, self.hooks);
+            if (telemetry_run) |*instrumentation| try hooks.append(allocator, telemetryHook(instrumentation));
+            return self.runConfigured(allocator, prompt, options, stream_sink, output_validator, hooks.items) catch |err| {
+                try emitLifecycle(hooks.items, .{ .run_error = .{ .failure = err } });
                 return err;
             };
         }
@@ -532,6 +545,7 @@ pub const Agent = struct {
         configured.history_processors = history_processors.items;
         configured.model_settings = capability_settings.overrideWith(self.model_settings);
         configured.capabilities = &.{};
+        if (telemetry_run) |*instrumentation| try hooks.append(allocator, telemetryHook(instrumentation));
         return configured.runConfigured(allocator, prompt, options, stream_sink, output_validator, hooks.items) catch |err| {
             try emitLifecycle(hooks.items, .{ .run_error = .{ .failure = err } });
             return err;
@@ -1294,6 +1308,16 @@ fn resolveInstructions(
 
 fn emitLifecycle(hooks: []const LifecycleHook, event: LifecycleEvent) !void {
     for (hooks) |hook| try hook.emit(event);
+}
+
+fn telemetryHook(run: *telemetry_types.Run) LifecycleHook {
+    const Adapter = struct {
+        fn emit(context: *anyopaque, event: LifecycleEvent) !void {
+            const telemetry_run: *telemetry_types.Run = @ptrCast(@alignCast(context));
+            return telemetry_run.observe(event);
+        }
+    };
+    return .{ .context = run, .eventFn = Adapter.emit };
 }
 
 fn emitStreamEvent(hooks: []const LifecycleHook, sink: AgentStreamSink, event: AgentStreamEvent) !void {

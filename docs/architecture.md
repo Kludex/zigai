@@ -54,6 +54,14 @@ start/end or before/after events plus an error event where failure is possible.
 Hook payloads are borrowed. Hook failures stop the run; terminal failures emit
 `run_error` before returning.
 
+OpenTelemetry instrumentation is attached as an isolated lifecycle observer
+for each run. It emits one trace with agent, model-request, and tool-call spans,
+plus counters and histograms for calls, retries, latency, token usage, and
+application-estimated cost. GenAI names and attributes follow the OpenTelemetry
+semantic conventions. Export callbacks are synchronous and borrowed; they can
+bridge to an SDK or OTLP pipeline. Prompt content is omitted unless explicitly
+enabled, and exporter failures are fail-open by default.
+
 Structured output is provider neutral at the agent boundary. JSON-object mode
 and named, strict JSON Schema mode are encoded as `text.format` for OpenAI and
 `output_config.format` for Anthropic, and `generationConfig` for Google. A

@@ -30,6 +30,8 @@ pub const Client = struct {
         return .{
             .context = self,
             .profile = self.profile,
+            .provider_name = "openai",
+            .model_name = self.model_name,
             .settings = self.settings,
             .requestFn = request,
             .streamFn = stream,

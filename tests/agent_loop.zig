@@ -1358,6 +1358,97 @@ test "agent propagates tool failures" {
     );
 }
 
+test "OpenTelemetry records runs requests tools retries tokens cost and latency" {
+    const ModelState = struct {
+        attempts: usize = 0,
+        fn request(context: *anyopaque, _: std.mem.Allocator, _: zigai.model.ModelRequest) !zigai.model.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.attempts += 1;
+            if (self.attempts == 1) return error.ProviderServerError;
+            if (self.attempts == 2) return .{
+                .parts = &.{.{ .tool_call = .{ .id = "call", .name = "tool", .arguments_json = "{}" } }},
+                .usage = .{ .input_tokens = 2, .output_tokens = 1 },
+            };
+            return .{
+                .parts = &.{.{ .text = "done" }},
+                .usage = .{ .input_tokens = 3, .output_tokens = 2 },
+            };
+        }
+    };
+    const Capture = struct {
+        run_spans: usize = 0,
+        request_spans: usize = 0,
+        tool_spans: usize = 0,
+        retries: usize = 0,
+        token_metrics: usize = 0,
+        cost: f64 = 0,
+        saw_latency: bool = false,
+        saw_prompt: bool = false,
+
+        fn span(context: *anyopaque, value: zigai.TelemetrySpan) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (std.mem.eql(u8, value.name, "gen_ai.invoke_agent")) self.run_spans += 1;
+            if (std.mem.eql(u8, value.name, "gen_ai.chat")) self.request_spans += 1;
+            if (std.mem.eql(u8, value.name, "gen_ai.execute_tool")) self.tool_spans += 1;
+            try std.testing.expect(value.duration_seconds >= 0);
+            for (value.attributes) |attribute| {
+                if (std.mem.eql(u8, attribute.key, "gen_ai.input.messages")) self.saw_prompt = true;
+            }
+        }
+
+        fn metric(context: *anyopaque, value: zigai.TelemetryMetric) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (std.mem.eql(u8, value.name, "zigai.agent.retries")) self.retries += 1;
+            if (std.mem.eql(u8, value.name, "gen_ai.client.token.usage")) self.token_metrics += 1;
+            if (std.mem.eql(u8, value.name, "gen_ai.client.estimated_cost")) self.cost += value.value;
+            if (std.mem.indexOf(u8, value.name, "duration") != null) {
+                try std.testing.expect(value.value >= 0);
+                self.saw_latency = true;
+            }
+        }
+    };
+    const Cost = struct {
+        fn estimate(_: *anyopaque, provider: ?[]const u8, model_name: ?[]const u8, usage: zigai.model.Usage) f64 {
+            std.testing.expectEqualStrings("test", provider.?) catch unreachable;
+            std.testing.expectEqualStrings("instrumented", model_name.?) catch unreachable;
+            return @as(f64, @floatFromInt(usage.totalTokens())) * 0.01;
+        }
+    };
+    var model_state: ModelState = .{};
+    var capture: Capture = .{};
+    var unused: u8 = 0;
+    var tool_calls: u8 = 0;
+    const model = zigai.Model{
+        .context = &model_state,
+        .profile = .{},
+        .provider_name = "test",
+        .model_name = "instrumented",
+        .requestFn = ModelState.request,
+    };
+    const telemetry = zigai.OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = .{ .context = &capture, .spanFn = Capture.span, .metricFn = Capture.metric },
+        .cost_estimator = .{ .context = &unused, .estimateFn = Cost.estimate },
+    };
+    const tool = successfulTool(&tool_calls);
+    var result = try (zigai.Agent{
+        .model = model,
+        .tools = &.{tool},
+        .telemetry = telemetry,
+    }).run(std.testing.allocator, "private prompt");
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("done", result.output);
+    try std.testing.expectEqual(@as(usize, 1), capture.run_spans);
+    try std.testing.expectEqual(@as(usize, 3), capture.request_spans);
+    try std.testing.expectEqual(@as(usize, 1), capture.tool_spans);
+    try std.testing.expectEqual(@as(usize, 1), capture.retries);
+    try std.testing.expectEqual(@as(usize, 4), capture.token_metrics);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.08), capture.cost, 0.0001);
+    try std.testing.expect(capture.saw_latency);
+    try std.testing.expect(!capture.saw_prompt);
+}
+
 const FlakyModel = struct {
     failures_remaining: usize,
     failure: anyerror,

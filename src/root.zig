@@ -9,6 +9,7 @@ pub const reflect = @import("reflect.zig");
 pub const history = @import("history.zig");
 pub const providers = @import("providers.zig");
 pub const models = @import("models.zig");
+pub const telemetry = @import("telemetry.zig");
 // Compatibility aliases for the original top-level provider imports.
 pub const openai = providers.openai;
 pub const openai_compatible = providers.openai_compatible;
@@ -30,6 +31,10 @@ pub const LifecycleHook = agent.LifecycleHook;
 pub const HistoryProcessor = history.Processor;
 pub const HistoryContext = history.Context;
 pub const OwnedHistory = history.Owned;
+pub const OpenTelemetry = telemetry.OpenTelemetry;
+pub const TelemetryExporter = telemetry.Exporter;
+pub const TelemetrySpan = telemetry.Span;
+pub const TelemetryMetric = telemetry.Metric;
 pub const Toolset = agent.Toolset;
 pub const ToolsetContext = agent.ToolsetContext;
 pub const ToolsetEntry = agent.ToolsetEntry;
@@ -54,4 +59,5 @@ test {
     _ = @import("history.zig");
     _ = @import("providers.zig");
     _ = @import("models.zig");
+    _ = @import("telemetry.zig");
 }

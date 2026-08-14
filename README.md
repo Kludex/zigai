@@ -240,6 +240,28 @@ validation, errors, retries, and stream events before and after delivery.
 Hook values are borrowed and callbacks run synchronously. Copy only what you
 need to retain. A hook error stops the run and is reported through `run_error`.
 
+## OpenTelemetry
+
+Configure `Agent.telemetry` to export OpenTelemetry-shaped spans and metrics:
+
+```zig
+.telemetry = .{
+    .io = init.io,
+    .exporter = my_otel_exporter,
+    .cost_estimator = my_cost_estimator,
+},
+```
+
+Each run has one trace with child model-request and tool-call spans. Metrics
+cover latency, request and tool counts, retries, input and output tokens, and
+optional estimated cost. The exporter is a small synchronous bridge to your
+OpenTelemetry SDK or OTLP pipeline.
+
+Prompt capture is disabled by default. Set `capture_prompts = true` only when
+the destination and data policy are ready for potentially sensitive content.
+Exporter failures are fail-open by default, so telemetry does not break an
+agent run.
+
 ## Model settings
 
 Generation settings use one provider-neutral type:

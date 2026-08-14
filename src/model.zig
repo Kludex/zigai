@@ -261,6 +261,10 @@ pub const OutputFormat = union(enum) {
 pub const ModelResponse = struct {
     parts: []const Part,
     usage: Usage = .{},
+    /// Concrete provider identity, populated by `Model.request` when omitted by an adapter.
+    provider_name: ?[]const u8 = null,
+    /// Concrete model identity, populated by `Model.request` when omitted by an adapter.
+    model_name: ?[]const u8 = null,
     /// Normalized termination category and the provider's original value.
     finish_reason: ?FinishReason = null,
 };
@@ -295,6 +299,10 @@ pub const ModelStreamSink = struct {
 pub const Model = struct {
     context: *anyopaque,
     profile: ModelProfile,
+    /// Provider identity used by telemetry and application policy.
+    provider_name: ?[]const u8 = null,
+    /// Provider model identifier used by telemetry and application policy.
+    model_name: ?[]const u8 = null,
     settings: ModelSettings = .{},
     requestFn: *const fn (context: *anyopaque, allocator: std.mem.Allocator, request: ModelRequest) anyerror!ModelResponse,
     streamFn: ?*const fn (
@@ -305,12 +313,18 @@ pub const Model = struct {
     ) anyerror!ModelResponse = null,
 
     pub fn request(self: Model, allocator: std.mem.Allocator, value: ModelRequest) !ModelResponse {
-        return self.requestFn(self.context, allocator, value);
+        var response = try self.requestFn(self.context, allocator, value);
+        response.provider_name = response.provider_name orelse self.provider_name;
+        response.model_name = response.model_name orelse self.model_name;
+        return response;
     }
 
     pub fn stream(self: Model, allocator: std.mem.Allocator, value: ModelRequest, sink: ModelStreamSink) !ModelResponse {
         const stream_request = self.streamFn orelse return error.StreamingNotSupported;
-        return stream_request(self.context, allocator, value, sink);
+        var response = try stream_request(self.context, allocator, value, sink);
+        response.provider_name = response.provider_name orelse self.provider_name;
+        response.model_name = response.model_name orelse self.model_name;
+        return response;
     }
 };
 
