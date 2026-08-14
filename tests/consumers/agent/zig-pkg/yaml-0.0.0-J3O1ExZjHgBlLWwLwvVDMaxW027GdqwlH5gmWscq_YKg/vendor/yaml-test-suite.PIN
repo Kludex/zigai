@@ -1,0 +1,7 @@
+repository = https://github.com/yaml/yaml-test-suite.git
+tag = data-2022-01-17
+commit = 6e6c296ae9c9d2d5c4134b4b64d01b29ac19ff6f
+fetched = 2026-05-02
+
+This directory vendors the released data tag above. Do not replace it with the
+mutable data branch.

@@ -1,0 +1,22 @@
+.{
+    .name = .yaml,
+    .version = "0.0.0",
+    .fingerprint = 0xea31a98413b57327, // Changing this has security and trust implications.
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{},
+    .paths = .{
+        ".github",
+        "AGENTS.md",
+        "LICENSE",
+        "README.md",
+        "build.zig",
+        "build.zig.zon",
+        "docs",
+        "src",
+        "tests",
+        "tools",
+        "vendor/yaml-test-suite",
+        "vendor/yaml-test-suite.LICENSE",
+        "vendor/yaml-test-suite.PIN",
+    },
+}

@@ -1,0 +1,6 @@
+const provider = @import("zigai").providers.google;
+
+pub const api_base = provider.api_base;
+pub const Client = provider.Client;
+pub const encodeRequest = provider.encodeRequest;
+pub const decodeResponse = provider.decodeResponse;

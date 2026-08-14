@@ -12,24 +12,28 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     _ = b.addModule("zopenai", .{
-        .root_source_file = b.path("src/providers/openai.zig"),
+        .root_source_file = b.path("src/zopenai.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{.{ .name = "zigai", .module = zigai }},
     });
     _ = b.addModule("zopenai_compatible", .{
-        .root_source_file = b.path("src/providers/openai_compatible.zig"),
+        .root_source_file = b.path("src/zopenai_compatible.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{.{ .name = "zigai", .module = zigai }},
     });
     _ = b.addModule("zanthropic", .{
-        .root_source_file = b.path("src/providers/anthropic.zig"),
+        .root_source_file = b.path("src/zanthropic.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{.{ .name = "zigai", .module = zigai }},
     });
     _ = b.addModule("zgoogle", .{
-        .root_source_file = b.path("src/providers/google.zig"),
+        .root_source_file = b.path("src/zgoogle.zig"),
         .target = target,
         .optimize = optimize,
+        .imports = &.{.{ .name = "zigai", .module = zigai }},
     });
 
     const tests = b.addTest(.{

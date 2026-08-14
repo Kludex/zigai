@@ -8,3 +8,4 @@ cd "$project_dir"
 zig fmt --check build.zig build.zig.zon src tests
 ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build check
 ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build test
+ZIGAI_GLOBAL_CACHE_DIR="$cache_dir" ./scripts/test-consumers

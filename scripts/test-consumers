@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cache_dir="${ZIGAI_GLOBAL_CACHE_DIR:-$project_dir/.zig-global-cache}"
+
+for consumer in agent providers; do
+    cd "$project_dir/tests/consumers/$consumer"
+    ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build run
+done

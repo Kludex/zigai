@@ -1,0 +1,116 @@
+//! Purpose: Parser layer API facade for scanner-token parsing.
+//! Owns: Re-exporting stable parser-layer types and entry points.
+//! Does not own: Parser state machine implementation or public package API.
+//! Depends on: parser/parser.zig, parser/event.zig, parser/types.zig.
+//! Tested by: tests/structure/api_boundary_test.zig and parser unit tests.
+
+const std = @import("std");
+const impl = @import("parser.zig");
+
+pub const scanner = impl.scanner;
+pub const types = impl.types;
+pub const Error = impl.Error;
+pub const Event = impl.Event;
+pub const EventBuilder = impl.EventBuilder;
+pub const EventStats = impl.EventStats;
+pub const EventStream = impl.EventStream;
+pub const ParsedEventStream = impl.ParsedEventStream;
+pub const ParseError = impl.ParseError;
+pub const max_block_depth = impl.max_block_depth;
+pub const NodeProperties = impl.NodeProperties;
+pub const TokenDirectives = impl.TokenDirectives;
+pub const PlainBlockNode = impl.PlainBlockNode;
+pub const PlainBlockPair = impl.PlainBlockPair;
+pub const DocumentRootClass = impl.DocumentRootClass;
+pub const ScalarDocumentTokens = impl.ScalarDocumentTokens;
+pub const appendCompactExplicitBlockMappingPair = impl.appendCompactExplicitBlockMappingPair;
+pub const appendPlainBlockNodeEvent = impl.appendPlainBlockNodeEvent;
+pub const appendDocumentEndSeparatedStreamEvents = impl.appendDocumentEndSeparatedStreamEvents;
+pub const appendExplicitDocumentStreamEvents = impl.appendExplicitDocumentStreamEvents;
+pub const appendImplicitDocumentStartSeparatedStreamEvents = impl.appendImplicitDocumentStartSeparatedStreamEvents;
+pub const parseAliasDocumentTokens = impl.parseAliasDocumentTokens;
+pub const appendNodeEvents = impl.appendNodeEvents;
+pub const appendMappingNodeEvents = impl.appendMappingNodeEvents;
+pub const parseFlowMappingDocumentTokens = impl.parseFlowMappingDocumentTokens;
+pub const parseFlowPlainBlockNode = impl.parseFlowPlainBlockNode;
+pub const parseFlowSequenceDocumentTokens = impl.parseFlowSequenceDocumentTokens;
+pub const parseScalarDocumentTokens = impl.parseScalarDocumentTokens;
+pub const consumeBlockCollectionProperties = impl.consumeBlockCollectionProperties;
+pub const compactBlockSequenceEntryHasSameLineContent = impl.compactBlockSequenceEntryHasSameLineContent;
+pub const consumeNestedBlockCollectionPropertyLine = impl.consumeNestedBlockCollectionPropertyLine;
+pub const isBareBlockSequenceEntryScalar = impl.isBareBlockSequenceEntryScalar;
+pub const isBlockSequenceItemScalar = impl.isBlockSequenceItemScalar;
+pub const isFlowIndicatorOrTag = impl.isFlowIndicatorOrTag;
+pub const isPlainScalarToken = impl.isPlainScalarToken;
+pub const isTabSeparatedCompactMappingStart = impl.isTabSeparatedCompactMappingStart;
+pub const parseBlockScalarToken = impl.parseBlockScalarToken;
+pub const parseBlockScalarTokenAt = impl.parseBlockScalarTokenAt;
+pub const parsePlainBlockSequenceItemScalarTokenRun = impl.parsePlainBlockSequenceItemScalarTokenRun;
+pub const parsePlainScalarTokenRun = impl.parsePlainScalarTokenRun;
+pub const parsePlainScalarTokenRunWithIndentedContinuations = impl.parsePlainScalarTokenRunWithIndentedContinuations;
+pub const parseScalarToken = impl.parseScalarToken;
+pub const scalarTokenSpansLines = impl.scalarTokenSpansLines;
+pub const consumeLeadingDirectives = impl.consumeLeadingDirectives;
+pub const consumeNodeProperties = impl.consumeNodeProperties;
+pub const consumeDocumentStartContent = impl.consumeDocumentStartContent;
+pub const emptyScalarNode = impl.emptyScalarNode;
+pub const flowCollectionAtStartSpansLines = impl.flowCollectionAtStartSpansLines;
+pub const flowCollectionDescendantSpansLines = impl.flowCollectionDescendantSpansLines;
+pub const hasNodeProperties = impl.hasNodeProperties;
+pub const indentlessBlockSequenceStartsAtIndent = impl.indentlessBlockSequenceStartsAtIndent;
+pub const isExplicitBlockMappingValueBoundary = impl.isExplicitBlockMappingValueBoundary;
+pub const isFlowStartToken = impl.isFlowStartToken;
+pub const isPlainBlockOmittedValueBoundary = impl.isPlainBlockOmittedValueBoundary;
+pub const isPlainBlockOmittedValueBoundaryAtIndent = impl.isPlainBlockOmittedValueBoundaryAtIndent;
+pub const isNestedBlockCollectionStart = impl.isNestedBlockCollectionStart;
+pub const isSingleIndicatorScalarKeyBeforeValue = impl.isSingleIndicatorScalarKeyBeforeValue;
+pub const mergeNodeProperties = impl.mergeNodeProperties;
+pub const multilineScalarCandidateHasNoImmediateMappingValue = impl.multilineScalarCandidateHasNoImmediateMappingValue;
+pub const nodePropertyLineStartsNestedBlockMappingKey = impl.nodePropertyLineStartsNestedBlockMappingKey;
+pub const parsePropertyOnlyEmptyBlockScalarNode = impl.parsePropertyOnlyEmptyBlockScalarNode;
+pub const scalarTokenRunStartsBlockMappingKey = impl.scalarTokenRunStartsBlockMappingKey;
+pub const skipComments = impl.skipComments;
+pub const tokenRangeSpansLines = impl.tokenRangeSpansLines;
+pub const validateAliasFlowCollectionSeparation = impl.validateAliasFlowCollectionSeparation;
+pub const validateAliasHasNoFollowingContent = impl.validateAliasHasNoFollowingContent;
+pub const validateBlockFlowScalarToken = impl.validateBlockFlowScalarToken;
+pub const validateExplicitMappingAliasKeyHasNoFollowingContent = impl.validateExplicitMappingAliasKeyHasNoFollowingContent;
+pub const validateFlowContinuationIndent = impl.validateFlowContinuationIndent;
+pub const validateImplicitAliasKeyLength = impl.validateImplicitAliasKeyLength;
+pub const validateImplicitScalarKeyLength = impl.validateImplicitScalarKeyLength;
+pub const validateImplicitTokenKeyLength = impl.validateImplicitTokenKeyLength;
+pub const validateNodePropertiesSeparatedFromScalar = impl.validateNodePropertiesSeparatedFromScalar;
+pub const parseCompactPlainBlockSequenceNode = impl.parseCompactPlainBlockSequenceNode;
+pub const inferredCompactSequenceIndent = impl.inferredCompactSequenceIndent;
+pub const parsePlainBlockSequenceItemAfterIndicator = impl.parsePlainBlockSequenceItemAfterIndicator;
+pub const parseIndentedPlainBlockSequenceItemNode = impl.parseIndentedPlainBlockSequenceItemNode;
+pub const PlainSequenceDocumentTokens = impl.PlainSequenceDocumentTokens;
+pub const parsePlainBlockSequenceDocumentTokens = impl.parsePlainBlockSequenceDocumentTokens;
+pub const parseIndentlessPlainBlockSequenceNode = impl.parseIndentlessPlainBlockSequenceNode;
+pub const parseNestedPlainBlockSequenceNode = impl.parseNestedPlainBlockSequenceNode;
+pub const parsePlainBlockMappingKeyNode = impl.parsePlainBlockMappingKeyNode;
+pub const parseExplicitBlockMappingScalarKeyNode = impl.parseExplicitBlockMappingScalarKeyNode;
+pub const parseIndentedExplicitBlockMappingScalarKeyNode = impl.parseIndentedExplicitBlockMappingScalarKeyNode;
+pub const parseIndentedExplicitBlockMappingBlockScalarKeyNode = impl.parseIndentedExplicitBlockMappingBlockScalarKeyNode;
+pub const parseIndentedExplicitBlockMappingFlowKeyNode = impl.parseIndentedExplicitBlockMappingFlowKeyNode;
+pub const parseIndentedExplicitBlockMappingAliasKeyNode = impl.parseIndentedExplicitBlockMappingAliasKeyNode;
+pub const parseSeparatedPropertyOnlyExplicitBlockMappingKeyNode = impl.parseSeparatedPropertyOnlyExplicitBlockMappingKeyNode;
+pub const MultilineScalarKeyBehavior = impl.MultilineScalarKeyBehavior;
+pub const parsePlainBlockMappingScalarKey = impl.parsePlainBlockMappingScalarKey;
+pub const parseIndentedPlainBlockMappingValueNode = impl.parseIndentedPlainBlockMappingValueNode;
+pub const parsePlainBlockMappingValueNode = impl.parsePlainBlockMappingValueNode;
+pub const parseNestedBlockCollectionAfterPropertyLine = impl.parseNestedBlockCollectionAfterPropertyLine;
+pub const parseCompactExplicitBlockMappingNode = impl.parseCompactExplicitBlockMappingNode;
+pub const isCompactExplicitOmittedKeyBoundary = impl.isCompactExplicitOmittedKeyBoundary;
+pub const parseCompactExplicitBlockMappingKeyNode = impl.parseCompactExplicitBlockMappingKeyNode;
+pub const parseCompactPlainBlockMappingNode = impl.parseCompactPlainBlockMappingNode;
+pub const PlainMappingDocumentTokens = impl.PlainMappingDocumentTokens;
+pub const parsePlainBlockMappingDocumentTokens = impl.parsePlainBlockMappingDocumentTokens;
+pub const parseNestedPlainBlockMappingNode = impl.parseNestedPlainBlockMappingNode;
+pub const classifyDocumentRoot = impl.classifyDocumentRoot;
+pub const parseTokens = impl.parseTokens;
+pub const parseTokensWithStats = impl.parseTokensWithStats;
+
+test {
+    std.testing.refAllDecls(@This());
+}

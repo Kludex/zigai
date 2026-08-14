@@ -14,7 +14,13 @@ difficult to reach clearly through a provider conversation.
 ```
 
 The command enforces `zig fmt --check`, uses `zig build check` as the Zig
-compiler-backed lint/type-check gate, and runs the full suite.
+compiler-backed lint/type-check gate, runs the full suite, and builds the
+downstream consumer projects.
+
+`tests/consumers/agent/` resolves ZigAI as a path dependency and runs the
+public agent and evaluation APIs. `tests/consumers/providers/` imports the
+unified module together with every standalone compatibility package. CI runs
+both consumers through `./scripts/check` on Linux and macOS.
 
 `./scripts/test-cli` adds a deterministic process-level test. It starts a local
 HTTP fixture and sends all three binaries through the real standard-library

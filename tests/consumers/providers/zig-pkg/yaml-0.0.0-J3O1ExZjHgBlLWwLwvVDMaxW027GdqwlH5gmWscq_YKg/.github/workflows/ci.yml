@@ -1,0 +1,92 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    # Run inside Debian trixie to get a current kcov (v43). Ubuntu 22.04 ships v38
+    # and 24.04 dropped the package entirely. seccomp=unconfined is required so
+    # kcov can ptrace the test binaries.
+    container:
+      image: debian:trixie-slim
+      options: --security-opt seccomp=unconfined
+    timeout-minutes: 45
+
+    steps:
+      - name: Install host tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            kcov valgrind \
+            git ca-certificates curl xz-utils \
+            gnupg
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # actions/checkout sets safe.directory under a temporary HOME that is
+      # reverted when the step ends, so subsequent steps run as root see the
+      # workspace as "not a git repository". Re-add it to the persistent config.
+      - name: Mark workspace as safe for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Format check
+        run: zig fmt --check build.zig build.zig.zon src tests tools
+
+      - name: Whitespace check
+        run: git diff --check
+
+      - name: Unit tests
+        run: zig build test-unit
+
+      - name: Structure checks
+        run: zig build test-structure
+
+      - name: Full test suite
+        run: zig build test
+
+      - name: Public conformance
+        run: zig build test-conformance
+
+      - name: Direct scanner/parser conformance
+        run: zig build test-direct-conformance
+
+      - name: Stress tests
+        run: zig build test-stress
+
+      - name: Allocation failure tests
+        run: zig build test-allocation
+
+      - name: Allocator leak checks
+        run: zig build test-leaks
+
+      - name: Coverage
+        run: zig build test-coverage -Duse-llvm=true -Dcoverage-threshold=85
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: zig-out/coverage/merged/cobertura.xml
+          fail_ci_if_error: false
+
+      # Valgrind 3.24 cannot decode every AVX/EVEX instruction LLVM may emit for
+      # GitHub's native runner CPU. Keep Memcheck binaries on baseline x86_64.
+      - name: Valgrind leak checks
+        run: zig build test-valgrind -Duse-llvm=true -Dcpu=baseline
+
+      - name: API docs
+        run: zig build docs
+
+      - name: Conformance report
+        run: zig build conformance-report

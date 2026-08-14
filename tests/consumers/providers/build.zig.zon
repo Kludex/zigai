@@ -1,0 +1,10 @@
+.{
+    .name = .zigai_provider_consumer,
+    .version = "0.0.0",
+    .fingerprint = 0x13add6035e149d55,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .zigai = .{ .path = "../../.." },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

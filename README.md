@@ -204,7 +204,8 @@ models' encrypted tool-call signatures are preserved automatically across
 follow-up requests and serialized message history.
 
 The original top-level imports and standalone `zopenai`, `zanthropic`,
-`zgoogle`, and `zopenai_compatible` packages remain available.
+`zgoogle`, and `zopenai_compatible` packages remain available and can coexist
+with the unified `zigai` import.
 
 See [Architecture](docs/architecture.md) for the provider contract and direct
 loop design.
