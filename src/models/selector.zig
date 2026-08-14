@@ -93,3 +93,62 @@ test "selector routes requests with application context" {
     try std.testing.expectEqual(@as(usize, 1), route.calls);
     try std.testing.expectEqual(@as(usize, 1), selected.calls);
 }
+
+test "selector routes streaming requests and merges settings" {
+    const Selected = struct {
+        calls: usize = 0,
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            return error.Unused;
+        }
+        fn stream(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            request_value: model_types.ModelRequest,
+            sink: model_types.ModelStreamSink,
+        ) !model_types.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            try std.testing.expectEqual(@as(?f64, 0.4), request_value.settings.temperature);
+            try std.testing.expectEqual(@as(?u64, 80), request_value.settings.max_tokens);
+            try sink.emit(.{ .text_delta = "selected" });
+            return .{ .parts = &.{.{ .text = "selected" }} };
+        }
+    };
+    const Route = struct {
+        model_value: model_types.Model,
+        calls: usize = 0,
+        fn select(context: *anyopaque, run: Context) !model_types.Model {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expect(run.streaming);
+            self.calls += 1;
+            return self.model_value;
+        }
+    };
+    const Sink = struct {
+        events: usize = 0,
+        fn emit(context: *anyopaque, event: model_types.ModelStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expectEqualStrings("selected", event.text_delta);
+            self.events += 1;
+        }
+    };
+    var selected: Selected = .{};
+    var route = Route{ .model_value = .{
+        .context = &selected,
+        .profile = .{ .supports_streaming = true },
+        .settings = .{ .temperature = 0.4, .max_tokens = 20 },
+        .requestFn = Selected.request,
+        .streamFn = Selected.stream,
+    } };
+    var selector = Selector{ .context = &route, .profile = .{ .supports_streaming = true }, .selectFn = Route.select };
+    var sink: Sink = .{};
+    const response = try selector.model().stream(
+        std.testing.allocator,
+        .{ .messages = &.{}, .settings = .{ .max_tokens = 80 } },
+        .{ .context = &sink, .eventFn = Sink.emit },
+    );
+    try std.testing.expectEqualStrings("selected", response.parts[0].text);
+    try std.testing.expectEqual(@as(usize, 1), route.calls);
+    try std.testing.expectEqual(@as(usize, 1), selected.calls);
+    try std.testing.expectEqual(@as(usize, 1), sink.events);
+}

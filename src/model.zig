@@ -519,3 +519,50 @@ test "model stream sinks propagate events and unsupported models fail" {
     try std.testing.expectEqual(@as(usize, 1), capture.requests);
     try std.testing.expectError(error.StreamingNotSupported, value.stream(std.testing.allocator, .{ .messages = &.{} }, sink));
 }
+
+test "tool execution adapters preserve rich outputs" {
+    const Executor = struct {
+        fn output(_: *anyopaque, allocator: std.mem.Allocator, arguments_json: []const u8) !ToolOutput {
+            return .{ .content = try allocator.dupe(u8, arguments_json) };
+        }
+
+        fn contextual(
+            _: *anyopaque,
+            allocator: std.mem.Allocator,
+            run_context: ToolRunContext,
+            _: []const u8,
+        ) !ToolOutput {
+            return .{ .content = try std.fmt.allocPrint(allocator, "{d}", .{run_context.model_requests}) };
+        }
+    };
+    var context: u8 = 0;
+    const output_tool = Tool{
+        .definition = .{ .name = "output", .description = "", .parameters_json_schema = "{}" },
+        .context = &context,
+        .executeOutputFn = Executor.output,
+    };
+    const plain = try output_tool.execute(std.testing.allocator, "result");
+    defer std.testing.allocator.free(plain);
+    try std.testing.expectEqualStrings("result", plain);
+
+    const contextual_tool = Tool{
+        .definition = .{ .name = "contextual", .description = "", .parameters_json_schema = "{}" },
+        .context = &context,
+        .executeOutputWithContextFn = Executor.contextual,
+    };
+    const contextual = try contextual_tool.executeWithContext(
+        std.testing.allocator,
+        .{ .model_requests = 7 },
+        "{}",
+    );
+    defer std.testing.allocator.free(contextual);
+    try std.testing.expectEqualStrings("7", contextual);
+
+    const rich = try contextual_tool.executeOutputWithContext(
+        std.testing.allocator,
+        .{ .model_requests = 9 },
+        "{}",
+    );
+    defer std.testing.allocator.free(rich.content);
+    try std.testing.expectEqualStrings("9", rich.content);
+}

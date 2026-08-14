@@ -226,12 +226,15 @@ test "fallback profile intersects builtin tools" {
     try std.testing.expect(!profile.supportsBuiltinTool(.web_fetch));
     try std.testing.expect(profile.supportsContentType(.image));
     try std.testing.expect(!profile.supportsContentType(.audio));
+    const response = try fallback.model().request(std.testing.allocator, .{ .messages = &.{} });
+    try std.testing.expectEqualStrings("unused", response.parts[0].text);
 }
 
 test "stream fallback stops after exposing output" {
     const State = struct {
         calls: usize = 0,
         emit_before_failure: bool,
+        succeeds: bool = false,
         fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
             return error.Unused;
         }
@@ -243,6 +246,7 @@ test "stream fallback stops after exposing output" {
         ) !model_types.ModelResponse {
             const self: *@This() = @ptrCast(@alignCast(context));
             self.calls += 1;
+            if (self.succeeds) return .{ .parts = &.{.{ .text = "recovered" }} };
             if (self.emit_before_failure) try sink.emit(.{ .text_delta = "visible" });
             return error.ProviderServerError;
         }
@@ -270,4 +274,21 @@ test "stream fallback stops after exposing output" {
     try std.testing.expectEqual(@as(usize, 1), first.calls);
     try std.testing.expectEqual(@as(usize, 0), second.calls);
     try std.testing.expectEqual(@as(usize, 1), sink_state.events);
+
+    var retry_first = State{ .emit_before_failure = false };
+    var retry_second = State{ .emit_before_failure = false, .succeeds = true };
+    const retry_candidates = [_]model_types.Model{
+        .{ .context = &retry_first, .profile = .{ .supports_streaming = true }, .requestFn = State.request, .streamFn = State.stream },
+        .{ .context = &retry_second, .profile = .{ .supports_streaming = true }, .requestFn = State.request, .streamFn = State.stream },
+    };
+    var retrying = Fallback{ .models = &retry_candidates };
+    const recovered = try retrying.model().stream(
+        std.testing.allocator,
+        .{ .messages = &.{} },
+        .{ .context = &sink_state, .eventFn = Sink.emit },
+    );
+    try std.testing.expectEqualStrings("recovered", recovered.parts[0].text);
+    try std.testing.expectEqual(@as(usize, 1), retry_first.calls);
+    try std.testing.expectEqual(@as(usize, 1), retry_second.calls);
+    try std.testing.expectError(error.Unused, retry_candidates[0].request(std.testing.allocator, .{ .messages = &.{} }));
 }

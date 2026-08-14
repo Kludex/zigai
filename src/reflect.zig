@@ -300,12 +300,39 @@ test "serializes non-string return values as JSON" {
 test "typed tool returns carry schema and copied follow-up messages" {
     const Answer = struct { count: usize };
     const count = struct {
-        fn call(args: struct { items: usize }) !model_types.ToolReturn(Answer) {
+        fn call(args: struct { items: usize }, run_context: ToolRunContext) !model_types.ToolReturn(Answer) {
             return .{
-                .value = .{ .count = args.items },
+                .value = .{ .count = args.items + run_context.model_requests },
                 .follow_up_messages = &.{.{
                     .role = .user,
-                    .parts = &.{.{ .text = "Use this additional context." }},
+                    .parts = &.{
+                        .{ .text = "Use this additional context." },
+                        .{ .image = .{
+                            .source = .{ .bytes = "pixels" },
+                            .media_type = "image/png",
+                            .filename = "image.png",
+                            .thought_signature = "image-signature",
+                            .metadata = &.{.{ .key = "quality", .value = "high" }},
+                        } },
+                        .{ .audio = .{ .source = .{ .url = "https://example.test/audio" }, .media_type = "audio/mpeg" } },
+                        .{ .document = .{
+                            .source = .{ .provider_file = .{ .id = "file-1", .provider = "provider" } },
+                            .media_type = "application/pdf",
+                        } },
+                        .{ .binary = .{ .source = .{ .bytes = "bytes" }, .media_type = "application/octet-stream" } },
+                        .{ .thinking = .{
+                            .content = "thinking",
+                            .signature = "thinking-signature",
+                            .metadata = &.{.{ .key = "visibility", .value = "private" }},
+                        } },
+                        .{ .tool_call = .{
+                            .id = "call-1",
+                            .name = "lookup",
+                            .arguments_json = "{}",
+                            .thought_signature = "call-signature",
+                        } },
+                        .{ .tool_result = .{ .call_id = "call-1", .name = "lookup", .content = "ok", .is_error = true } },
+                    },
                     .metadata = &.{.{ .key = "source", .value = "tool" }},
                 }},
             };
@@ -314,9 +341,20 @@ test "typed tool returns carry schema and copied follow-up messages" {
     const derived = tool("count", "Count items.", count);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const output = try derived.executeOutput(arena.allocator(), "{\"items\":3}");
-    try std.testing.expectEqualStrings("{\"count\":3}", output.content);
+    const output = try derived.executeOutputWithContext(
+        arena.allocator(),
+        .{ .model_requests = 2 },
+        "{\"items\":3}",
+    );
+    try std.testing.expectEqualStrings("{\"count\":5}", output.content);
     try std.testing.expectEqualStrings("Use this additional context.", output.follow_up_messages[0].parts[0].text);
+    try std.testing.expectEqualStrings("pixels", output.follow_up_messages[0].parts[1].image.source.bytes);
+    try std.testing.expectEqualStrings("https://example.test/audio", output.follow_up_messages[0].parts[2].audio.source.url);
+    try std.testing.expectEqualStrings("file-1", output.follow_up_messages[0].parts[3].document.source.provider_file.id);
+    try std.testing.expectEqualStrings("bytes", output.follow_up_messages[0].parts[4].binary.source.bytes);
+    try std.testing.expectEqualStrings("thinking-signature", output.follow_up_messages[0].parts[5].thinking.signature.?);
+    try std.testing.expectEqualStrings("call-signature", output.follow_up_messages[0].parts[6].tool_call.thought_signature.?);
+    try std.testing.expect(output.follow_up_messages[0].parts[7].tool_result.is_error);
     try std.testing.expectEqualStrings("tool", output.follow_up_messages[0].metadata[0].value);
     try std.testing.expect(std.mem.indexOf(u8, derived.definition.return_json_schema.?, "\"count\":{\"type\":\"integer\"}") != null);
 }
