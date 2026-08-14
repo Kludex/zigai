@@ -23,6 +23,8 @@ pub const ToolCall = struct {
     id: []const u8,
     name: []const u8,
     arguments_json: []const u8,
+    /// Provider reasoning state that must accompany this call in later turns.
+    thought_signature: ?[]const u8 = null,
 };
 
 pub const ToolResult = struct {

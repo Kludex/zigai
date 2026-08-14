@@ -196,6 +196,10 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
                 try json.objectField("id");
                 try json.write(call.id);
                 try json.endObject();
+                if (call.thought_signature) |signature| {
+                    try json.objectField("thoughtSignature");
+                    try json.write(signature);
+                }
                 try json.endObject();
             },
             .tool_result => |result| {
@@ -233,7 +237,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
             try json.objectField("description");
             try json.write(tool.description);
             try json.objectField("parameters");
-            try common.rawJson(&json, tool.parameters_json_schema);
+            try writeToolSchema(allocator, &json, tool.parameters_json_schema);
             try json.endObject();
         }
         try json.endArray();
@@ -251,6 +255,33 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
     }
     try json.endObject();
     return output.toOwnedSlice();
+}
+
+fn writeToolSchema(allocator: std.mem.Allocator, json: *std.json.Stringify, source: []const u8) !void {
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, source, .{}) catch return error.InvalidRequestEncoding;
+    defer parsed.deinit();
+    return writeToolSchemaValue(json, parsed.value);
+}
+
+fn writeToolSchemaValue(json: *std.json.Stringify, value: std.json.Value) !void {
+    switch (value) {
+        .object => |object| {
+            try json.beginObject();
+            var iterator = object.iterator();
+            while (iterator.next()) |entry| {
+                if (std.mem.eql(u8, entry.key_ptr.*, "additionalProperties")) continue;
+                try json.objectField(entry.key_ptr.*);
+                try writeToolSchemaValue(json, entry.value_ptr.*);
+            }
+            try json.endObject();
+        },
+        .array => |array| {
+            try json.beginArray();
+            for (array.items) |item| try writeToolSchemaValue(json, item);
+            try json.endArray();
+        },
+        else => try json.write(value),
+    }
 }
 
 fn writeTextPart(json: *std.json.Stringify, text: []const u8) !void {
@@ -368,6 +399,7 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
                     .id = id,
                     .name = try common.objectString(call, "name"),
                     .arguments_json = try std.json.Stringify.valueAlloc(allocator, args, .{}),
+                    .thought_signature = try common.optionalObjectString(object, "thoughtSignature"),
                 } });
             }
         }
@@ -423,13 +455,22 @@ fn hasToolCalls(parts: []const model_types.Part) bool {
 test "encodes Gemini system, tool, result, error, and structured output parts" {
     const messages = [_]model_types.Message{
         .{ .role = .system, .parts = &.{.{ .text = "Be concise." }} },
-        .{ .role = .assistant, .parts = &.{.{ .tool_call = .{ .id = "call_1", .name = "weather", .arguments_json = "{\"city\":\"Madrid\"}" } }} },
+        .{ .role = .assistant, .parts = &.{.{ .tool_call = .{
+            .id = "call_1",
+            .name = "weather",
+            .arguments_json = "{\"city\":\"Madrid\"}",
+            .thought_signature = "signed-state",
+        } }} },
         .{ .role = .tool, .parts = &.{.{ .tool_result = .{ .call_id = "call_1", .name = "weather", .content = "{\"message\":\"failed\"}", .is_error = true } }} },
     };
     const body = try encodeRequest(std.testing.allocator, .{
         .messages = &messages,
         .instructions = &.{"Current instruction."},
-        .tools = &.{.{ .name = "weather", .description = "Get weather.", .parameters_json_schema = "{\"type\":\"object\"}" }},
+        .tools = &.{.{
+            .name = "weather",
+            .description = "Get weather.",
+            .parameters_json_schema = "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\",\"additionalProperties\":false}},\"additionalProperties\":false}",
+        }},
         .settings = .{
             .temperature = 0.6,
             .max_tokens = 256,
@@ -443,6 +484,8 @@ test "encodes Gemini system, tool, result, error, and structured output parts" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"systemInstruction\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"Current instruction.\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"functionDeclarations\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "additionalProperties") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"thoughtSignature\":\"signed-state\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"error\":{\"message\":\"failed\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"responseJsonSchema\":{\"type\":\"object\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"temperature\":0.6") != null);
@@ -458,7 +501,7 @@ test "encodes Gemini system, tool, result, error, and structured output parts" {
 
 test "decodes Gemini text, calls with and without ids, and usage" {
     const body =
-        \\{"candidates":[{"content":{"parts":[{"text":"checking"},{"functionCall":{"id":"call_1","name":"weather","args":{"city":"Madrid"}}},{"functionCall":{"name":"other","args":{}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":3}}
+        \\{"candidates":[{"content":{"parts":[{"text":"checking"},{"functionCall":{"id":"call_1","name":"weather","args":{"city":"Madrid"}},"thoughtSignature":"signed-state"},{"functionCall":{"name":"other","args":{}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":3}}
     ;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -466,6 +509,7 @@ test "decodes Gemini text, calls with and without ids, and usage" {
     try std.testing.expectEqual(@as(usize, 3), response.parts.len);
     try std.testing.expectEqualStrings("checking", response.parts[0].text);
     try std.testing.expectEqualStrings("call_1", response.parts[1].tool_call.id);
+    try std.testing.expectEqualStrings("signed-state", response.parts[1].tool_call.thought_signature.?);
     try std.testing.expectEqualStrings("google-call-2", response.parts[2].tool_call.id);
     try std.testing.expectEqual(@as(u64, 8), response.usage.input_tokens);
     try std.testing.expectEqual(model_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);

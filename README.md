@@ -28,7 +28,7 @@ conversation.
 - Typed output plus JSON-object and JSON Schema modes.
 - Preserved finish reasons with distinct truncation, filtering, and incomplete-call errors.
 - Timeouts, cancellation, retries, backoff, and usage limits.
-- Readable YAML cassettes for deterministic provider tests.
+- Readable YAML cassettes, including a real-model compatibility matrix.
 - Small command-line clients for every first-party provider.
 
 ## Quick start
@@ -120,6 +120,10 @@ var client = zigai.providers.anthropic.Client{
 
 Each model exposes a `ModelProfile`. The profile tells the agent which
 capabilities are supported before it sends a paid request.
+
+Gemini tool schemas are converted to its supported JSON Schema subset. Thinking
+models' encrypted tool-call signatures are preserved automatically across
+follow-up requests and serialized message history.
 
 The original top-level imports and standalone `zopenai`, `zanthropic`,
 `zgoogle`, and `zopenai_compatible` packages remain available.

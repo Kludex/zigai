@@ -121,6 +121,10 @@ pub fn stringify(allocator: std.mem.Allocator, messages: []const model.Message) 
                     try json.write(call.name);
                     try json.objectField("arguments_json");
                     try json.write(call.arguments_json);
+                    if (call.thought_signature) |signature| {
+                        try json.objectField("thought_signature");
+                        try json.write(signature);
+                    }
                 },
                 .tool_result => |result| {
                     try json.objectField("type");
@@ -196,6 +200,7 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Owned {
                     .id = try jsonString(part_object, "id"),
                     .name = try jsonString(part_object, "name"),
                     .arguments_json = try jsonString(part_object, "arguments_json"),
+                    .thought_signature = try optionalJsonString(part_object, "thought_signature"),
                 } };
             } else if (std.mem.eql(u8, part_type, "tool_result")) {
                 const is_error = switch (part_object.get("is_error") orelse return Error.InvalidHistory) {
@@ -368,6 +373,14 @@ fn summarize(
 fn jsonString(object: std.json.ObjectMap, name: []const u8) ![]const u8 {
     return switch (object.get(name) orelse return Error.InvalidHistory) {
         .string => |value| value,
+        else => Error.InvalidHistory,
+    };
+}
+
+fn optionalJsonString(object: std.json.ObjectMap, name: []const u8) !?[]const u8 {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .string => |string| string,
         else => Error.InvalidHistory,
     };
 }

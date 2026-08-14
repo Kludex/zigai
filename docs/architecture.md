@@ -154,6 +154,11 @@ not depend on any concrete provider.
 Gemini GenerateContent API. All three accept the same `Transport`, so their
 encoding and parsing can be tested without a socket.
 
+The Google boundary recursively removes tool-schema keywords unsupported by
+Gemini. Tool-call thought signatures remain provider-neutral metadata on the
+call, are serialized with history, and are sent back unchanged so stateless
+thinking-model tool loops retain their reasoning state.
+
 `zopenai_compatible` maps the same contract to Chat Completions. Its explicit
 base URL, provider label, conservative profile presets, and stream-usage toggle
 cover gateways and local servers without assuming every compatible model has

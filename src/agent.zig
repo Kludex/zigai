@@ -1271,6 +1271,10 @@ fn appendMessageCopy(allocator: std.mem.Allocator, messages: *std.ArrayList(Mess
             .id = try allocator.dupe(u8, value.id),
             .name = try allocator.dupe(u8, value.name),
             .arguments_json = try allocator.dupe(u8, value.arguments_json),
+            .thought_signature = if (value.thought_signature) |signature|
+                try allocator.dupe(u8, signature)
+            else
+                null,
         } },
         .tool_result => |value| .{ .tool_result = .{
             .call_id = try allocator.dupe(u8, value.call_id),
