@@ -329,16 +329,13 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
             };
             const function = try common.requiredObject(.{ .object = call }, "function");
             const arguments = try common.objectString(function, "arguments");
-            _ = std.json.parseFromSliceLeaky(std.json.Value, allocator, arguments, .{}) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => {
-                    finish_reason = .{
-                        .kind = .incomplete_tool_call,
-                        .raw = if (finish_reason) |reason| reason.raw else "malformed_tool_arguments",
-                    };
-                    continue;
-                },
-            };
+            if (!try validToolArguments(allocator, arguments)) {
+                finish_reason = .{
+                    .kind = .incomplete_tool_call,
+                    .raw = if (finish_reason) |reason| reason.raw else "malformed_tool_arguments",
+                };
+                continue;
+            }
             try parts.append(allocator, .{ .tool_call = .{
                 .id = try common.objectString(call, "id"),
                 .name = try common.objectString(function, "name"),
@@ -515,17 +512,14 @@ const StreamState = struct {
                 pending.finalized = true;
                 continue;
             }
-            _ = std.json.parseFromSliceLeaky(std.json.Value, self.allocator, pending.arguments.items, .{}) catch |err| switch (err) {
-                error.OutOfMemory => return error.OutOfMemory,
-                else => {
-                    self.finish_reason = .{
-                        .kind = .incomplete_tool_call,
-                        .raw = if (self.finish_reason) |reason| reason.raw else "malformed_tool_arguments",
-                    };
-                    pending.finalized = true;
-                    continue;
-                },
-            };
+            if (!try validToolArguments(self.allocator, pending.arguments.items)) {
+                self.finish_reason = .{
+                    .kind = .incomplete_tool_call,
+                    .raw = if (self.finish_reason) |reason| reason.raw else "malformed_tool_arguments",
+                };
+                pending.finalized = true;
+                continue;
+            }
             const call = model_types.ToolCall{
                 .id = try pending.id.toOwnedSlice(self.allocator),
                 .name = try pending.name.toOwnedSlice(self.allocator),
@@ -545,6 +539,12 @@ fn optionalString(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
         .null => null,
         else => null,
     };
+}
+
+fn validToolArguments(allocator: std.mem.Allocator, arguments: []const u8) !bool {
+    _ = std.json.parseFromSliceLeaky(std.json.Value, allocator, arguments, .{}) catch |failure|
+        return if (failure == error.OutOfMemory) failure else false;
+    return true;
 }
 
 test "encodes Chat Completions messages, tools, and schema output" {

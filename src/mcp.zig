@@ -740,10 +740,7 @@ test "stdio transport releases malformed and interrupted messages" {
         std.testing.allocator,
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}",
         true,
-    )) |body| {
-        std.testing.allocator.free(body);
-        return error.ExpectedMcpWriteFailure;
-    } else |_| {}
+    )) |_| unreachable else |_| {}
 
     const partial_script =
         \\read -r line
@@ -755,8 +752,5 @@ test "stdio transport releases malformed and interrupted messages" {
         std.testing.allocator,
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}",
         true,
-    )) |body| {
-        std.testing.allocator.free(body);
-        return error.ExpectedMcpReadFailure;
-    } else |_| {}
+    )) |_| unreachable else |_| {}
 }
