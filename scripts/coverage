@@ -54,6 +54,8 @@ run_kcov() {
     elif command -v docker >/dev/null 2>&1; then
         docker run --rm \
             --network host \
+            --cap-add SYS_PTRACE \
+            --security-opt seccomp=unconfined \
             --add-host host.docker.internal:host-gateway \
             -e OPENAI_API_KEY -e OPENAI_BASE_URL \
             -e ANTHROPIC_API_KEY -e ANTHROPIC_BASE_URL \
