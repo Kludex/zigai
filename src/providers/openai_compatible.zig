@@ -632,3 +632,46 @@ test "profiles provide conservative compatibility presets" {
     try std.testing.expect(!profiles.basic.supports_parallel_tool_calls);
     try std.testing.expect(!profiles.minimal.supports_tools);
 }
+
+test "compatible responses classify malformed buffered and streamed tools" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const malformed = try decodeResponse(
+        arena.allocator(),
+        "{\"choices\":[{\"message\":{\"tool_calls\":[{\"id\":\"call\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\"}}]}}]}",
+    );
+    try std.testing.expectEqual(@as(usize, 0), malformed.parts.len);
+    try std.testing.expectEqual(model_types.FinishReason.Kind.incomplete_tool_call, malformed.finish_reason.?.kind);
+
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+    };
+    var unused: u8 = 0;
+    var incomplete = StreamState{
+        .allocator = arena.allocator(),
+        .sink = .{ .context = &unused, .eventFn = Sink.emit },
+        .status = 200,
+    };
+    defer incomplete.deinit();
+    try StreamState.line(
+        &incomplete,
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call\"}]},\"finish_reason\":\"tool_calls\"}]}",
+    );
+    try std.testing.expectEqual(model_types.FinishReason.Kind.incomplete_tool_call, incomplete.finish_reason.?.kind);
+
+    var invalid = StreamState{
+        .allocator = arena.allocator(),
+        .sink = .{ .context = &unused, .eventFn = Sink.emit },
+        .status = 200,
+    };
+    defer invalid.deinit();
+    try StreamState.line(
+        &invalid,
+        "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\"}}]},\"finish_reason\":\"tool_calls\"}]}",
+    );
+    try std.testing.expectEqual(model_types.FinishReason.Kind.incomplete_tool_call, invalid.finish_reason.?.kind);
+    try std.testing.expectError(error.InvalidProviderResponse, StreamState.line(
+        &invalid,
+        "data: {\"choices\":[false]}",
+    ));
+}

@@ -600,3 +600,74 @@ test "encodes OpenAI image, document, and provider file inputs" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"filename\":\"guide.pdf\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"file_id\":\"file_123\"") != null);
 }
+
+test "covers Responses API refusal, incomplete, and malformed edges" {
+    const Sink = struct {
+        events: usize = 0,
+        fn emit(context: *anyopaque, _: model_types.ModelStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.events += 1;
+        }
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var sink: Sink = .{};
+    var refusal = StreamState{
+        .allocator = arena.allocator(),
+        .sink = .{ .context = &sink, .eventFn = Sink.emit },
+        .status = 200,
+    };
+    try StreamState.line(&refusal, "data: {\"type\":\"response.refusal.delta\"}");
+    try std.testing.expectEqual(model_types.FinishReason.Kind.content_filter, refusal.finish_reason.?.kind);
+
+    var incomplete = StreamState{
+        .allocator = arena.allocator(),
+        .sink = .{ .context = &sink, .eventFn = Sink.emit },
+        .status = 200,
+        .saw_tool_call_delta = true,
+    };
+    try StreamState.line(&incomplete, "data: {\"type\":\"response.incomplete\",\"response\":{}}");
+    try std.testing.expectEqual(model_types.FinishReason.Kind.incomplete_tool_call, incomplete.finish_reason.?.kind);
+    try std.testing.expectError(error.InvalidProviderResponse, StreamState.line(
+        &incomplete,
+        "data: {\"type\":\"response.completed\",\"response\":{\"usage\":false}}",
+    ));
+
+    const unsupported_messages = [_]model_types.Message{.{
+        .role = .user,
+        .parts = &.{.{ .audio = .{ .source = .{ .bytes = "audio" }, .media_type = "audio/mpeg" } }},
+    }};
+    try std.testing.expectError(error.UnsupportedContentType, encodeRequest(
+        std.testing.allocator,
+        "gpt-test",
+        .{ .messages = &unsupported_messages },
+    ));
+    const document_messages = [_]model_types.Message{.{
+        .role = .user,
+        .parts = &.{.{ .document = .{
+            .source = .{ .bytes = "pdf" },
+            .media_type = "application/pdf",
+            .filename = "guide.pdf",
+        } }},
+    }};
+    const document = try encodeRequest(std.testing.allocator, "gpt-test", .{ .messages = &document_messages });
+    defer std.testing.allocator.free(document);
+    try std.testing.expect(std.mem.indexOf(u8, document, "\"file_data\":\"cGRm\"") != null);
+
+    const invalid = [_][]const u8{
+        "[]",
+        "{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"refusal\"}]}]}",
+        "{\"status\":\"incomplete\",\"incomplete_details\":false,\"output\":[]}",
+    };
+    try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(arena.allocator(), invalid[0]));
+    const filtered = try decodeResponse(arena.allocator(), invalid[1]);
+    try std.testing.expectEqual(model_types.FinishReason.Kind.content_filter, filtered.finish_reason.?.kind);
+    try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(arena.allocator(), invalid[2]));
+    const incomplete_call = try decodeResponse(
+        arena.allocator(),
+        "{\"status\":\"incomplete\",\"output\":[{\"type\":\"function_call\",\"status\":\"incomplete\"}]}",
+    );
+    try std.testing.expectEqual(model_types.FinishReason.Kind.incomplete_tool_call, incomplete_call.finish_reason.?.kind);
+    const unknown = try decodeResponse(arena.allocator(), "{\"status\":\"paused\",\"output\":[]}");
+    try std.testing.expectEqual(model_types.FinishReason.Kind.other, unknown.finish_reason.?.kind);
+}

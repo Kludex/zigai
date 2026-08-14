@@ -644,6 +644,12 @@ test "encodes and decodes Gemini rich content and thinking" {
                 .source = .{ .provider_file = .{ .id = "files/guide", .provider = "gcp.gen_ai" } },
                 .media_type = "application/pdf",
             } },
+            .{ .document = .{
+                .source = .{ .url = "https://example.test/guide.pdf" },
+                .media_type = "application/pdf",
+                .thought_signature = "document-signed",
+            } },
+            .{ .binary = .{ .source = .{ .bytes = "raw" }, .media_type = "application/octet-stream" } },
         } },
         .{ .role = .assistant, .parts = &.{.{ .thinking = .{ .content = "private", .signature = "signed" } }} },
     };
@@ -651,18 +657,23 @@ test "encodes and decodes Gemini rich content and thinking" {
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"inlineData\":{\"mimeType\":\"audio/mpeg\",\"data\":\"bXAz\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"fileData\":{\"mimeType\":\"application/pdf\",\"fileUri\":\"files/guide\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"fileUri\":\"https://example.test/guide.pdf\"},\"thoughtSignature\":\"document-signed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"inlineData\":{\"mimeType\":\"application/octet-stream\",\"data\":\"cmF3\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"private\",\"thought\":true,\"thoughtSignature\":\"signed\"") != null);
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const response = try decodeResponse(
         arena.allocator(),
-        "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"private\",\"thought\":true,\"thoughtSignature\":\"signed\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"cG5n\"},\"thoughtSignature\":\"image-signed\"}]},\"finishReason\":\"STOP\"}]}",
+        "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"private\",\"thought\":true,\"thoughtSignature\":\"signed\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"cG5n\"},\"thoughtSignature\":\"image-signed\"},{\"fileData\":{\"mimeType\":\"audio/mpeg\",\"fileUri\":\"files/audio\"}},{\"fileData\":{\"mimeType\":\"application/pdf\",\"fileUri\":\"files/pdf\"}},{\"fileData\":{\"mimeType\":\"application/octet-stream\",\"fileUri\":\"files/raw\"}}]},\"finishReason\":\"STOP\"}]}",
     );
     try std.testing.expectEqualStrings("private", response.parts[0].thinking.content);
     try std.testing.expectEqualStrings("signed", response.parts[0].thinking.signature.?);
     try std.testing.expectEqualSlices(u8, "png", response.parts[1].image.source.bytes);
     try std.testing.expectEqualStrings("image-signed", response.parts[1].image.thought_signature.?);
+    try std.testing.expectEqualStrings("files/audio", response.parts[2].audio.source.provider_file.id);
+    try std.testing.expectEqualStrings("files/pdf", response.parts[3].document.source.provider_file.id);
+    try std.testing.expectEqualStrings("files/raw", response.parts[4].binary.source.provider_file.id);
 }
 
 test "decodes Gemini text, calls with and without ids, and usage" {
@@ -700,6 +711,11 @@ test "decodes blocked Gemini prompts without candidates" {
     try std.testing.expectEqual(@as(usize, 0), response.parts.len);
     try std.testing.expectEqual(model_types.FinishReason.Kind.content_filter, response.finish_reason.?.kind);
     try std.testing.expectEqualStrings("PROHIBITED_CONTENT", response.finish_reason.?.raw);
+    const empty = try decodeResponse(
+        arena.allocator(),
+        "{\"candidates\":[],\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}",
+    );
+    try std.testing.expectEqualStrings("SAFETY", empty.finish_reason.?.raw);
 }
 
 test "rejects malformed Gemini responses" {
@@ -709,6 +725,8 @@ test "rejects malformed Gemini responses" {
         "{\"candidates\":[{}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[false]}}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":false}]}}]}",
+        "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"x\",\"thought\":1}]}}]}",
+        "{\"candidates\":[{\"content\":{\"parts\":[{\"fileData\":false}]}}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":false}]}}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"x\"}}]}}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"id\":false,\"name\":\"x\",\"args\":{}}}]}}]}",

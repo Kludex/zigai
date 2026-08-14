@@ -720,3 +720,67 @@ test "Anthropic streaming preserves thinking deltas and signatures" {
     try std.testing.expectEqualStrings("signed", state.parts.items[0].thinking.signature.?);
     try std.testing.expectEqual(@as(usize, 1), leadingThinkingCount(state.parts.items));
 }
+
+test "covers Anthropic rich and streaming response edges" {
+    try std.testing.expect(hasProviderFiles(&.{.{
+        .role = .user,
+        .parts = &.{.{ .image = .{
+            .source = .{ .provider_file = .{ .id = "file" } },
+            .media_type = "image/png",
+        } }},
+    }}));
+    const url_messages = [_]model_types.Message{.{
+        .role = .user,
+        .parts = &.{.{ .document = .{
+            .source = .{ .url = "https://example.test/guide.pdf" },
+            .media_type = "application/pdf",
+        } }},
+    }};
+    const url_body = try encodeRequest(std.testing.allocator, "claude-test", 20, .{ .messages = &url_messages });
+    defer std.testing.allocator.free(url_body);
+    try std.testing.expect(std.mem.indexOf(u8, url_body, "\"source\":{\"type\":\"url\",\"url\":\"https://example.test/guide.pdf\"}") != null);
+    const unsupported = [_]model_types.Message{.{
+        .role = .user,
+        .parts = &.{.{ .audio = .{ .source = .{ .bytes = "audio" }, .media_type = "audio/mpeg" } }},
+    }};
+    try std.testing.expectError(error.UnsupportedContentType, encodeRequest(
+        std.testing.allocator,
+        "claude-test",
+        20,
+        .{ .messages = &unsupported },
+    ));
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const redacted = try decodeResponse(
+        arena.allocator(),
+        "{\"content\":[{\"type\":\"redacted_thinking\",\"data\":\"opaque\"}]}",
+    );
+    try std.testing.expectEqualStrings("opaque", redacted.parts[0].thinking.signature.?);
+    try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(arena.allocator(), "[]"));
+
+    const Sink = struct {
+        events: usize = 0,
+        fn emit(context: *anyopaque, _: model_types.ModelStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.events += 1;
+        }
+    };
+    var sink: Sink = .{};
+    var state = StreamState{
+        .allocator = arena.allocator(),
+        .sink = .{ .context = &sink, .eventFn = Sink.emit },
+        .status = 200,
+    };
+    defer state.deinit();
+    try std.testing.expectError(error.InvalidProviderResponse, StreamState.line(
+        &state,
+        "data: {\"type\":\"message_delta\",\"delta\":[],\"usage\":{\"output_tokens\":1}}",
+    ));
+    try StreamState.line(
+        &state,
+        "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}",
+    );
+    try std.testing.expectEqual(model_types.FinishReason.Kind.stop, state.finish_reason.?.kind);
+    try std.testing.expectEqual(@as(usize, 1), sink.events);
+}
