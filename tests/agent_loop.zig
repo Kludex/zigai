@@ -274,6 +274,52 @@ test "agent joins final text parts" {
     try std.testing.expectEqual(@as(usize, 2), result.messages.len);
 }
 
+test "builtin web tools compose through capabilities and fail before unsupported requests" {
+    const final = [_]zigai.model.Part{.{ .text = "Grounded." }};
+    const Inspector = struct {
+        fn inspect(_: usize, request: zigai.model.ModelRequest) !void {
+            try std.testing.expectEqual(@as(usize, 1), request.builtin_tools.len);
+            try std.testing.expectEqual(zigai.BuiltinToolKind.web_search, request.builtin_tools[0].kind());
+        }
+    };
+    var supported = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &final }},
+        .profile = .{
+            .builtin_tools = zigai.ModelProfile.BuiltinToolSet.initMany(&.{.web_search}),
+        },
+        .inspectFn = Inspector.inspect,
+    };
+    const search_tools = [_]zigai.BuiltinTool{.{ .web_search = .{} }};
+    var result = try (zigai.Agent{
+        .model = supported.model(),
+        .capabilities = &.{.{ .builtin_tools = &search_tools }},
+    }).run(std.testing.allocator, "Search.");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("Grounded.", result.output);
+
+    var unsupported = zigai.testing.ScriptedModel{
+        .responses = &.{},
+        .profile = .{
+            .builtin_tools = zigai.ModelProfile.BuiltinToolSet.initMany(&.{.web_search}),
+        },
+    };
+    const fetch_tools = [_]zigai.BuiltinTool{.{ .web_fetch = .{} }};
+    try std.testing.expectError(
+        zigai.Agent.Error.ModelDoesNotSupportWebFetch,
+        (zigai.Agent{ .model = unsupported.model(), .builtin_tools = &fetch_tools }).run(std.testing.allocator, "Fetch."),
+    );
+    try std.testing.expectEqual(@as(usize, 0), unsupported.request_count);
+
+    const duplicates = [_]zigai.BuiltinTool{
+        .{ .web_search = .{} },
+        .{ .web_search = .{} },
+    };
+    try std.testing.expectError(
+        zigai.Agent.Error.DuplicateBuiltinTool,
+        (zigai.Agent{ .model = supported.model(), .builtin_tools = &duplicates }).run(std.testing.allocator, "Search."),
+    );
+}
+
 test "instructions compose for one run without entering message history" {
     const Dependencies = struct { audience: []const u8 };
     const DynamicState = struct {

@@ -23,6 +23,7 @@ conversation.
 - One agent API across supported providers.
 - Buffered and streaming responses.
 - Tool calls, including parallel calls and typed Zig functions.
+- Provider-managed web search and fetch behind model capability checks.
 - Static and per-step dynamic toolsets with namespaces and metadata.
 - MCP toolsets over Streamable HTTP and stdio.
 - Serializable approval and deferred-tool pauses.
@@ -123,6 +124,25 @@ var client = zigai.providers.anthropic.Client{
 Each model exposes a `ModelProfile`. The profile tells the agent which
 capabilities are supported before it sends a paid request.
 
+Provider-managed tools use the same agent API:
+
+```zig
+const web = [_]zigai.BuiltinTool{
+    .{ .web_search = .{} },
+    .{ .web_fetch = .{} },
+};
+
+const agent = zigai.Agent{
+    .model = model,
+    .builtin_tools = &web,
+};
+```
+
+ZigAI maps these to OpenAI web search, Anthropic web search and fetch, and
+Gemini Google Search and URL Context. The selected model's profile is checked
+before the request. OpenAI does not currently expose standalone web fetch, so
+an agent requesting it fails locally instead of silently changing behavior.
+
 Gemini tool schemas are converted to its supported JSON Schema subset. Thinking
 models' encrypted tool-call signatures are preserved automatically across
 follow-up requests and serialized message history.
@@ -212,9 +232,10 @@ const agent = zigai.Agent{
 };
 ```
 
-A capability can contribute tools, toolsets, instructions, history processors,
-hooks, model settings, and a model selector. Multiple capabilities apply from
-left to right. Duplicate tool names fail before the first model request.
+A capability can contribute tools, provider-managed tools, toolsets,
+instructions, history processors, hooks, model settings, and a model selector.
+Multiple capabilities apply from left to right. Duplicate tool names or
+provider-managed tools fail before the first model request.
 
 ## Toolsets
 

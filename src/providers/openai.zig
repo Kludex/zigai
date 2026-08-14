@@ -24,6 +24,7 @@ pub const Client = struct {
         .supports_temperature = true,
         .supports_max_tokens = true,
         .reasoning_efforts = model_types.ModelProfile.ReasoningEffortSet.initFull(),
+        .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{.web_search}),
     },
 
     pub fn model(self: *Client) model_types.Model {
@@ -251,9 +252,18 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
         };
     }
     try json.endArray();
-    if (request.tools.len > 0) {
+    if (request.tools.len > 0 or request.builtin_tools.len > 0) {
         try json.objectField("tools");
         try json.beginArray();
+        for (request.builtin_tools) |tool| switch (tool) {
+            .web_search => {
+                try json.beginObject();
+                try json.objectField("type");
+                try json.write("web_search");
+                try json.endObject();
+            },
+            .web_fetch => return error.UnsupportedBuiltinTool,
+        };
         for (request.tools) |tool| {
             try json.beginObject();
             try json.objectField("type");
@@ -492,4 +502,17 @@ test "encodes both Responses API structured output modes" {
     try std.testing.expect(std.mem.indexOf(u8, json_schema, "\"temperature\":0.2") != null);
     try std.testing.expect(std.mem.indexOf(u8, json_schema, "\"max_output_tokens\":512") != null);
     try std.testing.expect(std.mem.indexOf(u8, json_schema, "\"reasoning\":{\"effort\":\"high\"}") != null);
+}
+
+test "encodes OpenAI web search and rejects standalone web fetch" {
+    const search = try encodeRequest(std.testing.allocator, "gpt-test", .{
+        .messages = &.{},
+        .builtin_tools = &.{.{ .web_search = .{} }},
+    });
+    defer std.testing.allocator.free(search);
+    try std.testing.expect(std.mem.indexOf(u8, search, "\"tools\":[{\"type\":\"web_search\"}]") != null);
+    try std.testing.expectError(error.UnsupportedBuiltinTool, encodeRequest(std.testing.allocator, "gpt-test", .{
+        .messages = &.{},
+        .builtin_tools = &.{.{ .web_fetch = .{} }},
+    }));
 }

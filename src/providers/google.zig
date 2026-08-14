@@ -31,6 +31,7 @@ pub const Client = struct {
             .medium,
             .high,
         }),
+        .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{ .web_search, .web_fetch }),
     },
 
     pub fn model(self: *Client) model_types.Model {
@@ -224,24 +225,36 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
     }
     try json.endArray();
 
-    if (request.tools.len > 0) {
+    if (request.tools.len > 0 or request.builtin_tools.len > 0) {
         try json.objectField("tools");
         try json.beginArray();
-        try json.beginObject();
-        try json.objectField("functionDeclarations");
-        try json.beginArray();
-        for (request.tools) |tool| {
+        if (request.tools.len > 0) {
             try json.beginObject();
-            try json.objectField("name");
-            try json.write(tool.name);
-            try json.objectField("description");
-            try json.write(tool.description);
-            try json.objectField("parameters");
-            try writeToolSchema(allocator, &json, tool.parameters_json_schema);
+            try json.objectField("functionDeclarations");
+            try json.beginArray();
+            for (request.tools) |tool| {
+                try json.beginObject();
+                try json.objectField("name");
+                try json.write(tool.name);
+                try json.objectField("description");
+                try json.write(tool.description);
+                try json.objectField("parameters");
+                try writeToolSchema(allocator, &json, tool.parameters_json_schema);
+                try json.endObject();
+            }
+            try json.endArray();
             try json.endObject();
         }
-        try json.endArray();
-        try json.endObject();
+        for (request.builtin_tools) |tool| {
+            try json.beginObject();
+            try json.objectField(switch (tool) {
+                .web_search => "googleSearch",
+                .web_fetch => "urlContext",
+            });
+            try json.beginObject();
+            try json.endObject();
+            try json.endObject();
+        }
         try json.endArray();
     }
 
@@ -497,6 +510,19 @@ test "encodes Gemini system, tool, result, error, and structured output parts" {
     const object_body = try encodeRequest(std.testing.allocator, .{ .messages = &.{}, .output = .json_object });
     defer std.testing.allocator.free(object_body);
     try std.testing.expect(std.mem.indexOf(u8, object_body, "\"responseMimeType\":\"application/json\"") != null);
+}
+
+test "encodes Gemini Google Search and URL Context tools" {
+    const body = try encodeRequest(std.testing.allocator, .{
+        .messages = &.{},
+        .builtin_tools = &.{
+            .{ .web_search = .{} },
+            .{ .web_fetch = .{} },
+        },
+    });
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"googleSearch\":{}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"urlContext\":{}") != null);
 }
 
 test "decodes Gemini text, calls with and without ids, and usage" {

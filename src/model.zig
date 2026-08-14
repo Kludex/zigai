@@ -145,11 +145,36 @@ pub const ModelProfile = struct {
     supports_stop_sequences: bool = false,
     supports_seed: bool = false,
     reasoning_efforts: ReasoningEffortSet = ReasoningEffortSet.initEmpty(),
+    builtin_tools: BuiltinToolSet = BuiltinToolSet.initEmpty(),
 
     pub const ReasoningEffortSet = std.EnumSet(ReasoningEffort);
+    pub const BuiltinToolSet = std.EnumSet(BuiltinToolKind);
 
     pub fn supportsReasoningEffort(self: ModelProfile, effort: ReasoningEffort) bool {
         return self.reasoning_efforts.contains(effort);
+    }
+
+    pub fn supportsBuiltinTool(self: ModelProfile, kind: BuiltinToolKind) bool {
+        return self.builtin_tools.contains(kind);
+    }
+};
+
+pub const BuiltinToolKind = enum {
+    web_search,
+    web_fetch,
+};
+
+/// A provider-managed tool. The provider executes it inside the model request;
+/// it never enters the application's local tool dispatcher.
+pub const BuiltinTool = union(BuiltinToolKind) {
+    web_search: WebSearch,
+    web_fetch: WebFetch,
+
+    pub const WebSearch = struct {};
+    pub const WebFetch = struct {};
+
+    pub fn kind(self: BuiltinTool) BuiltinToolKind {
+        return std.meta.activeTag(self);
     }
 };
 
@@ -249,6 +274,7 @@ pub const ModelRequest = struct {
     /// them in reusable message history.
     instructions: []const []const u8 = &.{},
     tools: []const ToolDefinition = &.{},
+    builtin_tools: []const BuiltinTool = &.{},
     output: OutputFormat = .text,
     error_observer: ?ProviderErrorObserver = null,
     timeout_ms: ?u64 = null,

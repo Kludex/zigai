@@ -33,6 +33,7 @@ pub const Client = struct {
             .xhigh,
             .max,
         }),
+        .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{ .web_search, .web_fetch }),
     },
 
     pub fn model(self: *Client) model_types.Model {
@@ -322,9 +323,27 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
     }
     try json.endArray();
 
-    if (request.tools.len > 0) {
+    if (request.tools.len > 0 or request.builtin_tools.len > 0) {
         try json.objectField("tools");
         try json.beginArray();
+        for (request.builtin_tools) |tool| {
+            try json.beginObject();
+            switch (tool) {
+                .web_search => {
+                    try json.objectField("type");
+                    try json.write("web_search_20250305");
+                    try json.objectField("name");
+                    try json.write("web_search");
+                },
+                .web_fetch => {
+                    try json.objectField("type");
+                    try json.write("web_fetch_20250910");
+                    try json.objectField("name");
+                    try json.write("web_fetch");
+                },
+            }
+            try json.endObject();
+        }
         for (request.tools) |tool| {
             try json.beginObject();
             try json.objectField("name");
@@ -498,4 +517,17 @@ test "encodes Anthropic structured output and rejects JSON-object mode" {
         .messages = &.{},
         .output = .json_object,
     }));
+}
+
+test "encodes Anthropic web search and web fetch server tools" {
+    const body = try encodeRequest(std.testing.allocator, "claude-test", 20, .{
+        .messages = &.{},
+        .builtin_tools = &.{
+            .{ .web_search = .{} },
+            .{ .web_fetch = .{} },
+        },
+    });
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"web_search_20250305\",\"name\":\"web_search\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"web_fetch_20250910\",\"name\":\"web_fetch\"") != null);
 }

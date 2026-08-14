@@ -34,6 +34,10 @@ library or compiled into the command-line clients.
 models from each first-party provider. The matrix is defined once in
 `tests/support/model_matrix.zig` and drives both recording and replay.
 
+`tests/cassettes/native/` contains real provider-managed web-tool recordings:
+OpenAI web search, Anthropic web search plus fetch, and Google Search plus URL
+Context. These recordings verify the native request shapes and responses.
+
 Record the complete matrix with real credentials:
 
 ```console
@@ -45,6 +49,8 @@ Pass a provider or exact model to record only part of it:
 ```console
 zig build record-cassettes -- anthropic
 zig build record-cassettes -- gemini-3.5-flash
+zig build record-cassettes -- native-tools
+zig build record-cassettes -- native-google
 ```
 
 The recorder accepts `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and either

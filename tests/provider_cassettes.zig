@@ -5,6 +5,9 @@ const model_matrix = @import("support/model_matrix.zig");
 
 const matrix_prompt = "Call the weather tool exactly once with city Madrid. Then reply with one short sentence.";
 const matrix_system_prompt = "Always use the weather tool before answering.";
+const native_prompt = "Use the available web tools to read https://ziglang.org and answer with the site's main heading in one short sentence.";
+const native_google_prompt = "Use Google Search to identify the current stable Zig release. Answer in one short sentence.";
+const native_system_prompt = "Use the available provider-managed web tool before answering.";
 
 const weather_definition: zigai.model.ToolDefinition = .{
     .name = "weather",
@@ -92,6 +95,55 @@ test "real Google model cassettes replay complete tool loops" {
     }
 }
 
+test "real OpenAI cassette replays native web search" {
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/native/openai_web_search.yaml"));
+    defer cassette.deinit();
+    var client = zigai.openai.Client{
+        .model_name = "gpt-5-nano",
+        .api_key = "not-recorded",
+        .transport = cassette.transport(),
+    };
+    try replayNativeScenario(
+        client.model(),
+        &cassette,
+        &.{.{ .web_search = .{} }},
+        native_prompt,
+    );
+}
+
+test "real Anthropic cassette replays native web search and fetch" {
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/native/anthropic_web_search_fetch.yaml"));
+    defer cassette.deinit();
+    var client = zigai.anthropic.Client{
+        .model_name = "claude-sonnet-4-6",
+        .api_key = "not-recorded",
+        .transport = cassette.transport(),
+        .max_tokens = 256,
+    };
+    try replayNativeScenario(
+        client.model(),
+        &cassette,
+        &.{ .{ .web_search = .{} }, .{ .web_fetch = .{} } },
+        native_prompt,
+    );
+}
+
+test "real Google cassette replays native web search and fetch" {
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/native/google_web_search_fetch.yaml"));
+    defer cassette.deinit();
+    var client = zigai.google.Client{
+        .model_name = "gemini-3.5-flash",
+        .api_key = "not-recorded",
+        .transport = cassette.transport(),
+    };
+    try replayNativeScenario(
+        client.model(),
+        &cassette,
+        &.{ .{ .web_search = .{} }, .{ .web_fetch = .{} } },
+        native_google_prompt,
+    );
+}
+
 fn replayMatrixScenario(model: zigai.Model, cassette: *cassettes.ReplayTransport) !void {
     var calls: u8 = 0;
     const tool = matrixWeatherTool(&calls);
@@ -103,6 +155,24 @@ fn replayMatrixScenario(model: zigai.Model, cassette: *cassettes.ReplayTransport
     }).run(std.testing.allocator, matrix_prompt);
     defer result.deinit();
     try std.testing.expectEqual(@as(u8, 1), calls);
+    try std.testing.expect(result.output.len > 0);
+    try std.testing.expect(result.usage.totalTokens() > 0);
+    try std.testing.expectEqual(@as(usize, 0), cassette.remaining());
+}
+
+fn replayNativeScenario(
+    model: zigai.Model,
+    cassette: *cassettes.ReplayTransport,
+    builtin_tools: []const zigai.BuiltinTool,
+    prompt: []const u8,
+) !void {
+    var result = try (zigai.Agent{
+        .model = model,
+        .builtin_tools = builtin_tools,
+        .system_prompt = native_system_prompt,
+        .limits = .{ .max_model_requests = 2 },
+    }).run(std.testing.allocator, prompt);
+    defer result.deinit();
     try std.testing.expect(result.output.len > 0);
     try std.testing.expect(result.usage.totalTokens() > 0);
     try std.testing.expectEqual(@as(usize, 0), cassette.remaining());

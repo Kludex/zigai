@@ -10,8 +10,8 @@ provider does not need to modify the agent.
 
 `ModelProfile` is resolved before the agent runs. It describes model behavior
 independently from the transport: tools, parallel calls, system messages,
-structured JSON, and thinking. The agent rejects unsupported requested
-features before sending a paid request.
+structured JSON, thinking, and provider-managed tools. The agent rejects
+unsupported requested features before sending a paid request.
 
 Every model response keeps a normalized finish category and the provider's raw
 reason. Successful agent results expose the final reason. Truncation, content
@@ -34,11 +34,11 @@ the application declares the common profile its routing policy guarantees.
 Neither adapter adds a branch to the agent loop.
 
 Capabilities are ordered feature bundles. The agent starts with its direct
-tools and instructions, then appends each capability's contributions from left
-to right. Capabilities can contribute toolsets as well. Capability settings
-override earlier capabilities; direct agent and run settings remain higher
-precedence. Model selectors receive the model chosen so far, and capability
-lifecycle hooks run in the same stable order.
+tools, provider-managed tools, and instructions, then appends each capability's
+contributions from left to right. Capabilities can contribute toolsets as well.
+Capability settings override earlier capabilities; direct agent and run
+settings remain higher precedence. Model selectors receive the model chosen so
+far, and capability lifecycle hooks run in the same stable order.
 
 Toolsets group static tools or prepare them again before each model step. A
 preparer can inspect messages, usage, request count, and typed dependencies,
@@ -212,6 +212,13 @@ cover gateways and local servers without assuming every compatible model has
 the same capabilities.
 
 The default `HttpTransport` uses only Zig's standard library.
+
+Provider-managed tools remain a small neutral enum at the agent boundary.
+OpenAI maps web search to a Responses API tool. Anthropic maps search and fetch
+to its versioned server tools. Google maps them to Google Search and URL
+Context. Model profiles advertise the exact supported set, so unsupported and
+duplicate requests fail before transport. The provider executes these tools
+inside its own request; they do not enter ZigAI's local tool dispatch loop.
 
 ## Cassettes
 

@@ -14,6 +14,7 @@ const AgentError = error{
     Cancelled,
     ContentFiltered,
     DuplicateToolName,
+    DuplicateBuiltinTool,
     EmptyModelResponse,
     IncompleteToolCall,
     InputTokenLimitExceeded,
@@ -22,6 +23,8 @@ const AgentError = error{
     MaxToolCallsExceeded,
     ModelDoesNotSupportSystemMessages,
     ModelDoesNotSupportTools,
+    ModelDoesNotSupportWebFetch,
+    ModelDoesNotSupportWebSearch,
     ModelDoesNotSupportJsonObjectOutput,
     ModelDoesNotSupportJsonSchemaOutput,
     ModelDoesNotSupportMaxTokens,
@@ -415,6 +418,7 @@ pub const LifecycleHook = struct {
 /// A reusable feature bundle applied in `Agent.capabilities` order.
 pub const Capability = struct {
     tools: []const model_types.Tool = &.{},
+    builtin_tools: []const model_types.BuiltinTool = &.{},
     toolsets: []const Toolset = &.{},
     instructions: []const Instruction = &.{},
     hooks: []const LifecycleHook = &.{},
@@ -455,6 +459,7 @@ pub const Agent = struct {
     capabilities: []const Capability = &.{},
     hooks: []const LifecycleHook = &.{},
     tools: []const model_types.Tool = &.{},
+    builtin_tools: []const model_types.BuiltinTool = &.{},
     toolsets: []const Toolset = &.{},
     history_processors: []const history.Processor = &.{},
     system_prompt: ?[]const u8 = null,
@@ -731,6 +736,9 @@ pub const Agent = struct {
         var tools: std.ArrayList(model_types.Tool) = .empty;
         defer tools.deinit(allocator);
         try tools.appendSlice(allocator, self.tools);
+        var builtin_tools: std.ArrayList(model_types.BuiltinTool) = .empty;
+        defer builtin_tools.deinit(allocator);
+        try builtin_tools.appendSlice(allocator, self.builtin_tools);
         var instructions: std.ArrayList(Instruction) = .empty;
         defer instructions.deinit(allocator);
         try instructions.appendSlice(allocator, self.instructions);
@@ -749,6 +757,7 @@ pub const Agent = struct {
         var capability_settings: model_types.ModelSettings = .{};
         for (self.capabilities) |capability| {
             try tools.appendSlice(allocator, capability.tools);
+            try builtin_tools.appendSlice(allocator, capability.builtin_tools);
             try toolsets.appendSlice(allocator, capability.toolsets);
             try instructions.appendSlice(allocator, capability.instructions);
             try hooks.appendSlice(allocator, capability.hooks);
@@ -765,6 +774,7 @@ pub const Agent = struct {
         var configured = self;
         configured.model = model;
         configured.tools = tools.items;
+        configured.builtin_tools = builtin_tools.items;
         configured.toolsets = toolsets.items;
         configured.instructions = instructions.items;
         configured.history_processors = history_processors.items;
@@ -807,6 +817,7 @@ pub const Agent = struct {
         }
         const resolved_settings = self.model.settings.overrideWith(self.model_settings).overrideWith(options.model_settings);
         try requireModelSettings(self.model.profile, resolved_settings);
+        try ensureBuiltinToolsSupported(self.model.profile, self.builtin_tools);
         try emitLifecycle(hooks, .{ .run_start = .{ .prompt = prompt, .model = self.model } });
 
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -916,6 +927,7 @@ pub const Agent = struct {
                     .messages = request_messages,
                     .instructions = resolved_instructions,
                     .tools = definitions.items,
+                    .builtin_tools = self.builtin_tools,
                     .output = self.output,
                     .error_observer = provider_errors.observer(),
                     .timeout_ms = self.request_timeout_ms,
@@ -1932,6 +1944,23 @@ fn ensureUniqueToolNames(tools: []const model_types.Tool) Agent.Error!void {
         for (tools[index + 1 ..]) |other| {
             if (std.mem.eql(u8, tool.definition.name, other.definition.name)) return Agent.Error.DuplicateToolName;
         }
+    }
+}
+
+fn ensureBuiltinToolsSupported(
+    profile: model_types.ModelProfile,
+    tools: []const model_types.BuiltinTool,
+) Agent.Error!void {
+    for (tools, 0..) |tool, index| {
+        const kind = tool.kind();
+        for (tools[index + 1 ..]) |other| {
+            if (kind == other.kind()) return Agent.Error.DuplicateBuiltinTool;
+        }
+        if (profile.supportsBuiltinTool(kind)) continue;
+        return switch (kind) {
+            .web_search => Agent.Error.ModelDoesNotSupportWebSearch,
+            .web_fetch => Agent.Error.ModelDoesNotSupportWebFetch,
+        };
     }
 }
 

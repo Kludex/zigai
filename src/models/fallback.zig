@@ -122,6 +122,7 @@ fn commonProfile(models: []const model_types.Model) model_types.ModelProfile {
         profile.supports_stop_sequences = profile.supports_stop_sequences and other.supports_stop_sequences;
         profile.supports_seed = profile.supports_seed and other.supports_seed;
         profile.reasoning_efforts.setIntersection(other.reasoning_efforts);
+        profile.builtin_tools.setIntersection(other.builtin_tools);
     }
     return profile;
 }
@@ -199,6 +200,27 @@ test "fallback does not retry unsafe failures" {
         error.InvalidRequestEncoding,
         fallback.model().request(std.testing.allocator, .{ .messages = &.{} }),
     );
+}
+
+test "fallback profile intersects builtin tools" {
+    const Stub = struct {
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            return .{ .parts = &.{.{ .text = "unused" }} };
+        }
+    };
+    var unused: u8 = 0;
+    const candidates = [_]model_types.Model{
+        .{ .context = &unused, .profile = .{
+            .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{ .web_search, .web_fetch }),
+        }, .requestFn = Stub.request },
+        .{ .context = &unused, .profile = .{
+            .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{.web_search}),
+        }, .requestFn = Stub.request },
+    };
+    var fallback = Fallback{ .models = &candidates };
+    const profile = fallback.model().profile;
+    try std.testing.expect(profile.supportsBuiltinTool(.web_search));
+    try std.testing.expect(!profile.supportsBuiltinTool(.web_fetch));
 }
 
 test "stream fallback stops after exposing output" {
