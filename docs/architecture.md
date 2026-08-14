@@ -170,6 +170,12 @@ The HTTP transport parses allocation-free response metadata for numeric
 observers and retry hooks receive those values without exposing transport
 header storage or changing stable error categories.
 
+The same transport bounds untrusted response allocation after content
+decompression. Buffered bodies use `Limits.max_response_body_bytes`; streamed
+responses allocate and release one line at a time under
+`Limits.max_stream_line_bytes`. Exact-limit payloads remain valid, while the
+first excess byte maps to a stable transport error before provider decoding.
+
 ## MCP toolsets
 
 `mcp.Client` implements the stateless MCP `2026-07-28` envelope. Every request

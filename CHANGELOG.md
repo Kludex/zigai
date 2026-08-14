@@ -1,5 +1,10 @@
 # Release notes
 
+## Unreleased
+
+- Configurable post-decompression HTTP body and streaming-line limits with
+  stable oversized-response errors.
+
 ## 0.1.0 — 2026-08-14
 
 The first ZigAI release provides a provider-neutral agent loop for Zig 0.16.0.

@@ -40,6 +40,50 @@ pub fn main(init: std.process.Init) !void {
     });
     if (capture.starts != 2 or capture.lines != 6) return error.UnexpectedStreamEvents;
 
+    var limited_http = zigai.transport.HttpTransport.initWithLimits(init.gpa, init.io, .{
+        .max_response_body_bytes = 8,
+        .max_stream_line_bytes = 8,
+    });
+    defer limited_http.deinit();
+    const exact_body_url = try std.fmt.allocPrint(init.gpa, "{s}/body-limit-exact", .{base_url});
+    defer init.gpa.free(exact_body_url);
+    const exact_body = try limited_http.transport().send(init.gpa, .{ .method = .GET, .url = exact_body_url });
+    defer init.gpa.free(exact_body.body);
+    if (!std.mem.eql(u8, exact_body.body, "xxxxxxxx")) return error.UnexpectedLimitedBody;
+
+    const oversized_body_url = try std.fmt.allocPrint(init.gpa, "{s}/body-limit-over", .{base_url});
+    defer init.gpa.free(oversized_body_url);
+    if (limited_http.transport().send(init.gpa, .{ .method = .GET, .url = oversized_body_url })) |oversized| {
+        init.gpa.free(oversized.body);
+        return error.ExpectedResponseTooLarge;
+    } else |err| switch (err) {
+        error.ResponseTooLarge => {},
+        else => return err,
+    }
+
+    const exact_stream_url = try std.fmt.allocPrint(init.gpa, "{s}/stream-limit-exact", .{base_url});
+    defer init.gpa.free(exact_stream_url);
+    _ = try limited_http.transport().streamLines(init.gpa, .{ .method = .GET, .url = exact_stream_url }, .{
+        .context = &capture,
+        .startFn = Capture.start,
+        .lineFn = Capture.line,
+    });
+    if (capture.starts != 3 or capture.lines != 7) return error.UnexpectedStreamEvents;
+
+    const oversized_stream_url = try std.fmt.allocPrint(init.gpa, "{s}/stream-limit-over", .{base_url});
+    defer init.gpa.free(oversized_stream_url);
+    if (limited_http.transport().streamLines(init.gpa, .{ .method = .GET, .url = oversized_stream_url }, .{
+        .context = &capture,
+        .startFn = Capture.start,
+        .lineFn = Capture.line,
+    })) |_| {
+        return error.ExpectedStreamLineTooLarge;
+    } else |err| switch (err) {
+        error.StreamLineTooLarge => {},
+        else => return err,
+    }
+    if (capture.starts != 4 or capture.lines != 7) return error.UnexpectedStreamEvents;
+
     const slow_url = try std.fmt.allocPrint(init.gpa, "{s}/slow", .{base_url});
     defer init.gpa.free(slow_url);
     if (http.transport().send(init.gpa, .{

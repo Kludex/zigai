@@ -2,12 +2,33 @@
 """Local HTTP fixture for deterministic CLI and real-transport tests."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import gzip
 import os
 import time
 
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
+        if self.path in ("/body-limit-exact", "/body-limit-over"):
+            size = 8 if self.path.endswith("exact") else 9
+            body = gzip.compress(b"x" * size)
+            self.send_response(200)
+            self.send_header("content-type", "text/plain")
+            self.send_header("content-encoding", "gzip")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        if self.path in ("/stream-limit-exact", "/stream-limit-over"):
+            size = 8 if self.path.endswith("exact") else 9
+            body = gzip.compress(b"x" * size + b"\n")
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.send_header("content-encoding", "gzip")
+            self.send_header("content-length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if self.path == "/slow":
             body = b"eventually"
             self.send_response(200)

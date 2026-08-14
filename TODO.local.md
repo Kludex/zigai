@@ -10,7 +10,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 
 ## P0 — Stable core blockers
 
-- [ ] Add configurable HTTP safety limits. Cap decompressed buffered responses
+- [x] Add configurable HTTP safety limits. Cap decompressed buffered responses
   and individual streaming lines, return stable `ResponseTooLarge` and
   `StreamLineTooLarge` errors, and test exact boundaries through real sockets.
 - [ ] Bound every untrusted JSON boundary. Add documented limits for history,

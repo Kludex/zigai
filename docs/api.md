@@ -56,6 +56,13 @@ ZigAI follows one rule for high-level operations: a returned type with a
 | `evals.Report` | Owns every case and evaluation result until `deinit` |
 | `transport.Response` | Caller frees `body` with the allocator passed to `send` |
 
+`transport.HttpTransport.init` uses bounded decompressed response defaults:
+16 MiB per buffered body and 1 MiB per streaming line. Pass a
+`transport.Limits` value to `HttpTransport.initWithLimits` to change them.
+The limit excludes the streaming newline. A body or line exactly at its limit
+is accepted; the next byte returns `error.ResponseTooLarge` or
+`error.StreamLineTooLarge`.
+
 Inputs, callback events, stream events, lifecycle events, and provider error
 observer values are borrowed unless their documentation says otherwise. Copy
 data inside the callback if it must outlive the call. Functions such as
@@ -78,6 +85,10 @@ The public named error categories are:
   normalized provider request errors;
 - `history.Error`, `json_schema.Error`, `evals.Error`, `mcp.Error`, and
   `transport.Error` for their subsystem-defined failures.
+
+`transport.Error.ResponseTooLarge` and `transport.Error.StreamLineTooLarge`
+are stable policy failures. They apply to decompressed bytes, so compression
+cannot bypass the configured allocation boundary.
 
 Public operations intentionally use inferred error unions. Allocator, network,
 process, application callback, tool, hook, exporter, and custom model errors

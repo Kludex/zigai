@@ -539,6 +539,21 @@ The same loop supports:
 A stream is never retried after it exposes visible output. This prevents
 duplicated text and repeated tool actions.
 
+HTTP response allocations are bounded after decompression. The defaults accept
+up to 16 MiB for a buffered body and 1 MiB for one streaming line. Use tighter
+limits for a specific deployment:
+
+```zig
+var http = zigai.transport.HttpTransport.initWithLimits(init.gpa, init.io, .{
+    .max_response_body_bytes = 2 * 1024 * 1024,
+    .max_stream_line_bytes = 256 * 1024,
+});
+defer http.deinit();
+```
+
+Oversized input returns `error.ResponseTooLarge` or
+`error.StreamLineTooLarge` before it can grow the response allocation further.
+
 ## Command-line clients
 
 `zig build` installs three small clients:

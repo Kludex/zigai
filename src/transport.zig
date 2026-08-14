@@ -4,10 +4,22 @@ const model_types = @import("model.zig");
 /// Transport failures defined by ZigAI. Concrete transports may add their own
 /// I/O, TLS, URI, callback, and allocation errors.
 pub const Error = error{
+    /// The decompressed buffered response exceeded the configured byte limit.
+    ResponseTooLarge,
     RequestCancelled,
     RequestTimedOut,
+    /// One decompressed streaming line exceeded the configured byte limit.
+    StreamLineTooLarge,
     StreamingNotSupported,
     UnsupportedCompressionMethod,
+};
+
+/// Allocation limits applied after HTTP content decompression.
+pub const Limits = struct {
+    /// Maximum bytes accepted by one buffered response.
+    max_response_body_bytes: usize = 16 * 1024 * 1024,
+    /// Maximum bytes accepted before the newline in one streaming line.
+    max_stream_line_bytes: usize = 1024 * 1024,
 };
 
 pub const Method = enum {
@@ -81,9 +93,15 @@ pub const LineSink = struct {
 /// Dependency-free HTTP transport built on Zig's standard library.
 pub const HttpTransport = struct {
     client: std.http.Client,
+    limits: Limits = .{},
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) HttpTransport {
-        return .{ .client = .{ .allocator = allocator, .io = io } };
+        return initWithLimits(allocator, io, .{});
+    }
+
+    /// Initializes an HTTP transport with explicit decompressed response limits.
+    pub fn initWithLimits(allocator: std.mem.Allocator, io: std.Io, limits: Limits) HttpTransport {
+        return .{ .client = .{ .allocator = allocator, .io = io }, .limits = limits };
     }
 
     pub fn deinit(self: *HttpTransport) void {
@@ -135,15 +153,17 @@ pub const HttpTransport = struct {
         const status: u16 = @intFromEnum(response.head.status);
         const metadata = responseMetadata(response.head);
 
-        var body_writer: std.Io.Writer.Allocating = .init(allocator);
-        defer body_writer.deinit();
         const decompress_buffer = try decompressionBuffer(allocator, response.head.content_encoding);
         defer if (decompress_buffer.len > 0) allocator.free(decompress_buffer);
         var transfer_buffer: [64]u8 = undefined;
         var decompress: std.http.Decompress = undefined;
         const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
-        _ = try reader.streamRemaining(&body_writer.writer);
-        return .{ .status = status, .body = try body_writer.toOwnedSlice(), .metadata = metadata };
+        const allocation_limit = self.limits.max_response_body_bytes +| 1;
+        const body = reader.allocRemaining(allocator, .limited(allocation_limit)) catch |failure| switch (failure) {
+            error.StreamTooLong => return error.ResponseTooLarge,
+            else => |other| return other,
+        };
+        return .{ .status = status, .body = body, .metadata = metadata };
     }
 
     fn streamLines(context: *anyopaque, allocator: std.mem.Allocator, request_value: Request, sink: LineSink) !StreamResponse {
@@ -187,10 +207,34 @@ pub const HttpTransport = struct {
         var transfer_buffer: [64 * 1024]u8 = undefined;
         var decompress: std.http.Decompress = undefined;
         const reader = response.readerDecompressing(&transfer_buffer, &decompress, decompress_buffer);
-        while (try reader.takeDelimiter('\n')) |line| try sink.line(std.mem.trimEnd(u8, line, "\r"));
+        while (try streamLine(allocator, reader, self.limits.max_stream_line_bytes)) |line| {
+            defer allocator.free(line);
+            try sink.line(std.mem.trimEnd(u8, line, "\r"));
+        }
         return result;
     }
 };
+
+fn streamLine(allocator: std.mem.Allocator, reader: *std.Io.Reader, maximum_bytes: usize) !?[]u8 {
+    var line_writer: std.Io.Writer.Allocating = .init(allocator);
+    defer line_writer.deinit();
+    const delimiter_limit = maximum_bytes +| 1;
+    const line_length = reader.streamDelimiterLimit(&line_writer.writer, '\n', .limited(delimiter_limit)) catch |failure| switch (failure) {
+        error.StreamTooLong => return error.StreamLineTooLarge,
+        else => |other| return other,
+    };
+    const next_byte = reader.peekByte() catch |failure| switch (failure) {
+        error.EndOfStream => null,
+        else => |other| return other,
+    };
+    if (next_byte) |byte| {
+        std.debug.assert(byte == '\n');
+        reader.toss(1);
+    } else if (line_length == 0) {
+        return null;
+    }
+    return try line_writer.toOwnedSlice();
+}
 
 const SendOutcome = union(enum) {
     response: anyerror!Response,
