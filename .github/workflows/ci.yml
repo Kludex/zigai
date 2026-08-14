@@ -29,6 +29,7 @@ jobs:
           version: 0.16.0
       - run: ./scripts/coverage
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: coverage-html
           path: coverage/merged/kcov-merged
