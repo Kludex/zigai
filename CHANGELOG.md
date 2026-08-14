@@ -6,6 +6,8 @@
   stable oversized-response errors.
 - Shared pre-allocation JSON validation with documented limits for history,
   deferred state, providers, tools, MCP, schemas, and CLI manifests.
+- Bounded local tool execution with global and per-tool concurrency, queue,
+  timeout, result, follow-up, and cooperative cancellation policies.
 
 ## 0.1.0 — 2026-08-14
 

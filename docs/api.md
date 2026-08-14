@@ -124,6 +124,23 @@ contain one complete JSON document within the tool-payload profile. Invalid or
 oversized arguments return `error.InvalidToolArguments` before the callback is
 invoked.
 
+## Tool execution limits
+
+`Agent.tool_limits` applies `zigai.ToolLimits` to local calls. The defaults are
+eight concurrent calls, a 64-call queue, a 1 MiB result, 16 follow-up messages,
+and 1 MiB of aggregate follow-up strings and binary data. `Tool.limits` may
+tighten that policy for one tool, including an optional `timeout_ms`; it can
+never loosen the agent-wide envelope.
+
+Parallel batches preserve provider call order while the scheduler respects
+both the agent-wide and per-tool concurrency and queue limits. `ToolTimedOut`,
+`ToolQueueOverflow`, `ToolResultTooLarge`, and `ToolFollowUpOverflow` are
+recoverable tool failures by default and are sent to the model through the
+normal bounded retry path. `ToolIsolationRequiresIo`, cancellation, allocation
+failure, and unavailable runtime concurrency remain fatal. Cancellation and
+timeouts are cooperative: tools should use `ToolRunContext.io` for blocking I/O
+and propagate cancellation errors instead of swallowing them.
+
 Public operations intentionally use inferred error unions. Allocator, network,
 process, application callback, tool, hook, exporter, and custom model errors
 pass through unchanged, so callers can handle their own errors without ZigAI

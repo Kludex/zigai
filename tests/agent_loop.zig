@@ -545,7 +545,10 @@ test "typed tool results inject provider-neutral follow-up messages" {
                 return .{
                     .content = "{}",
                     .follow_up_messages = &.{.{
-                        .parts = &.{.{ .system_prompt = "not allowed" }},
+                        .parts = &.{
+                            .{ .system_prompt = "not allowed" },
+                            .{ .tool_return = .{ .call_id = "id", .name = "name", .content = "result" } },
+                        },
                     }},
                 };
             }
@@ -1647,6 +1650,298 @@ test "parallel tools overlap and keep model call order" {
     defer result.deinit();
     try std.testing.expect(state.overlapped.load(.seq_cst));
     try std.testing.expectEqualStrings("done", result.output);
+}
+
+test "tool isolation returns bounded timeout result and follow-up failures" {
+    const calls = [_]zigai.model.Part{
+        .{ .tool_call = .{ .id = "timeout", .name = "timeout", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "result", .name = "result", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "follow-count", .name = "follow-count", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "follow-bytes", .name = "follow-bytes", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "rich", .name = "rich", .arguments_json = "{}" } },
+    };
+    const final = [_]zigai.model.Part{.{ .text = "recovered" }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
+            if (index == 0) return;
+            const results = request.messages[2].request.parts;
+            try std.testing.expectEqual(@as(usize, 5), results.len);
+            try std.testing.expect(std.mem.indexOf(u8, results[0].tool_return.content, "ToolTimedOut") != null);
+            try std.testing.expect(std.mem.indexOf(u8, results[1].tool_return.content, "ToolResultTooLarge") != null);
+            try std.testing.expect(std.mem.indexOf(u8, results[2].tool_return.content, "ToolFollowUpOverflow") != null);
+            try std.testing.expect(std.mem.indexOf(u8, results[3].tool_return.content, "ToolFollowUpOverflow") != null);
+            try std.testing.expect(!results[4].tool_return.is_error);
+            for (results[0..4]) |part| try std.testing.expect(part.tool_return.is_error);
+            const follow_up = request.messages[3].request;
+            try std.testing.expectEqual(@as(usize, 4), follow_up.parts.len);
+            try std.testing.expectEqualStrings("run", follow_up.run_id.?);
+        }
+    };
+    const Execute = struct {
+        fn timeout(
+            _: *anyopaque,
+            allocator: std.mem.Allocator,
+            context: zigai.ToolRunContext,
+            _: []const u8,
+        ) ![]const u8 {
+            const io = context.io orelse return error.MissingIo;
+            (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(50),
+                .clock = .awake,
+            } }).sleep(io) catch return error.ToolCancelled;
+            return allocator.dupe(u8, "late");
+        }
+        fn large(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]const u8 {
+            return allocator.dupe(u8, "large");
+        }
+        fn follow(_: *anyopaque, _: std.mem.Allocator, _: []const u8) !zigai.ToolOutput {
+            return .{ .content = "ok", .follow_up_messages = &.{.{
+                .parts = &.{.{ .user_prompt = .{ .text = "too large" } }},
+            }} };
+        }
+        fn rich(_: *anyopaque, _: std.mem.Allocator, _: []const u8) !zigai.ToolOutput {
+            return .{ .content = "ok", .follow_up_messages = &.{.{
+                .parts = &.{
+                    .{ .user_prompt = .{ .image = .{
+                        .source = .{ .bytes = "image" },
+                        .media_type = "image/png",
+                        .filename = "image.png",
+                        .thought_signature = "signature",
+                        .metadata = &.{.{ .key = "kind", .value = "diagram" }},
+                    } } },
+                    .{ .user_prompt = .{ .audio = .{
+                        .source = .{ .url = "https://example.test/audio" },
+                        .media_type = "audio/mpeg",
+                    } } },
+                    .{ .user_prompt = .{ .document = .{
+                        .source = .{ .provider_file = .{ .id = "file-1", .provider = "test" } },
+                        .media_type = "application/pdf",
+                    } } },
+                    .{ .user_prompt = .{ .binary = .{
+                        .source = .{ .bytes = "binary" },
+                        .media_type = "application/octet-stream",
+                    } } },
+                },
+                .instructions = "instruction",
+                .run_id = "run",
+                .conversation_id = "conversation",
+                .metadata = &.{.{ .key = "source", .value = "tool" }},
+            }} };
+        }
+    };
+    var unused: u8 = 0;
+    const tools = [_]zigai.Tool{
+        .{
+            .definition = .{ .name = "timeout", .description = "", .parameters_json_schema = "{}" },
+            .context = &unused,
+            .limits = .{ .timeout_ms = 1 },
+            .executeWithContextFn = Execute.timeout,
+        },
+        .{
+            .definition = .{ .name = "result", .description = "", .parameters_json_schema = "{}" },
+            .context = &unused,
+            .limits = .{ .max_result_bytes = 3 },
+            .executeFn = Execute.large,
+        },
+        .{
+            .definition = .{ .name = "follow-count", .description = "", .parameters_json_schema = "{}" },
+            .context = &unused,
+            .limits = .{ .max_follow_up_messages = 0 },
+            .executeOutputFn = Execute.follow,
+        },
+        .{
+            .definition = .{ .name = "follow-bytes", .description = "", .parameters_json_schema = "{}" },
+            .context = &unused,
+            .limits = .{ .max_follow_up_bytes = 1 },
+            .executeOutputFn = Execute.follow,
+        },
+        .{
+            .definition = .{ .name = "rich", .description = "", .parameters_json_schema = "{}" },
+            .context = &unused,
+            .executeOutputFn = Execute.rich,
+        },
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &calls }, .{ .parts = &final } },
+        .inspectFn = Inspector.inspect,
+        .profile = .{ .content_types = zigai.ModelProfile.ContentTypeSet.initMany(&.{
+            .image,
+            .audio,
+            .document,
+            .binary,
+        }) },
+        .provider_name = "test",
+    };
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .tools = &tools,
+        .io = threaded.io(),
+    }).run(std.testing.allocator, "Run bounded tools.");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("recovered", result.output);
+}
+
+test "per-tool concurrency and queue limits serialize accepted calls" {
+    const calls = [_]zigai.model.Part{
+        .{ .tool_call = .{ .id = "one", .name = "limited", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "two", .name = "limited", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "three", .name = "limited", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "other", .name = "other", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "global-overflow", .name = "another", .arguments_json = "{}" } },
+    };
+    const final = [_]zigai.model.Part{.{ .text = "done" }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
+            if (index == 0) return;
+            const results = request.messages[2].request.parts;
+            try std.testing.expectEqualStrings("ok", results[0].tool_return.content);
+            try std.testing.expectEqualStrings("ok", results[1].tool_return.content);
+            try std.testing.expect(std.mem.indexOf(u8, results[2].tool_return.content, "ToolQueueOverflow") != null);
+            try std.testing.expectEqualStrings("ok", results[3].tool_return.content);
+            try std.testing.expect(std.mem.indexOf(u8, results[4].tool_return.content, "ToolQueueOverflow") != null);
+        }
+    };
+    const State = struct {
+        active: std.atomic.Value(usize) = .init(0),
+        overlapped: std.atomic.Value(bool) = .init(false),
+
+        fn execute(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            run_context: zigai.ToolRunContext,
+            _: []const u8,
+        ) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.active.fetchAdd(1, .seq_cst) != 0) self.overlapped.store(true, .seq_cst);
+            defer _ = self.active.fetchSub(1, .seq_cst);
+            try (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(5),
+                .clock = .awake,
+            } }).sleep(run_context.io.?);
+            return allocator.dupe(u8, "ok");
+        }
+    };
+    const Other = struct {
+        fn execute(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]const u8 {
+            return allocator.dupe(u8, "ok");
+        }
+    };
+    var state: State = .{};
+    const tools = [_]zigai.Tool{
+        .{
+            .definition = .{ .name = "limited", .description = "", .parameters_json_schema = "{}" },
+            .context = &state,
+            .limits = .{ .max_concurrency = 1, .max_queue_size = 1 },
+            .executeWithContextFn = State.execute,
+        },
+        .{
+            .definition = .{ .name = "other", .description = "", .parameters_json_schema = "{}" },
+            .context = &state,
+            .executeFn = Other.execute,
+        },
+        .{
+            .definition = .{ .name = "another", .description = "", .parameters_json_schema = "{}" },
+            .context = &state,
+            .executeFn = Other.execute,
+        },
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &calls }, .{ .parts = &final } },
+        .inspectFn = Inspector.inspect,
+    };
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .tools = &tools,
+        .tool_limits = .{ .max_concurrency = 2, .max_queue_size = 1 },
+        .io = threaded.io(),
+    }).run(std.testing.allocator, "Run limited tools.");
+    defer result.deinit();
+    try std.testing.expect(!state.overlapped.load(.seq_cst));
+}
+
+test "tool isolation cancels in-flight work and requires IO for timeouts" {
+    const call = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "slow",
+        .name = "slow",
+        .arguments_json = "{}",
+    } }};
+    const State = struct {
+        active: std.atomic.Value(bool) = .init(false),
+
+        fn execute(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            run_context: zigai.ToolRunContext,
+            _: []const u8,
+        ) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.active.store(true, .seq_cst);
+            defer self.active.store(false, .seq_cst);
+            try (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(100),
+                .clock = .awake,
+            } }).sleep(run_context.io.?);
+            return allocator.dupe(u8, "late");
+        }
+    };
+    const Cancel = struct {
+        fn after(io: std.Io, token: *zigai.CancellationToken) !void {
+            try (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(5),
+                .clock = .awake,
+            } }).sleep(io);
+            token.cancel();
+        }
+    };
+    var state: State = .{};
+    const tool = zigai.Tool{
+        .definition = .{ .name = "slow", .description = "", .parameters_json_schema = "{}" },
+        .context = &state,
+        .executeWithContextFn = State.execute,
+    };
+
+    var no_io_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &call }} };
+    try std.testing.expectError(
+        zigai.Agent.Error.ToolIsolationRequiresIo,
+        (zigai.Agent{
+            .model = no_io_model.model(),
+            .tools = &.{tool},
+            .tool_limits = .{ .timeout_ms = 1 },
+        }).run(std.testing.allocator, "Run."),
+    );
+
+    var tighter_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &call }} };
+    var timed_tool = tool;
+    timed_tool.limits = .{ .timeout_ms = 1 };
+    try std.testing.expectError(
+        zigai.Agent.Error.ToolIsolationRequiresIo,
+        (zigai.Agent{
+            .model = tighter_model.model(),
+            .tools = &.{timed_tool},
+            .tool_limits = .{ .timeout_ms = 10 },
+        }).run(std.testing.allocator, "Run."),
+    );
+
+    var cancelled_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &call }} };
+    var token: zigai.CancellationToken = .{};
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var cancel = try threaded.io().concurrent(Cancel.after, .{ threaded.io(), &token });
+    try std.testing.expectError(
+        zigai.Agent.Error.Cancelled,
+        (zigai.Agent{
+            .model = cancelled_model.model(),
+            .tools = &.{tool},
+            .cancellation = &token,
+            .io = threaded.io(),
+        }).run(std.testing.allocator, "Run."),
+    );
+    try cancel.await(threaded.io());
+    try std.testing.expect(!state.active.load(.seq_cst));
 }
 
 test "parallel tools handle validation and terminal execution failures" {

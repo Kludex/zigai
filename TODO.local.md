@@ -16,7 +16,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Bound every untrusted JSON boundary. Add documented limits for history,
   paused state, resume decisions, provider responses, tool arguments/results,
   MCP messages, nesting depth, and collection counts before allocation.
-- [ ] Isolate tool execution. Support per-tool timeouts, cancellation,
+- [x] Isolate tool execution. Support per-tool timeouts, cancellation,
   concurrency limits, queue limits, maximum result/follow-up sizes, and explicit
   timeout/overflow results that providers can retry safely.
 - [ ] Finish deadline and cancellation propagation. Use one run deadline across

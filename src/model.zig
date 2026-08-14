@@ -169,6 +169,23 @@ pub const ToolOutput = struct {
     follow_up_messages: []const RequestMessage = &.{},
 };
 
+/// Resource limits for local tool execution. An agent supplies the run-wide
+/// policy; `Tool.limits` may tighten it for one tool.
+pub const ToolLimits = struct {
+    /// Maximum wall-clock duration for one call. Requires an agent `io`.
+    timeout_ms: ?u64 = null,
+    /// Maximum simultaneously executing calls.
+    max_concurrency: usize = 8,
+    /// Maximum accepted calls waiting for an execution slot.
+    max_queue_size: usize = 64,
+    /// Maximum bytes in one encoded tool result.
+    max_result_bytes: usize = 1024 * 1024,
+    /// Maximum follow-up messages returned by one tool call.
+    max_follow_up_messages: usize = 16,
+    /// Maximum aggregate string and binary bytes in follow-up messages.
+    max_follow_up_bytes: usize = 1024 * 1024,
+};
+
 /// A typed reflected-tool return with optional model-visible follow-up
 /// messages. `reflect.tool` derives its return schema from `Value`.
 pub fn ToolReturn(comptime Value: type) type {
@@ -189,6 +206,8 @@ pub const Tool = struct {
     context: *anyopaque,
     /// Overrides `Agent.max_tool_retries` for this tool when non-null.
     max_retries: ?usize = null,
+    /// Tightens the agent's local execution limits for this tool when non-null.
+    limits: ?ToolLimits = null,
     validateFn: ?*const fn (
         context: *anyopaque,
         allocator: std.mem.Allocator,
@@ -277,7 +296,12 @@ pub const Tool = struct {
     pub fn isRecoverable(self: Tool, failure: anyerror) bool {
         if (self.isRecoverableFn) |classify| return classify(self.context, failure);
         return switch (failure) {
-            error.OutOfMemory, error.Cancelled, error.RequestCancelled => false,
+            error.OutOfMemory,
+            error.Cancelled,
+            error.RequestCancelled,
+            error.ToolConcurrencyUnavailable,
+            error.ToolIsolationRequiresIo,
+            => false,
             else => true,
         };
     }

@@ -153,10 +153,15 @@ requires every part to be a user prompt. Rich-content capability and
 provider-file checks are the same as for normal input.
 
 When a model requests multiple tools, the agent uses its `Io` runtime to run
-them concurrently. Allocations into the result arena are synchronized, result
-parts remain in model call order, and a fatal failure cancels outstanding work.
-Tools receive the run's `Io` and cancellation token for cooperative cleanup.
-`limits.max_tool_calls` caps the total across every step of a run.
+them through a bounded scheduler. Agent-wide and per-tool policies limit active
+and queued calls; excess work becomes a retryable tool result without executing
+the callback. Each accepted call races cooperative execution against its
+optional timeout and the run cancellation token, and every losing task is
+cancelled and drained before the agent continues. Allocations into the result
+arena are synchronized, result parts remain in model call order, and a fatal
+failure cancels outstanding work. Result and follow-up sizes are checked before
+they enter history or provider encoding. `limits.max_tool_calls` separately
+caps the total across every step of a run.
 
 Cancellation is checked at loop boundaries and propagated through the model
 request so the standard HTTP transport can interrupt in-flight buffered and

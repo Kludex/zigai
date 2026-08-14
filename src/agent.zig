@@ -49,6 +49,11 @@ const AgentError = error{
     ProviderFileProviderMismatch,
     TotalTokenLimitExceeded,
     ToolConcurrencyUnavailable,
+    ToolFollowUpOverflow,
+    ToolIsolationRequiresIo,
+    ToolQueueOverflow,
+    ToolResultTooLarge,
+    ToolTimedOut,
     ToolCallRequiresDeferredRun,
     MissingDeferredToolDecision,
     UnexpectedDeferredToolDecision,
@@ -490,6 +495,8 @@ pub const Agent = struct {
     max_output_retries: usize = 2,
     /// Default number of failures returned to the model for each tool.
     max_tool_retries: usize = 2,
+    /// Run-wide local tool execution limits. A tool may replace these limits.
+    tool_limits: model_types.ToolLimits = .{},
     /// Overrides model defaults for every run of this agent.
     model_settings: model_types.ModelSettings = .{},
     limits: UsageLimits = .{},
@@ -505,6 +512,7 @@ pub const Agent = struct {
     pub const UsageLimits = AgentUsageLimits;
     pub const RetryPolicy = AgentRetryPolicy;
     pub const Backoff = AgentBackoff;
+    pub const ToolLimits = model_types.ToolLimits;
 
     pub const Error = AgentError;
 
@@ -1252,7 +1260,14 @@ fn executeResumedToolCalls(
             switch (tool.execution) {
                 .immediate => {
                     try emitLifecycle(hooks, .{ .tool_execution_start = .{ .call = call, .tool = tool } });
-                    const outcome = executeTool(tool, allocator, run_context, call.arguments_json);
+                    const outcome = executeToolControlled(
+                        agent.io,
+                        tool,
+                        effectiveToolLimits(agent.tool_limits, tool.limits),
+                        allocator,
+                        run_context,
+                        call.arguments_json,
+                    );
                     try emitToolOutcome(hooks, tool, call, outcome);
                     const processed = try toolResult(
                         agent,
@@ -1270,7 +1285,14 @@ fn executeResumedToolCalls(
                     switch (approved.action) {
                         .approve => {
                             try emitLifecycle(hooks, .{ .tool_execution_start = .{ .call = call, .tool = tool } });
-                            const outcome = executeTool(tool, allocator, run_context, call.arguments_json);
+                            const outcome = executeToolControlled(
+                                agent.io,
+                                tool,
+                                effectiveToolLimits(agent.tool_limits, tool.limits),
+                                allocator,
+                                run_context,
+                                call.arguments_json,
+                            );
                             try emitToolOutcome(hooks, tool, call, outcome);
                             const processed = try toolResult(
                                 agent,
@@ -1429,6 +1451,12 @@ const ToolOutcome = union(enum) {
     failure: anyerror,
 };
 
+const ToolTaskState = enum {
+    pending,
+    running,
+    complete,
+};
+
 const ExecutedTool = struct {
     content: []const u8,
     is_error: bool,
@@ -1492,6 +1520,7 @@ fn executeToolCalls(
     const result_parts = try allocator.alloc(RequestPart, call_count);
     if (call_count == 1) {
         try checkCancellation(agent.cancellation);
+        const limits = effectiveToolLimits(agent.tool_limits, tools[work[0].tool_index].limits);
         const outcome: ToolOutcome = if (work[0].validation_failure) |failure|
             .{ .failure = failure }
         else execute: {
@@ -1499,8 +1528,10 @@ fn executeToolCalls(
                 .call = work[0].call,
                 .tool = tools[work[0].tool_index],
             } });
-            const executed = executeTool(
+            const executed = executeToolControlled(
+                agent.io,
                 tools[work[0].tool_index],
+                limits,
                 allocator,
                 run_context,
                 work[0].call.arguments_json,
@@ -1526,53 +1557,76 @@ fn executeToolCalls(
     const futures = try allocator.alloc(?std.Io.Future(ToolOutcome), call_count);
     @memset(futures, null);
     const outcomes = try allocator.alloc(ToolOutcome, call_count);
-    var spawned: usize = 0;
-    while (spawned < call_count) : (spawned += 1) {
-        const item = work[spawned];
+    const states = try allocator.alloc(ToolTaskState, call_count);
+    const admitted_per_tool = try allocator.alloc(usize, tools.len);
+    @memset(admitted_per_tool, 0);
+    var admitted: usize = 0;
+    var completed: usize = 0;
+    const global_capacity = executionCapacity(agent.tool_limits);
+    for (work, states, outcomes) |item, *state, *outcome| {
         if (item.validation_failure) |failure| {
-            outcomes[spawned] = .{ .failure = failure };
+            outcome.* = .{ .failure = failure };
+            state.* = .complete;
+            completed += 1;
             continue;
         }
-        try emitLifecycle(hooks, .{ .tool_execution_start = .{
-            .call = item.call,
-            .tool = tools[item.tool_index],
-        } });
-        futures[spawned] = io.concurrent(executeTool, .{
-            tools[item.tool_index],
-            concurrent_allocator,
-            run_context,
-            item.call.arguments_json,
-        }) catch {
-            for (futures[0..spawned]) |*slot| {
-                if (slot.*) |*future| _ = future.cancel(io);
-            }
-            return Agent.Error.ToolConcurrencyUnavailable;
-        };
+        const limits = effectiveToolLimits(agent.tool_limits, tools[item.tool_index].limits);
+        if (admitted >= global_capacity or admitted_per_tool[item.tool_index] >= executionCapacity(limits)) {
+            outcome.* = .{ .failure = Agent.Error.ToolQueueOverflow };
+            state.* = .complete;
+            completed += 1;
+            try emitToolOutcome(hooks, tools[item.tool_index], item.call, outcome.*);
+            continue;
+        }
+        admitted += 1;
+        admitted_per_tool[item.tool_index] += 1;
+        state.* = .pending;
     }
 
-    var awaited: usize = 0;
     errdefer {
-        for (futures[awaited..]) |*slot| {
+        for (futures) |*slot| {
             if (slot.*) |*future| _ = future.cancel(io);
         }
     }
-    while (awaited < call_count) {
+    var running: usize = 0;
+    while (completed < call_count) {
         try checkCancellation(agent.cancellation);
-        if (futures[awaited]) |*future| {
-            outcomes[awaited] = future.await(io);
-            try emitToolOutcome(
-                hooks,
-                tools[work[awaited].tool_index],
-                work[awaited].call,
-                outcomes[awaited],
-            );
+        for (work, states, futures) |item, *state, *future| {
+            if (state.* != .pending or running >= agent.tool_limits.max_concurrency) continue;
+            const limits = effectiveToolLimits(agent.tool_limits, tools[item.tool_index].limits);
+            if (runningCallsForTool(work, states, item.tool_index) >= limits.max_concurrency) continue;
+            try emitLifecycle(hooks, .{ .tool_execution_start = .{
+                .call = item.call,
+                .tool = tools[item.tool_index],
+            } });
+            future.* = io.async(executeToolControlled, .{
+                @as(?std.Io, io),
+                tools[item.tool_index],
+                limits,
+                concurrent_allocator,
+                run_context,
+                item.call.arguments_json,
+            });
+            state.* = .running;
+            running += 1;
         }
-        if (outcomes[awaited] == .failure and
-            !tools[work[awaited].tool_index].isRecoverable(outcomes[awaited].failure))
+
+        var next: ?usize = null;
+        for (states, 0..) |state, index| if (state == .running) {
+            next = index;
+            break;
+        };
+        const index = next orelse return Agent.Error.ToolQueueOverflow;
+        outcomes[index] = futures[index].?.await(io);
+        states[index] = .complete;
+        running -= 1;
+        completed += 1;
+        try emitToolOutcome(hooks, tools[work[index].tool_index], work[index].call, outcomes[index]);
+        if (outcomes[index] == .failure and
+            !tools[work[index].tool_index].isRecoverable(outcomes[index].failure))
         {
-            return outcomes[awaited].failure;
+            return outcomes[index].failure;
         }
-        awaited += 1;
     }
     try checkCancellation(agent.cancellation);
     var follow_up_messages: std.ArrayList(model_types.RequestMessage) = .empty;
@@ -1592,6 +1646,39 @@ fn executeToolCalls(
         .parts = result_parts,
         .follow_up_messages = try follow_up_messages.toOwnedSlice(allocator),
     };
+}
+
+fn executionCapacity(limits: model_types.ToolLimits) usize {
+    if (limits.max_concurrency == 0) return 0;
+    return limits.max_concurrency +| limits.max_queue_size;
+}
+
+fn effectiveToolLimits(agent_limits: model_types.ToolLimits, tool_limits: ?model_types.ToolLimits) model_types.ToolLimits {
+    const tool = tool_limits orelse return agent_limits;
+    return .{
+        .timeout_ms = earliestTimeout(agent_limits.timeout_ms, tool.timeout_ms),
+        .max_concurrency = @min(agent_limits.max_concurrency, tool.max_concurrency),
+        .max_queue_size = @min(agent_limits.max_queue_size, tool.max_queue_size),
+        .max_result_bytes = @min(agent_limits.max_result_bytes, tool.max_result_bytes),
+        .max_follow_up_messages = @min(agent_limits.max_follow_up_messages, tool.max_follow_up_messages),
+        .max_follow_up_bytes = @min(agent_limits.max_follow_up_bytes, tool.max_follow_up_bytes),
+    };
+}
+
+fn earliestTimeout(agent_timeout: ?u64, tool_timeout: ?u64) ?u64 {
+    if (agent_timeout) |agent_value| {
+        if (tool_timeout) |tool_value| return @min(agent_value, tool_value);
+        return agent_value;
+    }
+    return tool_timeout;
+}
+
+fn runningCallsForTool(work: []const ToolWork, states: []const ToolTaskState, tool_index: usize) usize {
+    var count: usize = 0;
+    for (work, states) |item, state| {
+        if (state == .running and item.tool_index == tool_index) count += 1;
+    }
+    return count;
 }
 
 fn emitToolOutcome(
@@ -1615,6 +1702,7 @@ fn emitToolOutcome(
 
 fn executeTool(
     tool: model_types.Tool,
+    limits: model_types.ToolLimits,
     allocator: std.mem.Allocator,
     run_context: model_types.ToolRunContext,
     arguments_json: []const u8,
@@ -1623,7 +1711,126 @@ fn executeTool(
     const output = tool.executeOutputWithContext(allocator, run_context, arguments_json) catch |err| {
         return .{ .failure = err };
     };
+    validateToolOutput(output, limits) catch |failure| return .{ .failure = failure };
     return .{ .success = output };
+}
+
+const ToolControlOutcome = union(enum) {
+    tool: ToolOutcome,
+    timeout: anyerror!void,
+    cancelled: anyerror!void,
+};
+
+fn executeToolControlled(
+    maybe_io: ?std.Io,
+    tool: model_types.Tool,
+    limits: model_types.ToolLimits,
+    allocator: std.mem.Allocator,
+    run_context: model_types.ToolRunContext,
+    arguments_json: []const u8,
+) ToolOutcome {
+    if (limits.max_concurrency == 0) return .{ .failure = Agent.Error.ToolQueueOverflow };
+    if (maybe_io == null and limits.timeout_ms == null and run_context.cancellation == null)
+        return executeTool(tool, limits, allocator, run_context, arguments_json);
+    const io = maybe_io orelse return .{ .failure = Agent.Error.ToolIsolationRequiresIo };
+    var buffer: [3]ToolControlOutcome = undefined;
+    var select: std.Io.Select(ToolControlOutcome) = .init(io, &buffer);
+    defer select.cancelDiscard();
+    select.concurrent(.tool, executeTool, .{ tool, limits, allocator, run_context, arguments_json }) catch
+        return .{ .failure = Agent.Error.ToolConcurrencyUnavailable };
+    if (limits.timeout_ms) |milliseconds|
+        select.async(.timeout, waitForToolTimeout, .{ io, milliseconds });
+    if (run_context.cancellation) |token|
+        select.async(.cancelled, waitForToolCancellation, .{ io, token });
+    const outcome = select.await() catch return .{ .failure = Agent.Error.Cancelled };
+    return switch (outcome) {
+        .tool => |result| result,
+        .timeout => |result| timeout: {
+            result catch return .{ .failure = Agent.Error.Cancelled };
+            break :timeout .{ .failure = Agent.Error.ToolTimedOut };
+        },
+        .cancelled => |result| cancelled: {
+            result catch return .{ .failure = Agent.Error.Cancelled };
+            break :cancelled .{ .failure = Agent.Error.Cancelled };
+        },
+    };
+}
+
+fn waitForToolTimeout(io: std.Io, milliseconds: u64) !void {
+    const maximum: u64 = @intCast(std.math.maxInt(i64));
+    return toolTimeout(@min(milliseconds, maximum)).sleep(io);
+}
+
+fn waitForToolCancellation(io: std.Io, token: *const CancellationToken) !void {
+    while (!token.isCancelled()) try toolTimeout(5).sleep(io);
+}
+
+fn toolTimeout(milliseconds: u64) std.Io.Timeout {
+    return .{ .duration = .{
+        .raw = .fromMilliseconds(@intCast(milliseconds)),
+        .clock = .awake,
+    } };
+}
+
+fn validateToolOutput(output: model_types.ToolOutput, limits: model_types.ToolLimits) Agent.Error!void {
+    if (output.content.len > limits.max_result_bytes) return Agent.Error.ToolResultTooLarge;
+    if (output.follow_up_messages.len > limits.max_follow_up_messages) return Agent.Error.ToolFollowUpOverflow;
+    var total: usize = 0;
+    for (output.follow_up_messages) |message| {
+        if (!consumeFollowUpBytes(&total, limits.max_follow_up_bytes, message.instructions))
+            return Agent.Error.ToolFollowUpOverflow;
+        if (!consumeFollowUpBytes(&total, limits.max_follow_up_bytes, message.run_id))
+            return Agent.Error.ToolFollowUpOverflow;
+        if (!consumeFollowUpBytes(&total, limits.max_follow_up_bytes, message.conversation_id))
+            return Agent.Error.ToolFollowUpOverflow;
+        for (message.metadata) |metadata| {
+            if (!consumeBoundedBytes(&total, limits.max_follow_up_bytes, metadata.key.len) or
+                !consumeBoundedBytes(&total, limits.max_follow_up_bytes, metadata.value.len))
+                return Agent.Error.ToolFollowUpOverflow;
+        }
+        for (message.parts) |part| if (!consumeRequestPartBytes(&total, limits.max_follow_up_bytes, part))
+            return Agent.Error.ToolFollowUpOverflow;
+    }
+}
+
+fn consumeFollowUpBytes(total: *usize, limit: usize, value: ?[]const u8) bool {
+    return consumeBoundedBytes(total, limit, if (value) |bytes| bytes.len else 0);
+}
+
+fn consumeRequestPartBytes(total: *usize, limit: usize, part: RequestPart) bool {
+    return switch (part) {
+        .system_prompt, .retry_prompt => |text| consumeBoundedBytes(total, limit, text.len),
+        .user_prompt => |prompt| switch (prompt) {
+            .text => |text| consumeBoundedBytes(total, limit, text.len),
+            .image, .audio, .document, .binary => |content| consumeContentBytes(total, limit, content),
+        },
+        .tool_return => |result| consumeBoundedBytes(total, limit, result.call_id.len) and
+            consumeBoundedBytes(total, limit, result.name.len) and
+            consumeBoundedBytes(total, limit, result.content.len),
+    };
+}
+
+fn consumeContentBytes(total: *usize, limit: usize, content: model_types.Content) bool {
+    const source_ok = switch (content.source) {
+        .bytes, .url => |value| consumeBoundedBytes(total, limit, value.len),
+        .provider_file => |file| consumeBoundedBytes(total, limit, file.id.len) and
+            consumeFollowUpBytes(total, limit, file.provider),
+    };
+    if (!source_ok or
+        !consumeBoundedBytes(total, limit, content.media_type.len) or
+        !consumeFollowUpBytes(total, limit, content.filename) or
+        !consumeFollowUpBytes(total, limit, content.thought_signature)) return false;
+    for (content.metadata) |metadata| {
+        if (!consumeBoundedBytes(total, limit, metadata.key.len) or
+            !consumeBoundedBytes(total, limit, metadata.value.len)) return false;
+    }
+    return true;
+}
+
+fn consumeBoundedBytes(total: *usize, limit: usize, amount: usize) bool {
+    if (amount > limit -| total.*) return false;
+    total.* += amount;
+    return true;
 }
 
 fn toolResult(

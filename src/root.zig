@@ -76,6 +76,7 @@ pub const ToolDefinition = model.ToolDefinition;
 pub const ToolResult = model.ToolResult;
 pub const ToolExecution = model.ToolExecution;
 pub const ToolOutput = model.ToolOutput;
+pub const ToolLimits = model.ToolLimits;
 pub const ToolReturn = model.ToolReturn;
 pub const BuiltinTool = model.BuiltinTool;
 pub const BuiltinToolKind = model.BuiltinToolKind;

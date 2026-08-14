@@ -100,6 +100,13 @@ returned to the model as error results, bounded independently for each tool by
 run concurrently through `Agent.io`, keep the model's original result order,
 and count toward `limits.max_tool_calls` across the full run.
 
+Local tools use bounded execution defaults: at most eight calls run at once,
+64 may wait, and one result or all follow-up data may use at most 1 MiB. Set
+`Agent.tool_limits` for the run; `Tool.limits` may tighten it for one tool.
+Timeouts require `Agent.io`. Timeout, queue, result-size, and follow-up-size
+failures become ordinary error tool results so the model can recover without
+replaying a successful call.
+
 Reflected tools also expose the return type as
 `ToolDefinition.return_json_schema`. To add context for the next model step,
 return `ToolReturn(T)`:
