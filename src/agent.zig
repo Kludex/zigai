@@ -2487,6 +2487,7 @@ test "paused state serializes retries and rejects mismatched calls" {
         }
     };
     const agent = Agent{ .model = .{ .context = &unused, .profile = .{}, .requestFn = Stub.request } };
+    _ = try agent.model.request(std.testing.allocator, .{ .messages = &.{} });
     const approval = model_types.Tool{
         .definition = .{ .name = "approval", .description = "", .parameters_json_schema = "{}" },
         .execution = .requires_approval,
