@@ -520,6 +520,115 @@ test "unsupported model settings fail before requesting" {
     try std.testing.expectEqual(@as(usize, 0), reasoning.request_count);
 }
 
+test "capabilities compose tools instructions hooks settings and model selection" {
+    const parts = [_]zigai.model.Part{.{ .text = "selected" }};
+    const Inspector = struct {
+        fn inspect(_: usize, request: zigai.model.ModelRequest) !void {
+            try std.testing.expectEqual(@as(usize, 2), request.tools.len);
+            try std.testing.expectEqualStrings("first", request.tools[0].name);
+            try std.testing.expectEqualStrings("second", request.tools[1].name);
+            try std.testing.expectEqual(@as(usize, 3), request.instructions.len);
+            try std.testing.expectEqualStrings("agent", request.instructions[0]);
+            try std.testing.expectEqualStrings("capability one", request.instructions[1]);
+            try std.testing.expectEqualStrings("capability two", request.instructions[2]);
+            try std.testing.expectEqual(@as(f64, 0.5), request.settings.temperature.?);
+            try std.testing.expectEqual(@as(u64, 300), request.settings.max_tokens.?);
+        }
+    };
+    var base = zigai.testing.ScriptedModel{ .responses = &.{} };
+    var selected = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .inspectFn = Inspector.inspect,
+        .profile = .{ .supports_temperature = true },
+    };
+    const Selector = struct {
+        model: zigai.Model,
+        calls: usize = 0,
+
+        fn select(context: ?*anyopaque, run: zigai.CapabilityContext) !zigai.Model {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.calls += 1;
+            try std.testing.expectEqualStrings("go", run.prompt);
+            return self.model;
+        }
+    };
+    var selector = Selector{ .model = selected.model() };
+    const HookCapture = struct {
+        sequence: [4]u8 = undefined,
+        count: usize = 0,
+    };
+    const HookState = struct {
+        capture: *HookCapture,
+        id: u8,
+
+        fn event(context: *anyopaque, value: zigai.LifecycleEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.capture.sequence[self.capture.count] = switch (value) {
+                .run_start => self.id,
+                .run_end => |end| end_event: {
+                    try std.testing.expectEqualStrings("selected", end.output);
+                    break :end_event self.id + 10;
+                },
+            };
+            self.capture.count += 1;
+        }
+    };
+    var hook_capture: HookCapture = .{};
+    var hook_one = HookState{ .capture = &hook_capture, .id = 1 };
+    var hook_two = HookState{ .capture = &hook_capture, .id = 2 };
+    var unused_calls: u8 = 0;
+    var first = successfulTool(&unused_calls);
+    first.definition.name = "first";
+    var second = successfulTool(&unused_calls);
+    second.definition.name = "second";
+    const capabilities = [_]zigai.Capability{
+        .{
+            .tools = &.{first},
+            .instructions = &.{.{ .text = "capability one" }},
+            .hooks = &.{.{ .context = &hook_one, .eventFn = HookState.event }},
+            .model_settings = .{ .temperature = 0.2 },
+            .context = &selector,
+            .selectModelFn = Selector.select,
+        },
+        .{
+            .tools = &.{second},
+            .instructions = &.{.{ .text = "capability two" }},
+            .hooks = &.{.{ .context = &hook_two, .eventFn = HookState.event }},
+            .model_settings = .{ .max_tokens = 300 },
+        },
+    };
+    var result = try (zigai.Agent{
+        .model = base.model(),
+        .capabilities = &capabilities,
+        .instructions = &.{.{ .text = "agent" }},
+        .model_settings = .{ .temperature = 0.4 },
+    }).runWithOptions(std.testing.allocator, "go", .{
+        .model_settings = .{ .temperature = 0.5 },
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("selected", result.output);
+    try std.testing.expectEqual(@as(usize, 0), base.request_count);
+    try std.testing.expectEqual(@as(usize, 1), selected.request_count);
+    try std.testing.expectEqual(@as(usize, 1), selector.calls);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 11, 12 }, &hook_capture.sequence);
+}
+
+test "capability composition rejects duplicate tool names" {
+    const parts = [_]zigai.model.Part{.{ .text = "unused" }};
+    var scripted = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    var calls: u8 = 0;
+    const tool = successfulTool(&calls);
+    try std.testing.expectError(
+        zigai.Agent.Error.DuplicateToolName,
+        (zigai.Agent{
+            .model = scripted.model(),
+            .tools = &.{tool},
+            .capabilities = &.{.{ .tools = &.{tool} }},
+        }).run(std.testing.allocator, "hi"),
+    );
+    try std.testing.expectEqual(@as(usize, 0), scripted.request_count);
+}
+
 test "agent rejects empty and textless final responses" {
     const no_parts = [_]zigai.model.ModelResponse{.{ .parts = &.{} }};
     var empty = zigai.testing.ScriptedModel{ .responses = &no_parts };

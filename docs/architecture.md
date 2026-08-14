@@ -26,6 +26,13 @@ including the exact reasoning-effort levels, so an unsupported override fails
 before a request. Each adapter translates the resolved settings once at its
 wire boundary.
 
+Capabilities are ordered feature bundles. The agent starts with its direct
+tools and instructions, then appends each capability's contributions from left
+to right. Capability settings override earlier capabilities; direct agent and
+run settings remain higher precedence. Model selectors receive the model chosen
+so far, and capability lifecycle hooks run in the same stable order. Duplicate
+tool names are rejected before any provider call.
+
 Structured output is provider neutral at the agent boundary. JSON-object mode
 and named, strict JSON Schema mode are encoded as `text.format` for OpenAI and
 `output_config.format` for Anthropic, and `generationConfig` for Google. A

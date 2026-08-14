@@ -149,6 +149,27 @@ run. Instructions are sent again for every model request in that run, but are
 not stored in `result.messages`. This makes the result safe to reuse as message
 history without carrying instructions from an earlier run.
 
+## Capabilities
+
+Capabilities package one reusable agent feature:
+
+```zig
+const capability = zigai.Capability{
+    .tools = &tools,
+    .instructions = &.{.{ .text = "Use the knowledge base." }},
+    .model_settings = .{ .reasoning_effort = .medium },
+};
+
+const agent = zigai.Agent{
+    .model = model,
+    .capabilities = &.{capability},
+};
+```
+
+A capability can contribute tools, instructions, hooks, model settings, and a
+model selector. Multiple capabilities apply from left to right. Duplicate tool
+names fail before the first model request.
+
 ## Model settings
 
 Generation settings use one provider-neutral type:

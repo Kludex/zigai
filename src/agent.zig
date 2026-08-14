@@ -11,6 +11,7 @@ const Part = model_types.Part;
 const AgentError = error{
     Cancelled,
     ContentFiltered,
+    DuplicateToolName,
     EmptyModelResponse,
     IncompleteToolCall,
     InputTokenLimitExceeded,
@@ -152,6 +153,52 @@ pub const RunOptions = struct {
     model_settings: model_types.ModelSettings = .{},
 };
 
+pub const CapabilityContext = struct {
+    prompt: []const u8,
+    dependencies: ?*anyopaque,
+    model: model_types.Model,
+};
+
+pub const LifecycleEvent = union(enum) {
+    run_start: RunStart,
+    run_end: RunEnd,
+
+    pub const RunStart = struct {
+        prompt: []const u8,
+        model: model_types.Model,
+    };
+
+    pub const RunEnd = struct {
+        output: []const u8,
+        usage: model_types.Usage,
+        model_requests: usize,
+    };
+};
+
+pub const LifecycleHook = struct {
+    context: *anyopaque,
+    eventFn: *const fn (context: *anyopaque, event: LifecycleEvent) anyerror!void,
+
+    pub fn emit(self: LifecycleHook, event: LifecycleEvent) !void {
+        return self.eventFn(self.context, event);
+    }
+};
+
+/// A reusable feature bundle applied in `Agent.capabilities` order.
+pub const Capability = struct {
+    tools: []const model_types.Tool = &.{},
+    instructions: []const Instruction = &.{},
+    hooks: []const LifecycleHook = &.{},
+    model_settings: model_types.ModelSettings = .{},
+    context: ?*anyopaque = null,
+    selectModelFn: ?*const fn (context: ?*anyopaque, run: CapabilityContext) anyerror!model_types.Model = null,
+
+    pub fn selectModel(self: Capability, run: CapabilityContext) !model_types.Model {
+        const select = self.selectModelFn orelse return run.model;
+        return select(self.context, run);
+    }
+};
+
 /// An owned agent result whose JSON response has been decoded as `Output`.
 ///
 /// `output`, `output_json`, and `messages` may all reference the result arena.
@@ -175,6 +222,7 @@ pub fn TypedResult(comptime Output: type) type {
 
 pub const Agent = struct {
     model: model_types.Model,
+    capabilities: []const Capability = &.{},
     tools: []const model_types.Tool = &.{},
     system_prompt: ?[]const u8 = null,
     instructions: []const Instruction = &.{},
@@ -312,6 +360,53 @@ pub const Agent = struct {
         stream_sink: ?AgentStreamSink,
         output_validator: ?OutputValidator,
     ) !Result {
+        if (self.capabilities.len == 0) {
+            try ensureUniqueToolNames(self.tools);
+            return self.runConfigured(allocator, prompt, options, stream_sink, output_validator, &.{});
+        }
+        var tools: std.ArrayList(model_types.Tool) = .empty;
+        defer tools.deinit(allocator);
+        try tools.appendSlice(allocator, self.tools);
+        var instructions: std.ArrayList(Instruction) = .empty;
+        defer instructions.deinit(allocator);
+        try instructions.appendSlice(allocator, self.instructions);
+        var hooks: std.ArrayList(LifecycleHook) = .empty;
+        defer hooks.deinit(allocator);
+
+        const dependencies = options.dependencies orelse self.dependencies;
+        var model = self.model;
+        var capability_settings: model_types.ModelSettings = .{};
+        for (self.capabilities) |capability| {
+            try tools.appendSlice(allocator, capability.tools);
+            try instructions.appendSlice(allocator, capability.instructions);
+            try hooks.appendSlice(allocator, capability.hooks);
+            capability_settings = capability_settings.overrideWith(capability.model_settings);
+            model = try capability.selectModel(.{
+                .prompt = prompt,
+                .dependencies = dependencies,
+                .model = model,
+            });
+        }
+        try ensureUniqueToolNames(tools.items);
+
+        var configured = self;
+        configured.model = model;
+        configured.tools = tools.items;
+        configured.instructions = instructions.items;
+        configured.model_settings = capability_settings.overrideWith(self.model_settings);
+        configured.capabilities = &.{};
+        return configured.runConfigured(allocator, prompt, options, stream_sink, output_validator, hooks.items);
+    }
+
+    fn runConfigured(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        prompt: []const u8,
+        options: RunOptions,
+        stream_sink: ?AgentStreamSink,
+        output_validator: ?OutputValidator,
+        hooks: []const LifecycleHook,
+    ) !Result {
         try checkCancellation(self.cancellation);
         if (stream_sink != null and !self.model.profile.supports_streaming) return Error.ModelDoesNotSupportStreaming;
         if (self.system_prompt != null and !self.model.profile.supports_system_messages) {
@@ -333,6 +428,7 @@ pub const Agent = struct {
         }
         const resolved_settings = self.model.settings.overrideWith(self.model_settings).overrideWith(options.model_settings);
         try requireModelSettings(self.model.profile, resolved_settings);
+        try emitLifecycle(hooks, .{ .run_start = .{ .prompt = prompt, .model = self.model } });
 
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
@@ -438,6 +534,11 @@ pub const Agent = struct {
                     continue;
                 };
                 if (stream_sink) |sink| try sink.emit(.{ .final_output = output });
+                try emitLifecycle(hooks, .{ .run_end = .{
+                    .output = output,
+                    .usage = total_usage,
+                    .model_requests = model_requests,
+                } });
                 return .{
                     .arena = arena,
                     .output = output,
@@ -906,6 +1007,18 @@ fn resolveInstructions(
         try resolved.append(allocator, try allocator.dupe(u8, value));
     };
     return resolved.toOwnedSlice(allocator);
+}
+
+fn emitLifecycle(hooks: []const LifecycleHook, event: LifecycleEvent) !void {
+    for (hooks) |hook| try hook.emit(event);
+}
+
+fn ensureUniqueToolNames(tools: []const model_types.Tool) Agent.Error!void {
+    for (tools, 0..) |tool, index| {
+        for (tools[index + 1 ..]) |other| {
+            if (std.mem.eql(u8, tool.definition.name, other.definition.name)) return Agent.Error.DuplicateToolName;
+        }
+    }
 }
 
 fn findTool(tools: []const model_types.Tool, name: []const u8) ?model_types.Tool {
