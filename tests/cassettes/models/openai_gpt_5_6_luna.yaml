@@ -1,0 +1,253 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.openai.com/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-5.6-luna"
+        input:
+          - type: "message"
+            role: "system"
+            content: "Always use the weather tool before answering."
+          - type: "message"
+            role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - type: "function"
+            name: "weather"
+            description: "Get the current weather for a city."
+            parameters:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "29999"
+      x-ratelimit-remaining-tokens:
+      - "180000000"
+    body:
+      type: json
+      content:
+        id: "resp_09afdc188450d329006a7f51ba3ff48192a3b6b5ebc9d2d872"
+        object: "response"
+        created_at: 1786728890
+        status: "completed"
+        background: false
+        billing:
+          payer: "developer"
+        completed_at: 1786728891
+        error: null
+        frequency_penalty: 0
+        incomplete_details: null
+        instructions: null
+        max_output_tokens: null
+        max_tool_calls: null
+        model: "gpt-5.6-luna"
+        moderation: null
+        output:
+          - id: "fc_09afdc188450d329006a7f51bb60e48192a003a10b174e925a"
+            type: "function_call"
+            status: "completed"
+            arguments: "{\"city\":\"Madrid\"}"
+            call_id: "call_zUK6dd1Exlx6aBVRwpUadzP6"
+            name: "weather"
+        parallel_tool_calls: true
+        presence_penalty: 0
+        previous_response_id: null
+        prompt_cache_key: null
+        prompt_cache_retention: "24h"
+        reasoning:
+          context: "all_turns"
+          effort: "medium"
+          mode: "standard"
+          summary: null
+        safety_identifier: null
+        service_tier: "default"
+        store: true
+        temperature: 1
+        text:
+          format:
+            type: "text"
+          verbosity: "medium"
+        tool_choice: "auto"
+        tool_usage:
+          image_gen:
+            input_tokens: 0
+            input_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            output_tokens: 0
+            output_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            total_tokens: 0
+          web_search:
+            num_requests: 0
+        tools:
+          - type: "function"
+            description: "Get the current weather for a city."
+            name: "weather"
+            output_schema: null
+            parameters:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+            strict: true
+        top_logprobs: 0
+        top_p: 0.98
+        truncation: "disabled"
+        usage:
+          input_tokens: 72
+          input_tokens_details:
+            cache_write_tokens: 0
+            cached_tokens: 0
+          output_tokens: 17
+          output_tokens_details:
+            reasoning_tokens: 0
+          total_tokens: 89
+        user: null
+        metadata: {}
+- request:
+    method: POST
+    uri: "https://api.openai.com/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-5.6-luna"
+        input:
+          - type: "message"
+            role: "system"
+            content: "Always use the weather tool before answering."
+          - type: "message"
+            role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - type: "function_call"
+            call_id: "call_zUK6dd1Exlx6aBVRwpUadzP6"
+            name: "weather"
+            arguments: "{\"city\":\"Madrid\"}"
+          - type: "function_call_output"
+            call_id: "call_zUK6dd1Exlx6aBVRwpUadzP6"
+            output: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            name: "weather"
+            description: "Get the current weather for a city."
+            parameters:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "29999"
+      x-ratelimit-remaining-tokens:
+      - "180000000"
+    body:
+      type: json
+      content:
+        id: "resp_040866b6e386a6e5006a7f51bcbbc481a0b872d1ce3b3fcca5"
+        object: "response"
+        created_at: 1786728892
+        status: "completed"
+        background: false
+        billing:
+          payer: "developer"
+        completed_at: 1786728893
+        error: null
+        frequency_penalty: 0
+        incomplete_details: null
+        instructions: null
+        max_output_tokens: null
+        max_tool_calls: null
+        model: "gpt-5.6-luna"
+        moderation: null
+        output:
+          - id: "msg_040866b6e386a6e5006a7f51bd38f481a0b47f0870107416c5"
+            type: "message"
+            status: "completed"
+            content:
+              - type: "output_text"
+                annotations: []
+                logprobs: []
+                text: "Madrid is sunny and 31°C."
+            phase: "final_answer"
+            role: "assistant"
+        parallel_tool_calls: true
+        presence_penalty: 0
+        previous_response_id: null
+        prompt_cache_key: null
+        prompt_cache_retention: "24h"
+        reasoning:
+          context: "all_turns"
+          effort: "medium"
+          mode: "standard"
+          summary: null
+        safety_identifier: null
+        service_tier: "default"
+        store: true
+        temperature: 1
+        text:
+          format:
+            type: "text"
+          verbosity: "medium"
+        tool_choice: "auto"
+        tool_usage:
+          image_gen:
+            input_tokens: 0
+            input_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            output_tokens: 0
+            output_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            total_tokens: 0
+          web_search:
+            num_requests: 0
+        tools:
+          - type: "function"
+            description: "Get the current weather for a city."
+            name: "weather"
+            output_schema: null
+            parameters:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+            strict: true
+        top_logprobs: 0
+        top_p: 0.98
+        truncation: "disabled"
+        usage:
+          input_tokens: 110
+          input_tokens_details:
+            cache_write_tokens: 0
+            cached_tokens: 0
+          output_tokens: 12
+          output_tokens_details:
+            reasoning_tokens: 0
+          total_tokens: 122
+        user: null
+        metadata: {}

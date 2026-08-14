@@ -261,9 +261,32 @@ fn writeJsonChild(writer: *std.Io.Writer, value: std.json.Value, indentation: us
         try writer.writeByte('\n');
         return writeJsonBlock(writer, value, indentation + 2);
     }
+    if (value == .string and value.string.len > 512 and blockScalarSafe(value.string)) {
+        return writeBlockScalar(writer, value.string, indentation + 2);
+    }
     try writer.writeByte(' ');
     try writeJsonScalar(writer, value);
     try writer.writeByte('\n');
+}
+
+fn writeBlockScalar(writer: *std.Io.Writer, value: []const u8, indentation: usize) std.Io.Writer.Error!void {
+    const trailing_newline = std.mem.endsWith(u8, value, "\n");
+    try writer.writeAll(if (trailing_newline) " |+\n" else " |-\n");
+    const block = if (trailing_newline) value[0 .. value.len - 1] else value;
+    var lines = std.mem.splitScalar(u8, block, '\n');
+    while (lines.next()) |line| {
+        try writeIndent(writer, indentation);
+        try writer.writeAll(line);
+        try writer.writeByte('\n');
+    }
+}
+
+fn blockScalarSafe(value: []const u8) bool {
+    _ = std.unicode.Utf8View.init(value) catch return false;
+    for (value) |byte| {
+        if (byte < 0x20 and byte != '\n' and byte != '\t') return false;
+    }
+    return true;
 }
 
 fn writeJsonScalar(writer: *std.Io.Writer, value: std.json.Value) !void {

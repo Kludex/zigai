@@ -100,6 +100,23 @@ pub fn build(b: *std.Build) void {
     const docs = b.step("docs", "Generate Zig API documentation");
     const generate_docs = b.addSystemCommand(&.{"./scripts/docs"});
     docs.dependOn(&generate_docs.step);
+
+    const recorder = b.addExecutable(.{
+        .name = "zigai-record-cassettes",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/record_cassettes.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zigai", .module = zigai },
+                .{ .name = "yaml", .module = yaml },
+            },
+        }),
+    });
+    const run_recorder = b.addRunArtifact(recorder);
+    if (b.args) |args| run_recorder.addArgs(args);
+    const record_cassettes = b.step("record-cassettes", "Record real-provider model cassettes");
+    record_cassettes.dependOn(&run_recorder.step);
 }
 
 fn addCli(

@@ -325,6 +325,25 @@ test "cassette rejects a request whose body changed" {
     }));
 }
 
+test "cassette YAML round trips long opaque JSON strings" {
+    var blob: [2048]u8 = undefined;
+    @memset(&blob, 'a');
+    const body = try std.fmt.allocPrint(std.testing.allocator, "{{\"opaque\":\"{s}\"}}", .{&blob});
+    defer std.testing.allocator.free(body);
+    const yaml = try format.stringify(std.testing.allocator, .{
+        .version = 1,
+        .interactions = &.{.{
+            .request = .{ .method = .POST, .url = "https://example.test", .body = body },
+            .response = .{ .status = 200, .body = "{}" },
+        }},
+    });
+    defer std.testing.allocator.free(yaml);
+    try std.testing.expect(std.mem.indexOf(u8, yaml, "|-\n") != null);
+    var parsed = try format.parse(std.testing.allocator, yaml);
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings(body, parsed.value.interactions[0].request.body);
+}
+
 test "cassette streaming replay and recording preserve lines" {
     const cassette =
         \\version: 1

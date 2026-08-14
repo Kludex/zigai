@@ -30,6 +30,27 @@ Provider cassettes live in `tests/cassettes/`. Their codec, recorder, replay
 transport, and body filters live in `tests/support/`; none are exported by the
 library or compiled into the command-line clients.
 
+`tests/cassettes/models/` contains real tool-loop recordings for four current
+models from each first-party provider. The matrix is defined once in
+`tests/support/model_matrix.zig` and drives both recording and replay.
+
+Record the complete matrix with real credentials:
+
+```console
+zig build record-cassettes
+```
+
+Pass a provider or exact model to record only part of it:
+
+```console
+zig build record-cassettes -- anthropic
+zig build record-cassettes -- gemini-3.5-flash
+```
+
+The recorder accepts `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and either
+`GOOGLE_API_KEY` or `GEMINI_API_KEY`. It replaces each cassette atomically only
+after a successful agent tool loop. Authentication headers are never copied.
+
 The files follow Cassetter v1 YAML. JSON bodies are nested YAML values, streamed
 responses use literal text blocks, and binary bodies are explicit. Headers are
 omitted by default. Review request and response content before committing a new

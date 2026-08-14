@@ -1,0 +1,124 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent"
+    headers: {}
+    body:
+      type: json
+      content:
+        systemInstruction:
+          parts:
+            - text: "Always use the weather tool before answering."
+        contents:
+          - role: "user"
+            parts:
+              - text: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - functionDeclarations:
+              - name: "weather"
+                description: "Get the current weather for a city."
+                parameters:
+                  type: "object"
+                  properties:
+                    city:
+                      type: "string"
+                  required:
+                    - "city"
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        candidates:
+          - content:
+              parts:
+                - functionCall:
+                    name: "weather"
+                    args:
+                      city: "Madrid"
+                    id: "call_132475"
+                  thoughtSignature: "ErgFCrUFARFNMg84VvLcKAHS7tPN2qNDts0u/nBCi/i8kz81d9mWnInvUPpZNl6AD9d1V1OqDnAFOY9I7akp9PfaE1zHDFw+ctG5VrqE+E+w7JCQAMzF3xKzCa073Rjy2ARZb7GYNXQOnxhyRFDIeTC2xa/0HiuGZ1scMIBOOeTdGQhFh5AyQfcJ2pWmBTveH32qQMtIVwo0YwQOi1LOmsVZDqxqVCrQk8/RBuwR+rK1aKvZTuL9DUruX14vZobw5aMuqBq3hzA4Q8Ecd7ot7jn5X3dwDSvAuiEJ5rky6IeQ8IPt5XhfxPjdoEjvwLL7yyRGE9LmyaJfbXPWz51h223Lam1dHy4J83pA7SxxvfpQQAA2l7eX1Ib/oiD2ZY21ufUNp79wosQQwnl1jaCTUOV3jZV5ID2HJzJDZcDXmCOpeCJVuuDrEsPqTLrKjJypYQyC3KCleNcr5o7uVP/OlqfQK/+sMHvwFl2UmZSTY5IXXENTuH+6vC63hkFasWIOfszbnpjaHuSCb5IUMhHl1cvOCGt3OZ8/qrf6jDO5WIcylvVHDb/32MDe++h0B8cRR7Tmf1FaYZfGThE0s0RyO32ufqv7MV9sS7MN8DiZ49AYPgGIAXvnu5dy+22wH9N/hCNe2E1/AY7CRoo82Z0/5s/VKr3aWfMgF38TabOAVhavH2/w5Y4S/IxpbfCp192tcOi1IXJ6seSUP7LH8V5OX6FLSFTUKZclvkaNrlk1M8HPZ/VRLMOk6nhaSWcW5LBl7988HIk1Ea15UT0fXo7E/BDMoBuGutqrzNO48184dOD0B2iIsu3eQgBcBMU7bJrdqLjvuZGZUJo0sxviUORxoyZRe1yy6rOaw5pDOqplUoF7oP82Kt8rIuvSf/SSyQqYRReMu3U+MscipeRB89DLlp8WIYgMlA5TwoBY"
+              role: "model"
+            finishReason: "STOP"
+            index: 0
+            finishMessage: "Model generated function call(s)."
+        usageMetadata:
+          promptTokenCount: 69
+          candidatesTokenCount: 14
+          totalTokenCount: 237
+          promptTokensDetails:
+            - modality: "TEXT"
+              tokenCount: 69
+          thoughtsTokenCount: 154
+          serviceTier: "standard"
+        modelVersion: "gemini-3.1-pro-preview"
+        responseId: "D1F_aq3qJp3insEPo9CSuAI"
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent"
+    headers: {}
+    body:
+      type: json
+      content:
+        systemInstruction:
+          parts:
+            - text: "Always use the weather tool before answering."
+        contents:
+          - role: "user"
+            parts:
+              - text: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "model"
+            parts:
+              - functionCall:
+                  name: "weather"
+                  args:
+                    city: "Madrid"
+                  id: "call_132475"
+                thoughtSignature: "ErgFCrUFARFNMg84VvLcKAHS7tPN2qNDts0u/nBCi/i8kz81d9mWnInvUPpZNl6AD9d1V1OqDnAFOY9I7akp9PfaE1zHDFw+ctG5VrqE+E+w7JCQAMzF3xKzCa073Rjy2ARZb7GYNXQOnxhyRFDIeTC2xa/0HiuGZ1scMIBOOeTdGQhFh5AyQfcJ2pWmBTveH32qQMtIVwo0YwQOi1LOmsVZDqxqVCrQk8/RBuwR+rK1aKvZTuL9DUruX14vZobw5aMuqBq3hzA4Q8Ecd7ot7jn5X3dwDSvAuiEJ5rky6IeQ8IPt5XhfxPjdoEjvwLL7yyRGE9LmyaJfbXPWz51h223Lam1dHy4J83pA7SxxvfpQQAA2l7eX1Ib/oiD2ZY21ufUNp79wosQQwnl1jaCTUOV3jZV5ID2HJzJDZcDXmCOpeCJVuuDrEsPqTLrKjJypYQyC3KCleNcr5o7uVP/OlqfQK/+sMHvwFl2UmZSTY5IXXENTuH+6vC63hkFasWIOfszbnpjaHuSCb5IUMhHl1cvOCGt3OZ8/qrf6jDO5WIcylvVHDb/32MDe++h0B8cRR7Tmf1FaYZfGThE0s0RyO32ufqv7MV9sS7MN8DiZ49AYPgGIAXvnu5dy+22wH9N/hCNe2E1/AY7CRoo82Z0/5s/VKr3aWfMgF38TabOAVhavH2/w5Y4S/IxpbfCp192tcOi1IXJ6seSUP7LH8V5OX6FLSFTUKZclvkaNrlk1M8HPZ/VRLMOk6nhaSWcW5LBl7988HIk1Ea15UT0fXo7E/BDMoBuGutqrzNO48184dOD0B2iIsu3eQgBcBMU7bJrdqLjvuZGZUJo0sxviUORxoyZRe1yy6rOaw5pDOqplUoF7oP82Kt8rIuvSf/SSyQqYRReMu3U+MscipeRB89DLlp8WIYgMlA5TwoBY"
+          - role: "user"
+            parts:
+              - functionResponse:
+                  name: "weather"
+                  response:
+                    result:
+                      temperature_c: 31
+                      condition: "sunny"
+                  id: "call_132475"
+        tools:
+          - functionDeclarations:
+              - name: "weather"
+                description: "Get the current weather for a city."
+                parameters:
+                  type: "object"
+                  properties:
+                    city:
+                      type: "string"
+                  required:
+                    - "city"
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        candidates:
+          - content:
+              parts:
+                - text: "It is currently sunny and 31°C in Madrid."
+                  thoughtSignature: "Eo8CCowCARFNMg9xph5xkOavdszUGtY6aDpWyG2EWlgDhZeCs57+A5CTIK0XA1NlI8diQCY7Cj0gzxpe1ixXPALcEwul5frZRWnUGXY410/3UL46a//MeOjv6cpHz0L1BQsOYjCnD/oBax6ZObH8LQy26XzUnSLi0xNfaQRDAqPnpjAc4dO8qb6Ypuc+C6uh4IjIXl5UfC5+Z4a64vyaTRh3sv+p1Vwry+MuBHkLY4ITO8CjAQkMi90/XJPWziGrOm8M/gOsmaEkKOGqelRtJjffGBmJCNcg8pNmVREzIjpQW/uH0tnmxUUCv5JPxryP6Zzmq/vy/sGEkpFKwfR6ELkUahJXdNKeoNNRU21xsQJOhw=="
+              role: "model"
+            finishReason: "STOP"
+            index: 0
+        usageMetadata:
+          promptTokenCount: 258
+          candidatesTokenCount: 13
+          totalTokenCount: 311
+          promptTokensDetails:
+            - modality: "TEXT"
+              tokenCount: 258
+          thoughtsTokenCount: 40
+          serviceTier: "standard"
+        modelVersion: "gemini-3.1-pro-preview"
+        responseId: "ElF_ar2lLue6kdUP6MGK-Ao"

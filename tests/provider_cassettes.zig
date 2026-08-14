@@ -1,6 +1,10 @@
 const std = @import("std");
 const zigai = @import("zigai");
 const cassettes = @import("support/cassettes.zig");
+const model_matrix = @import("support/model_matrix.zig");
+
+const matrix_prompt = "Call the weather tool exactly once with city Madrid. Then reply with one short sentence.";
+const matrix_system_prompt = "Always use the weather tool before answering.";
 
 const weather_definition: zigai.model.ToolDefinition = .{
     .name = "weather",
@@ -21,6 +25,87 @@ fn weatherTool(state: *u8) zigai.Tool {
             }
         }.execute,
     };
+}
+
+fn matrixWeatherTool(state: *u8) zigai.Tool {
+    return .{
+        .definition = .{
+            .name = "weather",
+            .description = "Get the current weather for a city.",
+            .parameters_json_schema = "{\"type\":\"object\",\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"additionalProperties\":false}",
+        },
+        .context = state,
+        .executeFn = struct {
+            fn execute(context: *anyopaque, allocator: std.mem.Allocator, arguments: []const u8) ![]const u8 {
+                const calls: *u8 = @ptrCast(@alignCast(context));
+                calls.* += 1;
+                const parsed = try std.json.parseFromSliceLeaky(
+                    struct { city: []const u8 },
+                    allocator,
+                    arguments,
+                    .{ .ignore_unknown_fields = false },
+                );
+                try std.testing.expectEqualStrings("Madrid", parsed.city);
+                return allocator.dupe(u8, "{\"temperature_c\":31,\"condition\":\"sunny\"}");
+            }
+        }.execute,
+    };
+}
+
+test "real OpenAI model cassettes replay complete tool loops" {
+    inline for (model_matrix.openai) |entry| {
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+        defer cassette.deinit();
+        var client = zigai.openai.Client{
+            .model_name = entry.model,
+            .api_key = "not-recorded",
+            .transport = cassette.transport(),
+        };
+        try replayMatrixScenario(client.model(), &cassette);
+    }
+}
+
+test "real Anthropic model cassettes replay complete tool loops" {
+    inline for (model_matrix.anthropic) |entry| {
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+        defer cassette.deinit();
+        var client = zigai.anthropic.Client{
+            .model_name = entry.model,
+            .api_key = "not-recorded",
+            .transport = cassette.transport(),
+            .max_tokens = 128,
+        };
+        try replayMatrixScenario(client.model(), &cassette);
+    }
+}
+
+test "real Google model cassettes replay complete tool loops" {
+    inline for (model_matrix.google) |entry| {
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+        defer cassette.deinit();
+        var client = zigai.google.Client{
+            .model_name = entry.model,
+            .api_key = "not-recorded",
+            .transport = cassette.transport(),
+        };
+        try replayMatrixScenario(client.model(), &cassette);
+    }
+}
+
+fn replayMatrixScenario(model: zigai.Model, cassette: *cassettes.ReplayTransport) !void {
+    var calls: u8 = 0;
+    const tool = matrixWeatherTool(&calls);
+    var result = try (zigai.Agent{
+        .model = model,
+        .tools = &.{tool},
+        .system_prompt = matrix_system_prompt,
+        .limits = .{ .max_model_requests = 4, .max_tool_calls = 2 },
+    }).run(std.testing.allocator, matrix_prompt);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(u8, 1), calls);
+    try std.testing.expect(result.output.len > 0);
+    try std.testing.expect(result.usage.totalTokens() > 0);
+    try std.testing.expectEqual(@as(usize, 0), cassette.remaining());
 }
 
 test "OpenAI cassette covers the complete agent tool loop" {

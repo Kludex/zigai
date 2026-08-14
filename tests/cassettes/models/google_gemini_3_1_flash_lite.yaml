@@ -1,0 +1,122 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
+    headers: {}
+    body:
+      type: json
+      content:
+        systemInstruction:
+          parts:
+            - text: "Always use the weather tool before answering."
+        contents:
+          - role: "user"
+            parts:
+              - text: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - functionDeclarations:
+              - name: "weather"
+                description: "Get the current weather for a city."
+                parameters:
+                  type: "object"
+                  properties:
+                    city:
+                      type: "string"
+                  required:
+                    - "city"
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        candidates:
+          - content:
+              parts:
+                - functionCall:
+                    name: "weather"
+                    args:
+                      city: "Madrid"
+                    id: "call_2022257"
+                  thoughtSignature: "EnEKbwERTTIPIJgq1ocw05/wPkdA6Lv3QA5vXlEJIj5xxRrfPGR3pyhkAPuomo7/q9MLZ0umNS8huIapDcdQdCU6rmI7QcMBTgAltNAlFyz4wcymJt6fMmmuV3DdaaMycaV3dfLftOyyXZJjb3UlLW8D/w=="
+              role: "model"
+            finishReason: "STOP"
+            index: 0
+            finishMessage: "Model generated function call(s)."
+        usageMetadata:
+          promptTokenCount: 69
+          candidatesTokenCount: 14
+          totalTokenCount: 83
+          promptTokensDetails:
+            - modality: "TEXT"
+              tokenCount: 69
+          serviceTier: "standard"
+        modelVersion: "gemini-3.1-flash-lite"
+        responseId: "DFF_aveiA6PlnsEPt5OduA0"
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
+    headers: {}
+    body:
+      type: json
+      content:
+        systemInstruction:
+          parts:
+            - text: "Always use the weather tool before answering."
+        contents:
+          - role: "user"
+            parts:
+              - text: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "model"
+            parts:
+              - functionCall:
+                  name: "weather"
+                  args:
+                    city: "Madrid"
+                  id: "call_2022257"
+                thoughtSignature: "EnEKbwERTTIPIJgq1ocw05/wPkdA6Lv3QA5vXlEJIj5xxRrfPGR3pyhkAPuomo7/q9MLZ0umNS8huIapDcdQdCU6rmI7QcMBTgAltNAlFyz4wcymJt6fMmmuV3DdaaMycaV3dfLftOyyXZJjb3UlLW8D/w=="
+          - role: "user"
+            parts:
+              - functionResponse:
+                  name: "weather"
+                  response:
+                    result:
+                      temperature_c: 31
+                      condition: "sunny"
+                  id: "call_2022257"
+        tools:
+          - functionDeclarations:
+              - name: "weather"
+                description: "Get the current weather for a city."
+                parameters:
+                  type: "object"
+                  properties:
+                    city:
+                      type: "string"
+                  required:
+                    - "city"
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        candidates:
+          - content:
+              parts:
+                - text: "The weather in Madrid is currently sunny with a temperature of 31°C."
+                  thoughtSignature: "EnEKbwERTTIPwyWXUWlKaAXjupt0ZtIH/izubBID823EiTwMtdoMH/mziiMkpz/NnH3d+z+gYpNiBb9Sx78xhMZhkJ4llH4qX3PDX3UopJ61/ff683e4MPPbvtGkfUWd43NUFIMe7LdLDejBtONpa+mMTw=="
+              role: "model"
+            finishReason: "STOP"
+            index: 0
+        usageMetadata:
+          promptTokenCount: 104
+          candidatesTokenCount: 17
+          totalTokenCount: 121
+          promptTokensDetails:
+            - modality: "TEXT"
+              tokenCount: 104
+          serviceTier: "standard"
+        modelVersion: "gemini-3.1-flash-lite"
+        responseId: "DFF_arD-JNGunsEP3L7IsQY"
