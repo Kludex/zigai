@@ -440,7 +440,7 @@ fn randomId(comptime length: usize, io: std.Io) [length]u8 {
     std.Io.random(io, &id);
     for (id) |byte| if (byte != 0) return id;
     id[length - 1] = 1;
-    return id;
+    return id; // all-zero random fallback
 }
 
 fn durationSeconds(start: Run.Start, end: Run.Start) f64 {
@@ -468,4 +468,84 @@ fn encodePrompt(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
     try json.endObject();
     try json.endArray();
     return output.toOwnedSlice();
+}
+
+test "telemetry records captured prompts and lifecycle failures" {
+    const agent_types = @import("agent.zig");
+    const Capture = struct {
+        error_spans: usize = 0,
+        retries: usize = 0,
+        saw_prompt: bool = false,
+
+        fn span(context: *anyopaque, value: Span) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (value.status == .error_status) self.error_spans += 1;
+            for (value.attributes) |attribute| {
+                if (std.mem.eql(u8, attribute.key, "gen_ai.input.messages")) {
+                    try std.testing.expect(std.mem.indexOf(u8, attribute.value.string, "private prompt") != null);
+                    self.saw_prompt = true;
+                }
+            }
+        }
+
+        fn metric(context: *anyopaque, value: Metric) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (std.mem.eql(u8, value.name, "zigai.agent.retries")) self.retries += 1;
+        }
+    };
+    const Stub = struct {
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            return .{ .parts = &.{} };
+        }
+    };
+    var capture: Capture = .{};
+    var unused: u8 = 0;
+    const model = model_types.Model{
+        .context = &unused,
+        .profile = .{},
+        .provider_name = "test",
+        .model_name = "errors",
+        .requestFn = Stub.request,
+    };
+    var run = (OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = .{ .context = &capture, .spanFn = Capture.span, .metricFn = Capture.metric },
+        .capture_prompts = true,
+    }).start(std.testing.allocator);
+    defer run.deinit();
+
+    try run.observe(agent_types.LifecycleEvent{ .run_start = .{ .prompt = "private prompt", .model = model } });
+    try run.observe(agent_types.LifecycleEvent{ .model_request_start = .{
+        .number = 1,
+        .request = .{ .messages = &.{} },
+        .streaming = false,
+    } });
+    try run.observe(agent_types.LifecycleEvent{ .model_request_end = .{
+        .number = 1,
+        .response = .{ .parts = &.{} },
+    } });
+    const first = model_types.ToolCall{ .id = "first", .name = "lookup", .arguments_json = "{}" };
+    const second = model_types.ToolCall{ .id = "second", .name = "lookup", .arguments_json = "{}" };
+    const third = model_types.ToolCall{ .id = "third", .name = "lookup", .arguments_json = "{}" };
+    try run.observe(agent_types.LifecycleEvent{ .tool_validation_start = .{ .call = first } });
+    try run.observe(agent_types.LifecycleEvent{ .tool_validation_start = .{ .call = second } });
+    try run.observe(agent_types.LifecycleEvent{ .tool_execution_end = .{ .call = second, .content = "ok" } });
+    try run.observe(agent_types.LifecycleEvent{ .tool_validation_error = .{ .call = first, .failure = error.InvalidToolArguments } });
+    try run.observe(agent_types.LifecycleEvent{ .tool_validation_start = .{ .call = third } });
+    try run.observe(agent_types.LifecycleEvent{ .tool_execution_error = .{
+        .call = third,
+        .failure = error.ToolFailed,
+        .recoverable = true,
+    } });
+    try run.observe(agent_types.LifecycleEvent{ .output_validation_error = .{
+        .output = "invalid",
+        .failure = error.InvalidOutput,
+        .retry_number = 1,
+        .will_retry = true,
+    } });
+    try run.observe(agent_types.LifecycleEvent{ .run_error = .{ .failure = error.ProviderServerError } });
+
+    try std.testing.expectEqual(@as(usize, 3), capture.error_spans);
+    try std.testing.expectEqual(@as(usize, 2), capture.retries);
+    try std.testing.expect(capture.saw_prompt);
 }

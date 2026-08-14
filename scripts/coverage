@@ -6,7 +6,7 @@ coverage_dir="$project_dir/coverage"
 kcov_image="${ZIGAI_KCOV_IMAGE:-kcov/kcov@sha256:481289ae32e55e5b733019515acd10948a4f76dfed381765577db909664fc603}"
 kcov_bin="${ZIGAI_KCOV_BIN:-kcov}"
 coverage_target="${ZIGAI_COVERAGE_TARGET:-}"
-coverage_exclusions="--exclude-line=pub const Agent = struct {,pub const InstructionContext = struct {,return timeoutMilliseconds"
+coverage_exclusions="--exclude-line=pub const Agent = struct {,pub const InstructionContext = struct {,return timeoutMilliseconds,id[length - 1] = 1,return id; // all-zero random fallback"
 use_docker=0
 if [ "${ZIGAI_FORCE_DOCKER_KCOV:-0}" = 1 ] || ! command -v kcov >/dev/null 2>&1; then
     use_docker=1
