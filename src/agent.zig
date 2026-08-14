@@ -36,6 +36,11 @@ const AgentError = error{
     ParallelToolCallsRequireIo,
     TotalTokenLimitExceeded,
     ToolConcurrencyUnavailable,
+    ToolCallRequiresDeferredRun,
+    MissingDeferredToolDecision,
+    UnexpectedDeferredToolDecision,
+    DeferredToolRequiresResult,
+    InvalidDeferredState,
     UnknownTool,
     RetryBackoffRequiresIo,
 };
@@ -155,6 +160,110 @@ pub const RunOptions = struct {
     model_settings: model_types.ModelSettings = .{},
     /// Extra provider-facing history processors applied after agent processors.
     history_processors: []const history.Processor = &.{},
+};
+
+pub const DeferredToolCall = struct {
+    call_id: []const u8,
+    name: []const u8,
+    arguments_json: []const u8,
+    execution: model_types.ToolExecution,
+};
+
+pub const ResumeAction = enum {
+    approve,
+    deny,
+    result,
+};
+
+/// A serializable decision for one paused tool call. `content` is the denial
+/// reason or externally produced result for `deny` and `result` actions.
+pub const ResumeDecision = struct {
+    call_id: []const u8,
+    action: ResumeAction,
+    content: ?[]const u8 = null,
+    is_error: bool = false,
+};
+
+const SerializedResume = struct {
+    version: u8 = 1,
+    decisions: []const ResumeDecision,
+};
+
+pub fn stringifyResumeDecisions(
+    allocator: std.mem.Allocator,
+    decisions: []const ResumeDecision,
+) ![]u8 {
+    return std.json.Stringify.valueAlloc(allocator, SerializedResume{
+        .decisions = decisions,
+    }, .{});
+}
+
+pub const OwnedResumeDecisions = struct {
+    arena: std.heap.ArenaAllocator,
+    decisions: []const ResumeDecision,
+
+    pub fn deinit(self: *OwnedResumeDecisions) void {
+        self.arena.deinit();
+        self.* = undefined;
+    }
+};
+
+pub fn parseResumeDecisions(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+) !OwnedResumeDecisions {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    const parsed = std.json.parseFromSliceLeaky(
+        SerializedResume,
+        arena.allocator(),
+        source,
+        .{ .ignore_unknown_fields = false, .allocate = .alloc_always },
+    ) catch return Agent.Error.InvalidDeferredState;
+    if (parsed.version != 1) return Agent.Error.InvalidDeferredState;
+    return .{ .arena = arena, .decisions = parsed.decisions };
+}
+
+pub const PausedRun = struct {
+    arena: std.heap.ArenaAllocator,
+    state_json: []const u8,
+    calls: []const DeferredToolCall,
+    usage: model_types.Usage,
+    model_requests: usize,
+
+    pub fn deinit(self: *PausedRun) void {
+        self.arena.deinit();
+        self.* = undefined;
+    }
+};
+
+const SerializedToolRetry = struct {
+    name: []const u8,
+    count: usize,
+};
+
+const SerializedPause = struct {
+    version: u8,
+    prompt: []const u8,
+    history_json: []const u8,
+    instructions: []const []const u8,
+    usage: model_types.Usage,
+    model_requests: usize,
+    total_tool_calls: usize,
+    output_retries: usize,
+    tool_retries: []const SerializedToolRetry,
+    calls: []const DeferredToolCall,
+};
+
+const ResumeState = struct {
+    messages: []const Message,
+    instructions: []const []const u8,
+    usage: model_types.Usage,
+    model_requests: usize,
+    total_tool_calls: usize,
+    output_retries: usize,
+    tool_retries: []const SerializedToolRetry,
+    calls: []const DeferredToolCall,
 };
 
 pub const CapabilityContext = struct {
@@ -390,6 +499,19 @@ pub const Agent = struct {
         }
     };
 
+    pub const RunOutcome = union(enum) {
+        complete: Result,
+        paused: PausedRun,
+
+        pub fn deinit(self: *RunOutcome) void {
+            switch (self.*) {
+                .complete => |*result| result.deinit(),
+                .paused => |*paused| paused.deinit(),
+            }
+            self.* = undefined;
+        }
+    };
+
     pub fn run(self: Agent, allocator: std.mem.Allocator, prompt: []const u8) !Result {
         return self.runWithOptions(allocator, prompt, .{});
     }
@@ -414,7 +536,7 @@ pub const Agent = struct {
         options: RunOptions,
     ) !TypedResult(Output) {
         const configured = withTypedOutput(self, Output);
-        return decodeTypedResult(Output, try configured.runInternal(
+        return decodeTypedResult(Output, try configured.runResultInternal(
             allocator,
             prompt,
             options,
@@ -430,7 +552,79 @@ pub const Agent = struct {
         prompt: []const u8,
         options: RunOptions,
     ) !Result {
-        return self.runInternal(allocator, prompt, options, null, null);
+        return self.runResultInternal(allocator, prompt, options, null, null);
+    }
+
+    /// Runs until final output or a tool needs approval or external execution.
+    pub fn runUntilPause(self: Agent, allocator: std.mem.Allocator, prompt: []const u8) !RunOutcome {
+        return self.runUntilPauseWithOptions(allocator, prompt, .{});
+    }
+
+    pub fn runUntilPauseWithOptions(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        prompt: []const u8,
+        options: RunOptions,
+    ) !RunOutcome {
+        return self.runOutcomeInternal(allocator, prompt, options, null, null, true, null, &.{});
+    }
+
+    /// Continues a serialized paused run. Decisions must cover every paused
+    /// approval or external tool call exactly once.
+    pub fn resumeRun(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        state_json: []const u8,
+        decisions: []const ResumeDecision,
+    ) !RunOutcome {
+        return self.resumeRunWithOptions(allocator, state_json, decisions, .{});
+    }
+
+    pub fn resumeRunJson(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        state_json: []const u8,
+        decisions_json: []const u8,
+    ) !RunOutcome {
+        var decisions = try parseResumeDecisions(allocator, decisions_json);
+        defer decisions.deinit();
+        return self.resumeRun(allocator, state_json, decisions.decisions);
+    }
+
+    pub fn resumeRunWithOptions(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        state_json: []const u8,
+        decisions: []const ResumeDecision,
+        options: RunOptions,
+    ) !RunOutcome {
+        const parsed = std.json.parseFromSlice(SerializedPause, allocator, state_json, .{
+            .ignore_unknown_fields = false,
+        }) catch return Error.InvalidDeferredState;
+        defer parsed.deinit();
+        if (parsed.value.version != 1) return Error.InvalidDeferredState;
+        var owned_history = history.parse(allocator, parsed.value.history_json) catch
+            return Error.InvalidDeferredState;
+        defer owned_history.deinit();
+        return self.runOutcomeInternal(
+            allocator,
+            parsed.value.prompt,
+            options,
+            null,
+            null,
+            true,
+            .{
+                .messages = owned_history.messages,
+                .instructions = parsed.value.instructions,
+                .usage = parsed.value.usage,
+                .model_requests = parsed.value.model_requests,
+                .total_tool_calls = parsed.value.total_tool_calls,
+                .output_retries = parsed.value.output_retries,
+                .tool_retries = parsed.value.tool_retries,
+                .calls = parsed.value.calls,
+            },
+            decisions,
+        );
     }
 
     pub fn runStream(self: Agent, allocator: std.mem.Allocator, prompt: []const u8, sink: AgentStreamSink) !Result {
@@ -458,7 +652,7 @@ pub const Agent = struct {
         sink: AgentStreamSink,
     ) !TypedResult(Output) {
         const configured = withTypedOutput(self, Output);
-        return decodeTypedResult(Output, try configured.runInternal(
+        return decodeTypedResult(Output, try configured.runResultInternal(
             allocator,
             prompt,
             options,
@@ -475,10 +669,10 @@ pub const Agent = struct {
         options: RunOptions,
         sink: AgentStreamSink,
     ) !Result {
-        return self.runInternal(allocator, prompt, options, sink, null);
+        return self.runResultInternal(allocator, prompt, options, sink, null);
     }
 
-    fn runInternal(
+    fn runResultInternal(
         self: Agent,
         allocator: std.mem.Allocator,
         prompt: []const u8,
@@ -486,6 +680,37 @@ pub const Agent = struct {
         stream_sink: ?AgentStreamSink,
         output_validator: ?OutputValidator,
     ) !Result {
+        const outcome = try self.runOutcomeInternal(
+            allocator,
+            prompt,
+            options,
+            stream_sink,
+            output_validator,
+            false,
+            null,
+            &.{},
+        );
+        return switch (outcome) {
+            .complete => |result| result,
+            .paused => |paused_value| {
+                var paused = paused_value;
+                paused.deinit();
+                return Error.ToolCallRequiresDeferredRun;
+            },
+        };
+    }
+
+    fn runOutcomeInternal(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        prompt: []const u8,
+        options: RunOptions,
+        stream_sink: ?AgentStreamSink,
+        output_validator: ?OutputValidator,
+        allow_pause: bool,
+        resume_state: ?ResumeState,
+        decisions: []const ResumeDecision,
+    ) !RunOutcome {
         var telemetry_run: ?telemetry_types.Run = if (self.telemetry) |configured|
             configured.start(allocator)
         else
@@ -498,7 +723,7 @@ pub const Agent = struct {
             defer hooks.deinit(allocator);
             try hooks.appendSlice(allocator, self.hooks);
             if (telemetry_run) |*instrumentation| try hooks.append(allocator, telemetryHook(instrumentation));
-            return self.runConfigured(allocator, prompt, options, stream_sink, output_validator, hooks.items) catch |err| {
+            return self.runConfigured(allocator, prompt, options, stream_sink, output_validator, hooks.items, allow_pause, resume_state, decisions) catch |err| {
                 try emitLifecycle(hooks.items, .{ .run_error = .{ .failure = err } });
                 return err;
             };
@@ -546,7 +771,7 @@ pub const Agent = struct {
         configured.model_settings = capability_settings.overrideWith(self.model_settings);
         configured.capabilities = &.{};
         if (telemetry_run) |*instrumentation| try hooks.append(allocator, telemetryHook(instrumentation));
-        return configured.runConfigured(allocator, prompt, options, stream_sink, output_validator, hooks.items) catch |err| {
+        return configured.runConfigured(allocator, prompt, options, stream_sink, output_validator, hooks.items, allow_pause, resume_state, decisions) catch |err| {
             try emitLifecycle(hooks.items, .{ .run_error = .{ .failure = err } });
             return err;
         };
@@ -560,7 +785,10 @@ pub const Agent = struct {
         stream_sink: ?AgentStreamSink,
         output_validator: ?OutputValidator,
         hooks: []const LifecycleHook,
-    ) !Result {
+        allow_pause: bool,
+        resume_state: ?ResumeState,
+        decisions: []const ResumeDecision,
+    ) !RunOutcome {
         try checkCancellation(self.cancellation);
         if (stream_sink != null and !self.model.profile.supports_streaming) return Error.ModelDoesNotSupportStreaming;
         if (self.system_prompt != null and !self.model.profile.supports_system_messages) {
@@ -586,29 +814,38 @@ pub const Agent = struct {
         const memory = arena.allocator();
 
         const dependencies = options.dependencies orelse self.dependencies;
-        const resolved_instructions = try resolveInstructions(memory, self.instructions, options.instructions, .{
-            .dependencies = dependencies,
-            .prompt = prompt,
-        });
+        const resolved_instructions = if (resume_state) |state|
+            try copyStrings(memory, state.instructions)
+        else
+            try resolveInstructions(memory, self.instructions, options.instructions, .{
+                .dependencies = dependencies,
+                .prompt = prompt,
+            });
         if (resolved_instructions.len > 0 and !self.model.profile.supports_system_messages) {
             return Error.ModelDoesNotSupportSystemMessages;
         }
 
         var messages: std.ArrayList(Message) = .empty;
         var definitions: std.ArrayList(model_types.ToolDefinition) = .empty;
-        var total_usage: model_types.Usage = .{};
+        var total_usage: model_types.Usage = if (resume_state) |state| state.usage else .{};
         var provider_errors = ProviderErrorCapture{ .target = self.provider_error_observer };
         var tool_retries = ToolRetryTracker{ .allocator = memory };
 
-        if (self.system_prompt) |system_prompt| {
-            try appendTextMessage(memory, &messages, .system, system_prompt);
+        if (resume_state) |state| {
+            for (state.messages) |message| try appendMessageCopy(memory, &messages, message);
+            try tool_retries.restore(state.tool_retries);
+        } else {
+            if (self.system_prompt) |system_prompt| {
+                try appendTextMessage(memory, &messages, .system, system_prompt);
+            }
+            for (options.message_history) |message| try appendMessageCopy(memory, &messages, message);
+            try appendTextMessage(memory, &messages, .user, prompt);
         }
-        for (options.message_history) |message| try appendMessageCopy(memory, &messages, message);
-        try appendTextMessage(memory, &messages, .user, prompt);
 
-        var model_requests: usize = 0;
-        var output_retries: usize = 0;
-        var total_tool_calls: usize = 0;
+        var model_requests: usize = if (resume_state) |state| state.model_requests else 0;
+        var output_retries: usize = if (resume_state) |state| state.output_retries else 0;
+        var total_tool_calls: usize = if (resume_state) |state| state.total_tool_calls else 0;
+        var resume_pending = resume_state != null;
         while (true) {
             const available_tools = try prepareTools(memory, self.tools, self.toolsets, .{
                 .messages = messages.items,
@@ -619,6 +856,28 @@ pub const Agent = struct {
             try ensureUniqueToolNames(available_tools);
             if (available_tools.len > 0 and !self.model.profile.supports_tools) {
                 return Error.ModelDoesNotSupportTools;
+            }
+            if (resume_pending) {
+                const result_parts = try executeResumedToolCalls(
+                    self,
+                    available_tools,
+                    memory,
+                    messages.items,
+                    decisions,
+                    resume_state.?.calls,
+                    &tool_retries,
+                    .{
+                        .dependencies = dependencies,
+                        .usage = total_usage,
+                        .model_requests = model_requests,
+                        .cancellation = self.cancellation,
+                        .io = self.io,
+                    },
+                    hooks,
+                );
+                try messages.append(memory, .{ .role = .tool, .parts = result_parts });
+                resume_pending = false;
+                continue;
             }
             definitions.clearRetainingCapacity();
             for (available_tools) |tool| try definitions.append(memory, tool.definition);
@@ -752,14 +1011,14 @@ pub const Agent = struct {
                     .usage = total_usage,
                     .model_requests = model_requests,
                 } });
-                return .{
+                return .{ .complete = .{
                     .arena = arena,
                     .output = output,
                     .messages = try messages.toOwnedSlice(memory),
                     .usage = total_usage,
                     .model_requests = model_requests,
                     .finish_reason = response.finish_reason,
-                };
+                } };
             }
             if (tool_call_count > self.limits.max_tool_calls -| total_tool_calls) {
                 return Error.MaxToolCallsExceeded;
@@ -768,6 +1027,23 @@ pub const Agent = struct {
             if (!self.model.profile.supports_tools) return Error.ModelDoesNotSupportTools;
             if (tool_call_count > 1 and !self.model.profile.supports_parallel_tool_calls) {
                 return Error.ParallelToolCallsNotSupported;
+            }
+            if (hasDeferredToolCall(available_tools, response.parts)) {
+                if (!allow_pause) return Error.ToolCallRequiresDeferredRun;
+                return .{ .paused = try createPausedRun(
+                    &arena,
+                    memory,
+                    prompt,
+                    messages.items,
+                    resolved_instructions,
+                    total_usage,
+                    model_requests,
+                    total_tool_calls,
+                    output_retries,
+                    tool_retries.entries.items,
+                    available_tools,
+                    response.parts,
+                ) };
             }
 
             const result_parts = try executeToolCalls(
@@ -793,6 +1069,243 @@ pub const Agent = struct {
         }
     }
 };
+
+fn copyStrings(allocator: std.mem.Allocator, values: []const []const u8) ![]const []const u8 {
+    const copied = try allocator.alloc([]const u8, values.len);
+    for (values, copied) |value, *target| target.* = try allocator.dupe(u8, value);
+    return copied;
+}
+
+fn hasDeferredToolCall(tools: []const model_types.Tool, parts: []const Part) bool {
+    for (parts) |part| switch (part) {
+        .tool_call => |call| {
+            const tool = findTool(tools, call.name) orelse continue;
+            if (tool.execution != .immediate) return true;
+        },
+        else => {},
+    };
+    return false;
+}
+
+fn createPausedRun(
+    arena: *std.heap.ArenaAllocator,
+    allocator: std.mem.Allocator,
+    prompt: []const u8,
+    messages: []const Message,
+    instructions: []const []const u8,
+    usage: model_types.Usage,
+    model_requests: usize,
+    total_tool_calls: usize,
+    output_retries: usize,
+    retry_entries: []const ToolRetryTracker.Entry,
+    tools: []const model_types.Tool,
+    parts: []const Part,
+) !PausedRun {
+    var calls: std.ArrayList(DeferredToolCall) = .empty;
+    for (parts) |part| switch (part) {
+        .tool_call => |call| {
+            const tool = findTool(tools, call.name) orelse continue;
+            if (tool.execution == .immediate) continue;
+            try calls.append(allocator, .{
+                .call_id = try allocator.dupe(u8, call.id),
+                .name = try allocator.dupe(u8, call.name),
+                .arguments_json = try allocator.dupe(u8, call.arguments_json),
+                .execution = tool.execution,
+            });
+        },
+        else => {},
+    };
+    const paused_calls = try calls.toOwnedSlice(allocator);
+    const retries = try allocator.alloc(SerializedToolRetry, retry_entries.len);
+    for (retry_entries, retries) |entry, *retry| retry.* = .{
+        .name = entry.name,
+        .count = entry.count,
+    };
+    const history_json = try history.stringify(allocator, messages);
+    const state_json = try std.json.Stringify.valueAlloc(allocator, SerializedPause{
+        .version = 1,
+        .prompt = prompt,
+        .history_json = history_json,
+        .instructions = instructions,
+        .usage = usage,
+        .model_requests = model_requests,
+        .total_tool_calls = total_tool_calls,
+        .output_retries = output_retries,
+        .tool_retries = retries,
+        .calls = paused_calls,
+    }, .{});
+    return .{
+        .arena = arena.*,
+        .state_json = state_json,
+        .calls = paused_calls,
+        .usage = usage,
+        .model_requests = model_requests,
+    };
+}
+
+fn executeResumedToolCalls(
+    agent: Agent,
+    tools: []const model_types.Tool,
+    allocator: std.mem.Allocator,
+    messages: []const Message,
+    decisions: []const ResumeDecision,
+    saved_calls: []const DeferredToolCall,
+    tool_retries: *ToolRetryTracker,
+    run_context: model_types.ToolRunContext,
+    hooks: []const LifecycleHook,
+) ![]Part {
+    if (messages.len == 0) return Agent.Error.InvalidDeferredState;
+    const assistant = messages[messages.len - 1];
+    if (assistant.role != .assistant) return Agent.Error.InvalidDeferredState;
+    var call_count: usize = 0;
+    for (assistant.parts) |part| switch (part) {
+        .tool_call => call_count += 1,
+        else => {},
+    };
+    if (call_count == 0) return Agent.Error.InvalidDeferredState;
+    try validateDeferredCalls(tools, assistant.parts, saved_calls);
+
+    for (decisions, 0..) |decision, index| {
+        for (decisions[index + 1 ..]) |other| {
+            if (std.mem.eql(u8, decision.call_id, other.call_id)) return Agent.Error.UnexpectedDeferredToolDecision;
+        }
+        var found = false;
+        for (assistant.parts) |part| switch (part) {
+            .tool_call => |call| if (std.mem.eql(u8, call.id, decision.call_id)) {
+                const tool = findTool(tools, call.name) orelse return Agent.Error.UnknownTool;
+                found = tool.execution != .immediate;
+            },
+            else => {},
+        };
+        if (!found) return Agent.Error.UnexpectedDeferredToolDecision;
+    }
+
+    const results = try allocator.alloc(Part, call_count);
+    var result_index: usize = 0;
+    for (assistant.parts) |part| switch (part) {
+        .tool_call => |call| {
+            const tool_index = findToolIndex(tools, call.name) orelse return Agent.Error.UnknownTool;
+            const tool = tools[tool_index];
+            try emitLifecycle(hooks, .{ .tool_validation_start = .{ .call = call } });
+            tool.validate(allocator, call.arguments_json) catch |failure| {
+                try emitLifecycle(hooks, .{ .tool_validation_error = .{ .call = call, .failure = failure } });
+                const work = ToolWork{ .call = call, .tool_index = tool_index, .validation_failure = failure };
+                results[result_index] = .{ .tool_result = try toolResult(
+                    agent,
+                    tools,
+                    allocator,
+                    work,
+                    tool_retries,
+                    .{ .failure = failure },
+                ) };
+                result_index += 1;
+                continue;
+            };
+            try emitLifecycle(hooks, .{ .tool_validation_end = .{ .call = call, .tool = tool } });
+
+            const decision = findResumeDecision(decisions, call.id);
+            switch (tool.execution) {
+                .immediate => {
+                    try emitLifecycle(hooks, .{ .tool_execution_start = .{ .call = call, .tool = tool } });
+                    const outcome = executeTool(tool, allocator, run_context, call.arguments_json);
+                    try emitToolOutcome(hooks, tool, call, outcome);
+                    results[result_index] = .{ .tool_result = try toolResult(
+                        agent,
+                        tools,
+                        allocator,
+                        .{ .call = call, .tool_index = tool_index },
+                        tool_retries,
+                        outcome,
+                    ) };
+                },
+                .requires_approval => {
+                    const approved = decision orelse return Agent.Error.MissingDeferredToolDecision;
+                    switch (approved.action) {
+                        .approve => {
+                            try emitLifecycle(hooks, .{ .tool_execution_start = .{ .call = call, .tool = tool } });
+                            const outcome = executeTool(tool, allocator, run_context, call.arguments_json);
+                            try emitToolOutcome(hooks, tool, call, outcome);
+                            results[result_index] = .{ .tool_result = try toolResult(
+                                agent,
+                                tools,
+                                allocator,
+                                .{ .call = call, .tool_index = tool_index },
+                                tool_retries,
+                                outcome,
+                            ) };
+                        },
+                        .deny => results[result_index] = .{ .tool_result = .{
+                            .call_id = call.id,
+                            .name = call.name,
+                            .content = approved.content orelse "Tool call denied by reviewer.",
+                            .is_error = true,
+                        } },
+                        .result => results[result_index] = .{ .tool_result = .{
+                            .call_id = call.id,
+                            .name = call.name,
+                            .content = approved.content orelse "",
+                            .is_error = approved.is_error,
+                        } },
+                    }
+                },
+                .external => {
+                    const supplied = decision orelse return Agent.Error.MissingDeferredToolDecision;
+                    switch (supplied.action) {
+                        .approve => return Agent.Error.DeferredToolRequiresResult,
+                        .deny => results[result_index] = .{ .tool_result = .{
+                            .call_id = call.id,
+                            .name = call.name,
+                            .content = supplied.content orelse "Tool call denied by reviewer.",
+                            .is_error = true,
+                        } },
+                        .result => results[result_index] = .{ .tool_result = .{
+                            .call_id = call.id,
+                            .name = call.name,
+                            .content = supplied.content orelse "",
+                            .is_error = supplied.is_error,
+                        } },
+                    }
+                },
+            }
+            result_index += 1;
+        },
+        else => {},
+    };
+    return results;
+}
+
+fn validateDeferredCalls(
+    tools: []const model_types.Tool,
+    parts: []const Part,
+    saved_calls: []const DeferredToolCall,
+) !void {
+    var saved_index: usize = 0;
+    for (parts) |part| switch (part) {
+        .tool_call => |call| {
+            const tool = findTool(tools, call.name) orelse return Agent.Error.UnknownTool;
+            if (tool.execution == .immediate) continue;
+            if (saved_index >= saved_calls.len) return Agent.Error.InvalidDeferredState;
+            const saved = saved_calls[saved_index];
+            if (!std.mem.eql(u8, saved.call_id, call.id) or
+                !std.mem.eql(u8, saved.name, call.name) or
+                !std.mem.eql(u8, saved.arguments_json, call.arguments_json) or
+                saved.execution != tool.execution)
+            {
+                return Agent.Error.InvalidDeferredState;
+            }
+            saved_index += 1;
+        },
+        else => {},
+    };
+    if (saved_index != saved_calls.len) return Agent.Error.InvalidDeferredState;
+}
+
+fn findResumeDecision(decisions: []const ResumeDecision, call_id: []const u8) ?ResumeDecision {
+    for (decisions) |decision| {
+        if (std.mem.eql(u8, decision.call_id, call_id)) return decision;
+    }
+    return null;
+}
 
 fn withTypedOutput(agent: Agent, comptime Output: type) Agent {
     var configured = agent;
@@ -1393,6 +1906,13 @@ const ToolRetryTracker = struct {
         name: []const u8,
         count: usize,
     };
+
+    fn restore(self: *ToolRetryTracker, saved: []const SerializedToolRetry) !void {
+        for (saved) |entry| try self.entries.append(self.allocator, .{
+            .name = try self.allocator.dupe(u8, entry.name),
+            .count = entry.count,
+        });
+    }
 
     fn consume(self: *ToolRetryTracker, name: []const u8, limit: usize) !bool {
         if (limit == 0) return false;

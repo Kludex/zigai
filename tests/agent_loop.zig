@@ -77,6 +77,193 @@ fn successfulTool(state: *u8) zigai.Tool {
     };
 }
 
+test "approval tools pause into JSON and resume without repeating the model request" {
+    const calls = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "approval-1",
+        .name = "publish",
+        .arguments_json = "{\"message\":\"hello\"}",
+    } }};
+    const final = [_]zigai.model.Part{.{ .text = "Published." }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
+            if (index == 0) {
+                try std.testing.expectEqual(@as(usize, 1), request.messages.len);
+                return;
+            }
+            try std.testing.expectEqual(@as(usize, 3), request.messages.len);
+            const result = request.messages[2].parts[0].tool_result;
+            try std.testing.expectEqualStrings("approval-1", result.call_id);
+            try std.testing.expectEqualStrings("sent", result.content);
+            try std.testing.expect(!result.is_error);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{
+            .{ .parts = &calls, .usage = .{ .input_tokens = 3, .output_tokens = 2 } },
+            .{ .parts = &final, .usage = .{ .input_tokens = 5, .output_tokens = 1 } },
+        },
+        .inspectFn = Inspector.inspect,
+    };
+    var executions: u8 = 0;
+    const publish = zigai.Tool{
+        .definition = .{
+            .name = "publish",
+            .description = "Publish a message.",
+            .parameters_json_schema = "{\"type\":\"object\"}",
+        },
+        .execution = .requires_approval,
+        .context = &executions,
+        .executeFn = struct {
+            fn execute(context: *anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]const u8 {
+                const count: *u8 = @ptrCast(@alignCast(context));
+                count.* += 1;
+                return allocator.dupe(u8, "sent");
+            }
+        }.execute,
+    };
+    const agent = zigai.Agent{ .model = scripted.model(), .tools = &.{publish} };
+    var first = try agent.runUntilPause(std.testing.allocator, "Publish this.");
+    const state_json = switch (first) {
+        .complete => return error.ExpectedPausedRun,
+        .paused => |paused| blk: {
+            try std.testing.expectEqual(@as(usize, 1), paused.calls.len);
+            try std.testing.expectEqualStrings("approval-1", paused.calls[0].call_id);
+            try std.testing.expectEqual(zigai.ToolExecution.requires_approval, paused.calls[0].execution);
+            try std.testing.expectEqual(@as(u8, 0), executions);
+            const parsed_state = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, paused.state_json, .{});
+            parsed_state.deinit();
+            break :blk try std.testing.allocator.dupe(u8, paused.state_json);
+        },
+    };
+    first.deinit();
+    defer std.testing.allocator.free(state_json);
+
+    const decisions_json = try zigai.stringifyResumeDecisions(std.testing.allocator, &.{.{
+        .call_id = "approval-1",
+        .action = .approve,
+    }});
+    defer std.testing.allocator.free(decisions_json);
+    var resumed = try agent.resumeRunJson(std.testing.allocator, state_json, decisions_json);
+    defer resumed.deinit();
+    switch (resumed) {
+        .paused => return error.ExpectedCompleteRun,
+        .complete => |result| {
+            try std.testing.expectEqualStrings("Published.", result.output);
+            try std.testing.expectEqual(@as(usize, 2), result.model_requests);
+            try std.testing.expectEqual(@as(u64, 8), result.usage.input_tokens);
+        },
+    }
+    try std.testing.expectEqual(@as(u8, 1), executions);
+    try std.testing.expectEqual(@as(usize, 2), scripted.request_count);
+}
+
+test "external tools accept supplied results without local execution" {
+    const external_call = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "external-1",
+        .name = "human_input",
+        .arguments_json = "{}",
+    } }};
+    const final = [_]zigai.model.Part{.{ .text = "Thank you." }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
+            if (index == 0) return;
+            const result = request.messages[2].parts[0].tool_result;
+            try std.testing.expectEqualStrings("Marcelo", result.content);
+            try std.testing.expect(!result.is_error);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &external_call }, .{ .parts = &final } },
+        .inspectFn = Inspector.inspect,
+    };
+    var executions: u8 = 0;
+    var external = successfulTool(&executions);
+    external.definition.name = "human_input";
+    external.execution = .external;
+    const agent = zigai.Agent{ .model = scripted.model(), .tools = &.{external} };
+    var first = try agent.runUntilPause(std.testing.allocator, "Ask.");
+    defer first.deinit();
+    const state = switch (first) {
+        .complete => return error.ExpectedPausedRun,
+        .paused => |paused| paused.state_json,
+    };
+    try std.testing.expectError(
+        zigai.Agent.Error.MissingDeferredToolDecision,
+        agent.resumeRun(std.testing.allocator, state, &.{}),
+    );
+    try std.testing.expectError(
+        zigai.Agent.Error.DeferredToolRequiresResult,
+        agent.resumeRun(std.testing.allocator, state, &.{.{
+            .call_id = "external-1",
+            .action = .approve,
+        }}),
+    );
+    var resumed = try agent.resumeRun(std.testing.allocator, state, &.{.{
+        .call_id = "external-1",
+        .action = .result,
+        .content = "Marcelo",
+    }});
+    defer resumed.deinit();
+    try std.testing.expect(resumed == .complete);
+    try std.testing.expectEqual(@as(u8, 0), executions);
+}
+
+test "normal run refuses to discard a required approval pause" {
+    const call = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "approval",
+        .name = "tool",
+        .arguments_json = "{}",
+    } }};
+    var scripted = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &call }} };
+    var executions: u8 = 0;
+    var tool = successfulTool(&executions);
+    tool.execution = .requires_approval;
+    try std.testing.expectError(
+        zigai.Agent.Error.ToolCallRequiresDeferredRun,
+        (zigai.Agent{ .model = scripted.model(), .tools = &.{tool} }).run(std.testing.allocator, "do it"),
+    );
+    try std.testing.expectEqual(@as(u8, 0), executions);
+}
+
+test "denied approval becomes an error tool result" {
+    const call = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "approval",
+        .name = "tool",
+        .arguments_json = "{}",
+    } }};
+    const final = [_]zigai.model.Part{.{ .text = "Not executed." }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
+            if (index == 0) return;
+            const result = request.messages[2].parts[0].tool_result;
+            try std.testing.expect(result.is_error);
+            try std.testing.expectEqualStrings("Not authorized.", result.content);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &call }, .{ .parts = &final } },
+        .inspectFn = Inspector.inspect,
+    };
+    var executions: u8 = 0;
+    var tool = successfulTool(&executions);
+    tool.execution = .requires_approval;
+    const agent = zigai.Agent{ .model = scripted.model(), .tools = &.{tool} };
+    var first = try agent.runUntilPause(std.testing.allocator, "do it");
+    defer first.deinit();
+    const state = switch (first) {
+        .complete => return error.ExpectedPausedRun,
+        .paused => |paused| paused.state_json,
+    };
+    var resumed = try agent.resumeRun(std.testing.allocator, state, &.{.{
+        .call_id = "approval",
+        .action = .deny,
+        .content = "Not authorized.",
+    }});
+    defer resumed.deinit();
+    try std.testing.expect(resumed == .complete);
+    try std.testing.expectEqual(@as(u8, 0), executions);
+}
+
 test "agent joins final text parts" {
     const parts = [_]zigai.model.Part{ .{ .text = "hello " }, .{ .text = "world" } };
     const responses = [_]zigai.model.ModelResponse{.{ .parts = &parts }};

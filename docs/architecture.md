@@ -154,6 +154,32 @@ one per line, serializes concurrent exchanges, ignores notifications while
 waiting for the matching response, and rejects unsupported server-to-client
 requests. Closing it closes stdin and terminates the child.
 
+## Deferred tool execution
+
+A tool chooses `immediate`, `requires_approval`, or `external` execution.
+The regular `run` API refuses to discard a required pause.
+`runUntilPause` instead returns a tagged outcome before any call in that
+model response executes.
+
+The pause owns a versioned JSON state document containing canonical history,
+resolved instructions, usage and request counters, output and tool retry
+counters, and the calls awaiting decisions. This is application data: it can
+cross a process boundary or remain in a queue indefinitely.
+
+`resumeRun` rebuilds the provider-neutral state, prepares the current tools,
+and requires exactly one decision for every deferred call. Approval executes
+an approval-gated tool; denial becomes an error tool result; an external result
+is appended without invoking application code. Immediate calls from the same
+model response execute during resume. The next model request sees one complete
+tool-result message and the original request is never replayed.
+
+Resume decisions have their own versioned JSON wrapper for integrations that
+do not share Zig memory. Dependencies and dynamic toolsets are supplied again
+at resume time, while resolved instructions come from the saved state so their
+meaning cannot change mid-run.
+Applications should integrity-protect persisted state before accepting it back
+from an untrusted boundary.
+
 There is intentionally no graph. Applications can build orchestration on top
 of this loop without paying for an abstraction when they do not need one.
 

@@ -25,6 +25,7 @@ conversation.
 - Tool calls, including parallel calls and typed Zig functions.
 - Static and per-step dynamic toolsets with namespaces and metadata.
 - MCP toolsets over Streamable HTTP and stdio.
+- Serializable approval and deferred-tool pauses.
 - Static, dynamic, and run-specific instructions.
 - Typed output plus JSON-object and JSON Schema modes.
 - Preserved finish reasons with distinct truncation, filtering, and incomplete-call errors.
@@ -272,6 +273,48 @@ The client negotiates MCP `2025-11-25`, follows paginated tool discovery, and
 forwards calls through the agent's existing tool loop. Streamable HTTP accepts
 JSON and SSE responses, carries optional session IDs, and supports extra
 headers through `mcp_http.headers`.
+
+### Approval and deferred tools
+
+Mark a tool that must stop before execution:
+
+```zig
+var publish = zigai.reflect.tool(
+    "publish",
+    "Publish a message.",
+    publishMessage,
+);
+publish.execution = .requires_approval;
+```
+
+Use `runUntilPause` when the agent includes one of these tools. It returns
+either the final result or a pause with the pending calls and versioned JSON
+state:
+
+```zig
+var outcome = try agent.runUntilPause(allocator, "Publish the update.");
+defer outcome.deinit();
+
+switch (outcome) {
+    .complete => |result| useResult(result),
+    .paused => |paused| persist(paused.state_json),
+}
+```
+
+Resume later without repeating the model request:
+
+```zig
+var resumed = try agent.resumeRun(allocator, state_json, &.{.{
+    .call_id = call_id,
+    .action = .approve,
+}});
+defer resumed.deinit();
+```
+
+Use `.deny` with a reason to reject a call. Tools marked `.external` never
+execute inside ZigAI; resume them with `.result` and the externally produced
+content. `stringifyResumeDecisions` and `resumeRunJson` provide a JSON-only
+handoff for queues, databases, and approval services.
 
 ## Lifecycle hooks
 

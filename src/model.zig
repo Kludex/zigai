@@ -57,10 +57,18 @@ pub const ToolMetadata = struct {
     value: []const u8,
 };
 
+/// Determines whether an agent may execute a tool immediately or must pause.
+pub const ToolExecution = enum {
+    immediate,
+    requires_approval,
+    external,
+};
+
 pub const Tool = struct {
     definition: ToolDefinition,
     /// Metadata for application policy and observability; providers do not receive it.
     metadata: []const ToolMetadata = &.{},
+    execution: ToolExecution = .immediate,
     context: *anyopaque,
     /// Overrides `Agent.max_tool_retries` for this tool when non-null.
     max_retries: ?usize = null,
