@@ -93,6 +93,9 @@ pub const ToolDefinition = struct {
     name: []const u8,
     description: []const u8,
     parameters_json_schema: []const u8,
+    /// Application-visible schema for the encoded tool result. Providers do
+    /// not currently receive this field.
+    return_json_schema: ?[]const u8 = null,
 };
 
 /// Application metadata carried with a tool and exposed to lifecycle hooks.
@@ -104,6 +107,25 @@ pub const ToolExecution = enum {
     requires_approval,
     external,
 };
+
+/// Encoded result from a tool plus user messages to append after the protocol
+/// tool-result message.
+pub const ToolOutput = struct {
+    content: []const u8,
+    follow_up_messages: []const Message = &.{},
+};
+
+/// A typed reflected-tool return with optional model-visible follow-up
+/// messages. `reflect.tool` derives its return schema from `Value`.
+pub fn ToolReturn(comptime Value: type) type {
+    return struct {
+        value: Value,
+        follow_up_messages: []const Message = &.{},
+
+        pub const zigai_tool_return = true;
+        pub const ValueType = Value;
+    };
+}
 
 pub const Tool = struct {
     definition: ToolDefinition,
@@ -118,19 +140,33 @@ pub const Tool = struct {
         allocator: std.mem.Allocator,
         arguments_json: []const u8,
     ) anyerror!void = null,
-    executeFn: *const fn (context: *anyopaque, allocator: std.mem.Allocator, arguments_json: []const u8) anyerror![]const u8,
+    executeFn: ?*const fn (context: *anyopaque, allocator: std.mem.Allocator, arguments_json: []const u8) anyerror![]const u8 = null,
     executeWithContextFn: ?*const fn (
         context: *anyopaque,
         allocator: std.mem.Allocator,
         run_context: ToolRunContext,
         arguments_json: []const u8,
     ) anyerror![]const u8 = null,
+    executeOutputFn: ?*const fn (
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        arguments_json: []const u8,
+    ) anyerror!ToolOutput = null,
+    executeOutputWithContextFn: ?*const fn (
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        run_context: ToolRunContext,
+        arguments_json: []const u8,
+    ) anyerror!ToolOutput = null,
     /// Classifies failures that are safe to show to the model for correction.
     /// By default, only allocation and cancellation failures are fatal.
     isRecoverableFn: ?*const fn (context: *anyopaque, failure: anyerror) bool = null,
 
     pub fn execute(self: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) ![]const u8 {
-        return self.executeFn(self.context, allocator, arguments_json);
+        if (self.executeFn) |execute_fn| return execute_fn(self.context, allocator, arguments_json);
+        if (self.executeOutputFn) |execute_output|
+            return (try execute_output(self.context, allocator, arguments_json)).content;
+        return error.MissingToolExecutor;
     }
 
     pub fn validate(self: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) !void {
@@ -139,8 +175,30 @@ pub const Tool = struct {
     }
 
     pub fn executeWithContext(self: Tool, allocator: std.mem.Allocator, run_context: ToolRunContext, arguments_json: []const u8) ![]const u8 {
-        const contextual = self.executeWithContextFn orelse return self.execute(allocator, arguments_json);
-        return contextual(self.context, allocator, run_context, arguments_json);
+        if (self.executeWithContextFn) |contextual|
+            return contextual(self.context, allocator, run_context, arguments_json);
+        if (self.executeOutputWithContextFn) |execute_output|
+            return (try execute_output(self.context, allocator, run_context, arguments_json)).content;
+        return self.execute(allocator, arguments_json);
+    }
+
+    pub fn executeOutput(self: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) !ToolOutput {
+        if (self.executeOutputFn) |execute_output| return execute_output(self.context, allocator, arguments_json);
+        return .{ .content = try self.execute(allocator, arguments_json) };
+    }
+
+    pub fn executeOutputWithContext(
+        self: Tool,
+        allocator: std.mem.Allocator,
+        run_context: ToolRunContext,
+        arguments_json: []const u8,
+    ) !ToolOutput {
+        if (self.executeOutputWithContextFn) |execute_output|
+            return execute_output(self.context, allocator, run_context, arguments_json);
+        if (self.executeWithContextFn) |execute_context| return .{
+            .content = try execute_context(self.context, allocator, run_context, arguments_json),
+        };
+        return self.executeOutput(allocator, arguments_json);
     }
 
     /// Returns whether `failure` can be safely exposed to the model.

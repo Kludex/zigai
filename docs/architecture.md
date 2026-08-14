@@ -130,6 +130,18 @@ kept separately for each tool, with a per-tool override, and do not consume the
 structured-output retry budget. Allocation and cancellation failures remain
 fatal; custom tools can override failure classification.
 
+Reflected tools derive both their argument schema and their return schema. The
+return schema stays application-visible on `ToolDefinition`; provider function
+definitions still receive only the argument schema. A reflected function can
+return `ToolReturn(T)` to pair its typed value with follow-up user messages.
+Manual tools use `ToolOutput` for the same behavior.
+
+The agent always appends the provider-protocol tool-result message first. It
+then copies follow-up messages in original tool-call order, including after a
+resumed approval. Injected messages must use the user role, cannot forge tool
+protocol parts, and pass the same rich-content capability and provider-file
+checks as normal input.
+
 When a model requests multiple tools, the agent uses its `Io` runtime to run
 them concurrently. Allocations into the result arena are synchronized, result
 parts remain in model call order, and a fatal failure cancels outstanding work.

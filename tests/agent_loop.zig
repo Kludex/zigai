@@ -90,11 +90,12 @@ test "approval tools pause into JSON and resume without repeating the model requ
                 try std.testing.expectEqual(@as(usize, 1), request.messages.len);
                 return;
             }
-            try std.testing.expectEqual(@as(usize, 3), request.messages.len);
+            try std.testing.expectEqual(@as(usize, 4), request.messages.len);
             const result = request.messages[2].parts[0].tool_result;
             try std.testing.expectEqualStrings("approval-1", result.call_id);
             try std.testing.expectEqualStrings("sent", result.content);
             try std.testing.expect(!result.is_error);
+            try std.testing.expectEqualStrings("Publishing was approved.", request.messages[3].parts[0].text);
         }
     };
     var scripted = zigai.testing.ScriptedModel{
@@ -113,11 +114,17 @@ test "approval tools pause into JSON and resume without repeating the model requ
         },
         .execution = .requires_approval,
         .context = &executions,
-        .executeFn = struct {
-            fn execute(context: *anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]const u8 {
+        .executeOutputFn = struct {
+            fn execute(context: *anyopaque, allocator: std.mem.Allocator, _: []const u8) !zigai.ToolOutput {
                 const count: *u8 = @ptrCast(@alignCast(context));
                 count.* += 1;
-                return allocator.dupe(u8, "sent");
+                return .{
+                    .content = try allocator.dupe(u8, "sent"),
+                    .follow_up_messages = &.{.{
+                        .role = .user,
+                        .parts = &.{.{ .text = "Publishing was approved." }},
+                    }},
+                };
             }
         }.execute,
     };
@@ -396,6 +403,89 @@ test "rich prompt parts are copied and capability-checked before requests" {
             .{ .message_history = &invalid_history },
         ),
     );
+}
+
+test "typed tool results inject provider-neutral follow-up messages" {
+    const Lookup = struct {
+        const Result = struct { city: []const u8, temperature_c: i32 };
+
+        fn call(args: struct { city: []const u8 }) !zigai.ToolReturn(Result) {
+            return .{
+                .value = .{ .city = args.city, .temperature_c = 31 },
+                .follow_up_messages = &.{.{
+                    .role = .user,
+                    .parts = &.{.{ .text = "The reading came from the roof sensor." }},
+                    .metadata = &.{.{ .key = "sensor", .value = "roof" }},
+                }},
+            };
+        }
+    };
+    const call_parts = [_]zigai.Part{.{ .tool_call = .{
+        .id = "call_1",
+        .name = "lookup",
+        .arguments_json = "{\"city\":\"Madrid\"}",
+    } }};
+    const final_parts = [_]zigai.Part{.{ .text = "It is 31 C from the roof sensor." }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
+            try std.testing.expect(request.tools[0].return_json_schema != null);
+            if (index != 1) return;
+            try std.testing.expectEqual(@as(usize, 4), request.messages.len);
+            try std.testing.expectEqual(zigai.model.Role.tool, request.messages[2].role);
+            try std.testing.expectEqualStrings(
+                "{\"city\":\"Madrid\",\"temperature_c\":31}",
+                request.messages[2].parts[0].tool_result.content,
+            );
+            try std.testing.expectEqual(zigai.model.Role.user, request.messages[3].role);
+            try std.testing.expectEqualStrings("The reading came from the roof sensor.", request.messages[3].parts[0].text);
+            try std.testing.expectEqualStrings("roof", request.messages[3].metadata[0].value);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{
+            .{ .parts = &call_parts },
+            .{ .parts = &final_parts },
+        },
+        .inspectFn = Inspector.inspect,
+    };
+    const lookup = zigai.reflect.tool("lookup", "Look up a temperature.", Lookup.call);
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .tools = &.{lookup},
+    }).run(std.testing.allocator, "Check Madrid.");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("It is 31 C from the roof sensor.", result.output);
+    try std.testing.expectEqual(@as(usize, 5), result.messages.len);
+
+    var invalid_script = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &call_parts }} };
+    var unused: u8 = 0;
+    const invalid_tool = zigai.Tool{
+        .definition = .{
+            .name = "lookup",
+            .description = "Return an invalid follow-up.",
+            .parameters_json_schema = "{\"type\":\"object\"}",
+        },
+        .context = &unused,
+        .executeOutputFn = struct {
+            fn execute(_: *anyopaque, _: std.mem.Allocator, _: []const u8) !zigai.ToolOutput {
+                return .{
+                    .content = "{}",
+                    .follow_up_messages = &.{.{
+                        .role = .assistant,
+                        .parts = &.{.{ .text = "not allowed" }},
+                    }},
+                };
+            }
+        }.execute,
+    };
+    try std.testing.expectError(
+        zigai.Agent.Error.InvalidToolFollowUpMessage,
+        (zigai.Agent{ .model = invalid_script.model(), .tools = &.{invalid_tool} }).run(
+            std.testing.allocator,
+            "Check Madrid.",
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 1), invalid_script.request_count);
 }
 
 test "instructions compose for one run without entering message history" {

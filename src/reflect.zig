@@ -19,12 +19,22 @@ pub fn tool(
     const info = @typeInfo(@TypeOf(func)).@"fn";
     if (info.params.len == 0) @compileError("tool " ++ name ++ " needs an arguments struct parameter");
     const Args = info.params[0].type.?;
+    const Return = info.return_type orelse @compileError("tool " ++ name ++ " must have a return type");
+    const ReturnValue = switch (@typeInfo(Return)) {
+        .error_union => |value| value.payload,
+        else => Return,
+    };
+    const SchemaValue = toolReturnValueType(ReturnValue);
 
     const Wrapper = struct {
         var placeholder: u8 = 0;
 
         fn execute(_: *anyopaque, allocator: std.mem.Allocator, arguments_json: []const u8) anyerror![]const u8 {
-            return invoke(allocator, .{}, arguments_json);
+            return (try invokeOutput(allocator, .{}, arguments_json)).content;
+        }
+
+        fn executeOutput(_: *anyopaque, allocator: std.mem.Allocator, arguments_json: []const u8) anyerror!model_types.ToolOutput {
+            return invokeOutput(allocator, .{}, arguments_json);
         }
 
         fn validate(_: *anyopaque, allocator: std.mem.Allocator, arguments_json: []const u8) anyerror!void {
@@ -42,21 +52,34 @@ pub fn tool(
             run_context: ToolRunContext,
             arguments_json: []const u8,
         ) anyerror![]const u8 {
-            return invoke(allocator, run_context, arguments_json);
+            return (try invokeOutput(allocator, run_context, arguments_json)).content;
         }
 
-        fn invoke(
+        fn executeOutputWithContext(
+            _: *anyopaque,
             allocator: std.mem.Allocator,
             run_context: ToolRunContext,
             arguments_json: []const u8,
-        ) anyerror![]const u8 {
+        ) anyerror!model_types.ToolOutput {
+            return invokeOutput(allocator, run_context, arguments_json);
+        }
+
+        fn invokeOutput(
+            allocator: std.mem.Allocator,
+            run_context: ToolRunContext,
+            arguments_json: []const u8,
+        ) anyerror!model_types.ToolOutput {
             var arena = std.heap.ArenaAllocator.init(allocator);
             defer arena.deinit();
             const args = std.json.parseFromSliceLeaky(Args, arena.allocator(), arguments_json, .{
                 .ignore_unknown_fields = true,
             }) catch return error.InvalidToolArguments;
             const result = if (info.params.len == 1) try func(args) else try func(args, run_context);
-            return encode(allocator, result);
+            if (comptime isToolReturn(@TypeOf(result))) return .{
+                .content = try encode(allocator, result.value),
+                .follow_up_messages = try copyMessages(allocator, result.follow_up_messages),
+            };
+            return .{ .content = try encode(allocator, result) };
         }
 
         fn encode(allocator: std.mem.Allocator, value: anytype) ![]const u8 {
@@ -71,12 +94,91 @@ pub fn tool(
             .name = name,
             .description = description,
             .parameters_json_schema = schemaOf(Args),
+            .return_json_schema = schemaOf(SchemaValue),
         },
         .context = &Wrapper.placeholder,
         .validateFn = Wrapper.validate,
         .executeFn = Wrapper.execute,
         .executeWithContextFn = if (info.params.len > 1) Wrapper.executeWithContext else null,
+        .executeOutputFn = Wrapper.executeOutput,
+        .executeOutputWithContextFn = if (info.params.len > 1) Wrapper.executeOutputWithContext else null,
     };
+}
+
+fn isToolReturn(comptime T: type) bool {
+    return @typeInfo(T) == .@"struct" and @hasDecl(T, "zigai_tool_return");
+}
+
+fn toolReturnValueType(comptime T: type) type {
+    if (isToolReturn(T)) return T.ValueType;
+    return T;
+}
+
+fn copyMessages(allocator: std.mem.Allocator, source: []const model_types.Message) ![]const model_types.Message {
+    const messages = try allocator.alloc(model_types.Message, source.len);
+    for (source, messages) |message, *copy| {
+        const parts = try allocator.alloc(model_types.Part, message.parts.len);
+        for (message.parts, parts) |part, *part_copy| part_copy.* = try copyPart(allocator, part);
+        copy.* = .{
+            .role = message.role,
+            .parts = parts,
+            .metadata = try copyMetadata(allocator, message.metadata),
+        };
+    }
+    return messages;
+}
+
+fn copyPart(allocator: std.mem.Allocator, part: model_types.Part) !model_types.Part {
+    return switch (part) {
+        .text => |value| .{ .text = try allocator.dupe(u8, value) },
+        .image => |value| .{ .image = try copyContent(allocator, value) },
+        .audio => |value| .{ .audio = try copyContent(allocator, value) },
+        .document => |value| .{ .document = try copyContent(allocator, value) },
+        .binary => |value| .{ .binary = try copyContent(allocator, value) },
+        .thinking => |value| .{ .thinking = .{
+            .content = try allocator.dupe(u8, value.content),
+            .signature = if (value.signature) |signature| try allocator.dupe(u8, signature) else null,
+            .metadata = try copyMetadata(allocator, value.metadata),
+        } },
+        .tool_call => |value| .{ .tool_call = .{
+            .id = try allocator.dupe(u8, value.id),
+            .name = try allocator.dupe(u8, value.name),
+            .arguments_json = try allocator.dupe(u8, value.arguments_json),
+            .thought_signature = if (value.thought_signature) |signature| try allocator.dupe(u8, signature) else null,
+        } },
+        .tool_result => |value| .{ .tool_result = .{
+            .call_id = try allocator.dupe(u8, value.call_id),
+            .name = try allocator.dupe(u8, value.name),
+            .content = try allocator.dupe(u8, value.content),
+            .is_error = value.is_error,
+        } },
+    };
+}
+
+fn copyContent(allocator: std.mem.Allocator, value: model_types.Content) !model_types.Content {
+    return .{
+        .source = switch (value.source) {
+            .bytes => |bytes| .{ .bytes = try allocator.dupe(u8, bytes) },
+            .url => |url| .{ .url = try allocator.dupe(u8, url) },
+            .provider_file => |file| .{ .provider_file = .{
+                .id = try allocator.dupe(u8, file.id),
+                .provider = if (file.provider) |provider| try allocator.dupe(u8, provider) else null,
+            } },
+        },
+        .media_type = try allocator.dupe(u8, value.media_type),
+        .filename = if (value.filename) |filename| try allocator.dupe(u8, filename) else null,
+        .thought_signature = if (value.thought_signature) |signature| try allocator.dupe(u8, signature) else null,
+        .metadata = try copyMetadata(allocator, value.metadata),
+    };
+}
+
+fn copyMetadata(allocator: std.mem.Allocator, source: []const model_types.Metadata) ![]const model_types.Metadata {
+    const metadata = try allocator.alloc(model_types.Metadata, source.len);
+    for (source, metadata) |item, *copy| copy.* = .{
+        .key = try allocator.dupe(u8, item.key),
+        .value = try allocator.dupe(u8, item.value),
+    };
+    return metadata;
 }
 
 /// Derive one `Tool` per public function of `Namespace`. A function named `foo`
@@ -111,6 +213,7 @@ pub fn schemaOf(comptime T: type) []const u8 {
 fn buildSchema(comptime T: type) []const u8 {
     return switch (@typeInfo(T)) {
         .bool => "{\"type\":\"boolean\"}",
+        .void => "{\"type\":\"null\"}",
         .int, .comptime_int => "{\"type\":\"integer\"}",
         .float, .comptime_float => "{\"type\":\"number\"}",
         .optional => |optional| "{\"anyOf\":[" ++ buildSchema(optional.child) ++ ",{\"type\":\"null\"}]}",
@@ -185,9 +288,37 @@ test "serializes non-string return values as JSON" {
         }
     }.call;
     const derived = tool("origin", "Scale the origin.", origin);
+    try std.testing.expectEqualStrings(
+        "{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"integer\"},\"y\":{\"type\":\"integer\"}},\"required\":[\"x\",\"y\"],\"additionalProperties\":false}",
+        derived.definition.return_json_schema.?,
+    );
     const encoded = try derived.execute(std.testing.allocator, "{\"scale\":3}");
     defer std.testing.allocator.free(encoded);
     try std.testing.expectEqualStrings("{\"x\":3,\"y\":6}", encoded);
+}
+
+test "typed tool returns carry schema and copied follow-up messages" {
+    const Answer = struct { count: usize };
+    const count = struct {
+        fn call(args: struct { items: usize }) !model_types.ToolReturn(Answer) {
+            return .{
+                .value = .{ .count = args.items },
+                .follow_up_messages = &.{.{
+                    .role = .user,
+                    .parts = &.{.{ .text = "Use this additional context." }},
+                    .metadata = &.{.{ .key = "source", .value = "tool" }},
+                }},
+            };
+        }
+    }.call;
+    const derived = tool("count", "Count items.", count);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const output = try derived.executeOutput(arena.allocator(), "{\"items\":3}");
+    try std.testing.expectEqualStrings("{\"count\":3}", output.content);
+    try std.testing.expectEqualStrings("Use this additional context.", output.follow_up_messages[0].parts[0].text);
+    try std.testing.expectEqualStrings("tool", output.follow_up_messages[0].metadata[0].value);
+    try std.testing.expect(std.mem.indexOf(u8, derived.definition.return_json_schema.?, "\"count\":{\"type\":\"integer\"}") != null);
 }
 
 test "derives every public function of a namespace" {

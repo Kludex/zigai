@@ -51,6 +51,7 @@ const AgentError = error{
     DeferredToolRequiresResult,
     InvalidDeferredState,
     InvalidContentRole,
+    InvalidToolFollowUpMessage,
     UnknownTool,
     RetryBackoffRequiresIo,
 };
@@ -883,7 +884,7 @@ pub const Agent = struct {
                 return Error.ModelDoesNotSupportTools;
             }
             if (resume_pending) {
-                const result_parts = try executeResumedToolCalls(
+                const tool_batch = try executeResumedToolCalls(
                     self,
                     available_tools,
                     memory,
@@ -900,7 +901,8 @@ pub const Agent = struct {
                     },
                     hooks,
                 );
-                try messages.append(memory, .{ .role = .tool, .parts = result_parts });
+                try messages.append(memory, .{ .role = .tool, .parts = tool_batch.parts });
+                try appendToolFollowUps(self.model, memory, &messages, tool_batch.follow_up_messages);
                 resume_pending = false;
                 continue;
             }
@@ -1072,7 +1074,7 @@ pub const Agent = struct {
                 ) };
             }
 
-            const result_parts = try executeToolCalls(
+            const tool_batch = try executeToolCalls(
                 self,
                 available_tools,
                 memory,
@@ -1088,10 +1090,11 @@ pub const Agent = struct {
                 },
                 hooks,
             );
-            if (stream_sink) |sink| for (result_parts) |part| {
+            if (stream_sink) |sink| for (tool_batch.parts) |part| {
                 try emitStreamEvent(hooks, sink, .{ .tool_result = part.tool_result });
             };
-            try messages.append(memory, .{ .role = .tool, .parts = result_parts });
+            try messages.append(memory, .{ .role = .tool, .parts = tool_batch.parts });
+            try appendToolFollowUps(self.model, memory, &messages, tool_batch.follow_up_messages);
         }
     }
 };
@@ -1179,7 +1182,7 @@ fn executeResumedToolCalls(
     tool_retries: *ToolRetryTracker,
     run_context: model_types.ToolRunContext,
     hooks: []const LifecycleHook,
-) ![]Part {
+) !ToolCallBatch {
     if (messages.len == 0) return Agent.Error.InvalidDeferredState;
     const assistant = messages[messages.len - 1];
     if (assistant.role != .assistant) return Agent.Error.InvalidDeferredState;
@@ -1207,6 +1210,7 @@ fn executeResumedToolCalls(
     }
 
     const results = try allocator.alloc(Part, call_count);
+    var follow_up_messages: std.ArrayList(Message) = .empty;
     var result_index: usize = 0;
     for (assistant.parts) |part| switch (part) {
         .tool_call => |call| {
@@ -1216,14 +1220,16 @@ fn executeResumedToolCalls(
             tool.validate(allocator, call.arguments_json) catch |failure| {
                 try emitLifecycle(hooks, .{ .tool_validation_error = .{ .call = call, .failure = failure } });
                 const work = ToolWork{ .call = call, .tool_index = tool_index, .validation_failure = failure };
-                results[result_index] = .{ .tool_result = try toolResult(
+                const processed = try toolResult(
                     agent,
                     tools,
                     allocator,
                     work,
                     tool_retries,
                     .{ .failure = failure },
-                ) };
+                );
+                results[result_index] = .{ .tool_result = processed.result };
+                try follow_up_messages.appendSlice(allocator, processed.follow_up_messages);
                 result_index += 1;
                 continue;
             };
@@ -1235,14 +1241,16 @@ fn executeResumedToolCalls(
                     try emitLifecycle(hooks, .{ .tool_execution_start = .{ .call = call, .tool = tool } });
                     const outcome = executeTool(tool, allocator, run_context, call.arguments_json);
                     try emitToolOutcome(hooks, tool, call, outcome);
-                    results[result_index] = .{ .tool_result = try toolResult(
+                    const processed = try toolResult(
                         agent,
                         tools,
                         allocator,
                         .{ .call = call, .tool_index = tool_index },
                         tool_retries,
                         outcome,
-                    ) };
+                    );
+                    results[result_index] = .{ .tool_result = processed.result };
+                    try follow_up_messages.appendSlice(allocator, processed.follow_up_messages);
                 },
                 .requires_approval => {
                     const approved = decision orelse return Agent.Error.MissingDeferredToolDecision;
@@ -1251,14 +1259,16 @@ fn executeResumedToolCalls(
                             try emitLifecycle(hooks, .{ .tool_execution_start = .{ .call = call, .tool = tool } });
                             const outcome = executeTool(tool, allocator, run_context, call.arguments_json);
                             try emitToolOutcome(hooks, tool, call, outcome);
-                            results[result_index] = .{ .tool_result = try toolResult(
+                            const processed = try toolResult(
                                 agent,
                                 tools,
                                 allocator,
                                 .{ .call = call, .tool_index = tool_index },
                                 tool_retries,
                                 outcome,
-                            ) };
+                            );
+                            results[result_index] = .{ .tool_result = processed.result };
+                            try follow_up_messages.appendSlice(allocator, processed.follow_up_messages);
                         },
                         .deny => results[result_index] = .{ .tool_result = .{
                             .call_id = call.id,
@@ -1297,7 +1307,10 @@ fn executeResumedToolCalls(
         },
         else => {},
     };
-    return results;
+    return .{
+        .parts = results,
+        .follow_up_messages = try follow_up_messages.toOwnedSlice(allocator),
+    };
 }
 
 fn validateDeferredCalls(
@@ -1395,13 +1408,24 @@ const ToolWork = struct {
 };
 
 const ToolOutcome = union(enum) {
-    success: []const u8,
+    success: model_types.ToolOutput,
     failure: anyerror,
 };
 
 const ExecutedTool = struct {
     content: []const u8,
     is_error: bool,
+    follow_up_messages: []const Message = &.{},
+};
+
+const ProcessedTool = struct {
+    result: model_types.ToolResult,
+    follow_up_messages: []const Message = &.{},
+};
+
+const ToolCallBatch = struct {
+    parts: []Part,
+    follow_up_messages: []const Message = &.{},
 };
 
 fn executeToolCalls(
@@ -1413,7 +1437,7 @@ fn executeToolCalls(
     tool_retries: *ToolRetryTracker,
     run_context: model_types.ToolRunContext,
     hooks: []const LifecycleHook,
-) ![]Part {
+) !ToolCallBatch {
     const work = try allocator.alloc(ToolWork, call_count);
     var work_index: usize = 0;
     for (response_parts) |part| switch (part) {
@@ -1467,15 +1491,16 @@ fn executeToolCalls(
             try emitToolOutcome(hooks, tools[work[0].tool_index], work[0].call, executed);
             break :execute executed;
         };
-        result_parts[0] = .{ .tool_result = try toolResult(
+        const processed = try toolResult(
             agent,
             tools,
             allocator,
             work[0],
             tool_retries,
             outcome,
-        ) };
-        return result_parts;
+        );
+        result_parts[0] = .{ .tool_result = processed.result };
+        return .{ .parts = result_parts, .follow_up_messages = processed.follow_up_messages };
     }
 
     const io = agent.io orelse return Agent.Error.ParallelToolCallsRequireIo;
@@ -1533,17 +1558,23 @@ fn executeToolCalls(
         awaited += 1;
     }
     try checkCancellation(agent.cancellation);
+    var follow_up_messages: std.ArrayList(Message) = .empty;
     for (work, outcomes, result_parts) |item, outcome, *result_part| {
-        result_part.* = .{ .tool_result = try toolResult(
+        const processed = try toolResult(
             agent,
             tools,
             allocator,
             item,
             tool_retries,
             outcome,
-        ) };
+        );
+        result_part.* = .{ .tool_result = processed.result };
+        try follow_up_messages.appendSlice(allocator, processed.follow_up_messages);
     }
-    return result_parts;
+    return .{
+        .parts = result_parts,
+        .follow_up_messages = try follow_up_messages.toOwnedSlice(allocator),
+    };
 }
 
 fn emitToolOutcome(
@@ -1553,9 +1584,9 @@ fn emitToolOutcome(
     outcome: ToolOutcome,
 ) !void {
     switch (outcome) {
-        .success => |content| try emitLifecycle(hooks, .{ .tool_execution_end = .{
+        .success => |output| try emitLifecycle(hooks, .{ .tool_execution_end = .{
             .call = call,
-            .content = content,
+            .content = output.content,
         } }),
         .failure => |failure| try emitLifecycle(hooks, .{ .tool_execution_error = .{
             .call = call,
@@ -1572,10 +1603,10 @@ fn executeTool(
     arguments_json: []const u8,
 ) ToolOutcome {
     checkCancellation(run_context.cancellation) catch |err| return .{ .failure = err };
-    const content = tool.executeWithContext(allocator, run_context, arguments_json) catch |err| {
+    const output = tool.executeOutputWithContext(allocator, run_context, arguments_json) catch |err| {
         return .{ .failure = err };
     };
-    return .{ .success = content };
+    return .{ .success = output };
 }
 
 fn toolResult(
@@ -1585,10 +1616,14 @@ fn toolResult(
     work: ToolWork,
     tool_retries: *ToolRetryTracker,
     outcome: ToolOutcome,
-) !model_types.ToolResult {
+) !ProcessedTool {
     const tool = tools[work.tool_index];
     const executed: ExecutedTool = switch (outcome) {
-        .success => |content| .{ .content = content, .is_error = false },
+        .success => |output| .{
+            .content = output.content,
+            .is_error = false,
+            .follow_up_messages = output.follow_up_messages,
+        },
         .failure => |failure| recover: {
             if (!tool.isRecoverable(failure)) return failure;
             const retry_limit = tool.max_retries orelse agent.max_tool_retries;
@@ -1604,10 +1639,13 @@ fn toolResult(
         },
     };
     return .{
-        .call_id = work.call.id,
-        .name = work.call.name,
-        .content = executed.content,
-        .is_error = executed.is_error,
+        .result = .{
+            .call_id = work.call.id,
+            .name = work.call.name,
+            .content = executed.content,
+            .is_error = executed.is_error,
+        },
+        .follow_up_messages = executed.follow_up_messages,
     };
 }
 
@@ -1823,6 +1861,23 @@ fn appendMessageCopy(allocator: std.mem.Allocator, messages: *std.ArrayList(Mess
         .parts = parts,
         .metadata = try copyMetadata(allocator, message.metadata),
     });
+}
+
+fn appendToolFollowUps(
+    selected_model: model_types.Model,
+    allocator: std.mem.Allocator,
+    messages: *std.ArrayList(Message),
+    follow_ups: []const Message,
+) !void {
+    for (follow_ups) |message| {
+        if (message.role != .user) return Agent.Error.InvalidToolFollowUpMessage;
+        for (message.parts) |part| switch (part) {
+            .tool_call, .tool_result => return Agent.Error.InvalidToolFollowUpMessage,
+            else => {},
+        };
+        try ensurePartsSupported(selected_model, .user, message.parts);
+        try appendMessageCopy(allocator, messages, message);
+    }
 }
 
 fn copyPart(allocator: std.mem.Allocator, part: Part) !Part {

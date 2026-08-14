@@ -103,6 +103,27 @@ returned to the model as error results, bounded independently for each tool by
 run concurrently through `Agent.io`, keep the model's original result order,
 and count toward `limits.max_tool_calls` across the full run.
 
+Reflected tools also expose the return type as
+`ToolDefinition.return_json_schema`. To add context for the next model step,
+return `ToolReturn(T)`:
+
+```zig
+fn lookup(args: LookupArgs) !zigai.ToolReturn(Weather) {
+    return .{
+        .value = .{ .temperature_c = 31 },
+        .follow_up_messages = &.{.{
+            .role = .user,
+            .parts = &.{.{ .text = "The reading came from the roof sensor." }},
+        }},
+    };
+}
+```
+
+The typed value becomes the normal tool result. Follow-up messages are copied
+after it, in tool-call order, and checked before the next request. Only user
+messages without tool-call or tool-result parts can be injected. Manual tools
+can return the same shape through `Tool.executeOutputFn`.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.
