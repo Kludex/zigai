@@ -12,6 +12,7 @@ pub const Client = struct {
     api_key: []const u8,
     transport: http.Transport,
     base_url: []const u8 = api_base,
+    settings: model_types.ModelSettings = .{},
     profile: model_types.ModelProfile = .{
         .supports_tools = true,
         .supports_parallel_tool_calls = true,
@@ -20,10 +21,19 @@ pub const Client = struct {
         .supports_system_messages = true,
         .supports_thinking = true,
         .supports_streaming = true,
+        .supports_temperature = true,
+        .supports_max_tokens = true,
+        .reasoning_efforts = model_types.ModelProfile.ReasoningEffortSet.initFull(),
     },
 
     pub fn model(self: *Client) model_types.Model {
-        return .{ .context = self, .profile = self.profile, .requestFn = request, .streamFn = stream };
+        return .{
+            .context = self,
+            .profile = self.profile,
+            .settings = self.settings,
+            .requestFn = request,
+            .streamFn = stream,
+        };
     }
 
     fn request(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest) !model_types.ModelResponse {
@@ -256,6 +266,21 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
         }
         try json.endArray();
     }
+    if (request.settings.temperature) |temperature| {
+        try json.objectField("temperature");
+        try json.write(temperature);
+    }
+    if (request.settings.max_tokens) |max_tokens| {
+        try json.objectField("max_output_tokens");
+        try json.write(max_tokens);
+    }
+    if (request.settings.reasoning_effort) |effort| {
+        try json.objectField("reasoning");
+        try json.beginObject();
+        try json.objectField("effort");
+        try json.write(@tagName(effort));
+        try json.endObject();
+    }
     switch (request.output) {
         .text => {},
         .json_object => {
@@ -454,6 +479,7 @@ test "encodes both Responses API structured output modes" {
 
     const json_schema = try encodeRequest(std.testing.allocator, "gpt-test", .{
         .messages = &.{},
+        .settings = .{ .temperature = 0.2, .max_tokens = 512, .reasoning_effort = .high },
         .output = .{ .json_schema = .{
             .name = "answer",
             .schema = "{\"type\":\"object\"}",
@@ -461,4 +487,7 @@ test "encodes both Responses API structured output modes" {
     });
     defer std.testing.allocator.free(json_schema);
     try std.testing.expect(std.mem.indexOf(u8, json_schema, "\"type\":\"json_schema\",\"name\":\"answer\",\"strict\":true,\"schema\":{\"type\":\"object\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_schema, "\"temperature\":0.2") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_schema, "\"max_output_tokens\":512") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_schema, "\"reasoning\":{\"effort\":\"high\"}") != null);
 }

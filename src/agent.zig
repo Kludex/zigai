@@ -21,7 +21,12 @@ const AgentError = error{
     ModelDoesNotSupportTools,
     ModelDoesNotSupportJsonObjectOutput,
     ModelDoesNotSupportJsonSchemaOutput,
+    ModelDoesNotSupportMaxTokens,
+    ModelDoesNotSupportReasoningEffort,
+    ModelDoesNotSupportSeed,
+    ModelDoesNotSupportStopSequences,
     ModelDoesNotSupportStreaming,
+    ModelDoesNotSupportTemperature,
     ModelOutputTruncated,
     OutputTokenLimitExceeded,
     ParallelToolCallsNotSupported,
@@ -143,6 +148,8 @@ pub const RunOptions = struct {
     instructions: []const []const u8 = &.{},
     /// Overrides agent dependencies when non-null.
     dependencies: ?*anyopaque = null,
+    /// Highest-precedence generation settings for this run.
+    model_settings: model_types.ModelSettings = .{},
 };
 
 /// An owned agent result whose JSON response has been decoded as `Output`.
@@ -179,6 +186,8 @@ pub const Agent = struct {
     max_output_retries: usize = 2,
     /// Default number of failures returned to the model for each tool.
     max_tool_retries: usize = 2,
+    /// Overrides model defaults for every run of this agent.
+    model_settings: model_types.ModelSettings = .{},
     limits: UsageLimits = .{},
     retry_policy: RetryPolicy = .{},
     provider_error_observer: ?model_types.ProviderErrorObserver = null,
@@ -322,6 +331,8 @@ pub const Agent = struct {
                 Error.ModelDoesNotSupportJsonSchemaOutput,
             ),
         }
+        const resolved_settings = self.model.settings.overrideWith(self.model_settings).overrideWith(options.model_settings);
+        try requireModelSettings(self.model.profile, resolved_settings);
 
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
@@ -372,6 +383,7 @@ pub const Agent = struct {
                     .error_observer = provider_errors.observer(),
                     .timeout_ms = self.request_timeout_ms,
                     .cancellation = self.cancellation,
+                    .settings = resolved_settings,
                 };
                 break :request (if (stream_sink != null)
                     self.model.stream(memory, model_request, forwarder.modelSink())
@@ -766,6 +778,22 @@ fn checkCancellation(token: ?*const CancellationToken) Agent.Error!void {
 
 fn requireCapability(supported: bool, failure: Agent.Error) Agent.Error!void {
     if (!supported) return failure;
+}
+
+fn requireModelSettings(profile: model_types.ModelProfile, settings: model_types.ModelSettings) Agent.Error!void {
+    if (settings.temperature != null and !profile.supports_temperature) {
+        return Agent.Error.ModelDoesNotSupportTemperature;
+    }
+    if (settings.max_tokens != null and !profile.supports_max_tokens) {
+        return Agent.Error.ModelDoesNotSupportMaxTokens;
+    }
+    if (settings.stop_sequences != null and !profile.supports_stop_sequences) {
+        return Agent.Error.ModelDoesNotSupportStopSequences;
+    }
+    if (settings.seed != null and !profile.supports_seed) return Agent.Error.ModelDoesNotSupportSeed;
+    if (settings.reasoning_effort) |effort| {
+        if (!profile.supportsReasoningEffort(effort)) return Agent.Error.ModelDoesNotSupportReasoningEffort;
+    }
 }
 
 fn shouldRetry(err: anyerror, policy: Agent.RetryPolicy) bool {

@@ -112,6 +112,47 @@ pub const ModelProfile = struct {
     supports_system_messages: bool = true,
     supports_thinking: bool = false,
     supports_streaming: bool = false,
+    supports_temperature: bool = false,
+    supports_max_tokens: bool = true,
+    supports_stop_sequences: bool = false,
+    supports_seed: bool = false,
+    reasoning_efforts: ReasoningEffortSet = ReasoningEffortSet.initEmpty(),
+
+    pub const ReasoningEffortSet = std.EnumSet(ReasoningEffort);
+
+    pub fn supportsReasoningEffort(self: ModelProfile, effort: ReasoningEffort) bool {
+        return self.reasoning_efforts.contains(effort);
+    }
+};
+
+pub const ReasoningEffort = enum {
+    none,
+    minimal,
+    low,
+    medium,
+    high,
+    xhigh,
+    max,
+};
+
+/// Provider-neutral generation controls. Null fields inherit from a lower-precedence layer.
+pub const ModelSettings = struct {
+    temperature: ?f64 = null,
+    max_tokens: ?u64 = null,
+    stop_sequences: ?[]const []const u8 = null,
+    seed: ?i64 = null,
+    reasoning_effort: ?ReasoningEffort = null,
+
+    /// Applies each non-null field from `overrides` to `self`.
+    pub fn overrideWith(self: ModelSettings, overrides: ModelSettings) ModelSettings {
+        return .{
+            .temperature = overrides.temperature orelse self.temperature,
+            .max_tokens = overrides.max_tokens orelse self.max_tokens,
+            .stop_sequences = overrides.stop_sequences orelse self.stop_sequences,
+            .seed = overrides.seed orelse self.seed,
+            .reasoning_effort = overrides.reasoning_effort orelse self.reasoning_effort,
+        };
+    }
 };
 
 pub const Usage = struct {
@@ -184,6 +225,7 @@ pub const ModelRequest = struct {
     error_observer: ?ProviderErrorObserver = null,
     timeout_ms: ?u64 = null,
     cancellation: ?*const CancellationToken = null,
+    settings: ModelSettings = .{},
 };
 
 pub const OutputFormat = union(enum) {
@@ -235,6 +277,7 @@ pub const ModelStreamSink = struct {
 pub const Model = struct {
     context: *anyopaque,
     profile: ModelProfile,
+    settings: ModelSettings = .{},
     requestFn: *const fn (context: *anyopaque, allocator: std.mem.Allocator, request: ModelRequest) anyerror!ModelResponse,
     streamFn: ?*const fn (
         context: *anyopaque,

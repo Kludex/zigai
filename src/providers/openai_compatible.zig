@@ -15,18 +15,31 @@ pub const profiles = struct {
         .supports_json_object_output = true,
         .supports_system_messages = true,
         .supports_streaming = true,
+        .supports_temperature = true,
+        .supports_max_tokens = true,
+        .supports_stop_sequences = true,
+        .supports_seed = true,
+        .reasoning_efforts = model_types.ModelProfile.ReasoningEffortSet.initFull(),
     };
     pub const basic: model_types.ModelProfile = .{
         .supports_tools = true,
         .supports_parallel_tool_calls = false,
         .supports_system_messages = true,
         .supports_streaming = true,
+        .supports_temperature = true,
+        .supports_max_tokens = true,
+        .supports_stop_sequences = true,
+        .supports_seed = true,
     };
     pub const minimal: model_types.ModelProfile = .{
         .supports_tools = false,
         .supports_parallel_tool_calls = false,
         .supports_system_messages = true,
         .supports_streaming = true,
+        .supports_temperature = true,
+        .supports_max_tokens = true,
+        .supports_stop_sequences = true,
+        .supports_seed = true,
     };
 };
 
@@ -38,9 +51,16 @@ pub const Client = struct {
     provider_name: []const u8 = "openai-compatible",
     profile: model_types.ModelProfile = profiles.full,
     include_stream_usage: bool = true,
+    settings: model_types.ModelSettings = .{},
 
     pub fn model(self: *Client) model_types.Model {
-        return .{ .context = self, .profile = self.profile, .requestFn = request, .streamFn = stream };
+        return .{
+            .context = self,
+            .profile = self.profile,
+            .settings = self.settings,
+            .requestFn = request,
+            .streamFn = stream,
+        };
     }
 
     fn request(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest) !model_types.ModelResponse {
@@ -152,6 +172,26 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
             try json.endObject();
         }
         try json.endArray();
+    }
+    if (request.settings.temperature) |temperature| {
+        try json.objectField("temperature");
+        try json.write(temperature);
+    }
+    if (request.settings.max_tokens) |max_tokens| {
+        try json.objectField("max_tokens");
+        try json.write(max_tokens);
+    }
+    if (request.settings.stop_sequences) |stop_sequences| {
+        try json.objectField("stop");
+        try json.write(stop_sequences);
+    }
+    if (request.settings.seed) |seed| {
+        try json.objectField("seed");
+        try json.write(seed);
+    }
+    if (request.settings.reasoning_effort) |effort| {
+        try json.objectField("reasoning_effort");
+        try json.write(@tagName(effort));
     }
     switch (request.output) {
         .text => {},
@@ -509,6 +549,13 @@ test "encodes Chat Completions messages, tools, and schema output" {
         },
         .instructions = &.{"Current instruction."},
         .tools = &.{.{ .name = "weather", .description = "Weather", .parameters_json_schema = "{\"type\":\"object\"}" }},
+        .settings = .{
+            .temperature = 0.7,
+            .max_tokens = 128,
+            .stop_sequences = &.{"DONE"},
+            .seed = 9,
+            .reasoning_effort = .low,
+        },
         .output = .{ .json_schema = .{ .name = "answer", .schema = "{\"type\":\"object\"}" } },
     });
     defer std.testing.allocator.free(body);
@@ -516,6 +563,11 @@ test "encodes Chat Completions messages, tools, and schema output" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"response_format\":{\"type\":\"json_schema\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"parameters\":{\"type\":\"object\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"role\":\"system\",\"content\":\"Current instruction.\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"temperature\":0.7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"max_tokens\":128") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"stop\":[\"DONE\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"seed\":9") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning_effort\":\"low\"") != null);
 
     const object_mode = try encodeRequest(std.testing.allocator, "model", .{ .messages = &.{}, .output = .json_object });
     defer std.testing.allocator.free(object_mode);

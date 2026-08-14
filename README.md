@@ -149,6 +149,24 @@ run. Instructions are sent again for every model request in that run, but are
 not stored in `result.messages`. This makes the result safe to reuse as message
 history without carrying instructions from an earlier run.
 
+## Model settings
+
+Generation settings use one provider-neutral type:
+
+```zig
+.model_settings = .{
+    .temperature = 0.2,
+    .max_tokens = 1_000,
+    .stop_sequences = &.{"END"},
+    .seed = 42,
+    .reasoning_effort = .medium,
+},
+```
+
+Defaults on `Model.settings` are overridden by `Agent.model_settings`, then by
+`RunOptions.model_settings`. The model profile rejects unsupported settings
+before network I/O; providers never silently discard a requested control.
+
 ## Typed output
 
 Define the result you want as a Zig type. ZigAI derives its strict JSON Schema,

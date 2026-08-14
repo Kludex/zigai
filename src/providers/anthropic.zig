@@ -14,6 +14,7 @@ pub const Client = struct {
     transport: http.Transport,
     max_tokens: u32 = 4096,
     base_url: []const u8 = api_base,
+    settings: model_types.ModelSettings = .{},
     profile: model_types.ModelProfile = .{
         .supports_tools = true,
         .supports_parallel_tool_calls = true,
@@ -22,10 +23,26 @@ pub const Client = struct {
         .supports_system_messages = true,
         .supports_thinking = true,
         .supports_streaming = true,
+        .supports_temperature = true,
+        .supports_max_tokens = true,
+        .supports_stop_sequences = true,
+        .reasoning_efforts = model_types.ModelProfile.ReasoningEffortSet.initMany(&.{
+            .low,
+            .medium,
+            .high,
+            .xhigh,
+            .max,
+        }),
     },
 
     pub fn model(self: *Client) model_types.Model {
-        return .{ .context = self, .profile = self.profile, .requestFn = request, .streamFn = stream };
+        return .{
+            .context = self,
+            .profile = self.profile,
+            .settings = self.settings,
+            .requestFn = request,
+            .streamFn = stream,
+        };
     }
 
     fn request(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest) !model_types.ModelResponse {
@@ -211,7 +228,15 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
     try json.objectField("model");
     try json.write(model_name);
     try json.objectField("max_tokens");
-    try json.write(max_tokens);
+    try json.write(request.settings.max_tokens orelse max_tokens);
+    if (request.settings.temperature) |temperature| {
+        try json.objectField("temperature");
+        try json.write(temperature);
+    }
+    if (request.settings.stop_sequences) |stop_sequences| {
+        try json.objectField("stop_sequences");
+        try json.write(stop_sequences);
+    }
 
     var has_system = request.instructions.len > 0;
     for (request.messages) |message| if (message.role == .system) {
@@ -310,21 +335,28 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
         }
         try json.endArray();
     }
-    switch (request.output) {
-        .text => {},
-        .json_object => return error.UnsupportedOutputMode,
-        .json_schema => |format| {
-            try json.objectField("output_config");
-            try json.beginObject();
+    if (request.output == .json_object) return error.UnsupportedOutputMode;
+    const schema = switch (request.output) {
+        .json_schema => |format| format.schema,
+        else => null,
+    };
+    if (schema != null or request.settings.reasoning_effort != null) {
+        try json.objectField("output_config");
+        try json.beginObject();
+        if (request.settings.reasoning_effort) |effort| {
+            try json.objectField("effort");
+            try json.write(@tagName(effort));
+        }
+        if (schema) |schema_value| {
             try json.objectField("format");
             try json.beginObject();
             try json.objectField("type");
             try json.write("json_schema");
             try json.objectField("schema");
-            try common.rawJson(&json, format.schema);
+            try common.rawJson(&json, schema_value);
             try json.endObject();
-            try json.endObject();
-        },
+        }
+        try json.endObject();
     }
     try json.endObject();
     return output.toOwnedSlice();
@@ -444,13 +476,22 @@ test "rejects malformed usage" {
 test "encodes Anthropic structured output and rejects JSON-object mode" {
     const body = try encodeRequest(std.testing.allocator, "claude-test", 20, .{
         .messages = &.{},
+        .settings = .{
+            .temperature = 0.4,
+            .max_tokens = 99,
+            .stop_sequences = &.{"END"},
+            .reasoning_effort = .high,
+        },
         .output = .{ .json_schema = .{
             .name = "unused-by-anthropic",
             .schema = "{\"type\":\"object\"}",
         } },
     });
     defer std.testing.allocator.free(body);
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"output_config\":{\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\"}}}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"max_tokens\":99") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"temperature\":0.4") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"stop_sequences\":[\"END\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"output_config\":{\"effort\":\"high\",\"format\":{\"type\":\"json_schema\",\"schema\":{\"type\":\"object\"}}}") != null);
     try std.testing.expectError(error.UnsupportedOutputMode, encodeRequest(std.testing.allocator, "claude-test", 20, .{
         .messages = &.{},
         .output = .json_object,

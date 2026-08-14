@@ -19,6 +19,13 @@ filtering, and incomplete tool calls fail with distinct agent errors before the
 generic empty-response check, so an empty successful response remains a
 separate condition.
 
+`ModelSettings` carries temperature, maximum output tokens, stop sequences,
+seed, and reasoning effort without exposing provider field names. Settings
+merge in model, agent, then run order. `ModelProfile` declares support,
+including the exact reasoning-effort levels, so an unsupported override fails
+before a request. Each adapter translates the resolved settings once at its
+wire boundary.
+
 Structured output is provider neutral at the agent boundary. JSON-object mode
 and named, strict JSON Schema mode are encoded as `text.format` for OpenAI and
 `output_config.format` for Anthropic, and `generationConfig` for Google. A

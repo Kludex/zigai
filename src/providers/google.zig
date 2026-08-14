@@ -12,18 +12,35 @@ pub const Client = struct {
     api_key: []const u8,
     transport: http.Transport,
     base_url: []const u8 = api_base,
+    settings: model_types.ModelSettings = .{},
     profile: model_types.ModelProfile = .{
         .supports_tools = true,
         .supports_parallel_tool_calls = true,
         .supports_json_schema_output = true,
         .supports_json_object_output = true,
         .supports_system_messages = true,
-        .supports_thinking = false,
+        .supports_thinking = true,
         .supports_streaming = true,
+        .supports_temperature = true,
+        .supports_max_tokens = true,
+        .supports_stop_sequences = true,
+        .supports_seed = true,
+        .reasoning_efforts = model_types.ModelProfile.ReasoningEffortSet.initMany(&.{
+            .minimal,
+            .low,
+            .medium,
+            .high,
+        }),
     },
 
     pub fn model(self: *Client) model_types.Model {
-        return .{ .context = self, .profile = self.profile, .requestFn = request, .streamFn = stream };
+        return .{
+            .context = self,
+            .profile = self.profile,
+            .settings = self.settings,
+            .requestFn = request,
+            .streamFn = stream,
+        };
     }
 
     fn request(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest) !model_types.ModelResponse {
@@ -222,10 +239,13 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
         try json.endArray();
     }
 
-    switch (request.output) {
-        .text => {},
-        .json_object => try writeGenerationConfig(&json, null),
-        .json_schema => |format| try writeGenerationConfig(&json, format.schema),
+    const schema = switch (request.output) {
+        .json_schema => |format| format.schema,
+        else => null,
+    };
+    const json_output = request.output != .text;
+    if (json_output or hasGenerationSettings(request.settings)) {
+        try writeGenerationConfig(&json, schema, json_output, request.settings);
     }
     try json.endObject();
     return output.toOwnedSlice();
@@ -238,14 +258,55 @@ fn writeTextPart(json: *std.json.Stringify, text: []const u8) !void {
     try json.endObject();
 }
 
-fn writeGenerationConfig(json: *std.json.Stringify, schema: ?[]const u8) !void {
+fn hasGenerationSettings(settings: model_types.ModelSettings) bool {
+    return settings.temperature != null or settings.max_tokens != null or
+        settings.stop_sequences != null or settings.seed != null or settings.reasoning_effort != null;
+}
+
+fn writeGenerationConfig(
+    json: *std.json.Stringify,
+    schema: ?[]const u8,
+    json_output: bool,
+    settings: model_types.ModelSettings,
+) !void {
     try json.objectField("generationConfig");
     try json.beginObject();
-    try json.objectField("responseMimeType");
-    try json.write("application/json");
+    if (json_output) {
+        try json.objectField("responseMimeType");
+        try json.write("application/json");
+    }
     if (schema) |value| {
         try json.objectField("responseJsonSchema");
         try common.rawJson(json, value);
+    }
+    if (settings.temperature) |temperature| {
+        try json.objectField("temperature");
+        try json.write(temperature);
+    }
+    if (settings.max_tokens) |max_tokens| {
+        try json.objectField("maxOutputTokens");
+        try json.write(max_tokens);
+    }
+    if (settings.stop_sequences) |stop_sequences| {
+        try json.objectField("stopSequences");
+        try json.write(stop_sequences);
+    }
+    if (settings.seed) |seed| {
+        try json.objectField("seed");
+        try json.write(seed);
+    }
+    if (settings.reasoning_effort) |effort| {
+        try json.objectField("thinkingConfig");
+        try json.beginObject();
+        try json.objectField("thinkingLevel");
+        try json.write(switch (effort) {
+            .minimal => "MINIMAL",
+            .low => "LOW",
+            .medium => "MEDIUM",
+            .high => "HIGH",
+            else => unreachable,
+        });
+        try json.endObject();
     }
     try json.endObject();
 }
@@ -367,6 +428,13 @@ test "encodes Gemini system, tool, result, error, and structured output parts" {
         .messages = &messages,
         .instructions = &.{"Current instruction."},
         .tools = &.{.{ .name = "weather", .description = "Get weather.", .parameters_json_schema = "{\"type\":\"object\"}" }},
+        .settings = .{
+            .temperature = 0.6,
+            .max_tokens = 256,
+            .stop_sequences = &.{"STOP"},
+            .seed = 7,
+            .reasoning_effort = .medium,
+        },
         .output = .{ .json_schema = .{ .name = "answer", .schema = "{\"type\":\"object\"}" } },
     });
     defer std.testing.allocator.free(body);
@@ -375,6 +443,11 @@ test "encodes Gemini system, tool, result, error, and structured output parts" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"functionDeclarations\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"error\":{\"message\":\"failed\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"responseJsonSchema\":{\"type\":\"object\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"temperature\":0.6") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"maxOutputTokens\":256") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"stopSequences\":[\"STOP\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"seed\":7") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"thinkingConfig\":{\"thinkingLevel\":\"MEDIUM\"}") != null);
 
     const object_body = try encodeRequest(std.testing.allocator, .{ .messages = &.{}, .output = .json_object });
     defer std.testing.allocator.free(object_body);

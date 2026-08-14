@@ -452,6 +452,74 @@ test "agent rejects unsupported requested capabilities before a model request" {
     try std.testing.expectEqual(@as(usize, 0), no_json.request_count);
 }
 
+test "model settings merge from model through agent and run" {
+    const parts = [_]zigai.model.Part{.{ .text = "done" }};
+    const Inspector = struct {
+        fn inspect(_: usize, request: zigai.model.ModelRequest) !void {
+            try std.testing.expectEqual(@as(f64, 0.3), request.settings.temperature.?);
+            try std.testing.expectEqual(@as(u64, 200), request.settings.max_tokens.?);
+            try std.testing.expectEqualStrings("run-stop", request.settings.stop_sequences.?[0]);
+            try std.testing.expectEqual(@as(i64, 3), request.settings.seed.?);
+            try std.testing.expectEqual(zigai.ReasoningEffort.high, request.settings.reasoning_effort.?);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .inspectFn = Inspector.inspect,
+        .profile = .{
+            .supports_temperature = true,
+            .supports_stop_sequences = true,
+            .supports_seed = true,
+            .reasoning_efforts = zigai.ModelProfile.ReasoningEffortSet.initFull(),
+        },
+    };
+    var model = scripted.model();
+    model.settings = .{
+        .temperature = 0.1,
+        .max_tokens = 100,
+        .stop_sequences = &.{"model-stop"},
+        .seed = 1,
+        .reasoning_effort = .low,
+    };
+    var result = try (zigai.Agent{
+        .model = model,
+        .model_settings = .{ .temperature = 0.2, .max_tokens = 200, .seed = 2 },
+    }).runWithOptions(std.testing.allocator, "hi", .{ .model_settings = .{
+        .temperature = 0.3,
+        .stop_sequences = &.{"run-stop"},
+        .seed = 3,
+        .reasoning_effort = .high,
+    } });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("done", result.output);
+}
+
+test "unsupported model settings fail before requesting" {
+    const parts = [_]zigai.model.Part{.{ .text = "unused" }};
+    var temperature = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    try std.testing.expectError(
+        zigai.Agent.Error.ModelDoesNotSupportTemperature,
+        (zigai.Agent{
+            .model = temperature.model(),
+            .model_settings = .{ .temperature = 0.5 },
+        }).run(std.testing.allocator, "hi"),
+    );
+    try std.testing.expectEqual(@as(usize, 0), temperature.request_count);
+
+    var reasoning = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .profile = .{ .reasoning_efforts = zigai.ModelProfile.ReasoningEffortSet.initOne(.low) },
+    };
+    try std.testing.expectError(
+        zigai.Agent.Error.ModelDoesNotSupportReasoningEffort,
+        (zigai.Agent{
+            .model = reasoning.model(),
+            .model_settings = .{ .reasoning_effort = .high },
+        }).run(std.testing.allocator, "hi"),
+    );
+    try std.testing.expectEqual(@as(usize, 0), reasoning.request_count);
+}
+
 test "agent rejects empty and textless final responses" {
     const no_parts = [_]zigai.model.ModelResponse{.{ .parts = &.{} }};
     var empty = zigai.testing.ScriptedModel{ .responses = &no_parts };
