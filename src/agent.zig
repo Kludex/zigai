@@ -16,6 +16,7 @@ const AgentError = error{
     InputTokenLimitExceeded,
     InvalidTypedOutput,
     MaxModelRequestsExceeded,
+    MaxToolCallsExceeded,
     ModelDoesNotSupportSystemMessages,
     ModelDoesNotSupportTools,
     ModelDoesNotSupportJsonObjectOutput,
@@ -24,13 +25,17 @@ const AgentError = error{
     ModelOutputTruncated,
     OutputTokenLimitExceeded,
     ParallelToolCallsNotSupported,
+    ParallelToolCallsRequireIo,
     TotalTokenLimitExceeded,
+    ToolConcurrencyUnavailable,
     UnknownTool,
     RetryBackoffRequiresIo,
 };
 
 const AgentUsageLimits = struct {
     max_model_requests: usize = 8,
+    /// Maximum number of tool calls requested across the complete run.
+    max_tool_calls: usize = 64,
     max_input_tokens: ?u64 = null,
     max_output_tokens: ?u64 = null,
     max_total_tokens: ?u64 = null,
@@ -347,6 +352,7 @@ pub const Agent = struct {
 
         var model_requests: usize = 0;
         var output_retries: usize = 0;
+        var total_tool_calls: usize = 0;
         while (true) {
             var retries: usize = 0;
             const response = request: while (true) {
@@ -429,45 +435,31 @@ pub const Agent = struct {
                     .finish_reason = response.finish_reason,
                 };
             }
+            if (tool_call_count > self.limits.max_tool_calls -| total_tool_calls) {
+                return Error.MaxToolCallsExceeded;
+            }
+            total_tool_calls += tool_call_count;
             if (!self.model.profile.supports_tools) return Error.ModelDoesNotSupportTools;
             if (tool_call_count > 1 and !self.model.profile.supports_parallel_tool_calls) {
                 return Error.ParallelToolCallsNotSupported;
             }
 
-            const result_parts = try memory.alloc(Part, tool_call_count);
-            var result_index: usize = 0;
-            for (response.parts) |part| switch (part) {
-                .tool_call => |call| {
-                    try checkCancellation(self.cancellation);
-                    const tool_index = findToolIndex(self.tools, call.name) orelse return Error.UnknownTool;
-                    const tool = self.tools[tool_index];
-                    var is_error = false;
-                    const content = tool.executeWithContext(memory, .{
-                        .dependencies = dependencies,
-                        .usage = total_usage,
-                        .model_requests = model_requests,
-                    }, call.arguments_json) catch |err| failure: {
-                        if (!tool.isRecoverable(err)) return err;
-                        const retry_limit = tool.max_retries orelse self.max_tool_retries;
-                        if (tool_retries[tool_index] >= retry_limit) return err;
-                        tool_retries[tool_index] += 1;
-                        is_error = true;
-                        break :failure try std.fmt.allocPrint(
-                            memory,
-                            "Tool {s} failed with {s}. Correct the arguments or approach and try again.",
-                            .{ call.name, @errorName(err) },
-                        );
-                    };
-                    result_parts[result_index] = .{ .tool_result = .{
-                        .call_id = call.id,
-                        .name = call.name,
-                        .content = content,
-                        .is_error = is_error,
-                    } };
-                    if (stream_sink) |sink| try sink.emit(.{ .tool_result = result_parts[result_index].tool_result });
-                    result_index += 1;
+            const result_parts = try executeToolCalls(
+                self,
+                memory,
+                response.parts,
+                tool_call_count,
+                tool_retries,
+                .{
+                    .dependencies = dependencies,
+                    .usage = total_usage,
+                    .model_requests = model_requests,
+                    .cancellation = self.cancellation,
+                    .io = self.io,
                 },
-                else => {},
+            );
+            if (stream_sink) |sink| for (result_parts) |part| {
+                try sink.emit(.{ .tool_result = part.tool_result });
             };
             try messages.append(memory, .{ .role = .tool, .parts = result_parts });
         }
@@ -528,6 +520,205 @@ fn decodeTypedResult(comptime Output: type, untyped: Agent.Result) !TypedResult(
         .finish_reason = owned.finish_reason,
     };
 }
+
+const ToolWork = struct {
+    call: model_types.ToolCall,
+    tool_index: usize,
+};
+
+const ToolOutcome = union(enum) {
+    success: []const u8,
+    failure: anyerror,
+};
+
+const ExecutedTool = struct {
+    content: []const u8,
+    is_error: bool,
+};
+
+fn executeToolCalls(
+    agent: Agent,
+    allocator: std.mem.Allocator,
+    response_parts: []const Part,
+    call_count: usize,
+    tool_retries: []usize,
+    run_context: model_types.ToolRunContext,
+) ![]Part {
+    const work = try allocator.alloc(ToolWork, call_count);
+    var work_index: usize = 0;
+    for (response_parts) |part| switch (part) {
+        .tool_call => |call| {
+            work[work_index] = .{
+                .call = call,
+                .tool_index = findToolIndex(agent.tools, call.name) orelse return Agent.Error.UnknownTool,
+            };
+            work_index += 1;
+        },
+        else => {},
+    };
+
+    const result_parts = try allocator.alloc(Part, call_count);
+    if (call_count == 1) {
+        try checkCancellation(agent.cancellation);
+        const outcome = executeTool(agent.tools[work[0].tool_index], allocator, run_context, work[0].call.arguments_json);
+        result_parts[0] = .{ .tool_result = try toolResult(
+            agent,
+            allocator,
+            work[0],
+            tool_retries,
+            outcome,
+        ) };
+        return result_parts;
+    }
+
+    const io = agent.io orelse return Agent.Error.ParallelToolCallsRequireIo;
+    var locked_allocator = LockedAllocator{ .child = allocator, .io = io };
+    const concurrent_allocator = locked_allocator.allocator();
+    const futures = try allocator.alloc(std.Io.Future(ToolOutcome), call_count);
+    const outcomes = try allocator.alloc(ToolOutcome, call_count);
+    var spawned: usize = 0;
+    while (spawned < call_count) : (spawned += 1) {
+        const item = work[spawned];
+        futures[spawned] = io.concurrent(executeTool, .{
+            agent.tools[item.tool_index],
+            concurrent_allocator,
+            run_context,
+            item.call.arguments_json,
+        }) catch {
+            for (futures[0..spawned]) |*future| _ = future.cancel(io);
+            return Agent.Error.ToolConcurrencyUnavailable;
+        };
+    }
+
+    var awaited: usize = 0;
+    errdefer {
+        for (futures[awaited..]) |*future| _ = future.cancel(io);
+    }
+    while (awaited < call_count) {
+        try checkCancellation(agent.cancellation);
+        outcomes[awaited] = futures[awaited].await(io);
+        if (outcomes[awaited] == .failure and
+            !agent.tools[work[awaited].tool_index].isRecoverable(outcomes[awaited].failure))
+        {
+            return outcomes[awaited].failure;
+        }
+        awaited += 1;
+    }
+    try checkCancellation(agent.cancellation);
+    for (work, outcomes, result_parts) |item, outcome, *result_part| {
+        result_part.* = .{ .tool_result = try toolResult(
+            agent,
+            allocator,
+            item,
+            tool_retries,
+            outcome,
+        ) };
+    }
+    return result_parts;
+}
+
+fn executeTool(
+    tool: model_types.Tool,
+    allocator: std.mem.Allocator,
+    run_context: model_types.ToolRunContext,
+    arguments_json: []const u8,
+) ToolOutcome {
+    checkCancellation(run_context.cancellation) catch |err| return .{ .failure = err };
+    const content = tool.executeWithContext(allocator, run_context, arguments_json) catch |err| {
+        return .{ .failure = err };
+    };
+    return .{ .success = content };
+}
+
+fn toolResult(
+    agent: Agent,
+    allocator: std.mem.Allocator,
+    work: ToolWork,
+    tool_retries: []usize,
+    outcome: ToolOutcome,
+) !model_types.ToolResult {
+    const tool = agent.tools[work.tool_index];
+    const executed: ExecutedTool = switch (outcome) {
+        .success => |content| .{ .content = content, .is_error = false },
+        .failure => |failure| recover: {
+            if (!tool.isRecoverable(failure)) return failure;
+            const retry_limit = tool.max_retries orelse agent.max_tool_retries;
+            if (tool_retries[work.tool_index] >= retry_limit) return failure;
+            tool_retries[work.tool_index] += 1;
+            break :recover .{
+                .content = try std.fmt.allocPrint(
+                    allocator,
+                    "Tool {s} failed with {s}. Correct the arguments or approach and try again.",
+                    .{ work.call.name, @errorName(failure) },
+                ),
+                .is_error = true,
+            };
+        },
+    };
+    return .{
+        .call_id = work.call.id,
+        .name = work.call.name,
+        .content = executed.content,
+        .is_error = executed.is_error,
+    };
+}
+
+const LockedAllocator = struct {
+    child: std.mem.Allocator,
+    io: std.Io,
+    mutex: std.Io.Mutex = .init,
+
+    fn allocator(self: *LockedAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    const vtable: std.mem.Allocator.VTable = .{
+        .alloc = alloc,
+        .resize = resize,
+        .remap = remap,
+        .free = free,
+    };
+
+    fn alloc(context: *anyopaque, len: usize, alignment: std.mem.Alignment, return_address: usize) ?[*]u8 {
+        const self: *LockedAllocator = @ptrCast(@alignCast(context));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.child.rawAlloc(len, alignment, return_address);
+    }
+
+    fn resize(
+        context: *anyopaque,
+        memory: []u8,
+        alignment: std.mem.Alignment,
+        new_len: usize,
+        return_address: usize,
+    ) bool {
+        const self: *LockedAllocator = @ptrCast(@alignCast(context));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.child.rawResize(memory, alignment, new_len, return_address);
+    }
+
+    fn remap(
+        context: *anyopaque,
+        memory: []u8,
+        alignment: std.mem.Alignment,
+        new_len: usize,
+        return_address: usize,
+    ) ?[*]u8 {
+        const self: *LockedAllocator = @ptrCast(@alignCast(context));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        return self.child.rawRemap(memory, alignment, new_len, return_address);
+    }
+
+    fn free(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, return_address: usize) void {
+        const self: *LockedAllocator = @ptrCast(@alignCast(context));
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.child.rawFree(memory, alignment, return_address);
+    }
+};
 
 const ModelEventForwarder = struct {
     sink: ?AgentStreamSink,

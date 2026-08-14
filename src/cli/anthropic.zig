@@ -16,9 +16,9 @@ pub fn main(init: std.process.Init) !void {
     defer loaded_tools.deinit();
     var stream_io = init.io;
     var result = if (input.stream)
-        try (zigai.Agent{ .model = client.model(), .tools = loaded_tools.tools }).runStream(init.gpa, input.prompt, common.streamSink(&stream_io))
+        try (zigai.Agent{ .model = client.model(), .tools = loaded_tools.tools, .io = init.io }).runStream(init.gpa, input.prompt, common.streamSink(&stream_io))
     else
-        try (zigai.Agent{ .model = client.model(), .tools = loaded_tools.tools }).run(init.gpa, input.prompt);
+        try (zigai.Agent{ .model = client.model(), .tools = loaded_tools.tools, .io = init.io }).run(init.gpa, input.prompt);
     defer result.deinit();
     if (input.stream) try common.printNewline(init.io) else try common.printResult(init.io, result.output);
 }

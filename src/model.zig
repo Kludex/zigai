@@ -90,6 +90,10 @@ pub const ToolRunContext = struct {
     dependencies: ?*anyopaque = null,
     usage: Usage = .{},
     model_requests: usize = 0,
+    /// Shared cooperative cancellation state for the run.
+    cancellation: ?*const CancellationToken = null,
+    /// Runtime available to tools for cancellable I/O.
+    io: ?std.Io = null,
 
     pub fn dependency(self: ToolRunContext, comptime T: type) ?*T {
         const pointer = self.dependencies orelse return null;

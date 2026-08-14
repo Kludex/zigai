@@ -47,7 +47,7 @@ applications copy only the detail they need to retain.
 2. Copy message history, then add the current user message.
 3. Request a model response.
 4. Return its text if there are no tool calls.
-5. Otherwise execute every requested tool and append the results.
+5. Otherwise execute every requested tool and append the results in call order.
 6. Repeat until the model answers or the configured request limit is reached.
 
 Instructions belong to the current run. Static instructions are resolved
@@ -63,6 +63,12 @@ become error tool results so the model can repair its call. Retry counts are
 kept separately for each tool, with a per-tool override, and do not consume the
 structured-output retry budget. Allocation and cancellation failures remain
 fatal; custom tools can override failure classification.
+
+When a model requests multiple tools, the agent uses its `Io` runtime to run
+them concurrently. Allocations into the result arena are synchronized, result
+parts remain in model call order, and a fatal failure cancels outstanding work.
+Tools receive the run's `Io` and cancellation token for cooperative cleanup.
+`limits.max_tool_calls` caps the total across every step of a run.
 
 Cancellation is checked at loop boundaries and propagated through the model
 request so the standard HTTP transport can interrupt in-flight buffered and

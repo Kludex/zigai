@@ -550,6 +550,113 @@ test "agent enforces model request and parallel tool limits" {
         (zigai.Agent{ .model = no_parallel.model(), .tools = &.{tool} }).run(std.testing.allocator, "hi"),
     );
     try std.testing.expectEqual(@as(u8, 0), calls);
+
+    var over_tool_limit = zigai.testing.ScriptedModel{ .responses = &responses };
+    try std.testing.expectError(
+        zigai.Agent.Error.MaxToolCallsExceeded,
+        (zigai.Agent{
+            .model = over_tool_limit.model(),
+            .tools = &.{tool},
+            .limits = .{ .max_tool_calls = 1 },
+        }).run(std.testing.allocator, "hi"),
+    );
+    try std.testing.expectEqual(@as(u8, 0), calls);
+
+    var missing_io = zigai.testing.ScriptedModel{ .responses = &responses };
+    try std.testing.expectError(
+        zigai.Agent.Error.ParallelToolCallsRequireIo,
+        (zigai.Agent{ .model = missing_io.model(), .tools = &.{tool} }).run(std.testing.allocator, "hi"),
+    );
+
+    var unavailable = zigai.testing.ScriptedModel{ .responses = &responses };
+    var single_threaded = std.Io.Threaded.init(std.testing.allocator, .{ .concurrent_limit = .nothing });
+    defer single_threaded.deinit();
+    try std.testing.expectError(
+        zigai.Agent.Error.ToolConcurrencyUnavailable,
+        (zigai.Agent{
+            .model = unavailable.model(),
+            .tools = &.{tool},
+            .io = single_threaded.io(),
+        }).run(std.testing.allocator, "hi"),
+    );
+}
+
+test "parallel tools overlap and keep model call order" {
+    const call_parts = [_]zigai.model.Part{
+        .{ .tool_call = .{ .id = "slow-id", .name = "slow", .arguments_json = "slow" } },
+        .{ .tool_call = .{ .id = "fast-id", .name = "fast", .arguments_json = "fast" } },
+    };
+    const final_parts = [_]zigai.model.Part{.{ .text = "done" }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
+            if (index == 0) return;
+            const results = request.messages[2].parts;
+            try std.testing.expectEqual(@as(usize, 2), results.len);
+            try std.testing.expectEqualStrings("slow-id", results[0].tool_result.call_id);
+            try std.testing.expectEqualStrings("slow", results[0].tool_result.content);
+            try std.testing.expectEqualStrings("fast-id", results[1].tool_result.call_id);
+            try std.testing.expectEqualStrings("fast", results[1].tool_result.content);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &call_parts }, .{ .parts = &final_parts } },
+        .inspectFn = Inspector.inspect,
+    };
+    const State = struct {
+        active: std.atomic.Value(usize) = .init(0),
+        overlapped: std.atomic.Value(bool) = .init(false),
+
+        fn execute(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            run_context: zigai.ToolRunContext,
+            arguments: []const u8,
+        ) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.active.fetchAdd(1, .seq_cst) > 0) self.overlapped.store(true, .seq_cst);
+            defer _ = self.active.fetchSub(1, .seq_cst);
+            const io = run_context.io orelse return error.MissingIo;
+            (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(if (std.mem.eql(u8, arguments, "slow")) 40 else 5),
+                .clock = .awake,
+            } }).sleep(io) catch return error.ToolCancelled;
+            try std.testing.expect(run_context.cancellation == null);
+            return allocator.dupe(u8, arguments);
+        }
+    };
+    var state: State = .{};
+    const tools = [_]zigai.Tool{
+        .{
+            .definition = .{ .name = "slow", .description = "", .parameters_json_schema = "{}" },
+            .context = &state,
+            .executeFn = struct {
+                fn unused(_: *anyopaque, _: std.mem.Allocator, _: []const u8) ![]const u8 {
+                    return error.UnexpectedFallback;
+                }
+            }.unused,
+            .executeWithContextFn = State.execute,
+        },
+        .{
+            .definition = .{ .name = "fast", .description = "", .parameters_json_schema = "{}" },
+            .context = &state,
+            .executeFn = struct {
+                fn unused(_: *anyopaque, _: std.mem.Allocator, _: []const u8) ![]const u8 {
+                    return error.UnexpectedFallback;
+                }
+            }.unused,
+            .executeWithContextFn = State.execute,
+        },
+    };
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .tools = &tools,
+        .io = threaded.io(),
+    }).run(std.testing.allocator, "Run both.");
+    defer result.deinit();
+    try std.testing.expect(state.overlapped.load(.seq_cst));
+    try std.testing.expectEqualStrings("done", result.output);
 }
 
 test "agent reports unknown tools and exhausts a bounded tool loop" {

@@ -6,7 +6,7 @@ pub fn main(init: std.process.Init) !void {
     var http = zigai.transport.HttpTransport.init(init.gpa, init.io);
     defer http.deinit();
     var client = zigai.anthropic.Client{ .model_name = "claude-sonnet-4-5", .api_key = key, .transport = http.transport() };
-    var result = try (zigai.Agent{ .model = client.model(), .system_prompt = "Be concise." }).run(init.gpa, "Why is the sky blue?");
+    var result = try (zigai.Agent{ .model = client.model(), .system_prompt = "Be concise.", .io = init.io }).run(init.gpa, "Why is the sky blue?");
     defer result.deinit();
     std.debug.print("{s}\n", .{result.output});
 }
