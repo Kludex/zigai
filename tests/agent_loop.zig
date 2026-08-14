@@ -1659,6 +1659,80 @@ test "parallel tools overlap and keep model call order" {
     try std.testing.expectEqualStrings("done", result.output);
 }
 
+test "parallel tools handle validation and terminal execution failures" {
+    const invalid_calls = [_]zigai.model.Part{
+        .{ .tool_call = .{ .id = "invalid", .name = "validated", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "valid", .name = "valid", .arguments_json = "{}" } },
+    };
+    const final = [_]zigai.model.Part{.{ .text = "recovered" }};
+    var validation_model = zigai.testing.ScriptedModel{ .responses = &.{ .{ .parts = &invalid_calls }, .{ .parts = &final } } };
+    var validated = zigai.reflect.tool("validated", "", struct {
+        fn execute(args: struct { value: u8 }) !u8 {
+            return args.value;
+        }
+    }.execute);
+    validated.max_retries = 1;
+    var calls: u8 = 0;
+    var valid = successfulTool(&calls);
+    valid.definition.name = "valid";
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var recovered = try (zigai.Agent{
+        .model = validation_model.model(),
+        .tools = &.{ validated, valid },
+        .io = threaded.io(),
+    }).run(std.testing.allocator, "Run both.");
+    defer recovered.deinit();
+    try std.testing.expectEqualStrings("recovered", recovered.output);
+    try std.testing.expectEqual(@as(u8, 1), calls);
+
+    const fatal_calls = [_]zigai.model.Part{
+        .{ .tool_call = .{ .id = "fatal", .name = "fatal", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "slow", .name = "slow", .arguments_json = "{}" } },
+    };
+    var fatal_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &fatal_calls }} };
+    const Terminal = struct {
+        fn execute(_: *anyopaque, _: std.mem.Allocator, _: []const u8) ![]const u8 {
+            return error.TerminalToolFailure;
+        }
+        fn recoverable(_: *anyopaque, _: anyerror) bool {
+            return false;
+        }
+    };
+    const Slow = struct {
+        fn execute(
+            _: *anyopaque,
+            allocator: std.mem.Allocator,
+            run_context: zigai.ToolRunContext,
+            _: []const u8,
+        ) ![]const u8 {
+            const io = run_context.io orelse return error.MissingIo;
+            (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(100),
+                .clock = .awake,
+            } }).sleep(io) catch return error.ToolCancelled;
+            return allocator.dupe(u8, "slow");
+        }
+    };
+    var unused: u8 = 0;
+    const fatal = zigai.Tool{
+        .definition = .{ .name = "fatal", .description = "", .parameters_json_schema = "{}" },
+        .context = &unused,
+        .executeFn = Terminal.execute,
+        .isRecoverableFn = Terminal.recoverable,
+    };
+    const slow = zigai.Tool{
+        .definition = .{ .name = "slow", .description = "", .parameters_json_schema = "{}" },
+        .context = &unused,
+        .executeWithContextFn = Slow.execute,
+    };
+    try std.testing.expectError(error.TerminalToolFailure, (zigai.Agent{
+        .model = fatal_model.model(),
+        .tools = &.{ fatal, slow },
+        .io = threaded.io(),
+    }).run(std.testing.allocator, "Run both."));
+}
+
 test "agent reports unknown tools and exhausts a bounded tool loop" {
     const call_parts = [_]zigai.model.Part{.{ .tool_call = .{
         .id = "one",
@@ -2003,6 +2077,20 @@ test "lifecycle hooks observe request errors retries and terminal failures" {
     }).run(std.testing.allocator, "hi"));
     try std.testing.expectEqual(@as(usize, 1), failed_capture.terminal_errors);
     try std.testing.expectEqual(@as(usize, 1), failed_capture.run_errors);
+
+    var capability_capture: Capture = .{};
+    var capability_failed = FlakyModel{
+        .failures_remaining = 1,
+        .failure = error.ProviderServerError,
+        .response = .{ .parts = &parts },
+    };
+    try std.testing.expectError(error.ProviderServerError, (zigai.Agent{
+        .model = capability_failed.model(),
+        .capabilities = &.{.{}},
+        .hooks = &.{.{ .context = &capability_capture, .eventFn = Capture.event }},
+        .retry_policy = .{ .max_retries = 0 },
+    }).run(std.testing.allocator, "hi"));
+    try std.testing.expectEqual(@as(usize, 1), capability_capture.run_errors);
 }
 
 test "agent retries transient provider failures and counts every request" {
