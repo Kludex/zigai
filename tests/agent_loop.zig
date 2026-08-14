@@ -251,6 +251,85 @@ test "agent optionally validates structured output before returning it" {
     }).run(std.testing.allocator, "answer"));
 }
 
+test "typed agent output derives its schema and owns decoded data" {
+    const Weather = struct {
+        city: []const u8,
+        temperature_c: f64,
+        alerts: []const []const u8,
+    };
+    const parts = [_]zigai.model.Part{.{
+        .text = "{\"city\":\"Madrid\",\"temperature_c\":31.5,\"alerts\":[\"heat\"]}",
+    }};
+    const Inspector = struct {
+        fn inspect(_: usize, request: zigai.model.ModelRequest) !void {
+            const format = request.output.json_schema;
+            try std.testing.expectEqualStrings("response", format.name);
+            try std.testing.expect(format.strict);
+            try std.testing.expectEqualStrings(zigai.reflect.schemaOf(Weather), format.schema);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .inspectFn = Inspector.inspect,
+        .profile = .{ .supports_json_schema_output = true },
+    };
+
+    var result = try (zigai.Agent{ .model = scripted.model() }).runTyped(
+        Weather,
+        std.testing.allocator,
+        "What is the weather?",
+    );
+    defer result.deinit();
+
+    try std.testing.expectEqualStrings("Madrid", result.output.city);
+    try std.testing.expectEqual(@as(f64, 31.5), result.output.temperature_c);
+    try std.testing.expectEqualStrings("heat", result.output.alerts[0]);
+    try std.testing.expectEqualStrings(parts[0].text, result.output_json);
+    try std.testing.expectEqual(@as(usize, 2), result.messages.len);
+}
+
+test "typed agent output reports decoding errors without leaking" {
+    const Answer = struct { answer: u32 };
+    const parts = [_]zigai.model.Part{.{ .text = "{\"answer\":\"not a number\"}" }};
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .profile = .{ .supports_json_schema_output = true },
+    };
+    try std.testing.expectError(
+        zigai.Agent.Error.InvalidTypedOutput,
+        (zigai.Agent{ .model = scripted.model() }).runTyped(Answer, std.testing.allocator, "Answer."),
+    );
+}
+
+test "typed agent output is available after streaming completes" {
+    const Answer = struct { answer: []const u8 };
+    const parts = [_]zigai.model.Part{.{ .text = "{\"answer\":\"yes\"}" }};
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .profile = .{ .supports_json_schema_output = true, .supports_streaming = true },
+    };
+    const Capture = struct {
+        finals: usize = 0,
+        fn event(context: *anyopaque, value: zigai.AgentStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (value) {
+                .final_output => self.finals += 1,
+                else => {},
+            }
+        }
+    };
+    var capture: Capture = .{};
+    var result = try (zigai.Agent{ .model = scripted.model() }).runTypedStream(
+        Answer,
+        std.testing.allocator,
+        "Answer.",
+        .{ .context = &capture, .eventFn = Capture.event },
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("yes", result.output.answer);
+    try std.testing.expectEqual(@as(usize, 1), capture.finals);
+}
+
 test "streaming validation suppresses the final event for invalid output" {
     const parts = [_]zigai.model.Part{.{ .text = "not JSON" }};
     var scripted = zigai.testing.ScriptedModel{

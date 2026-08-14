@@ -20,6 +20,7 @@ pub const AgentStreamSink = agent.AgentStreamSink;
 pub const Instruction = agent.Instruction;
 pub const InstructionContext = agent.InstructionContext;
 pub const RunOptions = agent.RunOptions;
+pub const TypedResult = agent.TypedResult;
 pub const Model = model.Model;
 pub const ModelProfile = model.ModelProfile;
 pub const Tool = model.Tool;

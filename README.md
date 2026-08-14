@@ -143,22 +143,30 @@ run. Instructions are sent again for every model request in that run, but are
 not stored in `result.messages`. This makes the result safe to reuse as message
 history without carrying instructions from an earlier run.
 
-## Structured output
+## Typed output
 
-Request a strict schema without changing the agent loop:
+Define the result you want as a Zig type. ZigAI derives its strict JSON Schema,
+asks the provider for matching JSON, and decodes the answer:
 
 ```zig
-.output = .{ .json_schema = .{
-    .name = "weather_answer",
-    .schema =
-        \\{"type":"object","properties":{"temperature_c":{"type":"number"}},"required":["temperature_c"],"additionalProperties":false}
-    ,
-} },
-.validate_output_locally = true,
+const Weather = struct {
+    city: []const u8,
+    temperature_c: f64,
+};
+
+var result = try agent.runTyped(Weather, allocator, "Weather in Madrid?");
+defer result.deinit();
+
+std.debug.print("{s}: {d} C\n", .{
+    result.output.city,
+    result.output.temperature_c,
+});
 ```
 
-Providers use their native constrained-output formats. Optional local
-validation adds a final provider-independent check.
+The decoded value, original JSON in `result.output_json`, and message history
+share one result arena. Keep them only until `result.deinit()`. Use
+`runTypedWithOptions`, `runTypedStream`, or `runTypedStreamWithOptions` for the
+corresponding run modes.
 
 ## Streaming and resilience
 

@@ -18,11 +18,13 @@ and named, strict JSON Schema mode are encoded as `text.format` for OpenAI and
 `output_config.format` for Anthropic, and `generationConfig` for Google. A
 profile mismatch fails before network I/O.
 
-Applications can opt into local structured-output validation at the final
-agent boundary. It validates JSON-object mode and the documented JSON Schema
-subset, regardless of whether the provider also constrains decoding. Buffered
-and streaming runs share this check. Streaming deltas remain provisional, and
-the agent emits `final_output` only after local validation succeeds.
+`Agent.runTyped` derives that schema from a Zig output type and decodes the
+final JSON into the same type. Its typed value, original JSON, and message
+history share one result arena and one `deinit` ownership boundary. Buffered
+and streaming typed runs use the same path. Applications using `run` directly
+can still opt into provider-independent local schema validation. Streaming
+deltas remain provisional, and the agent emits `final_output` only after local
+validation succeeds.
 
 Provider failures keep two layers separate. Stable error categories drive agent
 retry policy, while an optional synchronous observer receives the provider

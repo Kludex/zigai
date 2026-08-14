@@ -1,6 +1,9 @@
+//! The provider-neutral agent loop and its owned buffered and typed results.
+
 const std = @import("std");
 const model_types = @import("model.zig");
 const json_schema = @import("json_schema.zig");
+const reflect = @import("reflect.zig");
 
 const Message = model_types.Message;
 const Part = model_types.Part;
@@ -9,6 +12,7 @@ const AgentError = error{
     Cancelled,
     EmptyModelResponse,
     InputTokenLimitExceeded,
+    InvalidTypedOutput,
     MaxModelRequestsExceeded,
     ModelDoesNotSupportSystemMessages,
     ModelDoesNotSupportTools,
@@ -124,6 +128,26 @@ pub const RunOptions = struct {
     dependencies: ?*anyopaque = null,
 };
 
+/// An owned agent result whose JSON response has been decoded as `Output`.
+///
+/// `output`, `output_json`, and `messages` may all reference the result arena.
+/// Call `deinit` exactly once when none of them are needed anymore.
+pub fn TypedResult(comptime Output: type) type {
+    return struct {
+        arena: std.heap.ArenaAllocator,
+        output: Output,
+        output_json: []const u8,
+        messages: []const Message,
+        usage: model_types.Usage,
+        model_requests: usize,
+
+        pub fn deinit(self: *@This()) void {
+            self.arena.deinit();
+            self.* = undefined;
+        }
+    };
+}
+
 pub const Agent = struct {
     model: model_types.Model,
     tools: []const model_types.Tool = &.{},
@@ -164,6 +188,29 @@ pub const Agent = struct {
         return self.runWithOptions(allocator, prompt, .{});
     }
 
+    /// Derives a strict JSON Schema from `Output`, requests it from the model,
+    /// and decodes the final response into an owned typed result.
+    pub fn runTyped(
+        self: Agent,
+        comptime Output: type,
+        allocator: std.mem.Allocator,
+        prompt: []const u8,
+    ) !TypedResult(Output) {
+        return self.runTypedWithOptions(Output, allocator, prompt, .{});
+    }
+
+    /// Runs a typed request with history, run-specific instructions, or dependencies.
+    pub fn runTypedWithOptions(
+        self: Agent,
+        comptime Output: type,
+        allocator: std.mem.Allocator,
+        prompt: []const u8,
+        options: RunOptions,
+    ) !TypedResult(Output) {
+        const configured = withTypedOutput(self, Output);
+        return decodeTypedResult(Output, try configured.runWithOptions(allocator, prompt, options));
+    }
+
     /// Runs with message history, run-specific instructions, or dependencies.
     pub fn runWithOptions(
         self: Agent,
@@ -176,6 +223,30 @@ pub const Agent = struct {
 
     pub fn runStream(self: Agent, allocator: std.mem.Allocator, prompt: []const u8, sink: AgentStreamSink) !Result {
         return self.runStreamWithOptions(allocator, prompt, .{}, sink);
+    }
+
+    /// Streams a typed request and returns the decoded, arena-owned result.
+    pub fn runTypedStream(
+        self: Agent,
+        comptime Output: type,
+        allocator: std.mem.Allocator,
+        prompt: []const u8,
+        sink: AgentStreamSink,
+    ) !TypedResult(Output) {
+        return self.runTypedStreamWithOptions(Output, allocator, prompt, .{}, sink);
+    }
+
+    /// Streams a typed request with history, instructions, or dependencies.
+    pub fn runTypedStreamWithOptions(
+        self: Agent,
+        comptime Output: type,
+        allocator: std.mem.Allocator,
+        prompt: []const u8,
+        options: RunOptions,
+        sink: AgentStreamSink,
+    ) !TypedResult(Output) {
+        const configured = withTypedOutput(self, Output);
+        return decodeTypedResult(Output, try configured.runStreamWithOptions(allocator, prompt, options, sink));
     }
 
     /// Streams a run with message history, run-specific instructions, or dependencies.
@@ -345,6 +416,31 @@ pub const Agent = struct {
         }
     }
 };
+
+fn withTypedOutput(agent: Agent, comptime Output: type) Agent {
+    var configured = agent;
+    configured.output = .{ .json_schema = .{
+        .name = "response",
+        .schema = reflect.schemaOf(Output),
+    } };
+    return configured;
+}
+
+fn decodeTypedResult(comptime Output: type, untyped: Agent.Result) !TypedResult(Output) {
+    var owned = untyped;
+    errdefer owned.deinit();
+    const output = std.json.parseFromSliceLeaky(Output, owned.arena.allocator(), owned.output, .{
+        .ignore_unknown_fields = false,
+    }) catch return Agent.Error.InvalidTypedOutput;
+    return .{
+        .arena = owned.arena,
+        .output = output,
+        .output_json = owned.output,
+        .messages = owned.messages,
+        .usage = owned.usage,
+        .model_requests = owned.model_requests,
+    };
+}
 
 const ModelEventForwarder = struct {
     sink: ?AgentStreamSink,
