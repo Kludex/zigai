@@ -495,3 +495,26 @@ test "HTTP runtime controls reject expired requests before socket work" {
     }));
     try waitForTimeout(std.testing.io, 1);
 }
+
+test "stream line propagates a read failure after partial input" {
+    const FailingReader = struct {
+        reader: std.Io.Reader,
+        reads: usize = 0,
+
+        fn stream(reader: *std.Io.Reader, _: *std.Io.Writer, _: std.Io.Limit) std.Io.Reader.StreamError!usize {
+            const self: *@This() = @alignCast(@fieldParentPtr("reader", reader));
+            self.reads += 1;
+            if (self.reads == 1) return error.EndOfStream;
+            return error.ReadFailed;
+        }
+    };
+    var buffer = [_]u8{'x'};
+    var failing = FailingReader{ .reader = .{
+        .vtable = &.{ .stream = FailingReader.stream },
+        .buffer = &buffer,
+        .seek = 0,
+        .end = buffer.len,
+    } };
+    try std.testing.expectError(error.ReadFailed, streamLine(std.testing.allocator, &failing.reader, 8));
+    try std.testing.expectEqual(@as(usize, 2), failing.reads);
+}
