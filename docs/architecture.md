@@ -26,6 +26,13 @@ including the exact reasoning-effort levels, so an unsupported override fails
 before a request. Each adapter translates the resolved settings once at its
 wire boundary.
 
+Model composition also stays behind the same contract. `models.Fallback` tries
+an ordered candidate list for transient failures and exposes the intersection
+of their profiles. It never falls back after a stream event has been delivered.
+`models.Selector` asks application code for a concrete model on each request;
+the application declares the common profile its routing policy guarantees.
+Neither adapter adds a branch to the agent loop.
+
 Capabilities are ordered feature bundles. The agent starts with its direct
 tools and instructions, then appends each capability's contributions from left
 to right. Capabilities can contribute toolsets as well. Capability settings

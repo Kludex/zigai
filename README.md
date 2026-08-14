@@ -127,6 +127,24 @@ The original top-level imports and standalone `zopenai`, `zanthropic`,
 See [Architecture](docs/architecture.md) for the provider contract and direct
 loop design.
 
+## Model routing
+
+Fallbacks and application routing are models themselves, so the agent loop does
+not change:
+
+```zig
+var fallback = zigai.models.Fallback{
+    .models = &.{primary.model(), backup.model()},
+};
+
+const agent = zigai.Agent{ .model = fallback.model() };
+```
+
+Fallbacks move in order on transient provider failures and never replay a
+stream after visible output. `zigai.models.Selector` calls application code for
+each request, which is useful for tenant, cost, or workload routing. A selector
+declares the common `ModelProfile` guaranteed by every model it can return.
+
 ## Instructions
 
 Instructions describe how the agent should handle the current run.

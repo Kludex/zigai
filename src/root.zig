@@ -8,6 +8,7 @@ pub const json_schema = @import("json_schema.zig");
 pub const reflect = @import("reflect.zig");
 pub const history = @import("history.zig");
 pub const providers = @import("providers.zig");
+pub const models = @import("models.zig");
 // Compatibility aliases for the original top-level provider imports.
 pub const openai = providers.openai;
 pub const openai_compatible = providers.openai_compatible;
@@ -52,4 +53,5 @@ test {
     _ = @import("reflect.zig");
     _ = @import("history.zig");
     _ = @import("providers.zig");
+    _ = @import("models.zig");
 }
