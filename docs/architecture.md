@@ -84,6 +84,13 @@ before dynamic ones, and run-specific instructions come last. Empty values are
 ignored. Providers receive the resolved list on every request in the tool
 loop, while `Result.messages` contains only reusable conversation history.
 
+History storage uses a versioned provider-neutral JSON format. Before each
+request, agent, capability, and run-specific processors transform a borrowed
+provider-facing view from left to right. Built-ins trim old messages, compact
+adjacent text, summarize an older prefix through an application callback, and
+remove malformed or orphaned tool parts. The canonical arena-owned conversation
+is never truncated, so callers can persist or reprocess the complete result.
+
 An agent may carry an opaque per-run dependency pointer. Contextual tools use
 `ToolRunContext.dependency(T)` to recover their application type and can also
 inspect cumulative token usage and model-request count. Existing simple tool

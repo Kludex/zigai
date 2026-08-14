@@ -194,6 +194,63 @@ test "instructions compose for one run without entering message history" {
     try std.testing.expectEqual(@as(usize, 2), dynamic_state.calls);
 }
 
+test "history processors run before each request without discarding result history" {
+    const State = struct {
+        calls: usize = 0,
+        fn process(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            run: zigai.HistoryContext,
+            messages: []const zigai.model.Message,
+        ) ![]const zigai.model.Message {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expectEqual(self.calls, run.model_requests);
+            try std.testing.expectEqual(@as(usize, 2 + self.calls * 2), messages.len);
+            if (self.calls == 0) {
+                try std.testing.expectEqual(@as(u64, 0), run.usage.input_tokens);
+            } else {
+                try std.testing.expectEqual(@as(u64, 4), run.usage.input_tokens);
+            }
+            self.calls += 1;
+            return messages;
+        }
+    };
+    const call = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "call",
+        .name = "tool",
+        .arguments_json = "{}",
+    } }};
+    const final = [_]zigai.model.Part{.{ .text = "done" }};
+    var scripted = zigai.testing.ScriptedModel{ .responses = &.{
+        .{ .parts = &call, .usage = .{ .input_tokens = 4 } },
+        .{ .parts = &final },
+    } };
+    var processor_state: State = .{};
+    var tool_calls: u8 = 0;
+    const tool = successfulTool(&tool_calls);
+    const previous = [_]zigai.model.Message{.{
+        .role = .user,
+        .parts = &.{.{ .text = "earlier" }},
+    }};
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .tools = &.{tool},
+        .history_processors = &.{.{ .custom = .{
+            .context = &processor_state,
+            .processFn = State.process,
+        } }},
+    }).runWithOptions(std.testing.allocator, "now", .{
+        .message_history = &previous,
+        .history_processors = &.{.provider_valid},
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), processor_state.calls);
+    try std.testing.expectEqual(@as(u8, 1), tool_calls);
+    try std.testing.expectEqual(@as(usize, 5), result.messages.len);
+    try std.testing.expectEqualStrings("earlier", result.messages[0].parts[0].text);
+}
+
 test "instruction failures and unsupported system capability stop before requesting" {
     const Failure = struct {
         fn resolve(_: *anyopaque, _: std.mem.Allocator, _: zigai.InstructionContext) ![]const u8 {

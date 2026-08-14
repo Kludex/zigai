@@ -6,6 +6,7 @@ pub const testing = @import("testing.zig");
 pub const transport = @import("transport.zig");
 pub const json_schema = @import("json_schema.zig");
 pub const reflect = @import("reflect.zig");
+pub const history = @import("history.zig");
 pub const providers = @import("providers.zig");
 // Compatibility aliases for the original top-level provider imports.
 pub const openai = providers.openai;
@@ -25,6 +26,9 @@ pub const Capability = agent.Capability;
 pub const CapabilityContext = agent.CapabilityContext;
 pub const LifecycleEvent = agent.LifecycleEvent;
 pub const LifecycleHook = agent.LifecycleHook;
+pub const HistoryProcessor = history.Processor;
+pub const HistoryContext = history.Context;
+pub const OwnedHistory = history.Owned;
 pub const Toolset = agent.Toolset;
 pub const ToolsetContext = agent.ToolsetContext;
 pub const ToolsetEntry = agent.ToolsetEntry;
@@ -46,5 +50,6 @@ test {
     _ = @import("transport.zig");
     _ = @import("json_schema.zig");
     _ = @import("reflect.zig");
+    _ = @import("history.zig");
     _ = @import("providers.zig");
 }

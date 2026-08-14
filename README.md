@@ -150,6 +150,27 @@ run. Instructions are sent again for every model request in that run, but are
 not stored in `result.messages`. This makes the result safe to reuse as message
 history without carrying instructions from an earlier run.
 
+## Message history
+
+Persist and restore complete conversations with `zigai.history.stringify` and
+`zigai.history.parse`. The JSON format is versioned, and parsed history has one
+clear `deinit` ownership boundary.
+
+History processors change only the view sent to the provider:
+
+```zig
+.history_processors = &.{
+    .{ .trim = .{ .max_messages = 24 } },
+    .compact,
+    .provider_valid,
+},
+```
+
+Processors run from left to right before each model request. Built-ins support
+trimming, text compaction, provider-valid tool history, and callback-based
+summaries. Custom processors can inspect current usage, request count, and the
+model profile. `result.messages` still contains the full canonical history.
+
 ## Capabilities
 
 Capabilities package one reusable agent feature:
@@ -167,9 +188,9 @@ const agent = zigai.Agent{
 };
 ```
 
-A capability can contribute tools, instructions, hooks, model settings, and a
-model selector. Multiple capabilities apply from left to right. Duplicate tool
-names fail before the first model request.
+A capability can contribute tools, toolsets, instructions, history processors,
+hooks, model settings, and a model selector. Multiple capabilities apply from
+left to right. Duplicate tool names fail before the first model request.
 
 ## Toolsets
 

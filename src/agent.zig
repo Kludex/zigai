@@ -4,6 +4,7 @@ const std = @import("std");
 const model_types = @import("model.zig");
 const json_schema = @import("json_schema.zig");
 const reflect = @import("reflect.zig");
+const history = @import("history.zig");
 
 const Message = model_types.Message;
 const Part = model_types.Part;
@@ -151,6 +152,8 @@ pub const RunOptions = struct {
     dependencies: ?*anyopaque = null,
     /// Highest-precedence generation settings for this run.
     model_settings: model_types.ModelSettings = .{},
+    /// Extra provider-facing history processors applied after agent processors.
+    history_processors: []const history.Processor = &.{},
 };
 
 pub const CapabilityContext = struct {
@@ -305,6 +308,7 @@ pub const Capability = struct {
     toolsets: []const Toolset = &.{},
     instructions: []const Instruction = &.{},
     hooks: []const LifecycleHook = &.{},
+    history_processors: []const history.Processor = &.{},
     model_settings: model_types.ModelSettings = .{},
     context: ?*anyopaque = null,
     selectModelFn: ?*const fn (context: ?*anyopaque, run: CapabilityContext) anyerror!model_types.Model = null,
@@ -342,6 +346,7 @@ pub const Agent = struct {
     hooks: []const LifecycleHook = &.{},
     tools: []const model_types.Tool = &.{},
     toolsets: []const Toolset = &.{},
+    history_processors: []const history.Processor = &.{},
     system_prompt: ?[]const u8 = null,
     instructions: []const Instruction = &.{},
     output: model_types.OutputFormat = .text,
@@ -497,6 +502,9 @@ pub const Agent = struct {
         var hooks: std.ArrayList(LifecycleHook) = .empty;
         defer hooks.deinit(allocator);
         try hooks.appendSlice(allocator, self.hooks);
+        var history_processors: std.ArrayList(history.Processor) = .empty;
+        defer history_processors.deinit(allocator);
+        try history_processors.appendSlice(allocator, self.history_processors);
 
         const dependencies = options.dependencies orelse self.dependencies;
         var model = self.model;
@@ -506,6 +514,7 @@ pub const Agent = struct {
             try toolsets.appendSlice(allocator, capability.toolsets);
             try instructions.appendSlice(allocator, capability.instructions);
             try hooks.appendSlice(allocator, capability.hooks);
+            try history_processors.appendSlice(allocator, capability.history_processors);
             capability_settings = capability_settings.overrideWith(capability.model_settings);
             model = try capability.selectModel(.{
                 .prompt = prompt,
@@ -520,6 +529,7 @@ pub const Agent = struct {
         configured.tools = tools.items;
         configured.toolsets = toolsets.items;
         configured.instructions = instructions.items;
+        configured.history_processors = history_processors.items;
         configured.model_settings = capability_settings.overrideWith(self.model_settings);
         configured.capabilities = &.{};
         return configured.runConfigured(allocator, prompt, options, stream_sink, output_validator, hooks.items) catch |err| {
@@ -598,6 +608,23 @@ pub const Agent = struct {
             }
             definitions.clearRetainingCapacity();
             for (available_tools) |tool| try definitions.append(memory, tool.definition);
+            const history_context = history.Context{
+                .profile = self.model.profile,
+                .usage = total_usage,
+                .model_requests = model_requests,
+            };
+            var request_messages = try history.processAll(
+                memory,
+                self.history_processors,
+                history_context,
+                messages.items,
+            );
+            request_messages = try history.processAll(
+                memory,
+                options.history_processors,
+                history_context,
+                request_messages,
+            );
             var retries: usize = 0;
             const response = request: while (true) {
                 try checkCancellation(self.cancellation);
@@ -613,7 +640,7 @@ pub const Agent = struct {
                     .hooks = hooks,
                 };
                 const model_request = model_types.ModelRequest{
-                    .messages = messages.items,
+                    .messages = request_messages,
                     .instructions = resolved_instructions,
                     .tools = definitions.items,
                     .output = self.output,
