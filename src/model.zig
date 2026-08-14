@@ -142,6 +142,10 @@ pub const ProviderErrorObserver = struct {
 
 pub const ModelRequest = struct {
     messages: []const Message,
+    /// Current-run instructions. Providers encode these as their native
+    /// instruction or system-message representation; agents do not retain
+    /// them in reusable message history.
+    instructions: []const []const u8 = &.{},
     tools: []const ToolDefinition = &.{},
     output: OutputFormat = .text,
     error_observer: ?ProviderErrorObserver = null,
@@ -232,11 +236,14 @@ test "tool run context casts optional dependencies" {
 test "model stream sinks propagate events and unsupported models fail" {
     const Capture = struct {
         called: bool = false,
+        requests: usize = 0,
         fn event(context: *anyopaque, value: ModelStreamEvent) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
             self.called = std.mem.eql(u8, value.text_delta, "hello");
         }
-        fn request(_: *anyopaque, _: std.mem.Allocator, _: ModelRequest) !ModelResponse {
+        fn request(context: *anyopaque, _: std.mem.Allocator, _: ModelRequest) !ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.requests += 1;
             return .{ .parts = &.{} };
         }
     };
@@ -244,9 +251,9 @@ test "model stream sinks propagate events and unsupported models fail" {
     const sink = ModelStreamSink{ .context = &capture, .eventFn = Capture.event };
     try sink.emit(.{ .text_delta = "hello" });
     try std.testing.expect(capture.called);
-    var unused: u8 = 0;
-    const value = Model{ .context = &unused, .profile = .{}, .requestFn = Capture.request };
+    const value = Model{ .context = &capture, .profile = .{}, .requestFn = Capture.request };
     const response = try value.request(std.testing.allocator, .{ .messages = &.{} });
     try std.testing.expectEqual(@as(usize, 0), response.parts.len);
+    try std.testing.expectEqual(@as(usize, 1), capture.requests);
     try std.testing.expectError(error.StreamingNotSupported, value.stream(std.testing.allocator, .{ .messages = &.{} }, sink));
 }

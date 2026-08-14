@@ -1,9 +1,9 @@
 //! A dependency-free Anthropic Messages API client.
 
 const std = @import("std");
-const model_types = @import("model.zig");
-const http = @import("transport.zig");
-const common = @import("provider_common.zig");
+const model_types = @import("../model.zig");
+const http = @import("../transport.zig");
+const common = @import("common.zig");
 
 pub const api_base = "https://api.anthropic.com/v1";
 pub const api_version = "2023-06-01";
@@ -199,7 +199,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
     try json.objectField("max_tokens");
     try json.write(max_tokens);
 
-    var has_system = false;
+    var has_system = request.instructions.len > 0;
     for (request.messages) |message| if (message.role == .system) {
         has_system = true;
         break;
@@ -220,6 +220,14 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
                 else => {},
             };
         };
+        for (request.instructions) |instruction| {
+            try json.beginObject();
+            try json.objectField("type");
+            try json.write("text");
+            try json.objectField("text");
+            try json.write(instruction);
+            try json.endObject();
+        }
         try json.endArray();
     }
 
@@ -359,7 +367,7 @@ test "decodes Anthropic tool use" {
     try std.testing.expectEqual(@as(u64, 3), response.usage.output_tokens);
 }
 
-test "encodes tool errors and requests without a system message" {
+test "encodes instructions, tool errors, and requests without system content" {
     const result_parts = [_]model_types.Part{.{ .tool_result = .{
         .call_id = "call_1",
         .name = "weather",
@@ -367,10 +375,17 @@ test "encodes tool errors and requests without a system message" {
         .is_error = true,
     } }};
     const messages = [_]model_types.Message{.{ .role = .tool, .parts = &result_parts }};
-    const body = try encodeRequest(std.testing.allocator, "claude-test", 20, .{ .messages = &messages });
+    const body = try encodeRequest(std.testing.allocator, "claude-test", 20, .{
+        .messages = &messages,
+        .instructions = &.{"Current instruction."},
+    });
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"is_error\":true") != null);
-    try std.testing.expect(std.mem.indexOf(u8, body, "\"system\"") == null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"system\":[{\"type\":\"text\",\"text\":\"Current instruction.\"}]") != null);
+
+    const without_system = try encodeRequest(std.testing.allocator, "claude-test", 20, .{ .messages = &messages });
+    defer std.testing.allocator.free(without_system);
+    try std.testing.expect(std.mem.indexOf(u8, without_system, "\"system\"") == null);
 }
 
 test "rejects malformed usage" {

@@ -33,11 +33,17 @@ applications copy only the detail they need to retain.
 
 `Agent.run` owns the conversation in an arena:
 
-1. Add the system and user messages.
-2. Request a model response.
-3. Return its text if there are no tool calls.
-4. Otherwise execute every requested tool and append the results.
-5. Repeat until the model answers or the configured request limit is reached.
+1. Resolve static, dynamic, and run-specific instructions.
+2. Copy message history, then add the current user message.
+3. Request a model response.
+4. Return its text if there are no tool calls.
+5. Otherwise execute every requested tool and append the results.
+6. Repeat until the model answers or the configured request limit is reached.
+
+Instructions belong to the current run. Static instructions are resolved
+before dynamic ones, and run-specific instructions come last. Empty values are
+ignored. Providers receive the resolved list on every request in the tool
+loop, while `Result.messages` contains only reusable conversation history.
 
 An agent may carry an opaque per-run dependency pointer. Contextual tools use
 `ToolRunContext.dependency(T)` to recover their application type and can also
@@ -65,7 +71,12 @@ tool results, and final output synchronously. Once visible stream output has
 been emitted, a failed request is never retried, preventing duplicated text or
 tool events.
 
-## Provider packages
+## Provider adapters
+
+First-party adapters live under `src/providers/` and are exported through
+`zigai.providers`. A provider owns authentication, endpoint selection, and
+wire encoding. Its client exposes the provider-neutral `Model`; the agent does
+not depend on any concrete provider.
 
 `zopenai` maps the neutral contract to the OpenAI Responses API.
 `zanthropic` maps it to the Anthropic Messages API. `zgoogle` maps it to the

@@ -50,12 +50,13 @@ pub const JsonFieldFilter = struct {
 
     fn apply(context: *const anyopaque, allocator: std.mem.Allocator, body: []const u8) ![]u8 {
         const self: *const JsonFieldFilter = @ptrCast(@alignCast(context));
-        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, body, .{});
-        defer parsed.deinit();
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const parsed = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), body, .{});
         var output: std.Io.Writer.Allocating = .init(allocator);
         defer output.deinit();
         var json: std.json.Stringify = .{ .writer = &output.writer };
-        try writeFiltered(&json, parsed.value, self.field_names);
+        try writeFiltered(&json, parsed, self.field_names);
         return output.toOwnedSlice();
     }
 };

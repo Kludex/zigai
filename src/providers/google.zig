@@ -1,9 +1,9 @@
 //! A dependency-free Google Gemini GenerateContent API client.
 
 const std = @import("std");
-const model_types = @import("model.zig");
-const http = @import("transport.zig");
-const common = @import("provider_common.zig");
+const model_types = @import("../model.zig");
+const http = @import("../transport.zig");
+const common = @import("common.zig");
 
 pub const api_base = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -128,7 +128,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
     var json: std.json.Stringify = .{ .writer = &output.writer };
     try json.beginObject();
 
-    var has_system = false;
+    var has_system = request.instructions.len > 0;
     for (request.messages) |message| if (message.role == .system) {
         has_system = true;
         break;
@@ -144,6 +144,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
                 else => {},
             };
         };
+        for (request.instructions) |instruction| try writeTextPart(&json, instruction);
         try json.endArray();
         try json.endObject();
     }
@@ -308,11 +309,13 @@ test "encodes Gemini system, tool, result, error, and structured output parts" {
     };
     const body = try encodeRequest(std.testing.allocator, .{
         .messages = &messages,
+        .instructions = &.{"Current instruction."},
         .tools = &.{.{ .name = "weather", .description = "Get weather.", .parameters_json_schema = "{\"type\":\"object\"}" }},
         .output = .{ .json_schema = .{ .name = "answer", .schema = "{\"type\":\"object\"}" } },
     });
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"systemInstruction\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"Current instruction.\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"functionDeclarations\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"error\":{\"message\":\"failed\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"responseJsonSchema\":{\"type\":\"object\"}") != null);

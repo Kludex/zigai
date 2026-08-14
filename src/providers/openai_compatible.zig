@@ -1,9 +1,9 @@
 //! OpenAI-compatible Chat Completions client for gateways and local servers.
 
 const std = @import("std");
-const model_types = @import("model.zig");
-const http = @import("transport.zig");
-const common = @import("provider_common.zig");
+const model_types = @import("../model.zig");
+const http = @import("../transport.zig");
+const common = @import("common.zig");
 
 pub const api_base = "https://api.openai.com/v1";
 
@@ -110,6 +110,14 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
     try json.write(model_name);
     try json.objectField("messages");
     try json.beginArray();
+    for (request.instructions) |instruction| {
+        try json.beginObject();
+        try json.objectField("role");
+        try json.write("system");
+        try json.objectField("content");
+        try json.write(instruction);
+        try json.endObject();
+    }
     for (request.messages) |message| {
         if (message.role == .tool) {
             for (message.parts) |part| switch (part) {
@@ -440,6 +448,7 @@ test "encodes Chat Completions messages, tools, and schema output" {
             .{ .role = .assistant, .parts = &.{.{ .tool_call = .{ .id = "call", .name = "weather", .arguments_json = "{}" } }} },
             .{ .role = .tool, .parts = &.{.{ .tool_result = .{ .call_id = "call", .name = "weather", .content = "sunny" } }} },
         },
+        .instructions = &.{"Current instruction."},
         .tools = &.{.{ .name = "weather", .description = "Weather", .parameters_json_schema = "{\"type\":\"object\"}" }},
         .output = .{ .json_schema = .{ .name = "answer", .schema = "{\"type\":\"object\"}" } },
     });
@@ -447,6 +456,7 @@ test "encodes Chat Completions messages, tools, and schema output" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"tool_call_id\":\"call\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"response_format\":{\"type\":\"json_schema\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"parameters\":{\"type\":\"object\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"role\":\"system\",\"content\":\"Current instruction.\"") != null);
 
     const object_mode = try encodeRequest(std.testing.allocator, "model", .{ .messages = &.{}, .output = .json_object });
     defer std.testing.allocator.free(object_mode);

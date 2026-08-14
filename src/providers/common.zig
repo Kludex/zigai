@@ -1,6 +1,6 @@
 const std = @import("std");
-const model_types = @import("model.zig");
-const http = @import("transport.zig");
+const model_types = @import("../model.zig");
+const http = @import("../transport.zig");
 
 pub fn statusError(status: u16) model_types.ProviderRequestError {
     if (status == 429) return error.ProviderRateLimited;

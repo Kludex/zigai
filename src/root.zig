@@ -7,15 +7,20 @@ pub const transport = @import("transport.zig");
 pub const vcr = @import("vcr.zig");
 pub const json_schema = @import("json_schema.zig");
 pub const reflect = @import("reflect.zig");
-pub const openai = @import("openai.zig");
-pub const openai_compatible = @import("openai_compatible.zig");
-pub const anthropic = @import("anthropic.zig");
-pub const google = @import("google.zig");
+pub const providers = @import("providers.zig");
+// Compatibility aliases for the original top-level provider imports.
+pub const openai = providers.openai;
+pub const openai_compatible = providers.openai_compatible;
+pub const anthropic = providers.anthropic;
+pub const google = providers.google;
 
 pub const Agent = agent.Agent;
 pub const CancellationToken = agent.CancellationToken;
 pub const AgentStreamEvent = agent.AgentStreamEvent;
 pub const AgentStreamSink = agent.AgentStreamSink;
+pub const Instruction = agent.Instruction;
+pub const InstructionContext = agent.InstructionContext;
+pub const RunOptions = agent.RunOptions;
 pub const Model = model.Model;
 pub const ModelProfile = model.ModelProfile;
 pub const Tool = model.Tool;
@@ -31,8 +36,5 @@ test {
     _ = @import("vcr.zig");
     _ = @import("json_schema.zig");
     _ = @import("reflect.zig");
-    _ = @import("openai.zig");
-    _ = @import("openai_compatible.zig");
-    _ = @import("anthropic.zig");
-    _ = @import("google.zig");
+    _ = @import("providers.zig");
 }

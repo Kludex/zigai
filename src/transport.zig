@@ -235,7 +235,7 @@ fn controlledStream(io: std.Io, context: *anyopaque, allocator: std.mem.Allocato
 
 fn waitForTimeout(io: std.Io, milliseconds: u64) !void {
     const maximum: u64 = @intCast(std.math.maxInt(i64));
-    try timeoutMilliseconds(@min(milliseconds, maximum)).sleep(io);
+    return timeoutMilliseconds(@min(milliseconds, maximum)).sleep(io);
 }
 
 fn waitForCancellation(io: std.Io, token: *const model_types.CancellationToken) !void {
@@ -313,7 +313,9 @@ test "transport delegates through its vtable" {
 test "transport reports unsupported line streaming" {
     var called = false;
     const Stub = struct {
-        fn send(_: *anyopaque, _: std.mem.Allocator, _: Request) !Response {
+        fn send(context: *anyopaque, _: std.mem.Allocator, _: Request) !Response {
+            const value: *bool = @ptrCast(@alignCast(context));
+            value.* = true;
             return error.Unused;
         }
         fn start(context: *anyopaque, _: StreamResponse) !void {
@@ -434,5 +436,5 @@ test "HTTP runtime controls reject expired requests before socket work" {
         .url = "invalid",
         .cancellation = &token,
     }));
-    try waitForTimeout(std.testing.io, 0);
+    try waitForTimeout(std.testing.io, 1);
 }

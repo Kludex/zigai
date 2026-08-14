@@ -80,10 +80,55 @@ pub const AgentStreamSink = struct {
     }
 };
 
+pub const InstructionContext = struct {
+    dependencies: ?*anyopaque = null,
+    prompt: []const u8,
+
+    /// Recovers the application dependency type supplied by the agent or run.
+    pub fn dependency(self: InstructionContext, comptime T: type) ?*T {
+        const pointer = self.dependencies orelse return null;
+        return @ptrCast(@alignCast(pointer));
+    }
+};
+
+/// A static instruction or a callback evaluated once at the start of a run.
+pub const Instruction = union(enum) {
+    text: []const u8,
+    dynamic: Dynamic,
+
+    pub const Dynamic = struct {
+        context: *anyopaque,
+        resolveFn: *const fn (
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            run_context: InstructionContext,
+        ) anyerror![]const u8,
+
+        pub fn resolve(
+            self: Dynamic,
+            allocator: std.mem.Allocator,
+            run_context: InstructionContext,
+        ) ![]const u8 {
+            return self.resolveFn(self.context, allocator, run_context);
+        }
+    };
+};
+
+/// Values that apply only to one buffered or streaming run.
+pub const RunOptions = struct {
+    /// Earlier conversation messages. They are copied into the result arena.
+    message_history: []const Message = &.{},
+    /// Extra instructions appended after the agent's static and dynamic ones.
+    instructions: []const []const u8 = &.{},
+    /// Overrides agent dependencies when non-null.
+    dependencies: ?*anyopaque = null,
+};
+
 pub const Agent = struct {
     model: model_types.Model,
     tools: []const model_types.Tool = &.{},
     system_prompt: ?[]const u8 = null,
+    instructions: []const Instruction = &.{},
     output: model_types.OutputFormat = .text,
     /// Re-check structured provider output locally before returning it. This is
     /// intentionally opt-in because JSON Schema support is a documented subset.
@@ -116,14 +161,41 @@ pub const Agent = struct {
     };
 
     pub fn run(self: Agent, allocator: std.mem.Allocator, prompt: []const u8) !Result {
-        return self.runInternal(allocator, prompt, null);
+        return self.runWithOptions(allocator, prompt, .{});
+    }
+
+    /// Runs with message history, run-specific instructions, or dependencies.
+    pub fn runWithOptions(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        prompt: []const u8,
+        options: RunOptions,
+    ) !Result {
+        return self.runInternal(allocator, prompt, options, null);
     }
 
     pub fn runStream(self: Agent, allocator: std.mem.Allocator, prompt: []const u8, sink: AgentStreamSink) !Result {
-        return self.runInternal(allocator, prompt, sink);
+        return self.runStreamWithOptions(allocator, prompt, .{}, sink);
     }
 
-    fn runInternal(self: Agent, allocator: std.mem.Allocator, prompt: []const u8, stream_sink: ?AgentStreamSink) !Result {
+    /// Streams a run with message history, run-specific instructions, or dependencies.
+    pub fn runStreamWithOptions(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        prompt: []const u8,
+        options: RunOptions,
+        sink: AgentStreamSink,
+    ) !Result {
+        return self.runInternal(allocator, prompt, options, sink);
+    }
+
+    fn runInternal(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        prompt: []const u8,
+        options: RunOptions,
+        stream_sink: ?AgentStreamSink,
+    ) !Result {
         try checkCancellation(self.cancellation);
         if (stream_sink != null and !self.model.profile.supports_streaming) return Error.ModelDoesNotSupportStreaming;
         if (self.system_prompt != null and !self.model.profile.supports_system_messages) {
@@ -148,6 +220,15 @@ pub const Agent = struct {
         errdefer arena.deinit();
         const memory = arena.allocator();
 
+        const dependencies = options.dependencies orelse self.dependencies;
+        const resolved_instructions = try resolveInstructions(memory, self.instructions, options.instructions, .{
+            .dependencies = dependencies,
+            .prompt = prompt,
+        });
+        if (resolved_instructions.len > 0 and !self.model.profile.supports_system_messages) {
+            return Error.ModelDoesNotSupportSystemMessages;
+        }
+
         var messages: std.ArrayList(Message) = .empty;
         var definitions: std.ArrayList(model_types.ToolDefinition) = .empty;
         var total_usage: model_types.Usage = .{};
@@ -156,6 +237,7 @@ pub const Agent = struct {
         if (self.system_prompt) |system_prompt| {
             try appendTextMessage(memory, &messages, .system, system_prompt);
         }
+        for (options.message_history) |message| try appendMessageCopy(memory, &messages, message);
         try appendTextMessage(memory, &messages, .user, prompt);
         for (self.tools) |tool| try definitions.append(memory, tool.definition);
 
@@ -173,6 +255,7 @@ pub const Agent = struct {
                 var forwarder = ModelEventForwarder{ .sink = stream_sink, .emitted = &stream_emitted };
                 const model_request = model_types.ModelRequest{
                     .messages = messages.items,
+                    .instructions = resolved_instructions,
                     .tools = definitions.items,
                     .output = self.output,
                     .error_observer = provider_errors.observer(),
@@ -244,7 +327,7 @@ pub const Agent = struct {
                     try checkCancellation(self.cancellation);
                     const tool = findTool(self.tools, call.name) orelse return Error.UnknownTool;
                     const content = try tool.executeWithContext(memory, .{
-                        .dependencies = self.dependencies,
+                        .dependencies = dependencies,
                         .usage = total_usage,
                         .model_requests = model_requests,
                     }, call.arguments_json);
@@ -368,6 +451,49 @@ fn appendTextMessage(allocator: std.mem.Allocator, messages: *std.ArrayList(Mess
     const parts = try allocator.alloc(Part, 1);
     parts[0] = .{ .text = try allocator.dupe(u8, text) };
     try messages.append(allocator, .{ .role = role, .parts = parts });
+}
+
+fn appendMessageCopy(allocator: std.mem.Allocator, messages: *std.ArrayList(Message), message: Message) !void {
+    const parts = try allocator.alloc(Part, message.parts.len);
+    for (message.parts, parts) |part, *copy| copy.* = switch (part) {
+        .text => |value| .{ .text = try allocator.dupe(u8, value) },
+        .tool_call => |value| .{ .tool_call = .{
+            .id = try allocator.dupe(u8, value.id),
+            .name = try allocator.dupe(u8, value.name),
+            .arguments_json = try allocator.dupe(u8, value.arguments_json),
+        } },
+        .tool_result => |value| .{ .tool_result = .{
+            .call_id = try allocator.dupe(u8, value.call_id),
+            .name = try allocator.dupe(u8, value.name),
+            .content = try allocator.dupe(u8, value.content),
+            .is_error = value.is_error,
+        } },
+    };
+    try messages.append(allocator, .{ .role = message.role, .parts = parts });
+}
+
+fn resolveInstructions(
+    allocator: std.mem.Allocator,
+    configured: []const Instruction,
+    runtime: []const []const u8,
+    context: InstructionContext,
+) ![]const []const u8 {
+    var resolved: std.ArrayList([]const u8) = .empty;
+    for (configured) |instruction| switch (instruction) {
+        .text => |value| if (value.len > 0) try resolved.append(allocator, try allocator.dupe(u8, value)),
+        .dynamic => {},
+    };
+    for (configured) |instruction| switch (instruction) {
+        .text => {},
+        .dynamic => |dynamic| {
+            const value = try dynamic.resolve(allocator, context);
+            if (value.len > 0) try resolved.append(allocator, try allocator.dupe(u8, value));
+        },
+    };
+    for (runtime) |value| if (value.len > 0) {
+        try resolved.append(allocator, try allocator.dupe(u8, value));
+    };
+    return resolved.toOwnedSlice(allocator);
 }
 
 fn findTool(tools: []const model_types.Tool, name: []const u8) ?model_types.Tool {

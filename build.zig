@@ -10,22 +10,22 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     _ = b.addModule("zopenai", .{
-        .root_source_file = b.path("src/openai.zig"),
+        .root_source_file = b.path("src/providers/openai.zig"),
         .target = target,
         .optimize = optimize,
     });
     _ = b.addModule("zopenai_compatible", .{
-        .root_source_file = b.path("src/openai_compatible.zig"),
+        .root_source_file = b.path("src/providers/openai_compatible.zig"),
         .target = target,
         .optimize = optimize,
     });
     _ = b.addModule("zanthropic", .{
-        .root_source_file = b.path("src/anthropic.zig"),
+        .root_source_file = b.path("src/providers/anthropic.zig"),
         .target = target,
         .optimize = optimize,
     });
     _ = b.addModule("zgoogle", .{
-        .root_source_file = b.path("src/google.zig"),
+        .root_source_file = b.path("src/providers/google.zig"),
         .target = target,
         .optimize = optimize,
     });

@@ -1,9 +1,9 @@
 //! A dependency-free OpenAI Responses API client.
 
 const std = @import("std");
-const model_types = @import("model.zig");
-const http = @import("transport.zig");
-const common = @import("provider_common.zig");
+const model_types = @import("../model.zig");
+const http = @import("../transport.zig");
+const common = @import("common.zig");
 
 pub const api_base = "https://api.openai.com/v1";
 
@@ -162,6 +162,12 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
     try json.beginObject();
     try json.objectField("model");
     try json.write(model_name);
+    if (request.instructions.len > 0) {
+        const instructions = try std.mem.join(allocator, "\n\n", request.instructions);
+        defer allocator.free(instructions);
+        try json.objectField("instructions");
+        try json.write(instructions);
+    }
     try json.objectField("input");
     try json.beginArray();
     for (request.messages) |message| {
@@ -331,9 +337,11 @@ test "rejects malformed nested content and usage" {
 test "encodes both Responses API structured output modes" {
     const json_object = try encodeRequest(std.testing.allocator, "gpt-test", .{
         .messages = &.{},
+        .instructions = &.{ "First.", "Second." },
         .output = .json_object,
     });
     defer std.testing.allocator.free(json_object);
+    try std.testing.expect(std.mem.indexOf(u8, json_object, "\"instructions\":\"First.\\n\\nSecond.\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json_object, "\"format\":{\"type\":\"json_object\"}") != null);
 
     const json_schema = try encodeRequest(std.testing.allocator, "gpt-test", .{

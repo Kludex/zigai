@@ -87,6 +87,139 @@ test "agent joins final text parts" {
     try std.testing.expectEqual(@as(usize, 2), result.messages.len);
 }
 
+test "instructions compose for one run without entering message history" {
+    const Dependencies = struct { audience: []const u8 };
+    const DynamicState = struct {
+        calls: usize = 0,
+
+        fn resolve(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            run_context: zigai.InstructionContext,
+        ) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            const dependencies = run_context.dependency(Dependencies) orelse return error.MissingDependencies;
+            return std.fmt.allocPrint(allocator, "Answer {s} about {s}.", .{ dependencies.audience, run_context.prompt });
+        }
+    };
+    const EmptyInstruction = struct {
+        fn resolve(_: *anyopaque, _: std.mem.Allocator, _: zigai.InstructionContext) ![]const u8 {
+            return "";
+        }
+    };
+    const Inspector = struct {
+        fn inspect(_: usize, request: zigai.model.ModelRequest) !void {
+            try std.testing.expectEqual(@as(usize, 3), request.instructions.len);
+            try std.testing.expectEqualStrings("Use plain language.", request.instructions[0]);
+            try std.testing.expectEqualStrings("Answer developers about Zig allocators.", request.instructions[1]);
+            try std.testing.expectEqualStrings("Keep it short.", request.instructions[2]);
+
+            try std.testing.expectEqual(@as(usize, 4), request.messages.len);
+            try std.testing.expectEqual(zigai.model.Role.system, request.messages[0].role);
+            try std.testing.expectEqualStrings("Stable system prompt.", request.messages[0].parts[0].text);
+            try std.testing.expectEqualStrings("Earlier answer", request.messages[1].parts[0].text);
+            try std.testing.expectEqualStrings("old-call", request.messages[1].parts[1].tool_call.id);
+            try std.testing.expect(request.messages[2].parts[0].tool_result.is_error);
+            try std.testing.expectEqualStrings("Zig allocators", request.messages[3].parts[0].text);
+        }
+    };
+
+    const history = [_]zigai.model.Message{
+        .{ .role = .assistant, .parts = &.{
+            .{ .text = "Earlier answer" },
+            .{ .tool_call = .{ .id = "old-call", .name = "lookup", .arguments_json = "{}" } },
+        } },
+        .{ .role = .tool, .parts = &.{.{ .tool_result = .{
+            .call_id = "old-call",
+            .name = "lookup",
+            .content = "unavailable",
+            .is_error = true,
+        } }} },
+    };
+    const final_parts = [_]zigai.model.Part{.{ .text = "Done." }};
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &final_parts }},
+        .inspectFn = Inspector.inspect,
+    };
+    var dynamic_state: DynamicState = .{};
+    var unused: u8 = 0;
+    var dependencies = Dependencies{ .audience = "developers" };
+    const configured = [_]zigai.Instruction{
+        .{ .dynamic = .{ .context = &dynamic_state, .resolveFn = DynamicState.resolve } },
+        .{ .text = "" },
+        .{ .text = "Use plain language." },
+        .{ .dynamic = .{ .context = &unused, .resolveFn = EmptyInstruction.resolve } },
+    };
+
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .system_prompt = "Stable system prompt.",
+        .instructions = &configured,
+    }).runWithOptions(std.testing.allocator, "Zig allocators", .{
+        .message_history = &history,
+        .instructions = &.{ "", "Keep it short." },
+        .dependencies = &dependencies,
+    });
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(usize, 1), dynamic_state.calls);
+    try std.testing.expectEqual(@as(usize, 5), result.messages.len);
+    try std.testing.expectEqualStrings("old-call", result.messages[1].parts[1].tool_call.id);
+    try std.testing.expectEqualStrings("unavailable", result.messages[2].parts[0].tool_result.content);
+
+    const FollowUpInspector = struct {
+        fn inspect(_: usize, request: zigai.model.ModelRequest) !void {
+            try std.testing.expectEqual(@as(usize, 3), request.instructions.len);
+            try std.testing.expectEqualStrings("Use plain language.", request.instructions[0]);
+            try std.testing.expectEqualStrings("Answer readers about Follow up.", request.instructions[1]);
+            try std.testing.expectEqualStrings("New run only.", request.instructions[2]);
+            try std.testing.expectEqual(@as(usize, 6), request.messages.len);
+        }
+    };
+    var follow_up = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &final_parts }},
+        .inspectFn = FollowUpInspector.inspect,
+    };
+    dependencies.audience = "readers";
+    var follow_up_result = try (zigai.Agent{
+        .model = follow_up.model(),
+        .instructions = &configured,
+    }).runWithOptions(std.testing.allocator, "Follow up", .{
+        .message_history = result.messages,
+        .instructions = &.{"New run only."},
+        .dependencies = &dependencies,
+    });
+    defer follow_up_result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), dynamic_state.calls);
+}
+
+test "instruction failures and unsupported system capability stop before requesting" {
+    const Failure = struct {
+        fn resolve(_: *anyopaque, _: std.mem.Allocator, _: zigai.InstructionContext) ![]const u8 {
+            return error.InstructionFailed;
+        }
+    };
+    var unused: u8 = 0;
+    var failing = zigai.testing.ScriptedModel{ .responses = &.{} };
+    try std.testing.expectError(error.InstructionFailed, (zigai.Agent{
+        .model = failing.model(),
+        .instructions = &.{.{ .dynamic = .{ .context = &unused, .resolveFn = Failure.resolve } }},
+    }).run(std.testing.allocator, "hi"));
+    try std.testing.expectEqual(@as(usize, 0), failing.request_count);
+
+    var unsupported = zigai.testing.ScriptedModel{
+        .responses = &.{},
+        .profile = .{ .supports_system_messages = false },
+    };
+    try std.testing.expectError(zigai.agent.Agent.Error.ModelDoesNotSupportSystemMessages, (zigai.Agent{
+        .model = unsupported.model(),
+        .instructions = &.{.{ .text = "Be concise." }},
+    }).run(std.testing.allocator, "hi"));
+    try std.testing.expectEqual(@as(usize, 0), unsupported.request_count);
+    try std.testing.expect((zigai.InstructionContext{ .prompt = "hi" }).dependency(u8) == null);
+}
+
 test "agent optionally validates structured output before returning it" {
     const valid_parts = [_]zigai.model.Part{.{ .text = "{\"answer\":42}" }};
     const invalid_parts = [_]zigai.model.Part{.{ .text = "{\"answer\":\"no\"}" }};
@@ -549,7 +682,17 @@ test "streaming agent uses the same tool loop and emits ordered events" {
         .{ .parts = &calls, .usage = .{ .input_tokens = 2, .output_tokens = 1 } },
         .{ .parts = &answer, .usage = .{ .input_tokens = 3, .output_tokens = 1 } },
     };
-    var scripted = zigai.testing.ScriptedModel{ .responses = &responses, .profile = .{ .supports_streaming = true } };
+    const Inspector = struct {
+        fn inspect(_: usize, request: zigai.model.ModelRequest) !void {
+            try std.testing.expectEqual(@as(usize, 1), request.instructions.len);
+            try std.testing.expectEqualStrings("Stream carefully.", request.instructions[0]);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &responses,
+        .inspectFn = Inspector.inspect,
+        .profile = .{ .supports_streaming = true },
+    };
     var tool_calls: u8 = 0;
     const tool = successfulTool(&tool_calls);
     const Capture = struct {
@@ -572,10 +715,12 @@ test "streaming agent uses the same tool loop and emits ordered events" {
         }
     };
     var capture: Capture = .{};
-    var result = try (zigai.Agent{ .model = scripted.model(), .tools = &.{tool} }).runStream(std.testing.allocator, "go", .{
-        .context = &capture,
-        .eventFn = Capture.event,
-    });
+    var result = try (zigai.Agent{ .model = scripted.model(), .tools = &.{tool} }).runStreamWithOptions(
+        std.testing.allocator,
+        "go",
+        .{ .instructions = &.{"Stream carefully."} },
+        .{ .context = &capture, .eventFn = Capture.event },
+    );
     defer result.deinit();
     try std.testing.expectEqualStrings("done", result.output);
     try std.testing.expectEqual(@as(usize, 4), capture.model_events);

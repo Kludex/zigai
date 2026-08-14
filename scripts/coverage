@@ -6,7 +6,8 @@ coverage_dir="$project_dir/coverage"
 kcov_image="${ZIGAI_KCOV_IMAGE:-kcov/kcov@sha256:481289ae32e55e5b733019515acd10948a4f76dfed381765577db909664fc603}"
 kcov_bin="${ZIGAI_KCOV_BIN:-kcov}"
 coverage_target="${ZIGAI_COVERAGE_TARGET:-}"
-non_code_line="--exclude-line=pub const Agent = struct {"
+agent_declaration="--exclude-line=pub const Agent = struct {"
+instruction_context_declaration="--exclude-line=pub const InstructionContext = struct {"
 use_docker=0
 if [ "${ZIGAI_FORCE_DOCKER_KCOV:-0}" = 1 ] || ! command -v kcov >/dev/null 2>&1; then
     use_docker=1
@@ -50,7 +51,7 @@ fi
 
 run_kcov() {
     if [ "$use_docker" = 0 ]; then
-        kcov "$non_code_line" "$@"
+        kcov "$agent_declaration" "$instruction_context_declaration" "$@"
     elif command -v docker >/dev/null 2>&1; then
         docker run --rm \
             --network host \
@@ -63,7 +64,7 @@ run_kcov() {
             -e ZIGAI_CASSETTE_PATH \
             -e ZIGAI_FIXTURE_BASE_URL \
             -v "$project_dir:$project_dir" -w "$project_dir" \
-            "$kcov_image" "$kcov_bin" "$non_code_line" "$@"
+            "$kcov_image" "$kcov_bin" "$agent_declaration" "$instruction_context_declaration" "$@"
     else
         echo "coverage requires kcov or Docker" >&2
         exit 2
@@ -127,7 +128,7 @@ run_kcov --merge coverage/merged \
     coverage/openai-cli coverage/anthropic-cli coverage/google-cli coverage/http-smoke
 
 report="$coverage_dir/merged/kcov-merged/coverage.json"
-for source in "$project_dir"/src/*.zig "$project_dir"/src/cli/*.zig; do
+for source in "$project_dir"/src/*.zig "$project_dir"/src/cli/*.zig "$project_dir"/src/providers/*.zig; do
     if ! grep -Fq "\"file\": \"$source\"" "$report"; then
         echo "coverage report is missing $source" >&2
         exit 1

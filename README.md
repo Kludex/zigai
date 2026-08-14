@@ -23,6 +23,7 @@ conversation.
 - One agent API across supported providers.
 - Buffered and streaming responses.
 - Tool calls, including parallel calls and typed Zig functions.
+- Static, dynamic, and run-specific instructions.
 - JSON-object and JSON Schema output modes.
 - Timeouts, cancellation, retries, backoff, and usage limits.
 - Strict, secret-free HTTP cassettes for deterministic tests.
@@ -62,7 +63,7 @@ pub fn main(init: std.process.Init) !void {
     var http = zigai.transport.HttpTransport.init(init.gpa, init.io);
     defer http.deinit();
 
-    var client = zigai.openai.Client{
+    var client = zigai.providers.openai.Client{
         .model_name = "gpt-5-mini",
         .api_key = key,
         .transport = http.transport(),
@@ -95,15 +96,15 @@ when you need complete control.
 
 The agent and tools stay the same when the provider changes.
 
-| Module | API |
+| Provider | API |
 | --- | --- |
-| `zopenai` | OpenAI Responses |
-| `zanthropic` | Anthropic Messages |
-| `zgoogle` | Gemini GenerateContent |
-| `zopenai_compatible` | Chat Completions-compatible servers |
+| `zigai.providers.openai` | OpenAI Responses |
+| `zigai.providers.anthropic` | Anthropic Messages |
+| `zigai.providers.google` | Gemini GenerateContent |
+| `zigai.providers.openai_compatible` | Chat Completions-compatible servers |
 
 ```zig
-var client = zigai.anthropic.Client{
+var client = zigai.providers.anthropic.Client{
     .model_name = "claude-sonnet-4-5",
     .api_key = anthropic_api_key,
     .transport = http.transport(),
@@ -113,8 +114,34 @@ var client = zigai.anthropic.Client{
 Each model exposes a `ModelProfile`. The profile tells the agent which
 capabilities are supported before it sends a paid request.
 
+The original top-level imports and standalone `zopenai`, `zanthropic`,
+`zgoogle`, and `zopenai_compatible` packages remain available.
+
 See [Architecture](docs/architecture.md) for the provider contract and direct
 loop design.
+
+## Instructions
+
+Instructions describe how the agent should handle the current run.
+
+```zig
+const instructions = [_]zigai.Instruction{
+    .{ .text = "Answer in plain language." },
+};
+
+var result = try (zigai.Agent{
+    .model = client.model(),
+    .instructions = &instructions,
+}).runWithOptions(allocator, "Explain allocators.", .{
+    .instructions = &.{"Use one short example."},
+    .message_history = previous_messages,
+});
+```
+
+Dynamic instructions can read typed dependencies and are evaluated once per
+run. Instructions are sent again for every model request in that run, but are
+not stored in `result.messages`. This makes the result safe to reuse as message
+history without carrying instructions from an earlier run.
 
 ## Structured output
 
@@ -190,7 +217,7 @@ On Linux, enforce the coverage contract with:
 ./scripts/coverage
 ```
 
-The verified baseline is **2309/2309 executable lines (100%)**.
+The coverage gate is **100% of executable lines**.
 
 Provider tests replay checked-in HTTP cassettes. They exercise the real agent,
 provider adapter, tool loop, usage accounting, and error paths without calling
