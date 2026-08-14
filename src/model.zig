@@ -54,6 +54,11 @@ pub const Tool = struct {
     context: *anyopaque,
     /// Overrides `Agent.max_tool_retries` for this tool when non-null.
     max_retries: ?usize = null,
+    validateFn: ?*const fn (
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        arguments_json: []const u8,
+    ) anyerror!void = null,
     executeFn: *const fn (context: *anyopaque, allocator: std.mem.Allocator, arguments_json: []const u8) anyerror![]const u8,
     executeWithContextFn: ?*const fn (
         context: *anyopaque,
@@ -67,6 +72,11 @@ pub const Tool = struct {
 
     pub fn execute(self: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) ![]const u8 {
         return self.executeFn(self.context, allocator, arguments_json);
+    }
+
+    pub fn validate(self: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) !void {
+        const validate_arguments = self.validateFn orelse return;
+        return validate_arguments(self.context, allocator, arguments_json);
     }
 
     pub fn executeWithContext(self: Tool, allocator: std.mem.Allocator, run_context: ToolRunContext, arguments_json: []const u8) ![]const u8 {

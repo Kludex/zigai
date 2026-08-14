@@ -33,6 +33,13 @@ run settings remain higher precedence. Model selectors receive the model chosen
 so far, and capability lifecycle hooks run in the same stable order. Duplicate
 tool names are rejected before any provider call.
 
+Lifecycle hooks form one synchronous ordered stream. Direct agent hooks run
+first, followed by capability hooks. Each provider request, tool dispatch,
+tool execution, output check, and delivered stream event has explicit
+start/end or before/after events plus an error event where failure is possible.
+Hook payloads are borrowed. Hook failures stop the run; terminal failures emit
+`run_error` before returning.
+
 Structured output is provider neutral at the agent boundary. JSON-object mode
 and named, strict JSON Schema mode are encoded as `text.format` for OpenAI and
 `output_config.format` for Anthropic, and `generationConfig` for Google. A

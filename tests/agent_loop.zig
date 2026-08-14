@@ -569,6 +569,7 @@ test "capabilities compose tools instructions hooks settings and model selection
                     try std.testing.expectEqualStrings("selected", end.output);
                     break :end_event self.id + 10;
                 },
+                else => return,
             };
             self.capture.count += 1;
         }
@@ -627,6 +628,106 @@ test "capability composition rejects duplicate tool names" {
         }).run(std.testing.allocator, "hi"),
     );
     try std.testing.expectEqual(@as(usize, 0), scripted.request_count);
+}
+
+test "lifecycle hooks observe ordered agent phases" {
+    const Answer = struct { answer: u32 };
+    const call_parts = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "call",
+        .name = "tool",
+        .arguments_json = "{}",
+    } }};
+    const invalid_parts = [_]zigai.model.Part{.{ .text = "{\"answer\":\"no\"}" }};
+    const valid_parts = [_]zigai.model.Part{.{ .text = "{\"answer\":42}" }};
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{
+            .{ .parts = &call_parts },
+            .{ .parts = &invalid_parts },
+            .{ .parts = &valid_parts },
+        },
+        .profile = .{ .supports_json_schema_output = true },
+    };
+    const Capture = struct {
+        sequence: [16]u8 = undefined,
+        count: usize = 0,
+
+        fn event(context: *anyopaque, value: zigai.LifecycleEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const code: u8 = switch (value) {
+                .run_start => 1,
+                .model_request_start => 2,
+                .model_request_end => 3,
+                .tool_validation_start => 4,
+                .tool_validation_end => 5,
+                .tool_execution_start => 6,
+                .tool_execution_end => 7,
+                .output_validation_start => 8,
+                .output_validation_end => 9,
+                .output_validation_error => |failure| output_error: {
+                    try std.testing.expect(failure.will_retry);
+                    break :output_error 10;
+                },
+                .run_end => 11,
+                else => return,
+            };
+            self.sequence[self.count] = code;
+            self.count += 1;
+        }
+    };
+    var capture: Capture = .{};
+    var calls: u8 = 0;
+    const tool = successfulTool(&calls);
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .tools = &.{tool},
+        .hooks = &.{.{ .context = &capture, .eventFn = Capture.event }},
+        .max_output_retries = 1,
+    }).runTyped(Answer, std.testing.allocator, "go");
+    defer result.deinit();
+    try std.testing.expectEqual(@as(u32, 42), result.output.answer);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4, 5, 6, 7, 2, 3, 8, 10, 2, 3, 8, 9, 11 }, &capture.sequence);
+}
+
+test "lifecycle hooks wrap every emitted stream event" {
+    const parts = [_]zigai.model.Part{.{ .text = "done" }};
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .profile = .{ .supports_streaming = true },
+    };
+    const Capture = struct {
+        before: usize = 0,
+        after: usize = 0,
+        sink: usize = 0,
+
+        fn hook(context: *anyopaque, value: zigai.LifecycleEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (value) {
+                .stream_event => |stream_value| switch (stream_value.stage) {
+                    .before => self.before += 1,
+                    .after => self.after += 1,
+                },
+                else => {},
+            }
+        }
+
+        fn stream(context: *anyopaque, _: zigai.AgentStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.sink += 1;
+        }
+    };
+    var capture: Capture = .{};
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .hooks = &.{.{ .context = &capture, .eventFn = Capture.hook }},
+    }).runStream(
+        std.testing.allocator,
+        "go",
+        .{ .context = &capture, .eventFn = Capture.stream },
+    );
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 3), capture.sink);
+    try std.testing.expectEqual(capture.sink, capture.before);
+    try std.testing.expectEqual(capture.sink, capture.after);
 }
 
 test "agent rejects empty and textless final responses" {
@@ -905,13 +1006,33 @@ test "invalid tool arguments are returned to the model for correction" {
     }.call);
     double.max_retries = 1;
 
+    const Hook = struct {
+        validation_errors: usize = 0,
+        executions: usize = 0,
+        fn event(context: *anyopaque, value: zigai.LifecycleEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (value) {
+                .tool_validation_error => |failure| {
+                    try std.testing.expectEqual(error.InvalidToolArguments, failure.failure);
+                    self.validation_errors += 1;
+                },
+                .tool_execution_start => self.executions += 1,
+                else => {},
+            }
+        }
+    };
+    var hook: Hook = .{};
+
     var result = try (zigai.Agent{
         .model = scripted.model(),
         .tools = &.{double},
+        .hooks = &.{.{ .context = &hook, .eventFn = Hook.event }},
     }).run(std.testing.allocator, "Double 21.");
     defer result.deinit();
     try std.testing.expectEqualStrings("42", result.output);
     try std.testing.expectEqual(@as(usize, 3), result.model_requests);
+    try std.testing.expectEqual(@as(usize, 1), hook.validation_errors);
+    try std.testing.expectEqual(@as(usize, 1), hook.executions);
 }
 
 test "recoverable tool failures are returned as error results" {
@@ -944,12 +1065,31 @@ test "recoverable tool failures are returned as error results" {
             }
         }.execute,
     };
-    var result = try (zigai.Agent{ .model = scripted.model(), .tools = &.{tool} }).run(
+    const Hook = struct {
+        saw_recoverable_error: bool = false,
+        fn event(context: *anyopaque, value: zigai.LifecycleEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (value) {
+                .tool_execution_error => |failure| {
+                    try std.testing.expectEqual(error.BackendUnavailable, failure.failure);
+                    self.saw_recoverable_error = failure.recoverable;
+                },
+                else => {},
+            }
+        }
+    };
+    var hook: Hook = .{};
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .tools = &.{tool},
+        .hooks = &.{.{ .context = &hook, .eventFn = Hook.event }},
+    }).run(
         std.testing.allocator,
         "Look it up.",
     );
     defer result.deinit();
     try std.testing.expectEqualStrings("No data is available.", result.output);
+    try std.testing.expect(hook.saw_recoverable_error);
 }
 
 test "agent propagates tool failures" {
@@ -997,6 +1137,60 @@ const FlakyModel = struct {
         return self.response;
     }
 };
+
+test "lifecycle hooks observe request errors retries and terminal failures" {
+    const parts = [_]zigai.model.Part{.{ .text = "done" }};
+    const Capture = struct {
+        retry_errors: usize = 0,
+        terminal_errors: usize = 0,
+        run_errors: usize = 0,
+
+        fn event(context: *anyopaque, value: zigai.LifecycleEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (value) {
+                .model_request_error => |failure| {
+                    if (failure.will_retry) {
+                        self.retry_errors += 1;
+                    } else {
+                        self.terminal_errors += 1;
+                    }
+                },
+                .run_error => |failure| {
+                    try std.testing.expectEqual(error.ProviderServerError, failure.failure);
+                    self.run_errors += 1;
+                },
+                else => {},
+            }
+        }
+    };
+    var retried_capture: Capture = .{};
+    var retried = FlakyModel{
+        .failures_remaining = 1,
+        .failure = error.ProviderServerError,
+        .response = .{ .parts = &parts },
+    };
+    var result = try (zigai.Agent{
+        .model = retried.model(),
+        .hooks = &.{.{ .context = &retried_capture, .eventFn = Capture.event }},
+    }).run(std.testing.allocator, "hi");
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), retried_capture.retry_errors);
+    try std.testing.expectEqual(@as(usize, 0), retried_capture.run_errors);
+
+    var failed_capture: Capture = .{};
+    var failed = FlakyModel{
+        .failures_remaining = 1,
+        .failure = error.ProviderServerError,
+        .response = .{ .parts = &parts },
+    };
+    try std.testing.expectError(error.ProviderServerError, (zigai.Agent{
+        .model = failed.model(),
+        .hooks = &.{.{ .context = &failed_capture, .eventFn = Capture.event }},
+        .retry_policy = .{ .max_retries = 0 },
+    }).run(std.testing.allocator, "hi"));
+    try std.testing.expectEqual(@as(usize, 1), failed_capture.terminal_errors);
+    try std.testing.expectEqual(@as(usize, 1), failed_capture.run_errors);
+}
 
 test "agent retries transient provider failures and counts every request" {
     const parts = [_]zigai.model.Part{.{ .text = "done" }};

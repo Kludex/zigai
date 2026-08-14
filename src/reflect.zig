@@ -27,6 +27,15 @@ pub fn tool(
             return invoke(allocator, .{}, arguments_json);
         }
 
+        fn validate(_: *anyopaque, allocator: std.mem.Allocator, arguments_json: []const u8) anyerror!void {
+            _ = std.json.parseFromSliceLeaky(Args, allocator, arguments_json, .{
+                .ignore_unknown_fields = true,
+            }) catch |err| return switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.InvalidToolArguments,
+            };
+        }
+
         fn executeWithContext(
             _: *anyopaque,
             allocator: std.mem.Allocator,
@@ -64,6 +73,7 @@ pub fn tool(
             .parameters_json_schema = schemaOf(Args),
         },
         .context = &Wrapper.placeholder,
+        .validateFn = Wrapper.validate,
         .executeFn = Wrapper.execute,
         .executeWithContextFn = if (info.params.len > 1) Wrapper.executeWithContext else null,
     };

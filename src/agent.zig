@@ -162,6 +162,20 @@ pub const CapabilityContext = struct {
 pub const LifecycleEvent = union(enum) {
     run_start: RunStart,
     run_end: RunEnd,
+    run_error: RunError,
+    model_request_start: ModelRequestStart,
+    model_request_end: ModelRequestEnd,
+    model_request_error: ModelRequestError,
+    tool_validation_start: ToolValidationStart,
+    tool_validation_end: ToolValidationEnd,
+    tool_validation_error: ToolValidationError,
+    tool_execution_start: ToolExecutionStart,
+    tool_execution_end: ToolExecutionEnd,
+    tool_execution_error: ToolExecutionError,
+    output_validation_start: OutputValidationStart,
+    output_validation_end: OutputValidationEnd,
+    output_validation_error: OutputValidationError,
+    stream_event: StreamEvent,
 
     pub const RunStart = struct {
         prompt: []const u8,
@@ -172,6 +186,64 @@ pub const LifecycleEvent = union(enum) {
         output: []const u8,
         usage: model_types.Usage,
         model_requests: usize,
+    };
+
+    pub const RunError = struct { failure: anyerror };
+    pub const ModelRequestStart = struct {
+        number: usize,
+        request: model_types.ModelRequest,
+        streaming: bool,
+    };
+    pub const ModelRequestEnd = struct {
+        number: usize,
+        response: model_types.ModelResponse,
+    };
+    pub const ModelRequestError = struct {
+        number: usize,
+        failure: anyerror,
+        will_retry: bool,
+    };
+    pub const ToolValidationStart = struct { call: model_types.ToolCall };
+    pub const ToolValidationEnd = struct {
+        call: model_types.ToolCall,
+        tool: model_types.Tool,
+    };
+    pub const ToolValidationError = struct {
+        call: model_types.ToolCall,
+        failure: anyerror,
+    };
+    pub const ToolExecutionStart = struct {
+        call: model_types.ToolCall,
+        tool: model_types.Tool,
+    };
+    pub const ToolExecutionEnd = struct {
+        call: model_types.ToolCall,
+        content: []const u8,
+    };
+    pub const ToolExecutionError = struct {
+        call: model_types.ToolCall,
+        failure: anyerror,
+        recoverable: bool,
+    };
+    pub const OutputValidationStart = struct {
+        output: []const u8,
+        retry_number: usize,
+    };
+    pub const OutputValidationEnd = struct {
+        output: []const u8,
+        retry_number: usize,
+    };
+    pub const OutputValidationError = struct {
+        output: []const u8,
+        failure: anyerror,
+        retry_number: usize,
+        will_retry: bool,
+    };
+    pub const StreamEvent = struct {
+        stage: Stage,
+        event: AgentStreamEvent,
+
+        pub const Stage = enum { before, after };
     };
 };
 
@@ -223,6 +295,7 @@ pub fn TypedResult(comptime Output: type) type {
 pub const Agent = struct {
     model: model_types.Model,
     capabilities: []const Capability = &.{},
+    hooks: []const LifecycleHook = &.{},
     tools: []const model_types.Tool = &.{},
     system_prompt: ?[]const u8 = null,
     instructions: []const Instruction = &.{},
@@ -362,7 +435,10 @@ pub const Agent = struct {
     ) !Result {
         if (self.capabilities.len == 0) {
             try ensureUniqueToolNames(self.tools);
-            return self.runConfigured(allocator, prompt, options, stream_sink, output_validator, &.{});
+            return self.runConfigured(allocator, prompt, options, stream_sink, output_validator, self.hooks) catch |err| {
+                try emitLifecycle(self.hooks, .{ .run_error = .{ .failure = err } });
+                return err;
+            };
         }
         var tools: std.ArrayList(model_types.Tool) = .empty;
         defer tools.deinit(allocator);
@@ -372,6 +448,7 @@ pub const Agent = struct {
         try instructions.appendSlice(allocator, self.instructions);
         var hooks: std.ArrayList(LifecycleHook) = .empty;
         defer hooks.deinit(allocator);
+        try hooks.appendSlice(allocator, self.hooks);
 
         const dependencies = options.dependencies orelse self.dependencies;
         var model = self.model;
@@ -395,7 +472,10 @@ pub const Agent = struct {
         configured.instructions = instructions.items;
         configured.model_settings = capability_settings.overrideWith(self.model_settings);
         configured.capabilities = &.{};
-        return configured.runConfigured(allocator, prompt, options, stream_sink, output_validator, hooks.items);
+        return configured.runConfigured(allocator, prompt, options, stream_sink, output_validator, hooks.items) catch |err| {
+            try emitLifecycle(hooks.items, .{ .run_error = .{ .failure = err } });
+            return err;
+        };
     }
 
     fn runConfigured(
@@ -470,7 +550,11 @@ pub const Agent = struct {
                 model_requests += 1;
                 provider_errors.reset();
                 var stream_emitted = false;
-                var forwarder = ModelEventForwarder{ .sink = stream_sink, .emitted = &stream_emitted };
+                var forwarder = ModelEventForwarder{
+                    .sink = stream_sink,
+                    .emitted = &stream_emitted,
+                    .hooks = hooks,
+                };
                 const model_request = model_types.ModelRequest{
                     .messages = messages.items,
                     .instructions = resolved_instructions,
@@ -481,12 +565,24 @@ pub const Agent = struct {
                     .cancellation = self.cancellation,
                     .settings = resolved_settings,
                 };
+                try emitLifecycle(hooks, .{ .model_request_start = .{
+                    .number = model_requests,
+                    .request = model_request,
+                    .streaming = stream_sink != null,
+                } });
                 break :request (if (stream_sink != null)
                     self.model.stream(memory, model_request, forwarder.modelSink())
                 else
                     self.model.request(memory, model_request)) catch |err| {
+                    const will_retry = !stream_emitted and retries < self.retry_policy.max_retries and
+                        shouldRetry(err, self.retry_policy);
+                    try emitLifecycle(hooks, .{ .model_request_error = .{
+                        .number = model_requests,
+                        .failure = err,
+                        .will_retry = will_retry,
+                    } });
                     if (err == error.RequestCancelled) return Error.Cancelled;
-                    if (!stream_emitted and retries < self.retry_policy.max_retries and shouldRetry(err, self.retry_policy)) {
+                    if (will_retry) {
                         retries += 1;
                         const delay_ms = if (self.retry_policy.backoff) |backoff|
                             backoffDelayMilliseconds(backoff, retries, provider_errors.retry_after_seconds)
@@ -510,6 +606,10 @@ pub const Agent = struct {
                     return err;
                 };
             };
+            try emitLifecycle(hooks, .{ .model_request_end = .{
+                .number = model_requests,
+                .response = response,
+            } });
             total_usage.add(response.usage);
             try enforceUsageLimits(total_usage, self.limits);
             try enforceFinishReason(response.finish_reason);
@@ -525,15 +625,30 @@ pub const Agent = struct {
 
             if (tool_call_count == 0) {
                 const output = try collectText(memory, response.parts);
+                try emitLifecycle(hooks, .{ .output_validation_start = .{
+                    .output = output,
+                    .retry_number = output_retries,
+                } });
                 validateFinalOutput(self, memory, output, output_validator) catch |err| {
+                    const will_retry = err != error.OutOfMemory and output_retries < self.max_output_retries;
+                    try emitLifecycle(hooks, .{ .output_validation_error = .{
+                        .output = output,
+                        .failure = err,
+                        .retry_number = output_retries,
+                        .will_retry = will_retry,
+                    } });
                     if (err == error.OutOfMemory) return err;
-                    if (output_retries >= self.max_output_retries) return err;
+                    if (!will_retry) return err;
                     output_retries += 1;
                     try appendTextMessage(memory, &messages, .user, "The previous response did not match the required output schema. " ++
                         "Return only valid JSON matching the schema.");
                     continue;
                 };
-                if (stream_sink) |sink| try sink.emit(.{ .final_output = output });
+                try emitLifecycle(hooks, .{ .output_validation_end = .{
+                    .output = output,
+                    .retry_number = output_retries,
+                } });
+                if (stream_sink) |sink| try emitStreamEvent(hooks, sink, .{ .final_output = output });
                 try emitLifecycle(hooks, .{ .run_end = .{
                     .output = output,
                     .usage = total_usage,
@@ -570,9 +685,10 @@ pub const Agent = struct {
                     .cancellation = self.cancellation,
                     .io = self.io,
                 },
+                hooks,
             );
             if (stream_sink) |sink| for (result_parts) |part| {
-                try sink.emit(.{ .tool_result = part.tool_result });
+                try emitStreamEvent(hooks, sink, .{ .tool_result = part.tool_result });
             };
             try messages.append(memory, .{ .role = .tool, .parts = result_parts });
         }
@@ -637,6 +753,7 @@ fn decodeTypedResult(comptime Output: type, untyped: Agent.Result) !TypedResult(
 const ToolWork = struct {
     call: model_types.ToolCall,
     tool_index: usize,
+    validation_failure: ?anyerror = null,
 };
 
 const ToolOutcome = union(enum) {
@@ -656,15 +773,37 @@ fn executeToolCalls(
     call_count: usize,
     tool_retries: []usize,
     run_context: model_types.ToolRunContext,
+    hooks: []const LifecycleHook,
 ) ![]Part {
     const work = try allocator.alloc(ToolWork, call_count);
     var work_index: usize = 0;
     for (response_parts) |part| switch (part) {
         .tool_call => |call| {
+            try emitLifecycle(hooks, .{ .tool_validation_start = .{ .call = call } });
+            const tool_index = findToolIndex(agent.tools, call.name) orelse {
+                try emitLifecycle(hooks, .{ .tool_validation_error = .{
+                    .call = call,
+                    .failure = Agent.Error.UnknownTool,
+                } });
+                return Agent.Error.UnknownTool;
+            };
             work[work_index] = .{
                 .call = call,
-                .tool_index = findToolIndex(agent.tools, call.name) orelse return Agent.Error.UnknownTool,
+                .tool_index = tool_index,
             };
+            agent.tools[tool_index].validate(allocator, call.arguments_json) catch |err| {
+                work[work_index].validation_failure = err;
+                try emitLifecycle(hooks, .{ .tool_validation_error = .{
+                    .call = call,
+                    .failure = err,
+                } });
+                work_index += 1;
+                continue;
+            };
+            try emitLifecycle(hooks, .{ .tool_validation_end = .{
+                .call = call,
+                .tool = agent.tools[tool_index],
+            } });
             work_index += 1;
         },
         else => {},
@@ -673,7 +812,22 @@ fn executeToolCalls(
     const result_parts = try allocator.alloc(Part, call_count);
     if (call_count == 1) {
         try checkCancellation(agent.cancellation);
-        const outcome = executeTool(agent.tools[work[0].tool_index], allocator, run_context, work[0].call.arguments_json);
+        const outcome: ToolOutcome = if (work[0].validation_failure) |failure|
+            .{ .failure = failure }
+        else execute: {
+            try emitLifecycle(hooks, .{ .tool_execution_start = .{
+                .call = work[0].call,
+                .tool = agent.tools[work[0].tool_index],
+            } });
+            const executed = executeTool(
+                agent.tools[work[0].tool_index],
+                allocator,
+                run_context,
+                work[0].call.arguments_json,
+            );
+            try emitToolOutcome(hooks, agent.tools[work[0].tool_index], work[0].call, executed);
+            break :execute executed;
+        };
         result_parts[0] = .{ .tool_result = try toolResult(
             agent,
             allocator,
@@ -687,29 +841,50 @@ fn executeToolCalls(
     const io = agent.io orelse return Agent.Error.ParallelToolCallsRequireIo;
     var locked_allocator = LockedAllocator{ .child = allocator, .io = io };
     const concurrent_allocator = locked_allocator.allocator();
-    const futures = try allocator.alloc(std.Io.Future(ToolOutcome), call_count);
+    const futures = try allocator.alloc(?std.Io.Future(ToolOutcome), call_count);
+    @memset(futures, null);
     const outcomes = try allocator.alloc(ToolOutcome, call_count);
     var spawned: usize = 0;
     while (spawned < call_count) : (spawned += 1) {
         const item = work[spawned];
+        if (item.validation_failure) |failure| {
+            outcomes[spawned] = .{ .failure = failure };
+            continue;
+        }
+        try emitLifecycle(hooks, .{ .tool_execution_start = .{
+            .call = item.call,
+            .tool = agent.tools[item.tool_index],
+        } });
         futures[spawned] = io.concurrent(executeTool, .{
             agent.tools[item.tool_index],
             concurrent_allocator,
             run_context,
             item.call.arguments_json,
         }) catch {
-            for (futures[0..spawned]) |*future| _ = future.cancel(io);
+            for (futures[0..spawned]) |*slot| {
+                if (slot.*) |*future| _ = future.cancel(io);
+            }
             return Agent.Error.ToolConcurrencyUnavailable;
         };
     }
 
     var awaited: usize = 0;
     errdefer {
-        for (futures[awaited..]) |*future| _ = future.cancel(io);
+        for (futures[awaited..]) |*slot| {
+            if (slot.*) |*future| _ = future.cancel(io);
+        }
     }
     while (awaited < call_count) {
         try checkCancellation(agent.cancellation);
-        outcomes[awaited] = futures[awaited].await(io);
+        if (futures[awaited]) |*future| {
+            outcomes[awaited] = future.await(io);
+            try emitToolOutcome(
+                hooks,
+                agent.tools[work[awaited].tool_index],
+                work[awaited].call,
+                outcomes[awaited],
+            );
+        }
         if (outcomes[awaited] == .failure and
             !agent.tools[work[awaited].tool_index].isRecoverable(outcomes[awaited].failure))
         {
@@ -728,6 +903,25 @@ fn executeToolCalls(
         ) };
     }
     return result_parts;
+}
+
+fn emitToolOutcome(
+    hooks: []const LifecycleHook,
+    tool: model_types.Tool,
+    call: model_types.ToolCall,
+    outcome: ToolOutcome,
+) !void {
+    switch (outcome) {
+        .success => |content| try emitLifecycle(hooks, .{ .tool_execution_end = .{
+            .call = call,
+            .content = content,
+        } }),
+        .failure => |failure| try emitLifecycle(hooks, .{ .tool_execution_error = .{
+            .call = call,
+            .failure = failure,
+            .recoverable = tool.isRecoverable(failure),
+        } }),
+    }
 }
 
 fn executeTool(
@@ -836,6 +1030,7 @@ const LockedAllocator = struct {
 const ModelEventForwarder = struct {
     sink: ?AgentStreamSink,
     emitted: *bool,
+    hooks: []const LifecycleHook,
 
     fn modelSink(self: *ModelEventForwarder) model_types.ModelStreamSink {
         return .{ .context = self, .eventFn = emit };
@@ -844,7 +1039,7 @@ const ModelEventForwarder = struct {
     fn emit(context: *anyopaque, event: model_types.ModelStreamEvent) !void {
         const self: *ModelEventForwarder = @ptrCast(@alignCast(context));
         self.emitted.* = true;
-        try self.sink.?.emit(.{ .model = event });
+        try emitStreamEvent(self.hooks, self.sink.?, .{ .model = event });
     }
 };
 
@@ -1011,6 +1206,12 @@ fn resolveInstructions(
 
 fn emitLifecycle(hooks: []const LifecycleHook, event: LifecycleEvent) !void {
     for (hooks) |hook| try hook.emit(event);
+}
+
+fn emitStreamEvent(hooks: []const LifecycleHook, sink: AgentStreamSink, event: AgentStreamEvent) !void {
+    try emitLifecycle(hooks, .{ .stream_event = .{ .stage = .before, .event = event } });
+    try sink.emit(event);
+    try emitLifecycle(hooks, .{ .stream_event = .{ .stage = .after, .event = event } });
 }
 
 fn ensureUniqueToolNames(tools: []const model_types.Tool) Agent.Error!void {

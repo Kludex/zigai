@@ -170,6 +170,15 @@ A capability can contribute tools, instructions, hooks, model settings, and a
 model selector. Multiple capabilities apply from left to right. Duplicate tool
 names fail before the first model request.
 
+## Lifecycle hooks
+
+`Agent.hooks` and capability hooks receive the same ordered event stream. It
+covers run boundaries, model requests, tool validation and execution, output
+validation, errors, retries, and stream events before and after delivery.
+
+Hook values are borrowed and callbacks run synchronously. Copy only what you
+need to retain. A hook error stops the run and is reported through `run_error`.
+
 ## Model settings
 
 Generation settings use one provider-neutral type:
