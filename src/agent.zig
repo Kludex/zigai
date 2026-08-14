@@ -1,0 +1,471 @@
+const std = @import("std");
+const model_types = @import("model.zig");
+const json_schema = @import("json_schema.zig");
+
+const Message = model_types.Message;
+const Part = model_types.Part;
+
+const AgentError = error{
+    Cancelled,
+    EmptyModelResponse,
+    InputTokenLimitExceeded,
+    MaxModelRequestsExceeded,
+    ModelDoesNotSupportSystemMessages,
+    ModelDoesNotSupportTools,
+    ModelDoesNotSupportJsonObjectOutput,
+    ModelDoesNotSupportJsonSchemaOutput,
+    ModelDoesNotSupportStreaming,
+    OutputTokenLimitExceeded,
+    ParallelToolCallsNotSupported,
+    TotalTokenLimitExceeded,
+    UnknownTool,
+    RetryBackoffRequiresIo,
+};
+
+const AgentUsageLimits = struct {
+    max_model_requests: usize = 8,
+    max_input_tokens: ?u64 = null,
+    max_output_tokens: ?u64 = null,
+    max_total_tokens: ?u64 = null,
+};
+
+const AgentBackoff = struct {
+    initial_delay_ms: u64 = 250,
+    maximum_delay_ms: u64 = 8_000,
+    respect_retry_after: bool = true,
+};
+
+const AgentRetryPolicy = struct {
+    max_retries: usize = 2,
+    retry_rate_limits: bool = true,
+    retry_server_errors: bool = true,
+    retry_timeouts: bool = true,
+    backoff: ?AgentBackoff = null,
+    before_retry: ?RetryHook = null,
+};
+
+pub const CancellationToken = model_types.CancellationToken;
+
+pub const RetryEvent = struct {
+    failure: anyerror,
+    retry_number: usize,
+    model_requests: usize,
+    retry_after_seconds: ?u64 = null,
+    rate_limit_remaining_requests: ?u64 = null,
+    rate_limit_remaining_tokens: ?u64 = null,
+    delay_ms: u64 = 0,
+};
+
+pub const RetryHook = struct {
+    context: *anyopaque,
+    waitFn: *const fn (context: *anyopaque, event: RetryEvent) anyerror!void,
+
+    pub fn wait(self: RetryHook, event: RetryEvent) !void {
+        return self.waitFn(self.context, event);
+    }
+};
+
+pub const AgentStreamEvent = union(enum) {
+    model: model_types.ModelStreamEvent,
+    tool_result: model_types.ToolResult,
+    final_output: []const u8,
+};
+
+pub const AgentStreamSink = struct {
+    context: *anyopaque,
+    eventFn: *const fn (context: *anyopaque, event: AgentStreamEvent) anyerror!void,
+
+    pub fn emit(self: AgentStreamSink, event: AgentStreamEvent) !void {
+        return self.eventFn(self.context, event);
+    }
+};
+
+pub const Agent = struct {
+    model: model_types.Model,
+    tools: []const model_types.Tool = &.{},
+    system_prompt: ?[]const u8 = null,
+    output: model_types.OutputFormat = .text,
+    /// Re-check structured provider output locally before returning it. This is
+    /// intentionally opt-in because JSON Schema support is a documented subset.
+    validate_output_locally: bool = false,
+    limits: UsageLimits = .{},
+    retry_policy: RetryPolicy = .{},
+    provider_error_observer: ?model_types.ProviderErrorObserver = null,
+    dependencies: ?*anyopaque = null,
+    cancellation: ?*const CancellationToken = null,
+    request_timeout_ms: ?u64 = null,
+    io: ?std.Io = null,
+
+    pub const UsageLimits = AgentUsageLimits;
+    pub const RetryPolicy = AgentRetryPolicy;
+    pub const Backoff = AgentBackoff;
+
+    pub const Error = AgentError;
+
+    pub const Result = struct {
+        arena: std.heap.ArenaAllocator,
+        output: []const u8,
+        messages: []const Message,
+        usage: model_types.Usage,
+        model_requests: usize,
+
+        pub fn deinit(self: *Result) void {
+            self.arena.deinit();
+            self.* = undefined;
+        }
+    };
+
+    pub fn run(self: Agent, allocator: std.mem.Allocator, prompt: []const u8) !Result {
+        return self.runInternal(allocator, prompt, null);
+    }
+
+    pub fn runStream(self: Agent, allocator: std.mem.Allocator, prompt: []const u8, sink: AgentStreamSink) !Result {
+        return self.runInternal(allocator, prompt, sink);
+    }
+
+    fn runInternal(self: Agent, allocator: std.mem.Allocator, prompt: []const u8, stream_sink: ?AgentStreamSink) !Result {
+        try checkCancellation(self.cancellation);
+        if (stream_sink != null and !self.model.profile.supports_streaming) return Error.ModelDoesNotSupportStreaming;
+        if (self.system_prompt != null and !self.model.profile.supports_system_messages) {
+            return Error.ModelDoesNotSupportSystemMessages;
+        }
+        if (self.tools.len > 0 and !self.model.profile.supports_tools) {
+            return Error.ModelDoesNotSupportTools;
+        }
+        switch (self.output) {
+            .text => {},
+            .json_object => try requireCapability(
+                self.model.profile.supports_json_object_output,
+                Error.ModelDoesNotSupportJsonObjectOutput,
+            ),
+            .json_schema => try requireCapability(
+                self.model.profile.supports_json_schema_output,
+                Error.ModelDoesNotSupportJsonSchemaOutput,
+            ),
+        }
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        errdefer arena.deinit();
+        const memory = arena.allocator();
+
+        var messages: std.ArrayList(Message) = .empty;
+        var definitions: std.ArrayList(model_types.ToolDefinition) = .empty;
+        var total_usage: model_types.Usage = .{};
+        var provider_errors = ProviderErrorCapture{ .target = self.provider_error_observer };
+
+        if (self.system_prompt) |system_prompt| {
+            try appendTextMessage(memory, &messages, .system, system_prompt);
+        }
+        try appendTextMessage(memory, &messages, .user, prompt);
+        for (self.tools) |tool| try definitions.append(memory, tool.definition);
+
+        var model_requests: usize = 0;
+        while (true) {
+            var retries: usize = 0;
+            const response = request: while (true) {
+                try checkCancellation(self.cancellation);
+                if (model_requests >= self.limits.max_model_requests) {
+                    return Error.MaxModelRequestsExceeded;
+                }
+                model_requests += 1;
+                provider_errors.reset();
+                var stream_emitted = false;
+                var forwarder = ModelEventForwarder{ .sink = stream_sink, .emitted = &stream_emitted };
+                const model_request = model_types.ModelRequest{
+                    .messages = messages.items,
+                    .tools = definitions.items,
+                    .output = self.output,
+                    .error_observer = provider_errors.observer(),
+                    .timeout_ms = self.request_timeout_ms,
+                    .cancellation = self.cancellation,
+                };
+                break :request (if (stream_sink != null)
+                    self.model.stream(memory, model_request, forwarder.modelSink())
+                else
+                    self.model.request(memory, model_request)) catch |err| {
+                    if (err == error.RequestCancelled) return Error.Cancelled;
+                    if (!stream_emitted and retries < self.retry_policy.max_retries and shouldRetry(err, self.retry_policy)) {
+                        retries += 1;
+                        const delay_ms = if (self.retry_policy.backoff) |backoff|
+                            backoffDelayMilliseconds(backoff, retries, provider_errors.retry_after_seconds)
+                        else
+                            0;
+                        if (self.retry_policy.before_retry) |hook| try hook.wait(.{
+                            .failure = err,
+                            .retry_number = retries,
+                            .model_requests = model_requests,
+                            .retry_after_seconds = provider_errors.retry_after_seconds,
+                            .rate_limit_remaining_requests = provider_errors.rate_limit_remaining_requests,
+                            .rate_limit_remaining_tokens = provider_errors.rate_limit_remaining_tokens,
+                            .delay_ms = delay_ms,
+                        });
+                        if (self.retry_policy.backoff != null) {
+                            const io = self.io orelse return Error.RetryBackoffRequiresIo;
+                            try sleepBackoff(io, delay_ms, self.cancellation);
+                        }
+                        continue;
+                    }
+                    return err;
+                };
+            };
+            total_usage.add(response.usage);
+            try enforceUsageLimits(total_usage, self.limits);
+            if (response.parts.len == 0) return Error.EmptyModelResponse;
+
+            try messages.append(memory, .{ .role = .assistant, .parts = response.parts });
+
+            var tool_call_count: usize = 0;
+            for (response.parts) |part| switch (part) {
+                .tool_call => tool_call_count += 1,
+                else => {},
+            };
+
+            if (tool_call_count == 0) {
+                const output = try collectText(memory, response.parts);
+                if (self.validate_output_locally) try json_schema.validate(memory, self.output, output);
+                if (stream_sink) |sink| try sink.emit(.{ .final_output = output });
+                return .{
+                    .arena = arena,
+                    .output = output,
+                    .messages = try messages.toOwnedSlice(memory),
+                    .usage = total_usage,
+                    .model_requests = model_requests,
+                };
+            }
+            if (!self.model.profile.supports_tools) return Error.ModelDoesNotSupportTools;
+            if (tool_call_count > 1 and !self.model.profile.supports_parallel_tool_calls) {
+                return Error.ParallelToolCallsNotSupported;
+            }
+
+            const result_parts = try memory.alloc(Part, tool_call_count);
+            var result_index: usize = 0;
+            for (response.parts) |part| switch (part) {
+                .tool_call => |call| {
+                    try checkCancellation(self.cancellation);
+                    const tool = findTool(self.tools, call.name) orelse return Error.UnknownTool;
+                    const content = try tool.executeWithContext(memory, .{
+                        .dependencies = self.dependencies,
+                        .usage = total_usage,
+                        .model_requests = model_requests,
+                    }, call.arguments_json);
+                    result_parts[result_index] = .{ .tool_result = .{
+                        .call_id = call.id,
+                        .name = call.name,
+                        .content = content,
+                    } };
+                    if (stream_sink) |sink| try sink.emit(.{ .tool_result = result_parts[result_index].tool_result });
+                    result_index += 1;
+                },
+                else => {},
+            };
+            try messages.append(memory, .{ .role = .tool, .parts = result_parts });
+        }
+    }
+};
+
+const ModelEventForwarder = struct {
+    sink: ?AgentStreamSink,
+    emitted: *bool,
+
+    fn modelSink(self: *ModelEventForwarder) model_types.ModelStreamSink {
+        return .{ .context = self, .eventFn = emit };
+    }
+
+    fn emit(context: *anyopaque, event: model_types.ModelStreamEvent) !void {
+        const self: *ModelEventForwarder = @ptrCast(@alignCast(context));
+        self.emitted.* = true;
+        try self.sink.?.emit(.{ .model = event });
+    }
+};
+
+const ProviderErrorCapture = struct {
+    target: ?model_types.ProviderErrorObserver,
+    retry_after_seconds: ?u64 = null,
+    rate_limit_remaining_requests: ?u64 = null,
+    rate_limit_remaining_tokens: ?u64 = null,
+
+    fn reset(self: *ProviderErrorCapture) void {
+        self.retry_after_seconds = null;
+        self.rate_limit_remaining_requests = null;
+        self.rate_limit_remaining_tokens = null;
+    }
+
+    fn observer(self: *ProviderErrorCapture) model_types.ProviderErrorObserver {
+        return .{ .context = self, .observeFn = observe };
+    }
+
+    fn observe(context: *anyopaque, value: model_types.ProviderError) void {
+        const self: *ProviderErrorCapture = @ptrCast(@alignCast(context));
+        self.retry_after_seconds = value.retry_after_seconds;
+        self.rate_limit_remaining_requests = value.rate_limit_remaining_requests;
+        self.rate_limit_remaining_tokens = value.rate_limit_remaining_tokens;
+        if (self.target) |target| target.observe(value);
+    }
+};
+
+fn checkCancellation(token: ?*const CancellationToken) Agent.Error!void {
+    if (token) |value| if (value.isCancelled()) return Agent.Error.Cancelled;
+}
+
+fn requireCapability(supported: bool, failure: Agent.Error) Agent.Error!void {
+    if (!supported) return failure;
+}
+
+fn shouldRetry(err: anyerror, policy: Agent.RetryPolicy) bool {
+    return switch (err) {
+        error.ProviderRateLimited => policy.retry_rate_limits,
+        error.ProviderServerError => policy.retry_server_errors,
+        error.RequestTimedOut => policy.retry_timeouts,
+        else => false,
+    };
+}
+
+fn backoffDelayMilliseconds(backoff: Agent.Backoff, retry_number: usize, retry_after_seconds: ?u64) u64 {
+    if (backoff.respect_retry_after) if (retry_after_seconds) |seconds| {
+        return @min(std.math.mul(u64, seconds, 1000) catch std.math.maxInt(u64), backoff.maximum_delay_ms);
+    };
+    var delay = @min(backoff.initial_delay_ms, backoff.maximum_delay_ms);
+    var exponent = retry_number -| 1;
+    while (exponent > 0 and delay < backoff.maximum_delay_ms) : (exponent -= 1) {
+        delay = @min(std.math.mul(u64, delay, 2) catch std.math.maxInt(u64), backoff.maximum_delay_ms);
+    }
+    return delay;
+}
+
+fn sleepBackoff(io: std.Io, delay_ms: u64, token: ?*const CancellationToken) !void {
+    var remaining = delay_ms;
+    while (remaining > 0) {
+        try checkCancellation(token);
+        const chunk: u64 = @min(remaining, 25);
+        (std.Io.Timeout{ .duration = .{
+            .raw = .fromMilliseconds(@intCast(chunk)),
+            .clock = .awake,
+        } }).sleep(io) catch |err| return normalizeBackoffSleepError(err);
+        remaining -= chunk;
+    }
+    try checkCancellation(token);
+}
+
+fn normalizeBackoffSleepError(err: error{Canceled}) Agent.Error {
+    return switch (err) {
+        error.Canceled => Agent.Error.Cancelled,
+    };
+}
+
+fn enforceUsageLimits(usage: model_types.Usage, limits: Agent.UsageLimits) Agent.Error!void {
+    if (limits.max_input_tokens) |maximum| {
+        if (usage.input_tokens > maximum) return Agent.Error.InputTokenLimitExceeded;
+    }
+    if (limits.max_output_tokens) |maximum| {
+        if (usage.output_tokens > maximum) return Agent.Error.OutputTokenLimitExceeded;
+    }
+    if (limits.max_total_tokens) |maximum| {
+        if (usage.totalTokens() > maximum) return Agent.Error.TotalTokenLimitExceeded;
+    }
+}
+
+fn appendTextMessage(allocator: std.mem.Allocator, messages: *std.ArrayList(Message), role: model_types.Role, text: []const u8) !void {
+    const parts = try allocator.alloc(Part, 1);
+    parts[0] = .{ .text = try allocator.dupe(u8, text) };
+    try messages.append(allocator, .{ .role = role, .parts = parts });
+}
+
+fn findTool(tools: []const model_types.Tool, name: []const u8) ?model_types.Tool {
+    for (tools) |tool| {
+        if (std.mem.eql(u8, tool.definition.name, name)) return tool;
+    }
+    return null;
+}
+
+fn collectText(allocator: std.mem.Allocator, parts: []const Part) ![]const u8 {
+    var output: std.ArrayList(u8) = .empty;
+    for (parts) |part| switch (part) {
+        .text => |text| try output.appendSlice(allocator, text),
+        else => {},
+    };
+    if (output.items.len == 0) return Agent.Error.EmptyModelResponse;
+    return output.toOwnedSlice(allocator);
+}
+
+test "tool lookup is exact" {
+    var unused: u8 = 0;
+    const tool = model_types.Tool{
+        .definition = .{ .name = "weather", .description = "", .parameters_json_schema = "{}" },
+        .context = &unused,
+        .executeFn = struct {
+            fn call(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]const u8 {
+                return allocator.dupe(u8, "ok");
+            }
+        }.call,
+    };
+    try std.testing.expect(findTool(&.{tool}, "weather") != null);
+    try std.testing.expect(findTool(&.{tool}, "Weather") == null);
+    const content = try tool.execute(std.testing.allocator, "{}");
+    defer std.testing.allocator.free(content);
+    try std.testing.expectEqualStrings("ok", content);
+}
+
+test "capability requirement accepts and rejects" {
+    try requireCapability(true, Agent.Error.ModelDoesNotSupportTools);
+    try std.testing.expectError(
+        Agent.Error.ModelDoesNotSupportTools,
+        requireCapability(false, Agent.Error.ModelDoesNotSupportTools),
+    );
+}
+
+test "retry classification follows policy" {
+    const defaults: Agent.RetryPolicy = .{};
+    try std.testing.expect(shouldRetry(error.ProviderRateLimited, defaults));
+    try std.testing.expect(shouldRetry(error.ProviderServerError, defaults));
+    try std.testing.expect(shouldRetry(error.RequestTimedOut, defaults));
+    try std.testing.expect(!shouldRetry(error.ProviderRequestFailed, defaults));
+    try std.testing.expect(!shouldRetry(error.ProviderRateLimited, .{ .retry_rate_limits = false }));
+    try std.testing.expect(!shouldRetry(error.ProviderServerError, .{ .retry_server_errors = false }));
+    try std.testing.expect(!shouldRetry(error.RequestTimedOut, .{ .retry_timeouts = false }));
+}
+
+test "backoff is exponential, capped, and honors Retry-After" {
+    const policy: Agent.Backoff = .{ .initial_delay_ms = 100, .maximum_delay_ms = 350 };
+    try std.testing.expectEqual(@as(u64, 100), backoffDelayMilliseconds(policy, 1, null));
+    try std.testing.expectEqual(@as(u64, 200), backoffDelayMilliseconds(policy, 2, null));
+    try std.testing.expectEqual(@as(u64, 350), backoffDelayMilliseconds(policy, 4, null));
+    try std.testing.expectEqual(@as(u64, 350), backoffDelayMilliseconds(policy, 1, 2));
+    try std.testing.expectEqual(@as(u64, 100), backoffDelayMilliseconds(.{
+        .initial_delay_ms = 100,
+        .maximum_delay_ms = 350,
+        .respect_retry_after = false,
+    }, 1, 2));
+    try std.testing.expectEqual(@as(u64, 350), backoffDelayMilliseconds(policy, 1, std.math.maxInt(u64)));
+    try std.testing.expectEqual(Agent.Error.Cancelled, normalizeBackoffSleepError(error.Canceled));
+}
+
+test "usage limits accept values at their boundaries" {
+    try enforceUsageLimits(.{ .input_tokens = 2, .output_tokens = 3 }, .{
+        .max_input_tokens = 2,
+        .max_output_tokens = 3,
+        .max_total_tokens = 5,
+    });
+}
+
+test "cancellation tokens and retry hooks expose stable state" {
+    var token: CancellationToken = .{};
+    try checkCancellation(&token);
+    token.cancel();
+    try std.testing.expect(token.isCancelled());
+    try std.testing.expectError(Agent.Error.Cancelled, checkCancellation(&token));
+
+    const Capture = struct {
+        called: bool = false,
+        fn wait(context: *anyopaque, event: RetryEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.called = event.failure == error.ProviderServerError and event.retry_number == 1 and event.model_requests == 1;
+        }
+    };
+    var capture: Capture = .{};
+    try (RetryHook{ .context = &capture, .waitFn = Capture.wait }).wait(.{
+        .failure = error.ProviderServerError,
+        .retry_number = 1,
+        .model_requests = 1,
+    });
+    try std.testing.expect(capture.called);
+}

@@ -1,0 +1,15 @@
+[
+  {
+    "name": "echo",
+    "description": "Echo the supplied JSON arguments.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "value": { "type": "string" }
+      },
+      "required": ["value"],
+      "additionalProperties": false
+    },
+    "command": ["/bin/echo"]
+  }
+]

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cache_dir="${ZIGAI_GLOBAL_CACHE_DIR:-$project_dir/.zig-global-cache}"
+
+cd "$project_dir"
+zig fmt --check build.zig build.zig.zon src tests
+ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build check
+ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build test

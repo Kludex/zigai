@@ -1,0 +1,39 @@
+#!/bin/sh
+set -eu
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cache_dir="${ZIGAI_GLOBAL_CACHE_DIR:-$project_dir/.zig-global-cache}"
+
+cd "$project_dir"
+ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build
+python3 tests/fake_provider_server.py &
+server_pid=$!
+trap 'kill "$server_pid" 2>/dev/null || true' EXIT INT TERM
+sleep 1
+
+openai_output=$(OPENAI_API_KEY=test OPENAI_BASE_URL=http://127.0.0.1:18765/openai ./zig-out/bin/zigai-openai test)
+anthropic_output=$(ANTHROPIC_API_KEY=test ANTHROPIC_BASE_URL=http://127.0.0.1:18765/anthropic ./zig-out/bin/zigai-anthropic test)
+google_output=$(GEMINI_API_KEY=test GEMINI_BASE_URL=http://127.0.0.1:18765/google ./zig-out/bin/zigai-google test)
+openai_stream_output=$(OPENAI_API_KEY=test OPENAI_BASE_URL=http://127.0.0.1:18765/openai ./zig-out/bin/zigai-openai --stream test)
+anthropic_stream_output=$(ANTHROPIC_API_KEY=test ANTHROPIC_BASE_URL=http://127.0.0.1:18765/anthropic ./zig-out/bin/zigai-anthropic --stream test)
+google_stream_output=$(GEMINI_API_KEY=test GEMINI_BASE_URL=http://127.0.0.1:18765/google ./zig-out/bin/zigai-google --stream test)
+openai_tool_output=$(OPENAI_API_KEY=test OPENAI_BASE_URL=http://127.0.0.1:18765/openai ./zig-out/bin/zigai-openai --tools tests/cli_tools.json test)
+anthropic_tool_output=$(ANTHROPIC_API_KEY=test ANTHROPIC_BASE_URL=http://127.0.0.1:18765/anthropic ./zig-out/bin/zigai-anthropic --tools tests/cli_tools.json test)
+google_tool_output=$(GEMINI_API_KEY=test GEMINI_BASE_URL=http://127.0.0.1:18765/google ./zig-out/bin/zigai-google --tools tests/cli_tools.json test)
+openai_stream_tool_output=$(OPENAI_API_KEY=test OPENAI_BASE_URL=http://127.0.0.1:18765/openai ./zig-out/bin/zigai-openai --stream --tools tests/cli_tools.json test)
+anthropic_stream_tool_output=$(ANTHROPIC_API_KEY=test ANTHROPIC_BASE_URL=http://127.0.0.1:18765/anthropic ./zig-out/bin/zigai-anthropic --stream --tools tests/cli_tools.json test)
+google_stream_tool_output=$(GEMINI_API_KEY=test GEMINI_BASE_URL=http://127.0.0.1:18765/google ./zig-out/bin/zigai-google --stream --tools tests/cli_tools.json test)
+
+test "$openai_output" = pong
+test "$anthropic_output" = pong
+test "$google_output" = pong
+test "$openai_stream_output" = pong
+test "$anthropic_stream_output" = pong
+test "$google_stream_output" = pong
+test "$openai_tool_output" = pong
+test "$anthropic_tool_output" = pong
+test "$google_tool_output" = pong
+test "$openai_stream_tool_output" = pong
+test "$anthropic_stream_tool_output" = pong
+test "$google_stream_tool_output" = pong
+echo "All provider CLIs passed against the local fixture."

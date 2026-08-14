@@ -1,0 +1,30 @@
+#!/bin/sh
+set -eu
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cache_dir="${ZIGAI_GLOBAL_CACHE_DIR:-$project_dir/.zig-global-cache}"
+
+: "${OPENAI_API_KEY:?OPENAI_API_KEY must be set}"
+: "${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY must be set}"
+
+cd "$project_dir"
+ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build
+
+openai_output=$(./zig-out/bin/zigai-openai 'Reply with exactly: pong')
+anthropic_output=$(./zig-out/bin/zigai-anthropic 'Reply with exactly: pong')
+openai_stream_output=$(./zig-out/bin/zigai-openai --stream 'Reply with exactly: pong')
+anthropic_stream_output=$(./zig-out/bin/zigai-anthropic --stream 'Reply with exactly: pong')
+
+test "$openai_output" = pong
+test "$anthropic_output" = pong
+test "$openai_stream_output" = pong
+test "$anthropic_stream_output" = pong
+if [ -n "${GEMINI_API_KEY:-}" ]; then
+    google_output=$(./zig-out/bin/zigai-google 'Reply with exactly: pong')
+    google_stream_output=$(./zig-out/bin/zigai-google --stream 'Reply with exactly: pong')
+    test "$google_output" = pong
+    test "$google_stream_output" = pong
+    echo "OpenAI, Anthropic, and Google live smoke tests passed."
+else
+    echo "OpenAI and Anthropic live smoke tests passed; Google skipped (GEMINI_API_KEY is unset)."
+fi

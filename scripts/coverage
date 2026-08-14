@@ -1,0 +1,139 @@
+#!/bin/sh
+set -eu
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+coverage_dir="$project_dir/coverage"
+kcov_image="${ZIGAI_KCOV_IMAGE:-kcov/kcov@sha256:481289ae32e55e5b733019515acd10948a4f76dfed381765577db909664fc603}"
+kcov_bin="${ZIGAI_KCOV_BIN:-kcov}"
+coverage_target="${ZIGAI_COVERAGE_TARGET:-}"
+non_code_line="--exclude-line=pub const Agent = struct {"
+use_docker=0
+if [ "${ZIGAI_FORCE_DOCKER_KCOV:-0}" = 1 ] || ! command -v kcov >/dev/null 2>&1; then
+    use_docker=1
+fi
+
+cd "$project_dir"
+case "$coverage_dir" in
+    "$project_dir/coverage") ;;
+    *) echo "refusing to clean unexpected coverage path: $coverage_dir" >&2; exit 2 ;;
+esac
+rm -rf -- "$coverage_dir"
+mkdir -p coverage/bin
+coverage_cache="$coverage_dir/zig-cache"
+coverage_global_cache="$coverage_dir/zig-global-cache"
+
+compile_test() {
+    output=$1
+    shift
+    if [ -n "$coverage_target" ]; then
+        ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig test --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm --test-no-exec -femit-bin="$output" "$@"
+    else
+        ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig test --cache-dir "$coverage_cache" -fllvm --test-no-exec -femit-bin="$output" "$@"
+    fi
+}
+
+compile_test coverage/bin/unit-tests src/root.zig
+compile_test coverage/bin/agent-tests --dep zigai -Mroot=tests/agent_loop.zig -Mzigai=src/root.zig
+compile_test coverage/bin/provider-tests --dep zigai -Mroot=tests/provider_cassettes.zig -Mzigai=src/root.zig
+compile_test coverage/bin/cli-common-tests --dep zigai -Mroot=src/cli/common.zig -Mzigai=src/root.zig
+if [ -n "$coverage_target" ]; then
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/openai-cli --dep zigai -Mroot=src/cli/openai.zig -Mzigai=src/root.zig
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/anthropic-cli --dep zigai -Mroot=src/cli/anthropic.zig -Mzigai=src/root.zig
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/google-cli --dep zigai -Mroot=src/cli/google.zig -Mzigai=src/root.zig
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/http-smoke --dep zigai -Mroot=tests/http_transport_smoke.zig -Mzigai=src/root.zig
+else
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/openai-cli --dep zigai -Mroot=src/cli/openai.zig -Mzigai=src/root.zig
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/anthropic-cli --dep zigai -Mroot=src/cli/anthropic.zig -Mzigai=src/root.zig
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/google-cli --dep zigai -Mroot=src/cli/google.zig -Mzigai=src/root.zig
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/http-smoke --dep zigai -Mroot=tests/http_transport_smoke.zig -Mzigai=src/root.zig
+fi
+
+run_kcov() {
+    if [ "$use_docker" = 0 ]; then
+        kcov "$non_code_line" "$@"
+    elif command -v docker >/dev/null 2>&1; then
+        docker run --rm \
+            --network host \
+            --add-host host.docker.internal:host-gateway \
+            -e OPENAI_API_KEY -e OPENAI_BASE_URL \
+            -e ANTHROPIC_API_KEY -e ANTHROPIC_BASE_URL \
+            -e GEMINI_API_KEY -e GEMINI_BASE_URL \
+            -e ZIGAI_CASSETTE_PATH \
+            -e ZIGAI_FIXTURE_BASE_URL \
+            -v "$project_dir:$project_dir" -w "$project_dir" \
+            "$kcov_image" "$kcov_bin" "$non_code_line" "$@"
+    else
+        echo "coverage requires kcov or Docker" >&2
+        exit 2
+    fi
+}
+
+include_path="--include-path=$project_dir/src"
+run_kcov --clean "$include_path" coverage/unit coverage/bin/unit-tests
+run_kcov --clean "$include_path" coverage/agent coverage/bin/agent-tests
+run_kcov --clean "$include_path" coverage/providers coverage/bin/provider-tests
+run_kcov --clean "$include_path" coverage/cli-common coverage/bin/cli-common-tests
+
+fixture_bind=127.0.0.1
+fixture_host=127.0.0.1
+if [ "$use_docker" = 1 ]; then
+    fixture_bind=0.0.0.0
+    fixture_host=host.docker.internal
+fi
+ZIGAI_FIXTURE_HOST="$fixture_bind" python3 tests/fake_provider_server.py &
+server_pid=$!
+trap 'kill "$server_pid" 2>/dev/null || true' EXIT INT TERM
+sleep 1
+
+OPENAI_API_KEY=test OPENAI_BASE_URL="http://$fixture_host:18765/openai" \
+    run_kcov --clean "$include_path" coverage/openai-cli coverage/bin/openai-cli test
+ANTHROPIC_API_KEY=test ANTHROPIC_BASE_URL="http://$fixture_host:18765/anthropic" \
+    run_kcov --clean "$include_path" coverage/anthropic-cli coverage/bin/anthropic-cli test
+GEMINI_API_KEY=test GEMINI_BASE_URL="http://$fixture_host:18765/google" ZIGAI_CASSETTE_PATH=coverage/google-cli-capture.json \
+    run_kcov --clean "$include_path" coverage/google-cli coverage/bin/google-cli test
+OPENAI_API_KEY=test OPENAI_BASE_URL="http://$fixture_host:18765/openai" \
+    run_kcov "$include_path" coverage/openai-cli coverage/bin/openai-cli --stream test
+ANTHROPIC_API_KEY=test ANTHROPIC_BASE_URL="http://$fixture_host:18765/anthropic" \
+    run_kcov "$include_path" coverage/anthropic-cli coverage/bin/anthropic-cli --stream test
+GEMINI_API_KEY=test GEMINI_BASE_URL="http://$fixture_host:18765/google" \
+    run_kcov "$include_path" coverage/google-cli coverage/bin/google-cli --stream test
+OPENAI_API_KEY=test OPENAI_BASE_URL="http://$fixture_host:18765/openai" \
+    run_kcov "$include_path" coverage/openai-cli coverage/bin/openai-cli --tools tests/cli_tools.json test
+ANTHROPIC_API_KEY=test ANTHROPIC_BASE_URL="http://$fixture_host:18765/anthropic" \
+    run_kcov "$include_path" coverage/anthropic-cli coverage/bin/anthropic-cli --tools tests/cli_tools.json test
+GEMINI_API_KEY=test GEMINI_BASE_URL="http://$fixture_host:18765/google" \
+    run_kcov "$include_path" coverage/google-cli coverage/bin/google-cli --stream --tools tests/cli_tools.json test
+ZIGAI_FIXTURE_BASE_URL="http://$fixture_host:18765" \
+    run_kcov --clean "$include_path" coverage/http-smoke coverage/bin/http-smoke
+
+# Accumulate CLI error paths in the same report.
+if OPENAI_API_KEY=test run_kcov "$include_path" coverage/openai-cli coverage/bin/openai-cli >/dev/null 2>&1; then
+    echo "OpenAI CLI unexpectedly accepted a missing prompt" >&2
+    exit 1
+fi
+if OPENAI_API_KEY= run_kcov "$include_path" coverage/openai-cli coverage/bin/openai-cli test >/dev/null 2>&1; then
+    echo "OpenAI CLI unexpectedly accepted an empty API key" >&2
+    exit 1
+fi
+if (unset OPENAI_API_KEY; run_kcov "$include_path" coverage/openai-cli coverage/bin/openai-cli test >/dev/null 2>&1); then
+    echo "OpenAI CLI unexpectedly accepted an unset API key" >&2
+    exit 1
+fi
+
+run_kcov --merge coverage/merged \
+    coverage/unit coverage/agent coverage/providers coverage/cli-common \
+    coverage/openai-cli coverage/anthropic-cli coverage/google-cli coverage/http-smoke
+
+report="$coverage_dir/merged/kcov-merged/coverage.json"
+for source in "$project_dir"/src/*.zig "$project_dir"/src/cli/*.zig; do
+    if ! grep -Fq "\"file\": \"$source\"" "$report"; then
+        echo "coverage report is missing $source" >&2
+        exit 1
+    fi
+done
+
+percent=$(awk -F'"' '/"percent_covered"/ { value=$4 } END { print value }' "$report")
+covered=$(awk '/"covered_lines"/ { value=$2 } END { gsub(/,/, "", value); print value }' "$report")
+total=$(awk '/"total_lines"/ { value=$2 } END { gsub(/,/, "", value); print value }' "$report")
+echo "Coverage: $covered/$total lines ($percent%)"
+test "$percent" = "100.00"

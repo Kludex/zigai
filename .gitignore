@@ -1,0 +1,7 @@
+/.zig-cache/
+/.zig-global-cache/
+/zig-out/
+/coverage/
+__pycache__/
+*.py[cod]
+.DS_Store

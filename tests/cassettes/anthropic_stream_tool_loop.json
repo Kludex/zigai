@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "interactions": [
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://anthropic.test/v1/messages",
+        "body": "{\"model\":\"claude-test\",\"max_tokens\":256,\"system\":[{\"type\":\"text\",\"text\":\"You are concise.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What is the weather?\"}]}],\"tools\":[{\"name\":\"weather\",\"description\":\"Get weather.\",\"input_schema\":{\"type\":\"object\"}}],\"stream\":true}"
+      },
+      "response": {
+        "status": 200,
+        "body": "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10}}}\n\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call-weather\",\"name\":\"weather\"}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"city\\\":\"}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\"Madrid\\\"}\"}}\n\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":4}}\n\ndata: {\"type\":\"message_stop\"}\n"
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://anthropic.test/v1/messages",
+        "body": "{\"model\":\"claude-test\",\"max_tokens\":256,\"system\":[{\"type\":\"text\",\"text\":\"You are concise.\"}],\"messages\":[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"What is the weather?\"}]},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call-weather\",\"name\":\"weather\",\"input\":{\"city\":\"Madrid\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-weather\",\"content\":\"{\\\"temperature_c\\\":31}\"}]}],\"tools\":[{\"name\":\"weather\",\"description\":\"Get weather.\",\"input_schema\":{\"type\":\"object\"}}],\"stream\":true}"
+      },
+      "response": {
+        "status": 200,
+        "body": "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":18}}}\n\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"It is sunny \"}}\n\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"in Madrid.\"}}\n\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":6}}\n\ndata: {\"type\":\"message_stop\"}\n"
+      }
+    }
+  ]
+}
