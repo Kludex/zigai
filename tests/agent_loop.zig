@@ -17,14 +17,13 @@ test "agent executes a tool and sends its result back to the model" {
         fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
             if (index == 0) {
                 try std.testing.expectEqual(@as(usize, 2), request.messages.len);
-                try std.testing.expectEqual(zigai.model.Role.system, request.messages[0].role);
-                try std.testing.expectEqualStrings("You are concise.", request.messages[0].parts[0].text);
-                try std.testing.expectEqualStrings("What is the weather?", request.messages[1].parts[0].text);
+                try std.testing.expectEqualStrings("You are concise.", request.messages[0].request.parts[0].system_prompt);
+                try std.testing.expectEqualStrings("What is the weather?", request.messages[1].request.parts[0].user_prompt.text);
                 try std.testing.expectEqual(@as(usize, 1), request.tools.len);
                 return;
             }
             try std.testing.expectEqual(@as(usize, 4), request.messages.len);
-            const result = request.messages[3].parts[0].tool_result;
+            const result = request.messages[3].request.parts[0].tool_return;
             try std.testing.expectEqualStrings("call-weather", result.call_id);
             try std.testing.expectEqualStrings("{\"temperature_c\":31}", result.content);
         }
@@ -91,11 +90,11 @@ test "approval tools pause into JSON and resume without repeating the model requ
                 return;
             }
             try std.testing.expectEqual(@as(usize, 4), request.messages.len);
-            const result = request.messages[2].parts[0].tool_result;
+            const result = request.messages[2].request.parts[0].tool_return;
             try std.testing.expectEqualStrings("approval-1", result.call_id);
             try std.testing.expectEqualStrings("sent", result.content);
             try std.testing.expect(!result.is_error);
-            try std.testing.expectEqualStrings("Publishing was approved.", request.messages[3].parts[0].text);
+            try std.testing.expectEqualStrings("Publishing was approved.", request.messages[3].request.parts[0].user_prompt.text);
         }
     };
     var scripted = zigai.testing.ScriptedModel{
@@ -121,8 +120,7 @@ test "approval tools pause into JSON and resume without repeating the model requ
                 return .{
                     .content = try allocator.dupe(u8, "sent"),
                     .follow_up_messages = &.{.{
-                        .role = .user,
-                        .parts = &.{.{ .text = "Publishing was approved." }},
+                        .parts = &.{.{ .user_prompt = .{ .text = "Publishing was approved." } }},
                     }},
                 };
             }
@@ -174,7 +172,7 @@ test "external tools accept supplied results without local execution" {
     const Inspector = struct {
         fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
             if (index == 0) return;
-            const result = request.messages[2].parts[0].tool_result;
+            const result = request.messages[2].request.parts[0].tool_return;
             try std.testing.expectEqualStrings("Marcelo", result.content);
             try std.testing.expect(!result.is_error);
         }
@@ -242,7 +240,7 @@ test "denied approval becomes an error tool result" {
     const Inspector = struct {
         fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
             if (index == 0) return;
-            const result = request.messages[2].parts[0].tool_result;
+            const result = request.messages[2].request.parts[0].tool_return;
             try std.testing.expect(result.is_error);
             try std.testing.expectEqualStrings("Not authorized.", result.content);
         }
@@ -282,14 +280,14 @@ test "resuming mixed deferred calls handles every decision path" {
     const Inspector = struct {
         fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
             if (index == 0) return;
-            const results = request.messages[2].parts;
+            const results = request.messages[2].request.parts;
             try std.testing.expectEqual(@as(usize, 4), results.len);
-            try std.testing.expectEqualStrings("executed", results[0].tool_result.content);
-            try std.testing.expectEqualStrings("supplied", results[1].tool_result.content);
-            try std.testing.expect(results[2].tool_result.is_error);
-            try std.testing.expectEqualStrings("denied", results[2].tool_result.content);
-            try std.testing.expect(results[3].tool_result.is_error);
-            try std.testing.expect(std.mem.indexOf(u8, results[3].tool_result.content, "InvalidToolArguments") != null);
+            try std.testing.expectEqualStrings("executed", results[0].tool_return.content);
+            try std.testing.expectEqualStrings("supplied", results[1].tool_return.content);
+            try std.testing.expect(results[2].tool_return.is_error);
+            try std.testing.expectEqualStrings("denied", results[2].tool_return.content);
+            try std.testing.expect(results[3].tool_return.is_error);
+            try std.testing.expect(std.mem.indexOf(u8, results[3].tool_return.content, "InvalidToolArguments") != null);
         }
     };
     var scripted = zigai.testing.ScriptedModel{
@@ -412,10 +410,10 @@ test "rich prompt parts are copied and capability-checked before requests" {
     const Inspector = struct {
         fn inspect(_: usize, request: zigai.model.ModelRequest) !void {
             try std.testing.expectEqual(@as(usize, 1), request.messages.len);
-            try std.testing.expectEqual(@as(usize, 2), request.messages[0].parts.len);
-            try std.testing.expectEqualSlices(u8, "png", request.messages[0].parts[0].image.source.bytes);
-            try std.testing.expectEqualStrings("Describe it.", request.messages[0].parts[1].text);
-            try std.testing.expectEqualStrings("camera", request.messages[0].parts[0].image.metadata[0].value);
+            try std.testing.expectEqual(@as(usize, 2), request.messages[0].request.parts.len);
+            try std.testing.expectEqualSlices(u8, "png", request.messages[0].request.parts[0].user_prompt.image.source.bytes);
+            try std.testing.expectEqualStrings("Describe it.", request.messages[0].request.parts[1].user_prompt.text);
+            try std.testing.expectEqualStrings("camera", request.messages[0].request.parts[0].user_prompt.image.metadata[0].value);
         }
     };
     var supported = zigai.testing.ScriptedModel{
@@ -426,7 +424,7 @@ test "rich prompt parts are copied and capability-checked before requests" {
         .provider_name = "openai",
         .inspectFn = Inspector.inspect,
     };
-    const image = [_]zigai.model.Part{.{ .image = .{
+    const image = [_]zigai.PromptPart{.{ .image = .{
         .source = .{ .bytes = "png" },
         .media_type = "image/png",
         .metadata = &.{.{ .key = "source", .value = "camera" }},
@@ -437,14 +435,14 @@ test "rich prompt parts are copied and capability-checked before requests" {
         .{ .prompt_parts = &image },
     );
     defer result.deinit();
-    try std.testing.expectEqualStrings("camera", result.messages[0].parts[0].image.metadata[0].value);
+    try std.testing.expectEqualStrings("camera", result.messages[0].request.parts[0].user_prompt.image.metadata[0].value);
 
     var unsupported = zigai.testing.ScriptedModel{
         .responses = &.{},
         .profile = .{ .content_types = zigai.ModelProfile.ContentTypeSet.initMany(&.{.image}) },
         .provider_name = "openai",
     };
-    const audio = [_]zigai.model.Part{.{ .audio = .{
+    const audio = [_]zigai.PromptPart{.{ .audio = .{
         .source = .{ .bytes = "mp3" },
         .media_type = "audio/mpeg",
     } }};
@@ -458,7 +456,7 @@ test "rich prompt parts are copied and capability-checked before requests" {
     );
     try std.testing.expectEqual(@as(usize, 0), unsupported.request_count);
 
-    const wrong_provider = [_]zigai.model.Part{.{ .image = .{
+    const wrong_provider = [_]zigai.PromptPart{.{ .image = .{
         .source = .{ .provider_file = .{ .id = "file_123", .provider = "anthropic" } },
         .media_type = "image/png",
     } }};
@@ -472,11 +470,10 @@ test "rich prompt parts are copied and capability-checked before requests" {
     );
 
     const invalid_history = [_]zigai.Message{.{
-        .role = .user,
-        .parts = &.{.{ .thinking = .{ .content = "private" } }},
+        .response = .{ .parts = &.{.{ .thinking = .{ .content = "private" } }} },
     }};
     try std.testing.expectError(
-        zigai.Agent.Error.InvalidContentRole,
+        zigai.Agent.Error.ModelDoesNotSupportThinking,
         (zigai.Agent{ .model = supported.model() }).runWithOptions(
             std.testing.allocator,
             "Continue.",
@@ -493,8 +490,7 @@ test "typed tool results inject provider-neutral follow-up messages" {
             return .{
                 .value = .{ .city = args.city, .temperature_c = 31 },
                 .follow_up_messages = &.{.{
-                    .role = .user,
-                    .parts = &.{.{ .text = "The reading came from the roof sensor." }},
+                    .parts = &.{.{ .user_prompt = .{ .text = "The reading came from the roof sensor." } }},
                     .metadata = &.{.{ .key = "sensor", .value = "roof" }},
                 }},
             };
@@ -511,14 +507,12 @@ test "typed tool results inject provider-neutral follow-up messages" {
             try std.testing.expect(request.tools[0].return_json_schema != null);
             if (index != 1) return;
             try std.testing.expectEqual(@as(usize, 4), request.messages.len);
-            try std.testing.expectEqual(zigai.model.Role.tool, request.messages[2].role);
             try std.testing.expectEqualStrings(
                 "{\"city\":\"Madrid\",\"temperature_c\":31}",
-                request.messages[2].parts[0].tool_result.content,
+                request.messages[2].request.parts[0].tool_return.content,
             );
-            try std.testing.expectEqual(zigai.model.Role.user, request.messages[3].role);
-            try std.testing.expectEqualStrings("The reading came from the roof sensor.", request.messages[3].parts[0].text);
-            try std.testing.expectEqualStrings("roof", request.messages[3].metadata[0].value);
+            try std.testing.expectEqualStrings("The reading came from the roof sensor.", request.messages[3].request.parts[0].user_prompt.text);
+            try std.testing.expectEqualStrings("roof", request.messages[3].request.metadata[0].value);
         }
     };
     var scripted = zigai.testing.ScriptedModel{
@@ -551,8 +545,7 @@ test "typed tool results inject provider-neutral follow-up messages" {
                 return .{
                     .content = "{}",
                     .follow_up_messages = &.{.{
-                        .role = .assistant,
-                        .parts = &.{.{ .text = "not allowed" }},
+                        .parts = &.{.{ .system_prompt = "not allowed" }},
                     }},
                 };
             }
@@ -597,26 +590,25 @@ test "instructions compose for one run without entering message history" {
             try std.testing.expectEqualStrings("Keep it short.", request.instructions[2]);
 
             try std.testing.expectEqual(@as(usize, 4), request.messages.len);
-            try std.testing.expectEqual(zigai.model.Role.system, request.messages[0].role);
-            try std.testing.expectEqualStrings("Stable system prompt.", request.messages[0].parts[0].text);
-            try std.testing.expectEqualStrings("Earlier answer", request.messages[1].parts[0].text);
-            try std.testing.expectEqualStrings("old-call", request.messages[1].parts[1].tool_call.id);
-            try std.testing.expect(request.messages[2].parts[0].tool_result.is_error);
-            try std.testing.expectEqualStrings("Zig allocators", request.messages[3].parts[0].text);
+            try std.testing.expectEqualStrings("Stable system prompt.", request.messages[0].request.parts[0].system_prompt);
+            try std.testing.expectEqualStrings("Earlier answer", request.messages[1].response.parts[0].text);
+            try std.testing.expectEqualStrings("old-call", request.messages[1].response.parts[1].tool_call.id);
+            try std.testing.expect(request.messages[2].request.parts[0].tool_return.is_error);
+            try std.testing.expectEqualStrings("Zig allocators", request.messages[3].request.parts[0].user_prompt.text);
         }
     };
 
     const history = [_]zigai.model.Message{
-        .{ .role = .assistant, .parts = &.{
+        .{ .response = .{ .parts = &.{
             .{ .text = "Earlier answer" },
             .{ .tool_call = .{ .id = "old-call", .name = "lookup", .arguments_json = "{}" } },
-        } },
-        .{ .role = .tool, .parts = &.{.{ .tool_result = .{
+        } } },
+        .{ .request = .{ .parts = &.{.{ .tool_return = .{
             .call_id = "old-call",
             .name = "lookup",
             .content = "unavailable",
             .is_error = true,
-        } }} },
+        } }} } },
     };
     const final_parts = [_]zigai.model.Part{.{ .text = "Done." }};
     var scripted = zigai.testing.ScriptedModel{
@@ -646,8 +638,12 @@ test "instructions compose for one run without entering message history" {
 
     try std.testing.expectEqual(@as(usize, 1), dynamic_state.calls);
     try std.testing.expectEqual(@as(usize, 5), result.messages.len);
-    try std.testing.expectEqualStrings("old-call", result.messages[1].parts[1].tool_call.id);
-    try std.testing.expectEqualStrings("unavailable", result.messages[2].parts[0].tool_result.content);
+    try std.testing.expectEqualStrings("old-call", result.messages[1].response.parts[1].tool_call.id);
+    try std.testing.expectEqualStrings("unavailable", result.messages[2].request.parts[0].tool_return.content);
+    try std.testing.expectEqualStrings(
+        "Use plain language.\n\nAnswer developers about Zig allocators.\n\nKeep it short.",
+        result.messages[3].request.instructions.?,
+    );
 
     const FollowUpInspector = struct {
         fn inspect(_: usize, request: zigai.model.ModelRequest) !void {
@@ -710,8 +706,7 @@ test "history processors run before each request without discarding result histo
     var tool_calls: u8 = 0;
     const tool = successfulTool(&tool_calls);
     const previous = [_]zigai.model.Message{.{
-        .role = .user,
-        .parts = &.{.{ .text = "earlier" }},
+        .request = .{ .parts = &.{.{ .user_prompt = .{ .text = "earlier" } }} },
     }};
     var result = try (zigai.Agent{
         .model = scripted.model(),
@@ -729,7 +724,7 @@ test "history processors run before each request without discarding result histo
     try std.testing.expectEqual(@as(usize, 2), processor_state.calls);
     try std.testing.expectEqual(@as(u8, 1), tool_calls);
     try std.testing.expectEqual(@as(usize, 5), result.messages.len);
-    try std.testing.expectEqualStrings("earlier", result.messages[0].parts[0].text);
+    try std.testing.expectEqualStrings("earlier", result.messages[0].request.parts[0].user_prompt.text);
 }
 
 test "instruction failures and unsupported system capability stop before requesting" {
@@ -797,13 +792,11 @@ test "invalid structured output is returned to the model for correction" {
         fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
             if (index == 0) return;
             try std.testing.expectEqual(@as(usize, 3), request.messages.len);
-            try std.testing.expectEqual(zigai.model.Role.assistant, request.messages[1].role);
-            try std.testing.expectEqualStrings("{\"answer\":\"no\"}", request.messages[1].parts[0].text);
-            try std.testing.expectEqual(zigai.model.Role.user, request.messages[2].role);
+            try std.testing.expectEqualStrings("{\"answer\":\"no\"}", request.messages[1].response.parts[0].text);
             try std.testing.expectEqualStrings(
                 "The previous response did not match the required output schema. " ++
                     "Return only valid JSON matching the schema.",
-                request.messages[2].parts[0].text,
+                request.messages[2].request.parts[0].retry_prompt,
             );
         }
     };
@@ -1256,11 +1249,11 @@ test "static and dynamic toolsets prepare namespaced tools for each model step" 
                 try std.testing.expectEqual(@as(usize, 2), request.tools.len);
                 try std.testing.expectEqualStrings("utility__always", request.tools[0].name);
                 try std.testing.expectEqualStrings("db__beta", request.tools[1].name);
-                try std.testing.expectEqualStrings("db__alpha", request.messages[2].parts[0].tool_result.name);
+                try std.testing.expectEqualStrings("db__alpha", request.messages[2].request.parts[0].tool_return.name);
             } else {
                 try std.testing.expectEqual(@as(usize, 1), request.tools.len);
                 try std.testing.expectEqualStrings("utility__always", request.tools[0].name);
-                try std.testing.expectEqualStrings("db__beta", request.messages[4].parts[0].tool_result.name);
+                try std.testing.expectEqualStrings("db__beta", request.messages[4].request.parts[0].tool_return.name);
             }
         }
     };
@@ -1460,12 +1453,8 @@ test "agent rejects empty and textless final responses" {
         (zigai.Agent{ .model = empty.model() }).run(std.testing.allocator, "hi"),
     );
 
-    const tool_result_parts = [_]zigai.model.Part{.{ .tool_result = .{
-        .call_id = "id",
-        .name = "tool",
-        .content = "ignored",
-    } }};
-    const no_text = [_]zigai.model.ModelResponse{.{ .parts = &tool_result_parts }};
+    const thinking_parts = [_]zigai.model.Part{.{ .thinking = .{ .content = "private" } }};
+    const no_text = [_]zigai.model.ModelResponse{.{ .parts = &thinking_parts }};
     var textless = zigai.testing.ScriptedModel{ .responses = &no_text };
     try std.testing.expectError(
         zigai.agent.Agent.Error.EmptyModelResponse,
@@ -1590,12 +1579,12 @@ test "parallel tools overlap and keep model call order" {
     const Inspector = struct {
         fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
             if (index == 0) return;
-            const results = request.messages[2].parts;
+            const results = request.messages[2].request.parts;
             try std.testing.expectEqual(@as(usize, 2), results.len);
-            try std.testing.expectEqualStrings("slow-id", results[0].tool_result.call_id);
-            try std.testing.expectEqualStrings("slow", results[0].tool_result.content);
-            try std.testing.expectEqualStrings("fast-id", results[1].tool_result.call_id);
-            try std.testing.expectEqualStrings("fast", results[1].tool_result.content);
+            try std.testing.expectEqualStrings("slow-id", results[0].tool_return.call_id);
+            try std.testing.expectEqualStrings("slow", results[0].tool_return.content);
+            try std.testing.expectEqualStrings("fast-id", results[1].tool_return.call_id);
+            try std.testing.expectEqualStrings("fast", results[1].tool_return.content);
         }
     };
     var scripted = zigai.testing.ScriptedModel{
@@ -1794,7 +1783,7 @@ test "invalid tool arguments are returned to the model for correction" {
     const Inspector = struct {
         fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
             if (index == 0) return;
-            const result = request.messages[request.messages.len - 1].parts[0].tool_result;
+            const result = request.messages[request.messages.len - 1].request.parts[0].tool_return;
             if (index == 1) {
                 try std.testing.expect(result.is_error);
                 try std.testing.expect(std.mem.indexOf(u8, result.content, "InvalidToolArguments") != null);
@@ -1858,7 +1847,7 @@ test "recoverable tool failures are returned as error results" {
     const Inspector = struct {
         fn inspect(index: usize, request: zigai.model.ModelRequest) !void {
             if (index == 0) return;
-            const result = request.messages[2].parts[0].tool_result;
+            const result = request.messages[2].request.parts[0].tool_return;
             try std.testing.expect(result.is_error);
             try std.testing.expect(std.mem.indexOf(u8, result.content, "BackendUnavailable") != null);
         }
@@ -2261,7 +2250,7 @@ test "contextual tools receive typed dependencies and current run accounting" {
     defer result.deinit();
     try std.testing.expect(state.saw_usage);
     try std.testing.expect(state.saw_request_count);
-    try std.testing.expectEqualStrings("typed result", result.messages[2].parts[0].tool_result.content);
+    try std.testing.expectEqualStrings("typed result", result.messages[2].request.parts[0].tool_return.content);
 }
 
 test "agent supports preflight cancellation and a fallible retry hook" {

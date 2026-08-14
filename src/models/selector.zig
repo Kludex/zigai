@@ -67,7 +67,7 @@ test "selector routes requests with application context" {
         fn select(context: *anyopaque, run: Context) !model_types.Model {
             const self: *@This() = @ptrCast(@alignCast(context));
             try std.testing.expect(!run.streaming);
-            try std.testing.expectEqualStrings("route me", run.request.messages[0].parts[0].text);
+            try std.testing.expectEqualStrings("route me", run.request.messages[0].request.parts[0].user_prompt.text);
             self.calls += 1;
             return self.model_value;
         }
@@ -86,7 +86,7 @@ test "selector routes requests with application context" {
         .selectFn = Route.select,
     };
     const response = try selector.model().request(std.testing.allocator, .{
-        .messages = &.{.{ .role = .user, .parts = &.{.{ .text = "route me" }} }},
+        .messages = &.{.{ .request = .{ .parts = &.{.{ .user_prompt = .{ .text = "route me" } }} } }},
         .settings = .{ .max_tokens = 50 },
     });
     try std.testing.expectEqualStrings("selected", response.parts[0].text);

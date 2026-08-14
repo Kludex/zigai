@@ -109,17 +109,16 @@ fn lookup(args: LookupArgs) !zigai.ToolReturn(Weather) {
     return .{
         .value = .{ .temperature_c = 31 },
         .follow_up_messages = &.{.{
-            .role = .user,
-            .parts = &.{.{ .text = "The reading came from the roof sensor." }},
+            .parts = &.{.{ .user_prompt = .{ .text = "The reading came from the roof sensor." } }},
         }},
     };
 }
 ```
 
-The typed value becomes the normal tool result. Follow-up messages are copied
-after it, in tool-call order, and checked before the next request. Only user
-messages without tool-call or tool-result parts can be injected. Manual tools
-can return the same shape through `Tool.executeOutputFn`.
+The typed value becomes the normal tool result. Follow-up requests are copied
+after it, in tool-call order, and checked before the next model request. They
+can contain only `user_prompt` parts. Manual tools can return the same shape
+through `Tool.executeOutputFn`.
 
 ## Providers
 
@@ -198,7 +197,7 @@ an agent requesting it fails locally instead of silently changing behavior.
 Add media to the current user message with `RunOptions.prompt_parts`:
 
 ```zig
-const image = zigai.Part{ .image = .{
+const image = zigai.PromptPart{ .image = .{
     .source = .{ .bytes = image_bytes },
     .media_type = "image/png",
 } };
@@ -224,7 +223,7 @@ sent to providers.
 
 Anthropic and Google thinking parts, opaque signatures, and Gemini media
 signatures are preserved across history and follow-up turns. Unsupported
-content and invalid roles fail before the first request.
+content fails before the first request.
 
 Gemini tool schemas are converted to its supported JSON Schema subset. Thinking
 models' encrypted tool-call signatures are preserved automatically across
@@ -274,15 +273,24 @@ var result = try (zigai.Agent{
 ```
 
 Dynamic instructions can read typed dependencies and are evaluated once per
-run. Instructions are sent again for every model request in that run, but are
-not stored in `result.messages`. This makes the result safe to reuse as message
-history without carrying instructions from an earlier run.
+run. Instructions are sent again for every model request in that run. Their
+rendered value is recorded on the run's initial `RequestMessage` for provenance;
+a later run still resolves and uses its own configured instructions.
 
 ## Message history
 
 Persist and restore complete conversations with `zigai.history.stringify` and
 `zigai.history.parse`. The JSON format is versioned, and parsed history has one
 clear `deinit` ownership boundary.
+
+History cannot represent invalid role/part combinations. `Message` is a tagged
+union of `RequestMessage` and `ResponseMessage`. Requests use `RequestPart`
+(`system_prompt`, `user_prompt`, `tool_return`, or `retry_prompt`), while
+responses use `ResponsePart` for text, thinking, files, and tool calls.
+
+Version 2 preserves request state and instructions plus response usage, finish
+reason, provider identity, response ID, and raw provider details. The parser
+also migrates version-1 role-based ZigAI histories.
 
 History processors change only the view sent to the provider:
 

@@ -225,16 +225,18 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
         try json.write(instruction);
         try json.endObject();
     }
-    for (request.messages) |message| {
-        if (message.role == .tool) {
-            for (message.parts) |part| switch (part) {
-                .tool_result => |result| try writeToolResult(&json, result),
-                else => {},
-            };
-        } else {
-            try writeMessage(allocator, &json, message);
-        }
-    }
+    for (request.messages) |message| switch (message) {
+        .request => |request_message| for (request_message.parts) |part| switch (part) {
+            .system_prompt => |text| try writeTextMessage(&json, "system", text),
+            .retry_prompt => |text| try writeTextMessage(&json, "user", text),
+            .user_prompt => |content| switch (content) {
+                .text => |text| try writeTextMessage(&json, "user", text),
+                else => return error.InvalidRequestEncoding,
+            },
+            .tool_return => |result| try writeToolResult(&json, result),
+        },
+        .response => |response| try writeResponseMessage(allocator, &json, response),
+    };
     try json.endArray();
     if (request.tools.len > 0) {
         try json.objectField("tools");
@@ -315,12 +317,12 @@ pub fn encodeStreamingRequest(allocator: std.mem.Allocator, model_name: []const 
     return std.fmt.allocPrint(allocator, "{s},\"stream\":true}}", .{buffered[0 .. buffered.len - 1]});
 }
 
-fn writeMessage(allocator: std.mem.Allocator, json: *std.json.Stringify, message: model_types.Message) !void {
+fn writeResponseMessage(allocator: std.mem.Allocator, json: *std.json.Stringify, message: model_types.ResponseMessage) !void {
     const text = try collectText(allocator, message.parts);
     defer allocator.free(text);
     try json.beginObject();
     try json.objectField("role");
-    try json.write(@tagName(message.role));
+    try json.write("assistant");
     try json.objectField("content");
     if (text.len > 0) try json.write(text) else try json.write(null);
     var has_calls = false;
@@ -351,6 +353,15 @@ fn writeMessage(allocator: std.mem.Allocator, json: *std.json.Stringify, message
         };
         try json.endArray();
     }
+    try json.endObject();
+}
+
+fn writeTextMessage(json: *std.json.Stringify, role: []const u8, text: []const u8) !void {
+    try json.beginObject();
+    try json.objectField("role");
+    try json.write(role);
+    try json.objectField("content");
+    try json.write(text);
     try json.endObject();
 }
 
@@ -627,9 +638,16 @@ fn validToolArguments(allocator: std.mem.Allocator, arguments: []const u8) !bool
 test "encodes Chat Completions messages, tools, and schema output" {
     const body = try encodeRequest(std.testing.allocator, "model", .{
         .messages = &.{
-            .{ .role = .system, .parts = &.{.{ .text = "system" }} },
-            .{ .role = .assistant, .parts = &.{.{ .tool_call = .{ .id = "call", .name = "weather", .arguments_json = "{}" } }} },
-            .{ .role = .tool, .parts = &.{.{ .tool_result = .{ .call_id = "call", .name = "weather", .content = "sunny" } }} },
+            .{ .request = .{ .parts = &.{
+                .{ .system_prompt = "system" },
+                .{ .retry_prompt = "retry" },
+                .{ .user_prompt = .{ .text = "question" } },
+            } } },
+            .{ .response = .{ .parts = &.{
+                .{ .text = "checking" },
+                .{ .tool_call = .{ .id = "call", .name = "weather", .arguments_json = "{}" } },
+            } } },
+            .{ .request = .{ .parts = &.{.{ .tool_return = .{ .call_id = "call", .name = "weather", .content = "sunny" } }} } },
         },
         .instructions = &.{"Current instruction."},
         .tools = &.{.{ .name = "weather", .description = "Weather", .parameters_json_schema = "{\"type\":\"object\"}" }},
@@ -652,6 +670,7 @@ test "encodes Chat Completions messages, tools, and schema output" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"stop\":[\"DONE\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"seed\":9") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning_effort\":\"low\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"content\":\"checking\"") != null);
 
     const object_mode = try encodeRequest(std.testing.allocator, "model", .{ .messages = &.{}, .output = .json_object });
     defer std.testing.allocator.free(object_mode);

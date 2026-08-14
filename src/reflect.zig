@@ -114,44 +114,44 @@ fn toolReturnValueType(comptime T: type) type {
     return T;
 }
 
-fn copyMessages(allocator: std.mem.Allocator, source: []const model_types.Message) ![]const model_types.Message {
-    const messages = try allocator.alloc(model_types.Message, source.len);
+fn copyMessages(
+    allocator: std.mem.Allocator,
+    source: []const model_types.RequestMessage,
+) ![]const model_types.RequestMessage {
+    const messages = try allocator.alloc(model_types.RequestMessage, source.len);
     for (source, messages) |message, *copy| {
-        const parts = try allocator.alloc(model_types.Part, message.parts.len);
-        for (message.parts, parts) |part, *part_copy| part_copy.* = try copyPart(allocator, part);
+        const parts = try allocator.alloc(model_types.RequestPart, message.parts.len);
+        for (message.parts, parts) |part, *part_copy| part_copy.* = switch (part) {
+            .system_prompt => |text| .{ .system_prompt = try allocator.dupe(u8, text) },
+            .retry_prompt => |text| .{ .retry_prompt = try allocator.dupe(u8, text) },
+            .user_prompt => |content| .{ .user_prompt = try copyUserContent(allocator, content) },
+            .tool_return => |result| .{ .tool_return = .{
+                .call_id = try allocator.dupe(u8, result.call_id),
+                .name = try allocator.dupe(u8, result.name),
+                .content = try allocator.dupe(u8, result.content),
+                .is_error = result.is_error,
+            } },
+        };
         copy.* = .{
-            .role = message.role,
             .parts = parts,
+            .timestamp_unix_ms = message.timestamp_unix_ms,
+            .instructions = if (message.instructions) |value| try allocator.dupe(u8, value) else null,
+            .run_id = if (message.run_id) |value| try allocator.dupe(u8, value) else null,
+            .conversation_id = if (message.conversation_id) |value| try allocator.dupe(u8, value) else null,
             .metadata = try copyMetadata(allocator, message.metadata),
+            .state = message.state,
         };
     }
     return messages;
 }
 
-fn copyPart(allocator: std.mem.Allocator, part: model_types.Part) !model_types.Part {
+fn copyUserContent(allocator: std.mem.Allocator, part: model_types.UserContent) !model_types.UserContent {
     return switch (part) {
         .text => |value| .{ .text = try allocator.dupe(u8, value) },
         .image => |value| .{ .image = try copyContent(allocator, value) },
         .audio => |value| .{ .audio = try copyContent(allocator, value) },
         .document => |value| .{ .document = try copyContent(allocator, value) },
         .binary => |value| .{ .binary = try copyContent(allocator, value) },
-        .thinking => |value| .{ .thinking = .{
-            .content = try allocator.dupe(u8, value.content),
-            .signature = if (value.signature) |signature| try allocator.dupe(u8, signature) else null,
-            .metadata = try copyMetadata(allocator, value.metadata),
-        } },
-        .tool_call => |value| .{ .tool_call = .{
-            .id = try allocator.dupe(u8, value.id),
-            .name = try allocator.dupe(u8, value.name),
-            .arguments_json = try allocator.dupe(u8, value.arguments_json),
-            .thought_signature = if (value.thought_signature) |signature| try allocator.dupe(u8, signature) else null,
-        } },
-        .tool_result => |value| .{ .tool_result = .{
-            .call_id = try allocator.dupe(u8, value.call_id),
-            .name = try allocator.dupe(u8, value.name),
-            .content = try allocator.dupe(u8, value.content),
-            .is_error = value.is_error,
-        } },
     };
 }
 
@@ -304,34 +304,21 @@ test "typed tool returns carry schema and copied follow-up messages" {
             return .{
                 .value = .{ .count = args.items + run_context.model_requests },
                 .follow_up_messages = &.{.{
-                    .role = .user,
                     .parts = &.{
-                        .{ .text = "Use this additional context." },
-                        .{ .image = .{
+                        .{ .user_prompt = .{ .text = "Use this additional context." } },
+                        .{ .user_prompt = .{ .image = .{
                             .source = .{ .bytes = "pixels" },
                             .media_type = "image/png",
                             .filename = "image.png",
                             .thought_signature = "image-signature",
                             .metadata = &.{.{ .key = "quality", .value = "high" }},
-                        } },
-                        .{ .audio = .{ .source = .{ .url = "https://example.test/audio" }, .media_type = "audio/mpeg" } },
-                        .{ .document = .{
+                        } } },
+                        .{ .user_prompt = .{ .audio = .{ .source = .{ .url = "https://example.test/audio" }, .media_type = "audio/mpeg" } } },
+                        .{ .user_prompt = .{ .document = .{
                             .source = .{ .provider_file = .{ .id = "file-1", .provider = "provider" } },
                             .media_type = "application/pdf",
-                        } },
-                        .{ .binary = .{ .source = .{ .bytes = "bytes" }, .media_type = "application/octet-stream" } },
-                        .{ .thinking = .{
-                            .content = "thinking",
-                            .signature = "thinking-signature",
-                            .metadata = &.{.{ .key = "visibility", .value = "private" }},
-                        } },
-                        .{ .tool_call = .{
-                            .id = "call-1",
-                            .name = "lookup",
-                            .arguments_json = "{}",
-                            .thought_signature = "call-signature",
-                        } },
-                        .{ .tool_result = .{ .call_id = "call-1", .name = "lookup", .content = "ok", .is_error = true } },
+                        } } },
+                        .{ .user_prompt = .{ .binary = .{ .source = .{ .bytes = "bytes" }, .media_type = "application/octet-stream" } } },
                     },
                     .metadata = &.{.{ .key = "source", .value = "tool" }},
                 }},
@@ -347,16 +334,36 @@ test "typed tool returns carry schema and copied follow-up messages" {
         "{\"items\":3}",
     );
     try std.testing.expectEqualStrings("{\"count\":5}", output.content);
-    try std.testing.expectEqualStrings("Use this additional context.", output.follow_up_messages[0].parts[0].text);
-    try std.testing.expectEqualStrings("pixels", output.follow_up_messages[0].parts[1].image.source.bytes);
-    try std.testing.expectEqualStrings("https://example.test/audio", output.follow_up_messages[0].parts[2].audio.source.url);
-    try std.testing.expectEqualStrings("file-1", output.follow_up_messages[0].parts[3].document.source.provider_file.id);
-    try std.testing.expectEqualStrings("bytes", output.follow_up_messages[0].parts[4].binary.source.bytes);
-    try std.testing.expectEqualStrings("thinking-signature", output.follow_up_messages[0].parts[5].thinking.signature.?);
-    try std.testing.expectEqualStrings("call-signature", output.follow_up_messages[0].parts[6].tool_call.thought_signature.?);
-    try std.testing.expect(output.follow_up_messages[0].parts[7].tool_result.is_error);
+    try std.testing.expectEqualStrings("Use this additional context.", output.follow_up_messages[0].parts[0].user_prompt.text);
+    try std.testing.expectEqualStrings("pixels", output.follow_up_messages[0].parts[1].user_prompt.image.source.bytes);
+    try std.testing.expectEqualStrings("https://example.test/audio", output.follow_up_messages[0].parts[2].user_prompt.audio.source.url);
+    try std.testing.expectEqualStrings("file-1", output.follow_up_messages[0].parts[3].user_prompt.document.source.provider_file.id);
+    try std.testing.expectEqualStrings("bytes", output.follow_up_messages[0].parts[4].user_prompt.binary.source.bytes);
     try std.testing.expectEqualStrings("tool", output.follow_up_messages[0].metadata[0].value);
     try std.testing.expect(std.mem.indexOf(u8, derived.definition.return_json_schema.?, "\"count\":{\"type\":\"integer\"}") != null);
+}
+
+test "request follow-up copies preserve every request field" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const copied = try copyMessages(arena.allocator(), &.{.{
+        .parts = &.{
+            .{ .system_prompt = "system" },
+            .{ .retry_prompt = "retry" },
+            .{ .tool_return = .{ .call_id = "call", .name = "tool", .content = "result", .is_error = true } },
+        },
+        .timestamp_unix_ms = 10,
+        .instructions = "instructions",
+        .run_id = "run",
+        .conversation_id = "conversation",
+        .metadata = &.{.{ .key = "key", .value = "value" }},
+        .state = .interrupted,
+    }});
+    try std.testing.expectEqualStrings("system", copied[0].parts[0].system_prompt);
+    try std.testing.expectEqualStrings("retry", copied[0].parts[1].retry_prompt);
+    try std.testing.expect(copied[0].parts[2].tool_return.is_error);
+    try std.testing.expectEqual(@as(?i64, 10), copied[0].timestamp_unix_ms);
+    try std.testing.expectEqual(model_types.RequestState.interrupted, copied[0].state);
 }
 
 test "derives every public function of a namespace" {

@@ -161,20 +161,24 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
     try json.beginObject();
 
     var has_system = request.instructions.len > 0;
-    for (request.messages) |message| if (message.role == .system) {
-        has_system = true;
-        break;
+    for (request.messages) |message| switch (message) {
+        .request => |request_message| for (request_message.parts) |part| if (part == .system_prompt) {
+            has_system = true;
+            break;
+        },
+        .response => {},
     };
     if (has_system) {
         try json.objectField("systemInstruction");
         try json.beginObject();
         try json.objectField("parts");
         try json.beginArray();
-        for (request.messages) |message| if (message.role == .system) {
-            for (message.parts) |part| switch (part) {
-                .text => |text| try writeTextPart(&json, text),
+        for (request.messages) |message| switch (message) {
+            .request => |request_message| for (request_message.parts) |part| switch (part) {
+                .system_prompt => |text| try writeTextPart(&json, text),
                 else => {},
-            };
+            },
+            .response => {},
         };
         for (request.instructions) |instruction| try writeTextPart(&json, instruction);
         try json.endArray();
@@ -184,64 +188,62 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
     try json.objectField("contents");
     try json.beginArray();
     for (request.messages) |message| {
-        if (message.role == .system) continue;
+        if (!messageHasGoogleContent(message)) continue;
         try json.beginObject();
         try json.objectField("role");
-        try json.write(if (message.role == .assistant) "model" else "user");
+        try json.write(if (message == .response) "model" else "user");
         try json.objectField("parts");
         try json.beginArray();
-        for (message.parts) |part| switch (part) {
-            .text => |text| try writeTextPart(&json, text),
-            .image => |content| try writeRichContent(allocator, &json, content),
-            .audio => |content| try writeRichContent(allocator, &json, content),
-            .document => |content| try writeRichContent(allocator, &json, content),
-            .binary => |content| try writeRichContent(allocator, &json, content),
-            .thinking => |thinking| {
-                try json.beginObject();
-                try json.objectField("text");
-                try json.write(thinking.content);
-                try json.objectField("thought");
-                try json.write(true);
-                if (thinking.signature) |signature| {
-                    try json.objectField("thoughtSignature");
-                    try json.write(signature);
-                }
-                try json.endObject();
+        switch (message) {
+            .request => |request_message| for (request_message.parts) |part| switch (part) {
+                .system_prompt => {},
+                .retry_prompt => |text| try writeTextPart(&json, text),
+                .user_prompt => |content| switch (content) {
+                    .text => |text| try writeTextPart(&json, text),
+                    .image => |value| try writeRichContent(allocator, &json, value),
+                    .audio => |value| try writeRichContent(allocator, &json, value),
+                    .document => |value| try writeRichContent(allocator, &json, value),
+                    .binary => |value| try writeRichContent(allocator, &json, value),
+                },
+                .tool_return => |result| try writeToolReturn(&json, result),
             },
-            .tool_call => |call| {
-                try json.beginObject();
-                try json.objectField("functionCall");
-                try json.beginObject();
-                try json.objectField("name");
-                try json.write(call.name);
-                try json.objectField("args");
-                try common.rawJson(&json, call.arguments_json);
-                try json.objectField("id");
-                try json.write(call.id);
-                try json.endObject();
-                if (call.thought_signature) |signature| {
-                    try json.objectField("thoughtSignature");
-                    try json.write(signature);
-                }
-                try json.endObject();
+            .response => |response| for (response.parts) |part| switch (part) {
+                .text => |text| try writeTextPart(&json, text),
+                .image => |content| try writeRichContent(allocator, &json, content),
+                .audio => |content| try writeRichContent(allocator, &json, content),
+                .document => |content| try writeRichContent(allocator, &json, content),
+                .binary => |content| try writeRichContent(allocator, &json, content),
+                .thinking => |thinking| {
+                    try json.beginObject();
+                    try json.objectField("text");
+                    try json.write(thinking.content);
+                    try json.objectField("thought");
+                    try json.write(true);
+                    if (thinking.signature) |signature| {
+                        try json.objectField("thoughtSignature");
+                        try json.write(signature);
+                    }
+                    try json.endObject();
+                },
+                .tool_call => |call| {
+                    try json.beginObject();
+                    try json.objectField("functionCall");
+                    try json.beginObject();
+                    try json.objectField("name");
+                    try json.write(call.name);
+                    try json.objectField("args");
+                    try common.rawJson(&json, call.arguments_json);
+                    try json.objectField("id");
+                    try json.write(call.id);
+                    try json.endObject();
+                    if (call.thought_signature) |signature| {
+                        try json.objectField("thoughtSignature");
+                        try json.write(signature);
+                    }
+                    try json.endObject();
+                },
             },
-            .tool_result => |result| {
-                try json.beginObject();
-                try json.objectField("functionResponse");
-                try json.beginObject();
-                try json.objectField("name");
-                try json.write(result.name);
-                try json.objectField("response");
-                try json.beginObject();
-                try json.objectField(if (result.is_error) "error" else "result");
-                try common.rawJson(&json, result.content);
-                try json.endObject();
-                try json.objectField("id");
-                try json.write(result.call_id);
-                try json.endObject();
-                try json.endObject();
-            },
-        };
+        }
         try json.endArray();
         try json.endObject();
     }
@@ -317,6 +319,33 @@ fn writeToolSchemaValue(json: *std.json.Stringify, value: std.json.Value) !void 
         },
         else => try json.write(value),
     }
+}
+
+fn messageHasGoogleContent(message: model_types.Message) bool {
+    return switch (message) {
+        .request => |request| blk: {
+            for (request.parts) |part| if (part != .system_prompt) break :blk true;
+            break :blk false;
+        },
+        .response => |response| response.parts.len > 0,
+    };
+}
+
+fn writeToolReturn(json: *std.json.Stringify, result: model_types.ToolResult) !void {
+    try json.beginObject();
+    try json.objectField("functionResponse");
+    try json.beginObject();
+    try json.objectField("name");
+    try json.write(result.name);
+    try json.objectField("response");
+    try json.beginObject();
+    try json.objectField(if (result.is_error) "error" else "result");
+    try common.rawJson(json, result.content);
+    try json.endObject();
+    try json.objectField("id");
+    try json.write(result.call_id);
+    try json.endObject();
+    try json.endObject();
 }
 
 fn writeTextPart(json: *std.json.Stringify, text: []const u8) !void {
@@ -578,14 +607,14 @@ fn hasToolCalls(parts: []const model_types.Part) bool {
 
 test "encodes Gemini system, tool, result, error, and structured output parts" {
     const messages = [_]model_types.Message{
-        .{ .role = .system, .parts = &.{.{ .text = "Be concise." }} },
-        .{ .role = .assistant, .parts = &.{.{ .tool_call = .{
+        .{ .request = .{ .parts = &.{.{ .system_prompt = "Be concise." }} } },
+        .{ .response = .{ .parts = &.{.{ .tool_call = .{
             .id = "call_1",
             .name = "weather",
             .arguments_json = "{\"city\":\"Madrid\"}",
             .thought_signature = "signed-state",
-        } }} },
-        .{ .role = .tool, .parts = &.{.{ .tool_result = .{ .call_id = "call_1", .name = "weather", .content = "{\"message\":\"failed\"}", .is_error = true } }} },
+        } }} } },
+        .{ .request = .{ .parts = &.{.{ .tool_return = .{ .call_id = "call_1", .name = "weather", .content = "{\"message\":\"failed\"}", .is_error = true } }} } },
     };
     const body = try encodeRequest(std.testing.allocator, .{
         .messages = &messages,
@@ -638,20 +667,30 @@ test "encodes Gemini Google Search and URL Context tools" {
 
 test "encodes and decodes Gemini rich content and thinking" {
     const messages = [_]model_types.Message{
-        .{ .role = .user, .parts = &.{
-            .{ .audio = .{ .source = .{ .bytes = "mp3" }, .media_type = "audio/mpeg" } },
-            .{ .document = .{
+        .{ .request = .{ .parts = &.{
+            .{ .retry_prompt = "Try again." },
+            .{ .user_prompt = .{ .text = "Review these." } },
+            .{ .user_prompt = .{ .image = .{ .source = .{ .bytes = "png" }, .media_type = "image/png" } } },
+            .{ .user_prompt = .{ .audio = .{ .source = .{ .bytes = "mp3" }, .media_type = "audio/mpeg" } } },
+            .{ .user_prompt = .{ .document = .{
                 .source = .{ .provider_file = .{ .id = "files/guide", .provider = "gcp.gen_ai" } },
                 .media_type = "application/pdf",
-            } },
-            .{ .document = .{
+            } } },
+            .{ .user_prompt = .{ .document = .{
                 .source = .{ .url = "https://example.test/guide.pdf" },
                 .media_type = "application/pdf",
                 .thought_signature = "document-signed",
-            } },
-            .{ .binary = .{ .source = .{ .bytes = "raw" }, .media_type = "application/octet-stream" } },
-        } },
-        .{ .role = .assistant, .parts = &.{.{ .thinking = .{ .content = "private", .signature = "signed" } }} },
+            } } },
+            .{ .user_prompt = .{ .binary = .{ .source = .{ .bytes = "raw" }, .media_type = "application/octet-stream" } } },
+        } } },
+        .{ .response = .{ .parts = &.{
+            .{ .text = "Previous answer." },
+            .{ .image = .{ .source = .{ .bytes = "answer-image" }, .media_type = "image/png" } },
+            .{ .audio = .{ .source = .{ .bytes = "answer-audio" }, .media_type = "audio/mpeg" } },
+            .{ .document = .{ .source = .{ .url = "https://example.test/answer.pdf" }, .media_type = "application/pdf" } },
+            .{ .binary = .{ .source = .{ .bytes = "answer-binary" }, .media_type = "application/octet-stream" } },
+            .{ .thinking = .{ .content = "private", .signature = "signed" } },
+        } } },
     };
     const body = try encodeRequest(std.testing.allocator, .{ .messages = &messages });
     defer std.testing.allocator.free(body);
@@ -660,6 +699,7 @@ test "encodes and decodes Gemini rich content and thinking" {
     try std.testing.expect(std.mem.indexOf(u8, body, "\"fileUri\":\"https://example.test/guide.pdf\"},\"thoughtSignature\":\"document-signed\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"inlineData\":{\"mimeType\":\"application/octet-stream\",\"data\":\"cmF3\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"private\",\"thought\":true,\"thoughtSignature\":\"signed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "Previous answer.") != null);
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

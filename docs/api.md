@@ -17,13 +17,19 @@ The root exposes the agent loop, its configuration and result types, message
 and tool types, model settings and usage, streaming events, provider errors,
 history helpers, telemetry, MCP, evaluation, and model-routing modules.
 
+Reusable history is typed as `Message`, a union of `RequestMessage` and
+`ResponseMessage`. Construct prompts and tool returns with `RequestPart`;
+model implementations return `ResponsePart`. `PromptPart` is the short alias
+for rich `UserContent` accepted by `RunOptions.prompt_parts`. `Part` remains a
+compatibility alias for `ResponsePart`.
+
 Use these namespaces for the rest of the API:
 
 | Namespace | Purpose |
 | --- | --- |
 | `zigai.providers` | Native and named OpenAI-compatible provider clients |
 | `zigai.models` | Fallback and application-selected model routing |
-| `zigai.history` | Versioned history serialization and processors |
+| `zigai.history` | Version-2 history serialization, version-1 migration, and processors |
 | `zigai.evals` | Datasets, evaluators, reports, and model grading |
 | `zigai.mcp` | MCP 2026 client, server, Streamable HTTP, and stdio |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |

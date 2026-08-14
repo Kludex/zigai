@@ -223,46 +223,28 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
     }
     try json.objectField("input");
     try json.beginArray();
-    for (request.messages) |message| {
-        for (message.parts) |part| switch (part) {
-            .text => |text| {
-                try json.beginObject();
-                try json.objectField("type");
-                try json.write("message");
-                try json.objectField("role");
-                try json.write(@tagName(message.role));
-                try json.objectField("content");
-                try json.write(text);
-                try json.endObject();
+    for (request.messages) |message| switch (message) {
+        .request => |request_message| for (request_message.parts) |part| switch (part) {
+            .system_prompt => |text| try writeTextMessage(&json, "system", text),
+            .retry_prompt => |text| try writeTextMessage(&json, "user", text),
+            .user_prompt => |content| switch (content) {
+                .text => |text| try writeTextMessage(&json, "user", text),
+                .image => |value| try writeContentMessage(allocator, &json, "user", .image, value),
+                .document => |value| try writeContentMessage(allocator, &json, "user", .document, value),
+                .binary => |value| try writeContentMessage(allocator, &json, "user", .binary, value),
+                .audio => return error.UnsupportedContentType,
             },
-            .image => |content| try writeContentMessage(allocator, &json, message.role, .image, content),
-            .document => |content| try writeContentMessage(allocator, &json, message.role, .document, content),
-            .binary => |content| try writeContentMessage(allocator, &json, message.role, .binary, content),
+            .tool_return => |result| try writeToolReturn(&json, result),
+        },
+        .response => |response| for (response.parts) |part| switch (part) {
+            .text => |text| try writeTextMessage(&json, "assistant", text),
+            .image => |content| try writeContentMessage(allocator, &json, "assistant", .image, content),
+            .document => |content| try writeContentMessage(allocator, &json, "assistant", .document, content),
+            .binary => |content| try writeContentMessage(allocator, &json, "assistant", .binary, content),
             .audio, .thinking => return error.UnsupportedContentType,
-            .tool_call => |call| {
-                try json.beginObject();
-                try json.objectField("type");
-                try json.write("function_call");
-                try json.objectField("call_id");
-                try json.write(call.id);
-                try json.objectField("name");
-                try json.write(call.name);
-                try json.objectField("arguments");
-                try json.write(call.arguments_json);
-                try json.endObject();
-            },
-            .tool_result => |result| {
-                try json.beginObject();
-                try json.objectField("type");
-                try json.write("function_call_output");
-                try json.objectField("call_id");
-                try json.write(result.call_id);
-                try json.objectField("output");
-                try json.write(result.content);
-                try json.endObject();
-            },
-        };
-    }
+            .tool_call => |call| try writeToolCall(&json, call),
+        },
+    };
     try json.endArray();
     if (request.tools.len > 0 or request.builtin_tools.len > 0) {
         try json.objectField("tools");
@@ -338,7 +320,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
 fn writeContentMessage(
     allocator: std.mem.Allocator,
     json: *std.json.Stringify,
-    role: model_types.Role,
+    role: []const u8,
     kind: model_types.ContentType,
     content: model_types.Content,
 ) !void {
@@ -346,7 +328,7 @@ fn writeContentMessage(
     try json.objectField("type");
     try json.write("message");
     try json.objectField("role");
-    try json.write(@tagName(role));
+    try json.write(role);
     try json.objectField("content");
     try json.beginArray();
     try json.beginObject();
@@ -383,6 +365,41 @@ fn writeContentMessage(
     }
     try json.endObject();
     try json.endArray();
+    try json.endObject();
+}
+
+fn writeTextMessage(json: *std.json.Stringify, role: []const u8, text: []const u8) !void {
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write("message");
+    try json.objectField("role");
+    try json.write(role);
+    try json.objectField("content");
+    try json.write(text);
+    try json.endObject();
+}
+
+fn writeToolCall(json: *std.json.Stringify, call: model_types.ToolCall) !void {
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write("function_call");
+    try json.objectField("call_id");
+    try json.write(call.id);
+    try json.objectField("name");
+    try json.write(call.name);
+    try json.objectField("arguments");
+    try json.write(call.arguments_json);
+    try json.endObject();
+}
+
+fn writeToolReturn(json: *std.json.Stringify, result: model_types.ToolResult) !void {
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write("function_call_output");
+    try json.objectField("call_id");
+    try json.write(result.call_id);
+    try json.objectField("output");
+    try json.write(result.content);
     try json.endObject();
 }
 
@@ -581,24 +598,35 @@ test "encodes OpenAI web search and rejects standalone web fetch" {
 }
 
 test "encodes OpenAI image, document, and provider file inputs" {
-    const messages = [_]model_types.Message{.{ .role = .user, .parts = &.{
-        .{ .image = .{ .source = .{ .bytes = "png" }, .media_type = "image/png" } },
-        .{ .document = .{
-            .source = .{ .url = "https://example.test/guide.pdf" },
-            .media_type = "application/pdf",
-            .filename = "guide.pdf",
-        } },
-        .{ .binary = .{
-            .source = .{ .provider_file = .{ .id = "file_123", .provider = "openai" } },
-            .media_type = "application/octet-stream",
-        } },
-    } }};
+    const messages = [_]model_types.Message{
+        .{ .request = .{ .parts = &.{
+            .{ .retry_prompt = "Retry with the files." },
+            .{ .user_prompt = .{ .text = "Review these." } },
+            .{ .user_prompt = .{ .image = .{ .source = .{ .bytes = "png" }, .media_type = "image/png" } } },
+            .{ .user_prompt = .{ .document = .{
+                .source = .{ .url = "https://example.test/guide.pdf" },
+                .media_type = "application/pdf",
+                .filename = "guide.pdf",
+            } } },
+            .{ .user_prompt = .{ .binary = .{
+                .source = .{ .provider_file = .{ .id = "file_123", .provider = "openai" } },
+                .media_type = "application/octet-stream",
+            } } },
+        } } },
+        .{ .response = .{ .parts = &.{
+            .{ .text = "Previous answer." },
+            .{ .image = .{ .source = .{ .bytes = "answer" }, .media_type = "image/png" } },
+            .{ .document = .{ .source = .{ .url = "https://example.test/answer.pdf" }, .media_type = "application/pdf" } },
+            .{ .binary = .{ .source = .{ .provider_file = .{ .id = "file_answer" } }, .media_type = "application/octet-stream" } },
+        } } },
+    };
     const body = try encodeRequest(std.testing.allocator, "gpt-test", .{ .messages = &messages });
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"image_url\":\"data:image/png;base64,cG5n\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"file_url\":\"https://example.test/guide.pdf\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"filename\":\"guide.pdf\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"file_id\":\"file_123\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "Previous answer.") != null);
 }
 
 test "covers Responses API refusal, incomplete, and malformed edges" {
@@ -635,21 +663,31 @@ test "covers Responses API refusal, incomplete, and malformed edges" {
     ));
 
     const unsupported_messages = [_]model_types.Message{.{
-        .role = .user,
-        .parts = &.{.{ .audio = .{ .source = .{ .bytes = "audio" }, .media_type = "audio/mpeg" } }},
+        .request = .{ .parts = &.{.{ .user_prompt = .{ .audio = .{
+            .source = .{ .bytes = "audio" },
+            .media_type = "audio/mpeg",
+        } } }} },
     }};
     try std.testing.expectError(error.UnsupportedContentType, encodeRequest(
         std.testing.allocator,
         "gpt-test",
         .{ .messages = &unsupported_messages },
     ));
+    const unsupported_response = [_]model_types.Message{.{ .response = .{ .parts = &.{.{ .audio = .{
+        .source = .{ .bytes = "audio" },
+        .media_type = "audio/mpeg",
+    } }} } }};
+    try std.testing.expectError(error.UnsupportedContentType, encodeRequest(
+        std.testing.allocator,
+        "gpt-test",
+        .{ .messages = &unsupported_response },
+    ));
     const document_messages = [_]model_types.Message{.{
-        .role = .user,
-        .parts = &.{.{ .document = .{
+        .request = .{ .parts = &.{.{ .user_prompt = .{ .document = .{
             .source = .{ .bytes = "pdf" },
             .media_type = "application/pdf",
             .filename = "guide.pdf",
-        } }},
+        } } }} },
     }};
     const document = try encodeRequest(std.testing.allocator, "gpt-test", .{ .messages = &document_messages });
     defer std.testing.allocator.free(document);

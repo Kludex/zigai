@@ -134,12 +134,24 @@ pub const Client = struct {
 };
 
 fn hasProviderFiles(messages: []const model_types.Message) bool {
-    for (messages) |message| for (message.parts) |part| switch (part) {
-        .image, .document => |content| switch (content.source) {
-            .provider_file => return true,
+    for (messages) |message| switch (message) {
+        .request => |request| for (request.parts) |part| switch (part) {
+            .user_prompt => |prompt| switch (prompt) {
+                .image, .document => |content| switch (content.source) {
+                    .provider_file => return true,
+                    else => {},
+                },
+                else => {},
+            },
             else => {},
         },
-        else => {},
+        .response => |response| for (response.parts) |part| switch (part) {
+            .image, .document => |content| switch (content.source) {
+                .provider_file => return true,
+                else => {},
+            },
+            else => {},
+        },
     };
     return false;
 }
@@ -313,16 +325,19 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
     }
 
     var has_system = request.instructions.len > 0;
-    for (request.messages) |message| if (message.role == .system) {
-        has_system = true;
-        break;
+    for (request.messages) |message| switch (message) {
+        .request => |request_message| for (request_message.parts) |part| if (part == .system_prompt) {
+            has_system = true;
+            break;
+        },
+        .response => {},
     };
     if (has_system) {
         try json.objectField("system");
         try json.beginArray();
-        for (request.messages) |message| if (message.role == .system) {
-            for (message.parts) |part| switch (part) {
-                .text => |text| {
+        for (request.messages) |message| switch (message) {
+            .request => |request_message| for (request_message.parts) |part| switch (part) {
+                .system_prompt => |text| {
                     try json.beginObject();
                     try json.objectField("type");
                     try json.write("text");
@@ -331,7 +346,8 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
                     try json.endObject();
                 },
                 else => {},
-            };
+            },
+            .response => {},
         };
         for (request.instructions) |instruction| {
             try json.beginObject();
@@ -347,63 +363,76 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
     try json.objectField("messages");
     try json.beginArray();
     for (request.messages) |message| {
-        if (message.role == .system) continue;
+        if (!messageHasAnthropicContent(message)) continue;
         try json.beginObject();
         try json.objectField("role");
-        try json.write(if (message.role == .assistant) "assistant" else "user");
+        try json.write(if (message == .response) "assistant" else "user");
         try json.objectField("content");
         try json.beginArray();
-        for (message.parts) |part| switch (part) {
-            .text => |text| {
-                try json.beginObject();
-                try json.objectField("type");
-                try json.write("text");
-                try json.objectField("text");
-                try json.write(text);
-                try json.endObject();
+        switch (message) {
+            .request => |request_message| for (request_message.parts) |part| switch (part) {
+                .system_prompt => {},
+                .user_prompt => |content| switch (content) {
+                    .text => |text| {
+                        try json.beginObject();
+                        try json.objectField("type");
+                        try json.write("text");
+                        try json.objectField("text");
+                        try json.write(text);
+                        try json.endObject();
+                    },
+                    .image => |value| try writeRichContent(allocator, &json, "image", value),
+                    .document => |value| try writeRichContent(allocator, &json, "document", value),
+                    .audio, .binary => return error.UnsupportedContentType,
+                },
+                .retry_prompt => |text| {
+                    try json.beginObject();
+                    try json.objectField("type");
+                    try json.write("text");
+                    try json.objectField("text");
+                    try json.write(text);
+                    try json.endObject();
+                },
+                .tool_return => |result| try writeToolReturn(&json, result),
             },
-            .image => |content| try writeRichContent(allocator, &json, "image", content),
-            .document => |content| try writeRichContent(allocator, &json, "document", content),
-            .thinking => |thinking| {
-                try json.beginObject();
-                try json.objectField("type");
-                try json.write("thinking");
-                try json.objectField("thinking");
-                try json.write(thinking.content);
-                if (thinking.signature) |signature| {
-                    try json.objectField("signature");
-                    try json.write(signature);
-                }
-                try json.endObject();
+            .response => |response| for (response.parts) |part| switch (part) {
+                .text => |text| {
+                    try json.beginObject();
+                    try json.objectField("type");
+                    try json.write("text");
+                    try json.objectField("text");
+                    try json.write(text);
+                    try json.endObject();
+                },
+                .image => |content| try writeRichContent(allocator, &json, "image", content),
+                .document => |content| try writeRichContent(allocator, &json, "document", content),
+                .thinking => |thinking| {
+                    try json.beginObject();
+                    try json.objectField("type");
+                    try json.write("thinking");
+                    try json.objectField("thinking");
+                    try json.write(thinking.content);
+                    if (thinking.signature) |signature| {
+                        try json.objectField("signature");
+                        try json.write(signature);
+                    }
+                    try json.endObject();
+                },
+                .audio, .binary => return error.UnsupportedContentType,
+                .tool_call => |call| {
+                    try json.beginObject();
+                    try json.objectField("type");
+                    try json.write("tool_use");
+                    try json.objectField("id");
+                    try json.write(call.id);
+                    try json.objectField("name");
+                    try json.write(call.name);
+                    try json.objectField("input");
+                    try common.rawJson(&json, call.arguments_json);
+                    try json.endObject();
+                },
             },
-            .audio, .binary => return error.UnsupportedContentType,
-            .tool_call => |call| {
-                try json.beginObject();
-                try json.objectField("type");
-                try json.write("tool_use");
-                try json.objectField("id");
-                try json.write(call.id);
-                try json.objectField("name");
-                try json.write(call.name);
-                try json.objectField("input");
-                try common.rawJson(&json, call.arguments_json);
-                try json.endObject();
-            },
-            .tool_result => |result| {
-                try json.beginObject();
-                try json.objectField("type");
-                try json.write("tool_result");
-                try json.objectField("tool_use_id");
-                try json.write(result.call_id);
-                try json.objectField("content");
-                try json.write(result.content);
-                if (result.is_error) {
-                    try json.objectField("is_error");
-                    try json.write(true);
-                }
-                try json.endObject();
-            },
-        };
+        }
         try json.endArray();
         try json.endObject();
     }
@@ -467,6 +496,31 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
     }
     try json.endObject();
     return output.toOwnedSlice();
+}
+
+fn messageHasAnthropicContent(message: model_types.Message) bool {
+    return switch (message) {
+        .request => |request| blk: {
+            for (request.parts) |part| if (part != .system_prompt) break :blk true;
+            break :blk false;
+        },
+        .response => |response| response.parts.len > 0,
+    };
+}
+
+fn writeToolReturn(json: *std.json.Stringify, result: model_types.ToolResult) !void {
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write("tool_result");
+    try json.objectField("tool_use_id");
+    try json.write(result.call_id);
+    try json.objectField("content");
+    try json.write(result.content);
+    if (result.is_error) {
+        try json.objectField("is_error");
+        try json.write(true);
+    }
+    try json.endObject();
 }
 
 fn writeRichContent(
@@ -603,13 +657,13 @@ test "maps Anthropic length and refusal reasons" {
 }
 
 test "encodes instructions, tool errors, and requests without system content" {
-    const result_parts = [_]model_types.Part{.{ .tool_result = .{
+    const result_parts = [_]model_types.RequestPart{.{ .tool_return = .{
         .call_id = "call_1",
         .name = "weather",
         .content = "failed",
         .is_error = true,
     } }};
-    const messages = [_]model_types.Message{.{ .role = .tool, .parts = &result_parts }};
+    const messages = [_]model_types.Message{.{ .request = .{ .parts = &result_parts } }};
     const body = try encodeRequest(std.testing.allocator, "claude-test", 20, .{
         .messages = &messages,
         .instructions = &.{"Current instruction."},
@@ -672,21 +726,29 @@ test "encodes Anthropic web search and web fetch server tools" {
 
 test "encodes Anthropic rich inputs and preserves thinking" {
     const messages = [_]model_types.Message{
-        .{ .role = .user, .parts = &.{
-            .{ .image = .{ .source = .{ .bytes = "png" }, .media_type = "image/png" } },
-            .{ .document = .{
+        .{ .request = .{ .parts = &.{
+            .{ .user_prompt = .{ .text = "Review these." } },
+            .{ .retry_prompt = "Try again." },
+            .{ .user_prompt = .{ .image = .{ .source = .{ .bytes = "png" }, .media_type = "image/png" } } },
+            .{ .user_prompt = .{ .document = .{
                 .source = .{ .provider_file = .{ .id = "file_123", .provider = "anthropic" } },
                 .media_type = "application/pdf",
                 .filename = "Guide",
-            } },
-        } },
-        .{ .role = .assistant, .parts = &.{.{ .thinking = .{ .content = "private", .signature = "signed" } }} },
+            } } },
+        } } },
+        .{ .response = .{ .parts = &.{
+            .{ .text = "Previous answer." },
+            .{ .image = .{ .source = .{ .bytes = "answer" }, .media_type = "image/png" } },
+            .{ .document = .{ .source = .{ .url = "https://example.test/answer.pdf" }, .media_type = "application/pdf" } },
+            .{ .thinking = .{ .content = "private", .signature = "signed" } },
+        } } },
     };
     const body = try encodeRequest(std.testing.allocator, "claude-test", 20, .{ .messages = &messages });
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"cG5n\"}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"source\":{\"type\":\"file\",\"file_id\":\"file_123\"},\"title\":\"Guide\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"thinking\",\"thinking\":\"private\",\"signature\":\"signed\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "Previous answer.") != null);
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -726,31 +788,47 @@ test "Anthropic streaming preserves thinking deltas and signatures" {
 
 test "covers Anthropic rich and streaming response edges" {
     try std.testing.expect(hasProviderFiles(&.{.{
-        .role = .user,
-        .parts = &.{.{ .image = .{
+        .request = .{ .parts = &.{.{ .user_prompt = .{ .image = .{
             .source = .{ .provider_file = .{ .id = "file" } },
             .media_type = "image/png",
-        } }},
+        } } }} },
+    }}));
+    try std.testing.expect(hasProviderFiles(&.{.{
+        .response = .{ .parts = &.{.{ .document = .{
+            .source = .{ .provider_file = .{ .id = "file" } },
+            .media_type = "application/pdf",
+        } }} },
     }}));
     const url_messages = [_]model_types.Message{.{
-        .role = .user,
-        .parts = &.{.{ .document = .{
+        .request = .{ .parts = &.{.{ .user_prompt = .{ .document = .{
             .source = .{ .url = "https://example.test/guide.pdf" },
             .media_type = "application/pdf",
-        } }},
+        } } }} },
     }};
     const url_body = try encodeRequest(std.testing.allocator, "claude-test", 20, .{ .messages = &url_messages });
     defer std.testing.allocator.free(url_body);
     try std.testing.expect(std.mem.indexOf(u8, url_body, "\"source\":{\"type\":\"url\",\"url\":\"https://example.test/guide.pdf\"}") != null);
     const unsupported = [_]model_types.Message{.{
-        .role = .user,
-        .parts = &.{.{ .audio = .{ .source = .{ .bytes = "audio" }, .media_type = "audio/mpeg" } }},
+        .request = .{ .parts = &.{.{ .user_prompt = .{ .audio = .{
+            .source = .{ .bytes = "audio" },
+            .media_type = "audio/mpeg",
+        } } }} },
     }};
     try std.testing.expectError(error.UnsupportedContentType, encodeRequest(
         std.testing.allocator,
         "claude-test",
         20,
         .{ .messages = &unsupported },
+    ));
+    const unsupported_response = [_]model_types.Message{.{ .response = .{ .parts = &.{.{ .binary = .{
+        .source = .{ .bytes = "binary" },
+        .media_type = "application/octet-stream",
+    } }} } }};
+    try std.testing.expectError(error.UnsupportedContentType, encodeRequest(
+        std.testing.allocator,
+        "claude-test",
+        20,
+        .{ .messages = &unsupported_response },
     ));
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

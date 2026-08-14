@@ -251,7 +251,7 @@ fn replayRichScenario(model: zigai.Model, cassette: *cassettes.ReplayTransport) 
     const image_bytes = try std.testing.allocator.alloc(u8, decoded_size);
     defer std.testing.allocator.free(image_bytes);
     try std.base64.standard.Decoder.decode(image_bytes, pixel_png_base64);
-    const image = zigai.Part{ .image = .{
+    const image = zigai.PromptPart{ .image = .{
         .source = .{ .bytes = image_bytes },
         .media_type = "image/png",
     } };

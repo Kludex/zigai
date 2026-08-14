@@ -77,16 +77,18 @@ local schema validation and receive the same correction behavior. Streaming
 deltas remain provisional, and the agent emits `final_output` only after
 validation succeeds.
 
-Rich message content is provider neutral too. `Part` distinguishes image,
-audio, document, arbitrary binary, and thinking content. Media uses one source
-union for bytes, URLs, or provider file references, with a MIME type and
+Rich message content is provider neutral too. `UserContent` distinguishes
+text, image, audio, document, and arbitrary binary prompt content.
+`ResponsePart` adds thinking and tool calls for model output. Media uses one
+source union for bytes, URLs, or provider file references, with a MIME type and
 optional filename. `RunOptions.prompt_parts` places rich content before the
 current text prompt. Message and content metadata are application-owned and
-survives copying and versioned history serialization without crossing the
+survive copying and versioned history serialization without crossing the
 provider boundary.
 
-Profiles advertise supported content kinds. The agent also validates content
-roles and optional provider guards on file references before network I/O.
+Profiles advertise supported content kinds. Request and response part unions
+make invalid content roles unrepresentable. The agent validates optional
+provider guards on file references before network I/O.
 Adapters base64-encode bytes only at their wire boundary. Anthropic and Google
 decode and retain thinking state; Gemini output media keeps its opaque thought
 signature on the neutral content part so the next request can return it
@@ -112,14 +114,22 @@ applications copy only the detail they need to retain.
 Instructions belong to the current run. Static instructions are resolved
 before dynamic ones, and run-specific instructions come last. Empty values are
 ignored. Providers receive the resolved list on every request in the tool
-loop, while `Result.messages` contains only reusable conversation history.
+loop. The rendered instruction string is retained on the initial request for
+provenance; a later run resolves its own instruction configuration.
 
-History storage uses a versioned provider-neutral JSON format. Before each
-request, agent, capability, and run-specific processors transform a borrowed
-provider-facing view from left to right. Built-ins trim old messages, compact
-adjacent text, summarize an older prefix through an application callback, and
-remove malformed or orphaned tool parts. The canonical arena-owned conversation
-is never truncated, so callers can persist or reprocess the complete result.
+History uses a `Message` tagged union with distinct `RequestMessage` and
+`ResponseMessage` envelopes. Requests contain only system prompts, user
+prompts, retries, and tool returns. Responses contain only text, media,
+thinking, and tool calls. Response history retains usage, finish reason,
+provider/model identity, response IDs, and raw provider details.
+
+Version 2 serializes those envelopes with `kind` and `part_kind`
+discriminators. The parser migrates version-1 role-based ZigAI histories.
+Before each request, agent, capability, and run-specific processors transform
+a borrowed provider-facing view from left to right. Built-ins trim old
+messages, compact adjacent text, summarize an older prefix through an
+application callback, and remove malformed or orphaned tool traffic. The
+canonical arena-owned conversation is never truncated.
 
 An agent may carry an opaque per-run dependency pointer. Contextual tools use
 `ToolRunContext.dependency(T)` to recover their application type and can also
@@ -136,11 +146,11 @@ definitions still receive only the argument schema. A reflected function can
 return `ToolReturn(T)` to pair its typed value with follow-up user messages.
 Manual tools use `ToolOutput` for the same behavior.
 
-The agent always appends the provider-protocol tool-result message first. It
-then copies follow-up messages in original tool-call order, including after a
-resumed approval. Injected messages must use the user role, cannot forge tool
-protocol parts, and pass the same rich-content capability and provider-file
-checks as normal input.
+The agent always appends the provider-protocol tool-return request first. It
+then copies follow-up requests in original tool-call order, including after a
+resumed approval. Their type permits only request parts, and the agent further
+requires every part to be a user prompt. Rich-content capability and
+provider-file checks are the same as for normal input.
 
 When a model requests multiple tools, the agent uses its `Io` runtime to run
 them concurrently. Allocations into the result arena are synchronized, result

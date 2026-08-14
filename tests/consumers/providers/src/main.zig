@@ -15,7 +15,8 @@ pub fn main() !void {
     _ = openai_compatible.Error;
     _ = openai_compatible.Client;
     _ = zigai.AgentError;
-    _ = zigai.Role;
+    _ = zigai.RequestMessage;
+    _ = zigai.ResponseMessage;
     _ = zigai.ToolDefinition;
     _ = zigai.Usage;
     _ = zigai.ProviderRequestError;

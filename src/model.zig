@@ -12,13 +12,6 @@ pub const CancellationToken = struct {
     }
 };
 
-pub const Role = enum {
-    system,
-    user,
-    assistant,
-    tool,
-};
-
 pub const ToolCall = struct {
     id: []const u8,
     name: []const u8,
@@ -72,7 +65,25 @@ pub const Thinking = struct {
     metadata: []const Metadata = &.{},
 };
 
-pub const Part = union(enum) {
+/// Content supplied by an application in a user prompt.
+pub const UserContent = union(enum) {
+    text: []const u8,
+    image: Content,
+    audio: Content,
+    document: Content,
+    binary: Content,
+};
+
+/// One part of a request sent to a model.
+pub const RequestPart = union(enum) {
+    system_prompt: []const u8,
+    user_prompt: UserContent,
+    tool_return: ToolResult,
+    retry_prompt: []const u8,
+};
+
+/// One part returned by a model.
+pub const ResponsePart = union(enum) {
     text: []const u8,
     image: Content,
     audio: Content,
@@ -80,14 +91,56 @@ pub const Part = union(enum) {
     binary: Content,
     thinking: Thinking,
     tool_call: ToolCall,
-    tool_result: ToolResult,
 };
 
-pub const Message = struct {
-    role: Role,
-    parts: []const Part,
+/// Lifecycle state of a request captured in history.
+pub const RequestState = enum {
+    complete,
+    interrupted,
+};
+
+/// An application request recorded in provider-neutral message history.
+pub const RequestMessage = struct {
+    parts: []const RequestPart,
+    timestamp_unix_ms: ?i64 = null,
+    /// Rendered instructions used for the run that created this request.
+    instructions: ?[]const u8 = null,
+    run_id: ?[]const u8 = null,
+    conversation_id: ?[]const u8 = null,
+    /// Application metadata retained in history and never sent to providers.
+    metadata: []const Metadata = &.{},
+    state: RequestState = .complete,
+};
+
+/// A provider response recorded in provider-neutral message history.
+pub const ResponseMessage = struct {
+    parts: []const ResponsePart,
+    usage: Usage = .{},
+    timestamp_unix_ms: ?i64 = null,
+    provider_name: ?[]const u8 = null,
+    provider_url: ?[]const u8 = null,
+    /// Raw JSON for provider data that must survive a history round trip.
+    provider_details_json: ?[]const u8 = null,
+    provider_response_id: ?[]const u8 = null,
+    model_name: ?[]const u8 = null,
+    finish_reason: ?FinishReason = null,
+    run_id: ?[]const u8 = null,
+    conversation_id: ?[]const u8 = null,
+    /// Application metadata retained in history and never sent to providers.
     metadata: []const Metadata = &.{},
 };
+
+/// A request or response in reusable provider-neutral history.
+pub const Message = union(enum) {
+    request: RequestMessage,
+    response: ResponseMessage,
+};
+
+/// Compatibility name for model response parts.
+pub const Part = ResponsePart;
+
+/// Rich content accepted by `RunOptions.prompt_parts`.
+pub const PromptPart = UserContent;
 
 pub const ToolDefinition = struct {
     name: []const u8,
@@ -112,7 +165,7 @@ pub const ToolExecution = enum {
 /// tool-result message.
 pub const ToolOutput = struct {
     content: []const u8,
-    follow_up_messages: []const Message = &.{},
+    follow_up_messages: []const RequestMessage = &.{},
 };
 
 /// A typed reflected-tool return with optional model-visible follow-up
@@ -120,7 +173,7 @@ pub const ToolOutput = struct {
 pub fn ToolReturn(comptime Value: type) type {
     return struct {
         value: Value,
-        follow_up_messages: []const Message = &.{},
+        follow_up_messages: []const RequestMessage = &.{},
 
         pub const zigai_tool_return = true;
         pub const ValueType = Value;
@@ -410,16 +463,7 @@ pub const OutputFormat = union(enum) {
 /// Provider response data allocated by the allocator passed to `Model.request`
 /// or `Model.stream`. Direct callers should normally use an arena allocator;
 /// `Agent` copies the response into its own owned result arena.
-pub const ModelResponse = struct {
-    parts: []const Part,
-    usage: Usage = .{},
-    /// Concrete provider identity, populated by `Model.request` when omitted by an adapter.
-    provider_name: ?[]const u8 = null,
-    /// Concrete model identity, populated by `Model.request` when omitted by an adapter.
-    model_name: ?[]const u8 = null,
-    /// Normalized termination category and the provider's original value.
-    finish_reason: ?FinishReason = null,
-};
+pub const ModelResponse = ResponseMessage;
 
 pub const ToolCallDelta = struct {
     id: ?[]const u8 = null,

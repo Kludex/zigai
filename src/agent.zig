@@ -8,7 +8,10 @@ const history = @import("history.zig");
 const telemetry_types = @import("telemetry.zig");
 
 const Message = model_types.Message;
-const Part = model_types.Part;
+const PromptPart = model_types.PromptPart;
+const RequestPart = model_types.RequestPart;
+const ResponsePart = model_types.ResponsePart;
+const Part = ResponsePart;
 
 const AgentError = error{
     Cancelled,
@@ -164,7 +167,7 @@ pub const RunOptions = struct {
     /// Earlier conversation messages. They are copied into the result arena.
     message_history: []const Message = &.{},
     /// Rich parts inserted before the text prompt in the new user message.
-    prompt_parts: []const Part = &.{},
+    prompt_parts: []const PromptPart = &.{},
     /// Extra instructions appended after the agent's static and dynamic ones.
     instructions: []const []const u8 = &.{},
     /// Overrides agent dependencies when non-null.
@@ -835,7 +838,7 @@ pub const Agent = struct {
             try ensureContentSupported(self.model, state.messages)
         else
             try ensureContentSupported(self.model, options.message_history);
-        try ensurePartsSupported(self.model, .user, options.prompt_parts);
+        try ensurePromptPartsSupported(self.model, options.prompt_parts);
         try emitLifecycle(hooks, .{ .run_start = .{ .prompt = prompt, .model = self.model } });
 
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -865,10 +868,10 @@ pub const Agent = struct {
             try tool_retries.restore(state.tool_retries);
         } else {
             if (self.system_prompt) |system_prompt| {
-                try appendTextMessage(memory, &messages, .system, system_prompt);
+                try appendSystemMessage(memory, &messages, system_prompt);
             }
             for (options.message_history) |message| try appendMessageCopy(memory, &messages, message);
-            try appendPromptMessage(memory, &messages, prompt, options.prompt_parts);
+            try appendPromptMessage(memory, &messages, prompt, options.prompt_parts, resolved_instructions);
         }
 
         var model_requests: usize = if (resume_state) |state| state.model_requests else 0;
@@ -904,7 +907,7 @@ pub const Agent = struct {
                     },
                     hooks,
                 );
-                try messages.append(memory, .{ .role = .tool, .parts = tool_batch.parts });
+                try messages.append(memory, .{ .request = .{ .parts = tool_batch.parts } });
                 try appendToolFollowUps(self.model, memory, &messages, tool_batch.follow_up_messages);
                 resume_pending = false;
                 continue;
@@ -1003,7 +1006,7 @@ pub const Agent = struct {
             try enforceFinishReason(response.finish_reason);
             if (response.parts.len == 0) return Error.EmptyModelResponse;
 
-            try messages.append(memory, .{ .role = .assistant, .parts = response.parts });
+            try messages.append(memory, .{ .response = try copyResponseMessage(memory, response) });
 
             var tool_call_count: usize = 0;
             for (response.parts) |part| switch (part) {
@@ -1028,7 +1031,7 @@ pub const Agent = struct {
                     if (err == error.OutOfMemory) return err;
                     if (!will_retry) return err;
                     output_retries += 1;
-                    try appendTextMessage(memory, &messages, .user, "The previous response did not match the required output schema. " ++
+                    try appendRetryMessage(memory, &messages, "The previous response did not match the required output schema. " ++
                         "Return only valid JSON matching the schema.");
                     continue;
                 };
@@ -1094,9 +1097,9 @@ pub const Agent = struct {
                 hooks,
             );
             if (stream_sink) |sink| for (tool_batch.parts) |part| {
-                try emitStreamEvent(hooks, sink, .{ .tool_result = part.tool_result });
+                try emitStreamEvent(hooks, sink, .{ .tool_result = part.tool_return });
             };
-            try messages.append(memory, .{ .role = .tool, .parts = tool_batch.parts });
+            try messages.append(memory, .{ .request = .{ .parts = tool_batch.parts } });
             try appendToolFollowUps(self.model, memory, &messages, tool_batch.follow_up_messages);
         }
     }
@@ -1187,8 +1190,10 @@ fn executeResumedToolCalls(
     hooks: []const LifecycleHook,
 ) !ToolCallBatch {
     if (messages.len == 0) return Agent.Error.InvalidDeferredState;
-    const assistant = messages[messages.len - 1];
-    if (assistant.role != .assistant) return Agent.Error.InvalidDeferredState;
+    const assistant = switch (messages[messages.len - 1]) {
+        .response => |response| response,
+        .request => return Agent.Error.InvalidDeferredState,
+    };
     var call_count: usize = 0;
     for (assistant.parts) |part| switch (part) {
         .tool_call => call_count += 1,
@@ -1212,8 +1217,8 @@ fn executeResumedToolCalls(
         if (!found) return Agent.Error.UnexpectedDeferredToolDecision;
     }
 
-    const results = try allocator.alloc(Part, call_count);
-    var follow_up_messages: std.ArrayList(Message) = .empty;
+    const results = try allocator.alloc(RequestPart, call_count);
+    var follow_up_messages: std.ArrayList(model_types.RequestMessage) = .empty;
     var result_index: usize = 0;
     for (assistant.parts) |part| switch (part) {
         .tool_call => |call| {
@@ -1231,7 +1236,7 @@ fn executeResumedToolCalls(
                     tool_retries,
                     .{ .failure = failure },
                 );
-                results[result_index] = .{ .tool_result = processed.result };
+                results[result_index] = .{ .tool_return = processed.result };
                 try follow_up_messages.appendSlice(allocator, processed.follow_up_messages);
                 result_index += 1;
                 continue;
@@ -1252,7 +1257,7 @@ fn executeResumedToolCalls(
                         tool_retries,
                         outcome,
                     );
-                    results[result_index] = .{ .tool_result = processed.result };
+                    results[result_index] = .{ .tool_return = processed.result };
                     try follow_up_messages.appendSlice(allocator, processed.follow_up_messages);
                 },
                 .requires_approval => {
@@ -1270,16 +1275,16 @@ fn executeResumedToolCalls(
                                 tool_retries,
                                 outcome,
                             );
-                            results[result_index] = .{ .tool_result = processed.result };
+                            results[result_index] = .{ .tool_return = processed.result };
                             try follow_up_messages.appendSlice(allocator, processed.follow_up_messages);
                         },
-                        .deny => results[result_index] = .{ .tool_result = .{
+                        .deny => results[result_index] = .{ .tool_return = .{
                             .call_id = call.id,
                             .name = call.name,
                             .content = approved.content orelse "Tool call denied by reviewer.",
                             .is_error = true,
                         } },
-                        .result => results[result_index] = .{ .tool_result = .{
+                        .result => results[result_index] = .{ .tool_return = .{
                             .call_id = call.id,
                             .name = call.name,
                             .content = approved.content orelse "",
@@ -1291,13 +1296,13 @@ fn executeResumedToolCalls(
                     const supplied = decision orelse return Agent.Error.MissingDeferredToolDecision;
                     switch (supplied.action) {
                         .approve => return Agent.Error.DeferredToolRequiresResult,
-                        .deny => results[result_index] = .{ .tool_result = .{
+                        .deny => results[result_index] = .{ .tool_return = .{
                             .call_id = call.id,
                             .name = call.name,
                             .content = supplied.content orelse "Tool call denied by reviewer.",
                             .is_error = true,
                         } },
-                        .result => results[result_index] = .{ .tool_result = .{
+                        .result => results[result_index] = .{ .tool_return = .{
                             .call_id = call.id,
                             .name = call.name,
                             .content = supplied.content orelse "",
@@ -1418,17 +1423,17 @@ const ToolOutcome = union(enum) {
 const ExecutedTool = struct {
     content: []const u8,
     is_error: bool,
-    follow_up_messages: []const Message = &.{},
+    follow_up_messages: []const model_types.RequestMessage = &.{},
 };
 
 const ProcessedTool = struct {
     result: model_types.ToolResult,
-    follow_up_messages: []const Message = &.{},
+    follow_up_messages: []const model_types.RequestMessage = &.{},
 };
 
 const ToolCallBatch = struct {
-    parts: []Part,
-    follow_up_messages: []const Message = &.{},
+    parts: []RequestPart,
+    follow_up_messages: []const model_types.RequestMessage = &.{},
 };
 
 fn executeToolCalls(
@@ -1475,7 +1480,7 @@ fn executeToolCalls(
         else => {},
     };
 
-    const result_parts = try allocator.alloc(Part, call_count);
+    const result_parts = try allocator.alloc(RequestPart, call_count);
     if (call_count == 1) {
         try checkCancellation(agent.cancellation);
         const outcome: ToolOutcome = if (work[0].validation_failure) |failure|
@@ -1502,7 +1507,7 @@ fn executeToolCalls(
             tool_retries,
             outcome,
         );
-        result_parts[0] = .{ .tool_result = processed.result };
+        result_parts[0] = .{ .tool_return = processed.result };
         return .{ .parts = result_parts, .follow_up_messages = processed.follow_up_messages };
     }
 
@@ -1561,7 +1566,7 @@ fn executeToolCalls(
         awaited += 1;
     }
     try checkCancellation(agent.cancellation);
-    var follow_up_messages: std.ArrayList(Message) = .empty;
+    var follow_up_messages: std.ArrayList(model_types.RequestMessage) = .empty;
     for (work, outcomes, result_parts) |item, outcome, *result_part| {
         const processed = try toolResult(
             agent,
@@ -1571,7 +1576,7 @@ fn executeToolCalls(
             tool_retries,
             outcome,
         );
-        result_part.* = .{ .tool_result = processed.result };
+        result_part.* = .{ .tool_return = processed.result };
         try follow_up_messages.appendSlice(allocator, processed.follow_up_messages);
     }
     return .{
@@ -1837,32 +1842,43 @@ fn enforceFinishReason(reason: ?model_types.FinishReason) Agent.Error!void {
     };
 }
 
-fn appendTextMessage(allocator: std.mem.Allocator, messages: *std.ArrayList(Message), role: model_types.Role, text: []const u8) !void {
-    const parts = try allocator.alloc(Part, 1);
-    parts[0] = .{ .text = try allocator.dupe(u8, text) };
-    try messages.append(allocator, .{ .role = role, .parts = parts });
+fn appendSystemMessage(allocator: std.mem.Allocator, messages: *std.ArrayList(Message), text: []const u8) !void {
+    const parts = try allocator.alloc(RequestPart, 1);
+    parts[0] = .{ .system_prompt = try allocator.dupe(u8, text) };
+    try messages.append(allocator, .{ .request = .{ .parts = parts } });
+}
+
+fn appendRetryMessage(allocator: std.mem.Allocator, messages: *std.ArrayList(Message), text: []const u8) !void {
+    const parts = try allocator.alloc(RequestPart, 1);
+    parts[0] = .{ .retry_prompt = try allocator.dupe(u8, text) };
+    try messages.append(allocator, .{ .request = .{ .parts = parts } });
 }
 
 fn appendPromptMessage(
     allocator: std.mem.Allocator,
     messages: *std.ArrayList(Message),
     prompt: []const u8,
-    rich_parts: []const Part,
+    rich_parts: []const PromptPart,
+    instructions: []const []const u8,
 ) !void {
     const extra: usize = if (prompt.len > 0) 1 else 0;
-    const parts = try allocator.alloc(Part, rich_parts.len + extra);
-    for (rich_parts, parts[0..rich_parts.len]) |part, *copy| copy.* = try copyPart(allocator, part);
-    if (prompt.len > 0) parts[rich_parts.len] = .{ .text = try allocator.dupe(u8, prompt) };
-    try messages.append(allocator, .{ .role = .user, .parts = parts });
+    const parts = try allocator.alloc(RequestPart, rich_parts.len + extra);
+    for (rich_parts, parts[0..rich_parts.len]) |part, *copy| {
+        copy.* = .{ .user_prompt = try copyPromptPart(allocator, part) };
+    }
+    if (prompt.len > 0) {
+        parts[rich_parts.len] = .{ .user_prompt = .{ .text = try allocator.dupe(u8, prompt) } };
+    }
+    try messages.append(allocator, .{ .request = .{
+        .parts = parts,
+        .instructions = if (instructions.len > 0) try std.mem.join(allocator, "\n\n", instructions) else null,
+    } });
 }
 
 fn appendMessageCopy(allocator: std.mem.Allocator, messages: *std.ArrayList(Message), message: Message) !void {
-    const parts = try allocator.alloc(Part, message.parts.len);
-    for (message.parts, parts) |part, *copy| copy.* = try copyPart(allocator, part);
-    try messages.append(allocator, .{
-        .role = message.role,
-        .parts = parts,
-        .metadata = try copyMetadata(allocator, message.metadata),
+    try messages.append(allocator, switch (message) {
+        .request => |request| .{ .request = try copyRequestMessage(allocator, request) },
+        .response => |response| .{ .response = try copyResponseMessage(allocator, response) },
     });
 }
 
@@ -1870,20 +1886,28 @@ fn appendToolFollowUps(
     selected_model: model_types.Model,
     allocator: std.mem.Allocator,
     messages: *std.ArrayList(Message),
-    follow_ups: []const Message,
+    follow_ups: []const model_types.RequestMessage,
 ) !void {
-    for (follow_ups) |message| {
-        if (message.role != .user) return Agent.Error.InvalidToolFollowUpMessage;
-        for (message.parts) |part| switch (part) {
-            .tool_call, .tool_result => return Agent.Error.InvalidToolFollowUpMessage,
-            else => {},
+    for (follow_ups) |request| {
+        for (request.parts) |part| switch (part) {
+            .user_prompt => |content| try ensurePromptPartSupported(selected_model, content),
+            else => return Agent.Error.InvalidToolFollowUpMessage,
         };
-        try ensurePartsSupported(selected_model, .user, message.parts);
-        try appendMessageCopy(allocator, messages, message);
+        try messages.append(allocator, .{ .request = try copyRequestMessage(allocator, request) });
     }
 }
 
-fn copyPart(allocator: std.mem.Allocator, part: Part) !Part {
+fn copyPromptPart(allocator: std.mem.Allocator, part: PromptPart) !PromptPart {
+    return switch (part) {
+        .text => |value| .{ .text = try allocator.dupe(u8, value) },
+        .image => |value| .{ .image = try copyContent(allocator, value) },
+        .audio => |value| .{ .audio = try copyContent(allocator, value) },
+        .document => |value| .{ .document = try copyContent(allocator, value) },
+        .binary => |value| .{ .binary = try copyContent(allocator, value) },
+    };
+}
+
+fn copyResponsePart(allocator: std.mem.Allocator, part: ResponsePart) !ResponsePart {
     return switch (part) {
         .text => |value| .{ .text = try allocator.dupe(u8, value) },
         .image => |value| .{ .image = try copyContent(allocator, value) },
@@ -1904,13 +1928,65 @@ fn copyPart(allocator: std.mem.Allocator, part: Part) !Part {
             else
                 null,
         } },
-        .tool_result => |value| .{ .tool_result = .{
+    };
+}
+
+fn copyPart(allocator: std.mem.Allocator, part: ResponsePart) !ResponsePart {
+    return copyResponsePart(allocator, part);
+}
+
+fn copyRequestPart(allocator: std.mem.Allocator, part: RequestPart) !RequestPart {
+    return switch (part) {
+        .system_prompt => |value| .{ .system_prompt = try allocator.dupe(u8, value) },
+        .user_prompt => |value| .{ .user_prompt = try copyPromptPart(allocator, value) },
+        .retry_prompt => |value| .{ .retry_prompt = try allocator.dupe(u8, value) },
+        .tool_return => |value| .{ .tool_return = .{
             .call_id = try allocator.dupe(u8, value.call_id),
             .name = try allocator.dupe(u8, value.name),
             .content = try allocator.dupe(u8, value.content),
             .is_error = value.is_error,
         } },
     };
+}
+
+fn copyRequestMessage(allocator: std.mem.Allocator, request: model_types.RequestMessage) !model_types.RequestMessage {
+    const parts = try allocator.alloc(RequestPart, request.parts.len);
+    for (request.parts, parts) |part, *copy| copy.* = try copyRequestPart(allocator, part);
+    return .{
+        .parts = parts,
+        .timestamp_unix_ms = request.timestamp_unix_ms,
+        .instructions = try copyOptionalString(allocator, request.instructions),
+        .run_id = try copyOptionalString(allocator, request.run_id),
+        .conversation_id = try copyOptionalString(allocator, request.conversation_id),
+        .metadata = try copyMetadata(allocator, request.metadata),
+        .state = request.state,
+    };
+}
+
+fn copyResponseMessage(allocator: std.mem.Allocator, response: model_types.ResponseMessage) !model_types.ResponseMessage {
+    const parts = try allocator.alloc(ResponsePart, response.parts.len);
+    for (response.parts, parts) |part, *copy| copy.* = try copyResponsePart(allocator, part);
+    return .{
+        .parts = parts,
+        .usage = response.usage,
+        .timestamp_unix_ms = response.timestamp_unix_ms,
+        .provider_name = try copyOptionalString(allocator, response.provider_name),
+        .provider_url = try copyOptionalString(allocator, response.provider_url),
+        .provider_details_json = try copyOptionalString(allocator, response.provider_details_json),
+        .provider_response_id = try copyOptionalString(allocator, response.provider_response_id),
+        .model_name = try copyOptionalString(allocator, response.model_name),
+        .finish_reason = if (response.finish_reason) |reason| .{
+            .kind = reason.kind,
+            .raw = try allocator.dupe(u8, reason.raw),
+        } else null,
+        .run_id = try copyOptionalString(allocator, response.run_id),
+        .conversation_id = try copyOptionalString(allocator, response.conversation_id),
+        .metadata = try copyMetadata(allocator, response.metadata),
+    };
+}
+
+fn copyOptionalString(allocator: std.mem.Allocator, value: ?[]const u8) !?[]const u8 {
+    return if (value) |string| try allocator.dupe(u8, string) else null;
 }
 
 fn copyContent(allocator: std.mem.Allocator, value: model_types.Content) !model_types.Content {
@@ -2093,29 +2169,44 @@ fn ensureBuiltinToolsSupported(
 }
 
 fn ensureContentSupported(selected_model: model_types.Model, messages: []const Message) Agent.Error!void {
-    for (messages) |message| try ensurePartsSupported(selected_model, message.role, message.parts);
+    for (messages) |message| switch (message) {
+        .request => |request| for (request.parts) |part| switch (part) {
+            .user_prompt => |content| try ensurePromptPartSupported(selected_model, content),
+            else => {},
+        },
+        .response => |response| try ensureResponsePartsSupported(selected_model, response.parts),
+    };
 }
 
-fn ensurePartsSupported(selected_model: model_types.Model, role: model_types.Role, parts: []const Part) Agent.Error!void {
+fn ensurePromptPartsSupported(selected_model: model_types.Model, parts: []const PromptPart) Agent.Error!void {
+    for (parts) |part| try ensurePromptPartSupported(selected_model, part);
+}
+
+fn ensurePromptPartSupported(selected_model: model_types.Model, part: PromptPart) Agent.Error!void {
+    switch (part) {
+        .image => |content| try ensureContentPartSupported(selected_model, .image, content),
+        .audio => |content| try ensureContentPartSupported(selected_model, .audio, content),
+        .document => |content| try ensureContentPartSupported(selected_model, .document, content),
+        .binary => |content| try ensureContentPartSupported(selected_model, .binary, content),
+        .text => {},
+    }
+}
+
+fn ensureResponsePartsSupported(selected_model: model_types.Model, parts: []const ResponsePart) Agent.Error!void {
     for (parts) |part| switch (part) {
         .image => |content| {
-            if (role != .user and role != .assistant) return Agent.Error.InvalidContentRole;
             try ensureContentPartSupported(selected_model, .image, content);
         },
         .audio => |content| {
-            if (role != .user and role != .assistant) return Agent.Error.InvalidContentRole;
             try ensureContentPartSupported(selected_model, .audio, content);
         },
         .document => |content| {
-            if (role != .user and role != .assistant) return Agent.Error.InvalidContentRole;
             try ensureContentPartSupported(selected_model, .document, content);
         },
         .binary => |content| {
-            if (role != .user and role != .assistant) return Agent.Error.InvalidContentRole;
             try ensureContentPartSupported(selected_model, .binary, content);
         },
         .thinking => {
-            if (role != .assistant) return Agent.Error.InvalidContentRole;
             if (!selected_model.profile.supportsContentType(.thinking)) return Agent.Error.ModelDoesNotSupportThinking;
         },
         else => {},
@@ -2153,7 +2244,7 @@ fn findToolIndex(tools: []const model_types.Tool, name: []const u8) ?usize {
     return null;
 }
 
-fn collectText(allocator: std.mem.Allocator, parts: []const Part) ![]const u8 {
+fn collectText(allocator: std.mem.Allocator, parts: []const ResponsePart) ![]const u8 {
     var output: std.ArrayList(u8) = .empty;
     for (parts) |part| switch (part) {
         .text => |text| try output.appendSlice(allocator, text),
@@ -2277,6 +2368,7 @@ test "agent private helpers cover ownership settings retries and rich content" {
     defer arena.deinit();
     const allocator = arena.allocator();
     const copied = [_]Part{
+        try copyPart(allocator, .{ .image = .{ .source = .{ .bytes = "image" }, .media_type = "image/png" } }),
         try copyPart(allocator, .{ .audio = .{ .source = .{ .bytes = "audio" }, .media_type = "audio/mpeg" } }),
         try copyPart(allocator, .{ .document = .{
             .source = .{ .url = "https://example.test/doc" },
@@ -2288,10 +2380,20 @@ test "agent private helpers cover ownership settings retries and rich content" {
         } }),
         try copyPart(allocator, .{ .thinking = .{ .content = "private", .signature = "signed" } }),
     };
-    try std.testing.expectEqualStrings("audio", copied[0].audio.source.bytes);
-    try std.testing.expectEqualStrings("https://example.test/doc", copied[1].document.source.url);
-    try std.testing.expectEqualStrings("file", copied[2].binary.source.provider_file.id);
-    try std.testing.expectEqualStrings("signed", copied[3].thinking.signature.?);
+    try std.testing.expectEqualStrings("image", copied[0].image.source.bytes);
+    try std.testing.expectEqualStrings("audio", copied[1].audio.source.bytes);
+    try std.testing.expectEqualStrings("https://example.test/doc", copied[2].document.source.url);
+    try std.testing.expectEqualStrings("file", copied[3].binary.source.provider_file.id);
+    try std.testing.expectEqualStrings("signed", copied[4].thinking.signature.?);
+
+    const copied_prompts = [_]PromptPart{
+        try copyPromptPart(allocator, .{ .audio = .{ .source = .{ .bytes = "audio" }, .media_type = "audio/mpeg" } }),
+        try copyPromptPart(allocator, .{ .document = .{ .source = .{ .bytes = "doc" }, .media_type = "application/pdf" } }),
+        try copyPromptPart(allocator, .{ .binary = .{ .source = .{ .bytes = "binary" }, .media_type = "application/octet-stream" } }),
+    };
+    try std.testing.expectEqualStrings("audio", copied_prompts[0].audio.source.bytes);
+    _ = try copyRequestPart(allocator, .{ .system_prompt = "system" });
+    _ = try copyRequestPart(allocator, .{ .retry_prompt = "retry" });
 
     const Stub = struct {
         fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
@@ -2317,7 +2419,7 @@ test "agent private helpers cover ownership settings retries and rich content" {
         selected_model,
         allocator,
         &messages,
-        &.{.{ .role = .user, .parts = &.{.{ .tool_call = .{ .id = "call", .name = "tool", .arguments_json = "{}" } }} }},
+        &.{.{ .parts = &.{.{ .system_prompt = "not allowed" }} }},
     ));
 
     var tracker = ToolRetryTracker{ .allocator = allocator };
@@ -2331,22 +2433,29 @@ test "agent private helpers cover ownership settings retries and rich content" {
         ensureBuiltinToolsSupported(.{}, &.{.{ .web_search = .{} }}),
     );
     const content = model_types.Content{ .source = .{ .bytes = "x" }, .media_type = "application/octet-stream" };
-    try std.testing.expectError(
-        Agent.Error.InvalidContentRole,
-        ensurePartsSupported(selected_model, .tool, &.{.{ .document = content }}),
-    );
-    try std.testing.expectError(
-        Agent.Error.InvalidContentRole,
-        ensurePartsSupported(selected_model, .system, &.{.{ .binary = content }}),
-    );
-    try ensurePartsSupported(selected_model, .user, &.{.{ .binary = content }});
+    try ensurePromptPartsSupported(selected_model, &.{
+        .{ .image = content },
+        .{ .audio = content },
+        .{ .document = content },
+        .{ .binary = content },
+    });
+    try ensureResponsePartsSupported(selected_model, &.{
+        .{ .image = content },
+        .{ .audio = content },
+        .{ .document = content },
+        .{ .binary = content },
+    });
+    try ensureContentSupported(selected_model, &.{
+        .{ .request = .{ .parts = &.{.{ .user_prompt = .{ .text = "text" } }} } },
+        .{ .response = .{ .parts = &.{.{ .text = "text" }} } },
+    });
     try std.testing.expectError(
         Agent.Error.ModelDoesNotSupportThinking,
-        ensurePartsSupported(.{
+        ensureResponsePartsSupported(.{
             .context = &unused,
             .profile = .{},
             .requestFn = Stub.request,
-        }, .assistant, &.{.{ .thinking = .{ .content = "private" } }}),
+        }, &.{.{ .thinking = .{ .content = "private" } }}),
     );
     const unsupported_model = model_types.Model{ .context = &unused, .profile = .{}, .requestFn = Stub.request };
     try std.testing.expectError(Agent.Error.ModelDoesNotSupportImages, ensureContentPartSupported(unsupported_model, .image, content));
@@ -2372,6 +2481,12 @@ test "typed result decoding releases invalid untyped results" {
 
 test "paused state serializes retries and rejects mismatched calls" {
     var unused: u8 = 0;
+    const Stub = struct {
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            return .{ .parts = &.{} };
+        }
+    };
+    const agent = Agent{ .model = .{ .context = &unused, .profile = .{}, .requestFn = Stub.request } };
     const approval = model_types.Tool{
         .definition = .{ .name = "approval", .description = "", .parameters_json_schema = "{}" },
         .execution = .requires_approval,
@@ -2383,7 +2498,7 @@ test "paused state serializes retries and rejects mismatched calls" {
         &arena,
         arena.allocator(),
         "prompt",
-        &.{.{ .role = .assistant, .parts = &.{call} }},
+        &.{.{ .response = .{ .parts = &.{call} } }},
         &.{"instruction"},
         .{},
         1,
@@ -2404,5 +2519,17 @@ test "paused state serializes retries and rejects mismatched calls" {
             .arguments_json = "{}",
             .execution = .requires_approval,
         }},
+    ));
+    var retries = ToolRetryTracker{ .allocator = std.testing.allocator };
+    try std.testing.expectError(Agent.Error.InvalidDeferredState, executeResumedToolCalls(
+        agent,
+        &.{approval},
+        std.testing.allocator,
+        &.{.{ .request = .{ .parts = &.{.{ .user_prompt = .{ .text = "not a response" } }} } }},
+        &.{},
+        &.{},
+        &retries,
+        .{},
+        &.{},
     ));
 }
