@@ -133,6 +133,27 @@ The HTTP transport parses allocation-free response metadata for numeric
 observers and retry hooks receive those values without exposing transport
 header storage or changing stable error categories.
 
+## MCP toolsets
+
+`mcp.Client` adapts a Model Context Protocol server to the existing `Toolset`
+contract. It performs the `2025-11-25` initialize/initialized handshake,
+follows `tools/list` cursors, preserves each input schema, and maps
+`tools/call` content back into a model-visible tool result. Discovery runs
+through normal per-step toolset preparation, so namespaces, metadata,
+duplicate-name checks, lifecycle hooks, retries, and parallel dispatch need no
+MCP-specific branch in the agent.
+
+The MCP message transport is a small JSON-RPC vtable. `StreamableHttpTransport`
+uses the shared ZigAI HTTP abstraction for testability, accepts direct JSON or
+SSE responses, correlates SSE messages by request ID, and retains bounded
+`Mcp-Session-Id` response metadata without an extra allocation. Custom request
+headers support authentication without entering recorded cassette data.
+
+`StdioTransport` owns the server child process, frames UTF-8 JSON-RPC messages
+one per line, serializes concurrent exchanges, ignores notifications while
+waiting for the matching response, and rejects unsupported server-to-client
+requests. Closing it closes stdin and terminates the child.
+
 There is intentionally no graph. Applications can build orchestration on top
 of this loop without paying for an abstraction when they do not need one.
 

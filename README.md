@@ -24,6 +24,7 @@ conversation.
 - Buffered and streaming responses.
 - Tool calls, including parallel calls and typed Zig functions.
 - Static and per-step dynamic toolsets with namespaces and metadata.
+- MCP toolsets over Streamable HTTP and stdio.
 - Static, dynamic, and run-specific instructions.
 - Typed output plus JSON-object and JSON Schema modes.
 - Preserved finish reasons with distinct truncation, filtering, and incomplete-call errors.
@@ -234,6 +235,43 @@ The model sees `db__search` and `db__fetch`. A `prepareFn` can enable or disable
 tools before each model step using the current messages, usage, request count,
 and typed dependencies. Tool, toolset, and prepared-entry metadata is available
 to lifecycle hooks, but is not sent to the provider.
+
+### MCP toolsets
+
+An MCP server is a normal toolset:
+
+```zig
+var mcp_http = zigai.mcp.StreamableHttpTransport.init(
+    init.io,
+    http.transport(),
+    "https://example.com/mcp",
+);
+var mcp_client = zigai.mcp.Client{ .transport = mcp_http.transport() };
+const remote_tools = mcp_client.toolset();
+
+const agent = zigai.Agent{
+    .model = model,
+    .toolsets = &.{remote_tools},
+    .io = init.io,
+};
+```
+
+For a local server, start it over stdio and use the same client:
+
+```zig
+var stdio = try zigai.mcp.StdioTransport.init(
+    init.io,
+    &.{ "my-mcp-server", "--config", "server.json" },
+);
+defer stdio.deinit();
+
+var mcp_client = zigai.mcp.Client{ .transport = stdio.transport() };
+```
+
+The client negotiates MCP `2025-11-25`, follows paginated tool discovery, and
+forwards calls through the agent's existing tool loop. Streamable HTTP accepts
+JSON and SSE responses, carries optional session IDs, and supports extra
+headers through `mcp_http.headers`.
 
 ## Lifecycle hooks
 
