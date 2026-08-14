@@ -2,8 +2,8 @@
 
 Build agents in Zig. Bring the model you want.
 
-ZigAI is a provider-independent agent framework with first-party clients for
-OpenAI, Anthropic, and Google Gemini.
+ZigAI is a provider-independent agent framework with native and
+OpenAI-compatible provider clients.
 
 It gives you one small agent loop:
 
@@ -30,7 +30,7 @@ conversation.
 - Timeouts, cancellation, retries, backoff, and usage limits.
 - Readable YAML cassettes, including a real-model compatibility matrix.
 - Dataset evaluations with deterministic and optional model-graded checks.
-- Small command-line clients for every first-party provider.
+- Small command-line clients for OpenAI, Anthropic, and Google.
 
 ## Quick start
 
@@ -130,6 +130,19 @@ The agent and tools stay the same when the provider changes.
 | `zigai.providers.openai` | OpenAI Responses |
 | `zigai.providers.anthropic` | Anthropic Messages |
 | `zigai.providers.google` | Gemini GenerateContent |
+| `zigai.providers.azure_openai` | Azure OpenAI v1 |
+| `zigai.providers.bedrock` | Amazon Bedrock Mantle |
+| `zigai.providers.cerebras` | Cerebras Inference |
+| `zigai.providers.cohere` | Cohere Compatibility API |
+| `zigai.providers.deepseek` | DeepSeek |
+| `zigai.providers.doubleword` | Doubleword |
+| `zigai.providers.groq` | Groq |
+| `zigai.providers.huggingface` | Hugging Face Inference Providers |
+| `zigai.providers.mistral` | Mistral AI |
+| `zigai.providers.openrouter` | OpenRouter |
+| `zigai.providers.ovhcloud` | OVHcloud AI Endpoints |
+| `zigai.providers.pydantic_gateway` | Pydantic AI Gateway |
+| `zigai.providers.together` | Together AI |
 | `zigai.providers.openai_compatible` | Chat Completions-compatible servers |
 
 ```zig
@@ -137,6 +150,24 @@ var client = zigai.providers.anthropic.Client{
     .model_name = "claude-sonnet-4-5",
     .api_key = anthropic_api_key,
     .transport = http.transport(),
+};
+```
+
+Compatible providers use the same three fields. Azure and Bedrock also expose
+`apiBase` helpers because their endpoints depend on the resource or region:
+
+```zig
+const base_url = try zigai.providers.azure_openai.apiBase(
+    allocator,
+    azure_endpoint,
+);
+defer allocator.free(base_url);
+
+var client = zigai.providers.azure_openai.Client{
+    .model_name = "gpt-4o",
+    .api_key = azure_api_key,
+    .transport = http.transport(),
+    .base_url = base_url,
 };
 ```
 
@@ -343,10 +374,29 @@ defer stdio.deinit();
 var mcp_client = zigai.mcp.Client{ .transport = stdio.transport() };
 ```
 
-The client negotiates MCP `2025-11-25`, follows paginated tool discovery, and
-forwards calls through the agent's existing tool loop. Streamable HTTP accepts
-JSON and SSE responses, carries optional session IDs, and supports extra
-headers through `mcp_http.headers`.
+ZigAI implements MCP `2026-07-28`. Requests are stateless and self-describing;
+there is no initialize handshake or protocol session. The client handles
+discovery, every core request, pagination, SSE subscriptions, cancellation,
+and multi-round-trip sampling, roots, and elicitation through an `InputHandler`.
+Tool arguments marked with `x-mcp-header` are mirrored for Streamable HTTP.
+
+The typed helpers cover tools, prompts, resources, completion, discovery, and
+subscriptions. Use `Client.request` for extensions such as Tasks:
+
+```zig
+const result_json = try mcp_client.request(
+    allocator,
+    "tasks/get",
+    "{\"taskId\":\"task-1\"}",
+);
+defer allocator.free(result_json);
+```
+
+`zigai.mcp.Server` provides the matching transport-neutral server dispatcher,
+automatic `server/discover`, protocol and HTTP header validation, extension
+dispatch, result metadata, and a stdio serving loop. HTTP hosts pass their
+request headers to `Server.handle`; authorization remains an HTTP concern and
+can be configured with `mcp_http.headers`.
 
 ### Approval and deferred tools
 

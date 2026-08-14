@@ -21,11 +21,11 @@ Use these namespaces for the rest of the API:
 
 | Namespace | Purpose |
 | --- | --- |
-| `zigai.providers` | OpenAI, Anthropic, Google, and OpenAI-compatible clients |
+| `zigai.providers` | Native and named OpenAI-compatible provider clients |
 | `zigai.models` | Fallback and application-selected model routing |
 | `zigai.history` | Versioned history serialization and processors |
 | `zigai.evals` | Datasets, evaluators, reports, and model grading |
-| `zigai.mcp` | Streamable HTTP and stdio MCP toolsets |
+| `zigai.mcp` | MCP 2026 client, server, Streamable HTTP, and stdio |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
 | `zigai.transport` | Pluggable buffered and line-streaming HTTP transport |

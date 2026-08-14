@@ -162,24 +162,30 @@ header storage or changing stable error categories.
 
 ## MCP toolsets
 
-`mcp.Client` adapts a Model Context Protocol server to the existing `Toolset`
-contract. It performs the `2025-11-25` initialize/initialized handshake,
-follows `tools/list` cursors, preserves each input schema, and maps
-`tools/call` content back into a model-visible tool result. Discovery runs
-through normal per-step toolset preparation, so namespaces, metadata,
-duplicate-name checks, lifecycle hooks, retries, and parallel dispatch need no
-MCP-specific branch in the agent.
+`mcp.Client` implements the stateless MCP `2026-07-28` envelope. Every request
+carries the protocol version, client identity, and capabilities. Typed helpers
+cover every core client method, while the generic JSON request path preserves
+extension methods and unknown fields. The toolset adapter follows list cursors,
+preserves schemas, mirrors `x-mcp-header` arguments, and renders tool content
+through the normal agent loop.
 
-The MCP message transport is a small JSON-RPC vtable. `StreamableHttpTransport`
-uses the shared ZigAI HTTP abstraction for testability, accepts direct JSON or
-SSE responses, correlates SSE messages by request ID, and retains bounded
-`Mcp-Session-Id` response metadata without an extra allocation. Custom request
-headers support authentication without entering recorded cassette data.
+Multi round-trip requests replace server-initiated JSON-RPC calls. When a
+result requires sampling, roots, or elicitation, the configured `InputHandler`
+answers each item and the client retries with `inputResponses` and opaque
+`requestState`. `subscriptions/listen` forwards request-scoped SSE or stdio
+notifications to an `EventSink` until the final response closes the stream.
 
-`StdioTransport` owns the server child process, frames UTF-8 JSON-RPC messages
-one per line, serializes concurrent exchanges, ignores notifications while
-waiting for the matching response, and rejects unsupported server-to-client
-requests. Closing it closes stdin and terminates the child.
+`StreamableHttpTransport` emits the required protocol, method, name, and tool
+parameter headers. It accepts direct JSON and request-scoped SSE responses.
+`StdioTransport` frames one JSON-RPC message per line and correlates response
+IDs. Authentication is supplied as custom HTTP headers and is outside the MCP
+message layer.
+
+`mcp.Server` is a transport-neutral dispatcher. It provides discovery,
+per-request version checks, standard and tool-parameter header validation,
+server identity metadata, core or extension method dispatch, JSON-RPC errors,
+and a stdio serving loop. An HTTP application passes its request headers to
+the same dispatcher.
 
 ## Deferred tool execution
 
