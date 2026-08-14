@@ -8,6 +8,26 @@ const http = @import("transport.zig");
 
 pub const protocol_version = "2025-11-25";
 
+/// MCP protocol and transport failures defined by ZigAI. Transport callback,
+/// process I/O, JSON parsing, and allocation errors may also propagate.
+pub const Error = error{
+    EmptyCommand,
+    InvalidMcpMessage,
+    InvalidMcpResponse,
+    InvalidMcpToolArguments,
+    McpHttpRequestFailed,
+    McpMessageTooLarge,
+    McpProcessClosed,
+    McpResponseIdMismatch,
+    McpRpcError,
+    MissingCursor,
+    MissingMcpClient,
+    MissingMcpSseResponse,
+    MissingParams,
+    UnexpectedMcpRequest,
+    UnsupportedMcpProtocolVersion,
+};
+
 /// Pluggable JSON-RPC message transport. Returned response bytes are owned by
 /// the caller. Notifications may return an empty owned slice.
 pub const Transport = struct {

@@ -7,6 +7,11 @@ const common = @import("common.zig");
 
 pub const api_base = "https://generativelanguage.googleapis.com/v1beta";
 
+pub const Error = model_types.ProviderRequestError || error{
+    InvalidProviderResponse,
+    InvalidRequestEncoding,
+};
+
 pub const Client = struct {
     model_name: []const u8,
     api_key: []const u8,

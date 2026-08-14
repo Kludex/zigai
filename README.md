@@ -563,6 +563,7 @@ Read [Testing](docs/testing.md) for coverage and cassette details.
 ## More documentation
 
 - [Architecture](docs/architecture.md)
+- [Public API and ownership](docs/api.md)
 - [Testing](docs/testing.md)
 - [Releasing](docs/releasing.md)
 - API reference: `zig build docs`

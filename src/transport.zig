@@ -1,6 +1,16 @@
 const std = @import("std");
 const model_types = @import("model.zig");
 
+/// Transport failures defined by ZigAI. Concrete transports may add their own
+/// I/O, TLS, URI, callback, and allocation errors.
+pub const Error = error{
+    RequestCancelled,
+    RequestTimedOut,
+    SessionIdTooLong,
+    StreamingNotSupported,
+    UnsupportedCompressionMethod,
+};
+
 pub const Method = enum {
     GET,
     POST,
@@ -21,6 +31,8 @@ pub const Request = struct {
     cancellation: ?*const model_types.CancellationToken = null,
 };
 
+/// The response body is allocated by the allocator passed to `Transport.send`.
+/// The caller must free it with that allocator.
 pub const Response = struct {
     status: u16,
     body: []const u8,

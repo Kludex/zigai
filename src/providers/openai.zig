@@ -7,6 +7,13 @@ const common = @import("common.zig");
 
 pub const api_base = "https://api.openai.com/v1";
 
+pub const Error = model_types.ProviderRequestError || error{
+    InvalidProviderResponse,
+    InvalidRequestEncoding,
+    UnsupportedBuiltinTool,
+    UnsupportedContentType,
+};
+
 pub const Client = struct {
     model_name: []const u8,
     api_key: []const u8,

@@ -211,6 +211,7 @@ pub fn stringifyResumeDecisions(
     }, .{});
 }
 
+/// Arena-owned resume decisions. All slices remain valid until `deinit`.
 pub const OwnedResumeDecisions = struct {
     arena: std.heap.ArenaAllocator,
     decisions: []const ResumeDecision,
@@ -237,6 +238,7 @@ pub fn parseResumeDecisions(
     return .{ .arena = arena, .decisions = parsed.decisions };
 }
 
+/// Arena-owned paused state. All slices remain valid until `deinit`.
 pub const PausedRun = struct {
     arena: std.heap.ArenaAllocator,
     state_json: []const u8,
@@ -500,6 +502,8 @@ pub const Agent = struct {
 
     pub const Error = AgentError;
 
+    /// Arena-owned buffered result. `output` and `messages` remain valid until
+    /// `deinit`.
     pub const Result = struct {
         arena: std.heap.ArenaAllocator,
         output: []const u8,

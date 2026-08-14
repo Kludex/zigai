@@ -19,7 +19,6 @@
         "scripts",
         ".github",
         "README.md",
-        "TODO.local.md",
         "LICENSE",
     },
 }

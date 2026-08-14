@@ -407,6 +407,9 @@ pub const OutputFormat = union(enum) {
     };
 };
 
+/// Provider response data allocated by the allocator passed to `Model.request`
+/// or `Model.stream`. Direct callers should normally use an arena allocator;
+/// `Agent` copies the response into its own owned result arena.
 pub const ModelResponse = struct {
     parts: []const Part,
     usage: Usage = .{},

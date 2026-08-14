@@ -4,6 +4,13 @@ const std = @import("std");
 const agent_types = @import("agent.zig");
 const model_types = @import("model.zig");
 
+/// Evaluation failures defined by ZigAI. Agent, evaluator callback, and
+/// allocation errors are intentionally allowed to propagate alongside these.
+pub const Error = error{
+    MissingExpectedOutput,
+    InvalidModelGrade,
+};
+
 pub const Case = struct {
     name: []const u8,
     prompt: []const u8,
@@ -57,6 +64,7 @@ pub const CaseResult = struct {
     }
 };
 
+/// Arena-owned dataset output. All slices remain valid until `deinit`.
 pub const Report = struct {
     arena: std.heap.ArenaAllocator,
     cases: []const CaseResult,
@@ -136,7 +144,7 @@ pub fn validJson() Evaluator {
 }
 
 fn exactMatchEvaluate(_: *anyopaque, _: std.mem.Allocator, run: Context) !Evaluation {
-    const expected = run.case.expected_output orelse return error.MissingExpectedOutput;
+    const expected = run.case.expected_output orelse return Error.MissingExpectedOutput;
     const passed = std.mem.eql(u8, run.output, expected);
     return .{
         .passed = passed,
@@ -146,7 +154,7 @@ fn exactMatchEvaluate(_: *anyopaque, _: std.mem.Allocator, run: Context) !Evalua
 }
 
 fn containsExpectedEvaluate(_: *anyopaque, _: std.mem.Allocator, run: Context) !Evaluation {
-    const expected = run.case.expected_output orelse return error.MissingExpectedOutput;
+    const expected = run.case.expected_output orelse return Error.MissingExpectedOutput;
     const passed = std.mem.indexOf(u8, run.output, expected) != null;
     return .{
         .passed = passed,
@@ -206,7 +214,7 @@ pub const ModelGrader = struct {
         );
         defer grade.deinit();
         if (!std.math.isFinite(grade.output.score) or grade.output.score < 0 or grade.output.score > 1)
-            return error.InvalidModelGrade;
+            return Error.InvalidModelGrade;
         return .{
             .passed = grade.output.passed,
             .score = grade.output.score,
