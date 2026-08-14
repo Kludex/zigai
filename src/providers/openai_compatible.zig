@@ -48,89 +48,165 @@ pub const profiles = struct {
     };
 };
 
-pub const Client = struct {
-    model_name: []const u8,
-    api_key: []const u8,
-    transport: http.Transport,
-    base_url: []const u8,
+/// Authentication applied to compatible API requests.
+pub const Authentication = struct {
+    /// HTTP header carrying the credential.
+    header: []const u8 = "authorization",
+    /// Text placed before the credential, normally `Bearer `.
+    prefix: []const u8 = "Bearer ",
+};
+
+/// Compile-time defaults used to define a first-class compatible provider.
+pub const ClientDefaults = struct {
+    base_url: []const u8 = api_base,
     provider_name: []const u8 = "openai-compatible",
     profile: model_types.ModelProfile = profiles.full,
+    authentication: Authentication = .{},
     include_stream_usage: bool = true,
-    settings: model_types.ModelSettings = .{},
-
-    pub fn model(self: *Client) model_types.Model {
-        return .{
-            .context = self,
-            .profile = self.profile,
-            .provider_name = self.provider_name,
-            .model_name = self.model_name,
-            .settings = self.settings,
-            .requestFn = request,
-            .streamFn = stream,
-        };
-    }
-
-    fn request(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest) !model_types.ModelResponse {
-        const self: *Client = @ptrCast(@alignCast(context));
-        const body = try encodeRequest(allocator, self.model_name, value);
-        defer allocator.free(body);
-        const url = try std.fmt.allocPrint(allocator, "{s}/chat/completions", .{self.base_url});
-        defer allocator.free(url);
-        const authorization = try std.fmt.allocPrint(allocator, "Bearer {s}", .{self.api_key});
-        defer allocator.free(authorization);
-        const response = try self.transport.send(allocator, .{
-            .method = .POST,
-            .url = url,
-            .headers = &.{
-                .{ .name = "content-type", .value = "application/json" },
-                .{ .name = "authorization", .value = authorization, .sensitive = true },
-            },
-            .body = body,
-            .timeout_ms = value.timeout_ms,
-            .cancellation = value.cancellation,
-        });
-        defer allocator.free(response.body);
-        if (response.status < 200 or response.status >= 300) {
-            common.notifyProviderError(allocator, value.error_observer, self.provider_name, response.status, response.body, response.metadata);
-            return common.statusError(response.status);
-        }
-        return decodeResponse(allocator, response.body);
-    }
-
-    fn stream(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest, sink: model_types.ModelStreamSink) !model_types.ModelResponse {
-        const self: *Client = @ptrCast(@alignCast(context));
-        const body = try encodeStreamingRequest(allocator, self.model_name, value, self.include_stream_usage);
-        defer allocator.free(body);
-        const url = try std.fmt.allocPrint(allocator, "{s}/chat/completions", .{self.base_url});
-        defer allocator.free(url);
-        const authorization = try std.fmt.allocPrint(allocator, "Bearer {s}", .{self.api_key});
-        defer allocator.free(authorization);
-        var state = StreamState{ .allocator = allocator, .sink = sink };
-        defer state.deinit();
-        const response = try self.transport.streamLines(allocator, .{
-            .method = .POST,
-            .url = url,
-            .headers = &.{
-                .{ .name = "content-type", .value = "application/json" },
-                .{ .name = "authorization", .value = authorization, .sensitive = true },
-            },
-            .body = body,
-            .timeout_ms = value.timeout_ms,
-            .cancellation = value.cancellation,
-        }, state.lineSink());
-        if (response.status < 200 or response.status >= 300) {
-            common.notifyProviderError(allocator, value.error_observer, self.provider_name, response.status, state.error_body.items, response.metadata);
-            return common.statusError(response.status);
-        }
-        try state.finalizeCalls();
-        if (state.text.items.len > 0) try state.parts.insert(allocator, 0, .{ .text = try state.text.toOwnedSlice(allocator) });
-        return .{
-            .parts = try state.parts.toOwnedSlice(allocator),
-            .usage = state.usage,
-            .finish_reason = state.finish_reason,
-        };
-    }
 };
+
+/// Defines a Chat Completions client with provider-specific defaults while
+/// retaining runtime overrides for gateways and private deployments.
+pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
+    return struct {
+        model_name: []const u8,
+        api_key: []const u8,
+        transport: http.Transport,
+        base_url: []const u8 = defaults.base_url,
+        provider_name: []const u8 = defaults.provider_name,
+        profile: model_types.ModelProfile = defaults.profile,
+        authentication: Authentication = defaults.authentication,
+        headers: []const http.Header = &.{},
+        include_stream_usage: bool = defaults.include_stream_usage,
+        settings: model_types.ModelSettings = .{},
+
+        const Self = @This();
+
+        pub fn model(self: *Self) model_types.Model {
+            return .{
+                .context = self,
+                .profile = self.profile,
+                .provider_name = self.provider_name,
+                .model_name = self.model_name,
+                .settings = self.settings,
+                .requestFn = request,
+                .streamFn = stream,
+            };
+        }
+
+        fn request(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            value: model_types.ModelRequest,
+        ) !model_types.ModelResponse {
+            const self: *Self = @ptrCast(@alignCast(context));
+            const body = try encodeRequest(allocator, self.model_name, value);
+            defer allocator.free(body);
+            const url = try endpointUrl(allocator, self.base_url);
+            defer allocator.free(url);
+            const authentication = try std.mem.concat(
+                allocator,
+                u8,
+                &.{ self.authentication.prefix, self.api_key },
+            );
+            defer allocator.free(authentication);
+            var headers: std.ArrayList(http.Header) = .empty;
+            defer headers.deinit(allocator);
+            try headers.appendSlice(allocator, &.{
+                .{ .name = "content-type", .value = "application/json" },
+                .{ .name = self.authentication.header, .value = authentication, .sensitive = true },
+            });
+            try headers.appendSlice(allocator, self.headers);
+            const response = try self.transport.send(allocator, .{
+                .method = .POST,
+                .url = url,
+                .headers = headers.items,
+                .body = body,
+                .timeout_ms = value.timeout_ms,
+                .cancellation = value.cancellation,
+            });
+            defer allocator.free(response.body);
+            if (response.status < 200 or response.status >= 300) {
+                common.notifyProviderError(
+                    allocator,
+                    value.error_observer,
+                    self.provider_name,
+                    response.status,
+                    response.body,
+                    response.metadata,
+                );
+                return common.statusError(response.status);
+            }
+            return decodeResponse(allocator, response.body);
+        }
+
+        fn stream(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            value: model_types.ModelRequest,
+            sink: model_types.ModelStreamSink,
+        ) !model_types.ModelResponse {
+            const self: *Self = @ptrCast(@alignCast(context));
+            const body = try encodeStreamingRequest(allocator, self.model_name, value, self.include_stream_usage);
+            defer allocator.free(body);
+            const url = try endpointUrl(allocator, self.base_url);
+            defer allocator.free(url);
+            const authentication = try std.mem.concat(
+                allocator,
+                u8,
+                &.{ self.authentication.prefix, self.api_key },
+            );
+            defer allocator.free(authentication);
+            var headers: std.ArrayList(http.Header) = .empty;
+            defer headers.deinit(allocator);
+            try headers.appendSlice(allocator, &.{
+                .{ .name = "content-type", .value = "application/json" },
+                .{ .name = self.authentication.header, .value = authentication, .sensitive = true },
+            });
+            try headers.appendSlice(allocator, self.headers);
+            var state = StreamState{ .allocator = allocator, .sink = sink };
+            defer state.deinit();
+            const response = try self.transport.streamLines(allocator, .{
+                .method = .POST,
+                .url = url,
+                .headers = headers.items,
+                .body = body,
+                .timeout_ms = value.timeout_ms,
+                .cancellation = value.cancellation,
+            }, state.lineSink());
+            if (response.status < 200 or response.status >= 300) {
+                common.notifyProviderError(
+                    allocator,
+                    value.error_observer,
+                    self.provider_name,
+                    response.status,
+                    state.error_body.items,
+                    response.metadata,
+                );
+                return common.statusError(response.status);
+            }
+            try state.finalizeCalls();
+            if (state.text.items.len > 0) {
+                try state.parts.insert(allocator, 0, .{ .text = try state.text.toOwnedSlice(allocator) });
+            }
+            return .{
+                .parts = try state.parts.toOwnedSlice(allocator),
+                .usage = state.usage,
+                .finish_reason = state.finish_reason,
+            };
+        }
+    };
+}
+
+pub const Client = ClientWithDefaults(.{});
+
+fn endpointUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
+    return std.fmt.allocPrint(
+        allocator,
+        "{s}/chat/completions",
+        .{std.mem.trimEnd(u8, base_url, "/")},
+    );
+}
 
 pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {
     var output: std.Io.Writer.Allocating = .init(allocator);
