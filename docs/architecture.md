@@ -216,6 +216,18 @@ tool results, and final output synchronously. Once visible stream output has
 been emitted, a failed request is never retried, preventing duplicated text or
 tool events.
 
+## Evaluations
+
+`evals.Dataset` runs ordinary `Agent` instances over named cases and produces
+one arena-owned report. Evaluators receive a borrowed case, output, and usage
+view. The built-in exact-match, contains, and valid-JSON checks are
+deterministic; applications can provide the same small callback interface.
+
+`evals.ModelGrader` is optional and is itself built from an `Agent`. It sends a
+JSON-quoted task, output, expected value, and rubric to that agent, requests a
+typed pass/score/reason object, and rejects non-finite or out-of-range scores.
+No evaluation-specific provider path exists.
+
 ## Provider adapters
 
 First-party adapters live under `src/providers/` and are exported through

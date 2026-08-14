@@ -7,6 +7,7 @@ pub const transport = @import("transport.zig");
 pub const json_schema = @import("json_schema.zig");
 pub const reflect = @import("reflect.zig");
 pub const history = @import("history.zig");
+pub const evals = @import("evals.zig");
 pub const providers = @import("providers.zig");
 pub const models = @import("models.zig");
 pub const telemetry = @import("telemetry.zig");

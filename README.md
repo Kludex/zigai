@@ -33,6 +33,7 @@ conversation.
 - Preserved finish reasons with distinct truncation, filtering, and incomplete-call errors.
 - Timeouts, cancellation, retries, backoff, and usage limits.
 - Readable YAML cassettes, including a real-model compatibility matrix.
+- Dataset evaluations with deterministic and optional model-graded checks.
 - Small command-line clients for every first-party provider.
 
 ## Quick start
@@ -508,6 +509,31 @@ OPENAI_API_KEY=... zig-out/bin/zigai-openai \
 
 Commands are executed directly, without a shell. The model's arguments JSON is
 appended as the final argument, and stdout becomes the tool result.
+
+## Evaluations
+
+Run a dataset through the same agent used by your application:
+
+```zig
+const evaluators = [_]zigai.evals.Evaluator{
+    zigai.evals.containsExpected(),
+};
+
+var report = try (zigai.evals.Dataset{
+    .cases = &.{.{
+        .name = "weather",
+        .prompt = "What is the weather in Madrid?",
+        .expected_output = "sunny",
+    }},
+    .evaluators = &evaluators,
+}).run(allocator, agent);
+defer report.deinit();
+```
+
+Built-ins cover exact matches, substring checks, and valid JSON. `Evaluator`
+is a small callback interface for application-specific deterministic checks.
+`ModelGrader` wraps another agent, requests a typed pass/score/reason result,
+and validates that its score is between zero and one.
 
 ## Testing
 
