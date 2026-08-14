@@ -396,9 +396,10 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
     if (message.get("tool_calls")) |calls_value| {
         const calls = switch (calls_value) {
             .array => |value| value,
+            .null => null,
             else => return error.InvalidProviderResponse,
         };
-        for (calls.items) |call_value| {
+        for (if (calls) |value| value.items else &.{}) |call_value| {
             const call = switch (call_value) {
                 .object => |value| value,
                 else => return error.InvalidProviderResponse,

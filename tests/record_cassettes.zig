@@ -69,6 +69,9 @@ pub fn main(init: std.process.Init) !void {
     for (matrix.google) |entry| if (selected(args, "google", entry.model)) {
         try recordGoogle(init, http.transport(), google_key, entry);
     };
+    for (matrix.compatible) |entry| if (selected(args, entry.provider, entry.model)) {
+        try recordCompatible(init, http.transport(), entry);
+    };
     if (selectedNative(args, native_openai)) {
         try recordNativeOpenAI(init, http.transport(), openai_key, native_openai);
     }
@@ -87,6 +90,83 @@ pub fn main(init: std.process.Init) !void {
     if (selectedRich(args, rich_google)) {
         try recordRichGoogle(init, http.transport(), google_key, rich_google);
     }
+}
+
+fn recordCompatible(
+    init: std.process.Init,
+    transport: zigai.transport.Transport,
+    entry: matrix.CompatibleEntry,
+) !void {
+    const api_key = requiredKey(init, entry.api_key_env);
+    const base_url = switch (entry.endpoint) {
+        .fixed => entry.base_url,
+        .azure_openai => try zigai.providers.azure_openai.apiBase(
+            init.gpa,
+            requiredKey(init, zigai.providers.azure_openai.endpoint_env),
+        ),
+        .bedrock => try zigai.providers.bedrock.apiBase(
+            init.gpa,
+            requiredKey(init, zigai.providers.bedrock.region_env),
+        ),
+    };
+    defer if (entry.endpoint != .fixed) init.gpa.free(base_url);
+
+    var recording = cassettes.RecordingTransport.init(init.gpa, transport);
+    defer recording.deinit();
+    var client = zigai.providers.openai_compatible.Client{
+        .model_name = entry.model,
+        .api_key = api_key,
+        .transport = recording.transport(),
+        .base_url = base_url,
+        .provider_name = entry.provider,
+        .authentication = if (entry.api_key_header)
+            .{ .header = "api-key", .prefix = "" }
+        else
+            .{},
+    };
+    try runTextScenario(init, client.model());
+    if (entry.endpoint != .fixed) try normalizeCompatibleUrl(init.gpa, &recording, entry);
+    try writeCompatible(init, recording, entry);
+}
+
+fn normalizeCompatibleUrl(
+    allocator: std.mem.Allocator,
+    recording: *cassettes.RecordingTransport,
+    entry: matrix.CompatibleEntry,
+) !void {
+    const fixture_base = switch (entry.endpoint) {
+        .azure_openai => "https://example.openai.azure.com/openai/v1",
+        .bedrock => "https://bedrock-mantle.example-region.api.aws/v1",
+        .fixed => return,
+    };
+    for (recording.interactions.items) |*interaction| {
+        allocator.free(interaction.request.url);
+        interaction.request.url = try std.fmt.allocPrint(allocator, "{s}/chat/completions", .{fixture_base});
+    }
+}
+
+fn runTextScenario(init: std.process.Init, model: zigai.Model) !void {
+    var observer_context: u8 = 0;
+    var result = try (zigai.Agent{
+        .model = model,
+        .io = init.io,
+        .model_settings = .{ .max_tokens = 256 },
+        .limits = .{ .max_model_requests = 1 },
+        .provider_error_observer = .{ .context = &observer_context, .observeFn = logProviderError },
+    }).run(init.gpa, "Reply with exactly: pong");
+    defer result.deinit();
+    if (result.output.len == 0 or result.usage.totalTokens() == 0) return error.UnexpectedModelBehavior;
+}
+
+fn writeCompatible(
+    init: std.process.Init,
+    recording: cassettes.RecordingTransport,
+    entry: matrix.CompatibleEntry,
+) !void {
+    const path = try std.fmt.allocPrint(init.gpa, "tests/{s}", .{entry.cassette});
+    defer init.gpa.free(path);
+    try recording.writeCassetteAtomic(init.gpa, init.io, .cwd(), path);
+    std.log.info("recorded {s} {s} -> {s}", .{ entry.provider, entry.model, path });
 }
 
 fn requiredKey(init: std.process.Init, name: []const u8) []const u8 {

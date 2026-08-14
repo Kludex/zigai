@@ -1,0 +1,43 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.deepseek.com/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "deepseek-v4-flash"
+        messages:
+          - role: "user"
+            content: "Reply with exactly: pong"
+        max_tokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "aca83ed0-cdc4-4454-ad64-c6d6b68934ed"
+        object: "chat.completion"
+        created: 1786740464
+        model: "deepseek-v4-flash"
+        choices:
+          - index: 0
+            message:
+              role: "assistant"
+              content: "pong"
+              reasoning_content: "We need to respond exactly \"pong\". The user says \"Reply with exactly: pong\". So output only pong."
+            logprobs: null
+            finish_reason: "stop"
+        usage:
+          prompt_tokens: 89
+          completion_tokens: 29
+          total_tokens: 118
+          prompt_tokens_details:
+            cached_tokens: 0
+          completion_tokens_details:
+            reasoning_tokens: 26
+          prompt_cache_hit_tokens: 0
+          prompt_cache_miss_tokens: 89
+        system_fingerprint: "a26a7955944dc5c60445bff77fac9c8e"

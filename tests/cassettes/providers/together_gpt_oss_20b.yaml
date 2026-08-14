@@ -1,0 +1,42 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.together.xyz/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "openai/gpt-oss-20b"
+        messages:
+          - role: "user"
+            content: "Reply with exactly: pong"
+        max_tokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "owD9Abp-3pDw3Z-a2b2d22f1bea304d"
+        object: "chat.completion"
+        created: 1786740514
+        model: "openai/gpt-oss-20b"
+        metadata:
+          weight_version: "default"
+        prompt: []
+        choices:
+          - index: 0
+            message:
+              role: "assistant"
+              content: "pong"
+              tool_calls: []
+              reasoning: "User wants the assistant to reply exactly: pong. No other content."
+            logprobs: null
+            finish_reason: "stop"
+            seed: null
+        usage:
+          prompt_tokens: 72
+          total_tokens: 97
+          completion_tokens: 25
+          reasoning_tokens: 0

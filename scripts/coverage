@@ -137,7 +137,18 @@ for source in "$project_dir"/src/*.zig "$project_dir"/src/cli/*.zig "$project_di
         "$project_dir"/src/zanthropic.zig|\
         "$project_dir"/src/zgoogle.zig|\
         "$project_dir"/src/zopenai.zig|\
-        "$project_dir"/src/zopenai_compatible.zig)
+        "$project_dir"/src/zopenai_compatible.zig|\
+        "$project_dir"/src/providers/cerebras.zig|\
+        "$project_dir"/src/providers/cohere.zig|\
+        "$project_dir"/src/providers/deepseek.zig|\
+        "$project_dir"/src/providers/doubleword.zig|\
+        "$project_dir"/src/providers/groq.zig|\
+        "$project_dir"/src/providers/huggingface.zig|\
+        "$project_dir"/src/providers/mistral.zig|\
+        "$project_dir"/src/providers/openrouter.zig|\
+        "$project_dir"/src/providers/ovhcloud.zig|\
+        "$project_dir"/src/providers/pydantic_gateway.zig|\
+        "$project_dir"/src/providers/together.zig)
             # These modules contain aliases only. Downstream consumer builds
             # compile them, but they have no executable lines for kcov.
             continue

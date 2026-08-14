@@ -1,0 +1,38 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.mistral.ai/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "mistral-small-latest"
+        messages:
+          - role: "user"
+            content: "Reply with exactly: pong"
+        max_tokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "d3780aaa70f74db0a6a49bbacdca1f92"
+        created: 1786740504
+        model: "mistral-small-latest"
+        usage:
+          prompt_tokens: 21
+          total_tokens: 24
+          completion_tokens: 3
+          prompt_tokens_details:
+            cached_tokens: 0
+          service_tier: "standard"
+        object: "chat.completion"
+        choices:
+          - index: 0
+            finish_reason: "stop"
+            message:
+              role: "assistant"
+              tool_calls: null
+              content: "pong"

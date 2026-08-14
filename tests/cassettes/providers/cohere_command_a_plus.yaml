@@ -1,0 +1,44 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.cohere.ai/compatibility/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "command-a-plus-05-2026"
+        messages:
+          - role: "user"
+            content: "Reply with exactly: pong"
+        max_tokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "f7279dba-c8bd-447f-a7fb-34bdb36e7e0b"
+        choices:
+          - index: 0
+            finish_reason: "stop"
+            message:
+              role: "assistant"
+              content: "pong"
+              reasoning_content: "The user says: \"Reply with exactly: pong\". So we must output exactly \"pong\". No extra spaces, no extra characters. Likely just \"pong\". Ensure no newline? Probably a newline is okay but the content must be exactly \"pong\". Usually we output exactly that word. So answer: pong."
+            logprobs: null
+        created: 1786740454
+        model: "command-a-plus-05-2026"
+        object: "chat.completion"
+        usage:
+          prompt_tokens: 5
+          completion_tokens: 63
+          total_tokens: 68
+          prompt_tokens_details:
+            cached_tokens: 0
+            audio_tokens: 0
+          completion_tokens_details:
+            reasoning_tokens: 62
+            audio_tokens: 0
+            accepted_prediction_tokens: 0
+            rejected_prediction_tokens: 0

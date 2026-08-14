@@ -1,0 +1,52 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.groq.com/openai/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "openai/gpt-oss-20b"
+        messages:
+          - role: "user"
+            content: "Reply with exactly: pong"
+        max_tokens: 256
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "499999"
+      x-ratelimit-remaining-tokens:
+      - "249668"
+    body:
+      type: json
+      content:
+        id: "chatcmpl-0fca978b-1677-4abe-8dd4-b128ce4b4198"
+        object: "chat.completion"
+        created: 1786740466
+        model: "openai/gpt-oss-20b"
+        choices:
+          - index: 0
+            message:
+              role: "assistant"
+              content: "pong"
+              reasoning: "User wants \"Reply with exactly: pong\". So respond with \"pong\" only, nothing else."
+            logprobs: null
+            finish_reason: "stop"
+        usage:
+          queue_time: 0.01610001
+          prompt_tokens: 76
+          prompt_time: 0.003854096
+          completion_tokens: 31
+          completion_time: 0.032596832
+          total_tokens: 107
+          total_time: 0.036450928
+          completion_tokens_details:
+            reasoning_tokens: 21
+        usage_breakdown: null
+        system_fingerprint: "fp_9340e7d14d"
+        x_groq:
+          id: "req_01m010fryaefhrk8dx600f6x5t"
+          seed: 1516723606
+        service_tier: "on_demand"

@@ -1,0 +1,48 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.cerebras.ai/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-oss-120b"
+        messages:
+          - role: "user"
+            content: "Reply with exactly: pong"
+        max_tokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "chatcmpl-1bc7a766-d4d8-4ac0-8d63-4c6c9e2added"
+        choices:
+          - finish_reason: "stop"
+            index: 0
+            message:
+              content: "pong"
+              reasoning: "User says: \"Reply with exactly: pong\". So respond with exactly the word pong, no extra whitespace or punctuation. Should match exactly."
+              role: "assistant"
+        created: 1786740524
+        model: "gpt-oss-120b"
+        system_fingerprint: "fp_e2cabf4999eb0aead3d1"
+        object: "chat.completion"
+        usage:
+          total_tokens: 111
+          completion_tokens: 39
+          completion_tokens_details:
+            accepted_prediction_tokens: 0
+            rejected_prediction_tokens: 0
+            reasoning_tokens: 28
+          prompt_tokens: 72
+          prompt_tokens_details:
+            cached_tokens: 0
+        time_info:
+          created: 1786740524.0982227
+          queue_time: 0.056562044
+          prompt_time: 0.001761767
+          completion_time: 0.048507169
+          total_time: 0.10809469223022461

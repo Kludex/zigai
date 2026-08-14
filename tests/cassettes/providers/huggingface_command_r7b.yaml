@@ -1,0 +1,43 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://router.huggingface.co/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "CohereLabs/c4ai-command-r7b-12-2024"
+        messages:
+          - role: "user"
+            content: "Reply with exactly: pong"
+        max_tokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "46054dba-0f99-4180-b550-9247e1b06b2a"
+        choices:
+          - index: 0
+            finish_reason: "stop"
+            message:
+              role: "assistant"
+              content: "pong"
+            logprobs: null
+        created: 1786740467
+        model: "command-r7b-12-2024"
+        object: "chat.completion"
+        usage:
+          prompt_tokens: 5
+          completion_tokens: 1
+          total_tokens: 6
+          prompt_tokens_details:
+            cached_tokens: 0
+            audio_tokens: 0
+          completion_tokens_details:
+            reasoning_tokens: 0
+            audio_tokens: 0
+            accepted_prediction_tokens: 0
+            rejected_prediction_tokens: 0

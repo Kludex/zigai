@@ -97,6 +97,38 @@ test "real Google model cassettes replay complete tool loops" {
     }
 }
 
+test "real OpenAI-compatible provider cassettes replay text responses" {
+    inline for (model_matrix.compatible) |entry| {
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+        defer cassette.deinit();
+        const base_url = switch (entry.endpoint) {
+            .fixed => entry.base_url,
+            .azure_openai => "https://example.openai.azure.com/openai/v1",
+            .bedrock => "https://bedrock-mantle.example-region.api.aws/v1",
+        };
+        var client = zigai.providers.openai_compatible.Client{
+            .model_name = entry.model,
+            .api_key = "not-recorded",
+            .transport = cassette.transport(),
+            .base_url = base_url,
+            .provider_name = entry.provider,
+            .authentication = if (entry.api_key_header)
+                .{ .header = "api-key", .prefix = "" }
+            else
+                .{},
+        };
+        var result = try (zigai.Agent{
+            .model = client.model(),
+            .model_settings = .{ .max_tokens = 256 },
+            .limits = .{ .max_model_requests = 1 },
+        }).run(std.testing.allocator, "Reply with exactly: pong");
+        defer result.deinit();
+        try std.testing.expect(result.output.len > 0);
+        try std.testing.expect(result.usage.totalTokens() > 0);
+        try std.testing.expectEqual(@as(usize, 0), cassette.remaining());
+    }
+}
+
 test "real OpenAI cassette replays native web search" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/native/openai_web_search.yaml"));
     defer cassette.deinit();
