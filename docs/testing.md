@@ -76,17 +76,16 @@ cassette.
 
 ## Coverage policy
 
-The gate is 100% line coverage for every Zig file under `src/`, excluding Zig's
-standard library, generated files, two type-declaration lines, and the timeout
-sleep expression that LLVM/kcov cannot trace inside Zig's concurrent I/O task.
-Coverage comes primarily from public, high-level behavior; a line-only unit test
-should exist only when a high-level scenario would obscure the behavior being
-tested.
+The gate is 100% line coverage for every executable Zig line under `src/`,
+excluding Zig's standard library, generated files, two type-declaration lines,
+and the timeout sleep expression that LLVM/kcov cannot trace inside Zig's
+concurrent I/O task. Alias-only standalone provider modules have no executable
+lines; the downstream consumer builds compile those instead. Coverage comes
+primarily from public, high-level behavior; a line-only unit test should exist
+only when a high-level scenario would obscure the behavior being tested.
 
 Run `./scripts/coverage` on Linux. It compiles with LLVM debug information,
 runs unit, cassette, agent, real-transport, CLI-success, and CLI-error paths,
 merges their reports, checks that every source file is represented, and fails
 unless the final line rate is exactly 100%. CI runs the same command. macOS
 `kcov` requires extra debugger signing, so coverage remains a Linux-only gate.
-
-Current verified baseline: 2077 of 2077 executable lines (100.00%).

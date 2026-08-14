@@ -132,7 +132,17 @@ run_kcov --merge coverage/merged \
     coverage/openai-cli coverage/anthropic-cli coverage/google-cli coverage/http-smoke
 
 report="$coverage_dir/merged/kcov-merged/coverage.json"
-for source in "$project_dir"/src/*.zig "$project_dir"/src/cli/*.zig "$project_dir"/src/providers/*.zig; do
+for source in "$project_dir"/src/*.zig "$project_dir"/src/cli/*.zig "$project_dir"/src/models/*.zig "$project_dir"/src/providers/*.zig; do
+    case "$source" in
+        "$project_dir"/src/zanthropic.zig|\
+        "$project_dir"/src/zgoogle.zig|\
+        "$project_dir"/src/zopenai.zig|\
+        "$project_dir"/src/zopenai_compatible.zig)
+            # These modules contain aliases only. Downstream consumer builds
+            # compile them, but they have no executable lines for kcov.
+            continue
+            ;;
+    esac
     if ! grep -Fq "\"file\": \"$source\"" "$report"; then
         echo "coverage report is missing $source" >&2
         exit 1
