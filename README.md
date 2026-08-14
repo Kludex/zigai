@@ -14,10 +14,6 @@ prompt -> model -> tool calls -> tool results -> final answer
 There is no hidden graph. Providers handle wire formats; the agent handles the
 conversation.
 
-> [!NOTE]
-> ZigAI is experimental. The planned pre-release scope is implemented, but the
-> public API may still change.
-
 ## What you get
 
 - One agent API across supported providers.
@@ -564,6 +560,7 @@ Read [Testing](docs/testing.md) for coverage and cassette details.
 
 - [Architecture](docs/architecture.md)
 - [Public API and ownership](docs/api.md)
+- [Release notes](CHANGELOG.md)
 - [Testing](docs/testing.md)
 - [Releasing](docs/releasing.md)
 - API reference: `zig build docs`

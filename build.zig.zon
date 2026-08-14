@@ -19,6 +19,7 @@
         "scripts",
         ".github",
         "README.md",
+        "CHANGELOG.md",
         "LICENSE",
     },
 }
