@@ -6,7 +6,6 @@ const model_types = @import("model.zig");
 pub const Error = error{
     RequestCancelled,
     RequestTimedOut,
-    SessionIdTooLong,
     StreamingNotSupported,
     UnsupportedCompressionMethod,
 };
@@ -43,25 +42,6 @@ pub const ResponseMetadata = struct {
     retry_after_seconds: ?u64 = null,
     rate_limit_remaining_requests: ?u64 = null,
     rate_limit_remaining_tokens: ?u64 = null,
-    /// Optional session identifier returned by an MCP Streamable HTTP server.
-    mcp_session_id: ?SessionId = null,
-
-    pub const SessionId = struct {
-        bytes: [256]u8 = undefined,
-        len: u16 = 0,
-
-        pub fn init(value: []const u8) !SessionId {
-            if (value.len > 256) return error.SessionIdTooLong;
-            var result: SessionId = .{};
-            @memcpy(result.bytes[0..value.len], value);
-            result.len = @intCast(value.len);
-            return result;
-        }
-
-        pub fn slice(self: *const SessionId) []const u8 {
-            return self.bytes[0..self.len];
-        }
-    };
 };
 
 pub const Transport = struct {
@@ -297,9 +277,7 @@ fn responseMetadata(head: std.http.Client.Response.Head) ResponseMetadata {
     var metadata: ResponseMetadata = .{};
     var iterator = head.iterateHeaders();
     while (iterator.next()) |header| {
-        if (std.ascii.eqlIgnoreCase(header.name, "mcp-session-id")) {
-            metadata.mcp_session_id = ResponseMetadata.SessionId.init(header.value) catch null;
-        } else if (std.ascii.eqlIgnoreCase(header.name, "retry-after")) {
+        if (std.ascii.eqlIgnoreCase(header.name, "retry-after")) {
             const value = std.fmt.parseInt(u64, header.value, 10) catch continue;
             metadata.retry_after_seconds = value;
         } else if (std.ascii.eqlIgnoreCase(header.name, "x-ratelimit-remaining-requests") or
@@ -387,16 +365,6 @@ test "response metadata parses retry and provider rate-limit headers" {
     try std.testing.expectEqual(@as(?u64, 3), metadata.retry_after_seconds);
     try std.testing.expectEqual(@as(?u64, 0), metadata.rate_limit_remaining_requests);
     try std.testing.expectEqual(@as(?u64, 12), metadata.rate_limit_remaining_tokens);
-
-    const long_session = [_]u8{'x'} ** 257;
-    const oversized_head_text = try std.fmt.allocPrint(
-        std.testing.allocator,
-        "HTTP/1.1 200 OK\r\nmcp-session-id: {s}\r\n\r\n",
-        .{&long_session},
-    );
-    defer std.testing.allocator.free(oversized_head_text);
-    const oversized_head = try std.http.Client.Response.Head.parse(oversized_head_text);
-    try std.testing.expect(responseMetadata(oversized_head).mcp_session_id == null);
 }
 
 test "decompression buffers cover every supported encoding" {
