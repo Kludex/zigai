@@ -32,6 +32,7 @@ pub const Client = struct {
             .high,
         }),
         .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{ .web_search, .web_fetch }),
+        .content_types = model_types.ModelProfile.ContentTypeSet.initFull(),
     },
 
     pub fn model(self: *Client) model_types.Model {
@@ -137,7 +138,7 @@ const StreamState = struct {
             switch (part) {
                 .text => |text| try self.sink.emit(.{ .text_delta = text }),
                 .tool_call => |call| try self.sink.emit(.{ .tool_call = call }),
-                .tool_result => {},
+                else => {},
             }
         }
         if (chunk.usage.input_tokens != 0 or chunk.usage.output_tokens != 0) {
@@ -186,6 +187,22 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
         try json.beginArray();
         for (message.parts) |part| switch (part) {
             .text => |text| try writeTextPart(&json, text),
+            .image => |content| try writeRichContent(allocator, &json, content),
+            .audio => |content| try writeRichContent(allocator, &json, content),
+            .document => |content| try writeRichContent(allocator, &json, content),
+            .binary => |content| try writeRichContent(allocator, &json, content),
+            .thinking => |thinking| {
+                try json.beginObject();
+                try json.objectField("text");
+                try json.write(thinking.content);
+                try json.objectField("thought");
+                try json.write(true);
+                if (thinking.signature) |signature| {
+                    try json.objectField("thoughtSignature");
+                    try json.write(signature);
+                }
+                try json.endObject();
+            },
             .tool_call => |call| {
                 try json.beginObject();
                 try json.objectField("functionCall");
@@ -304,6 +321,50 @@ fn writeTextPart(json: *std.json.Stringify, text: []const u8) !void {
     try json.endObject();
 }
 
+fn writeRichContent(
+    allocator: std.mem.Allocator,
+    json: *std.json.Stringify,
+    content: model_types.Content,
+) !void {
+    try json.beginObject();
+    switch (content.source) {
+        .bytes => |bytes| {
+            const encoded = try common.base64Alloc(allocator, bytes);
+            defer allocator.free(encoded);
+            try json.objectField("inlineData");
+            try json.beginObject();
+            try json.objectField("mimeType");
+            try json.write(content.media_type);
+            try json.objectField("data");
+            try json.write(encoded);
+            try json.endObject();
+        },
+        .url => |url| {
+            try json.objectField("fileData");
+            try json.beginObject();
+            try json.objectField("mimeType");
+            try json.write(content.media_type);
+            try json.objectField("fileUri");
+            try json.write(url);
+            try json.endObject();
+        },
+        .provider_file => |file| {
+            try json.objectField("fileData");
+            try json.beginObject();
+            try json.objectField("mimeType");
+            try json.write(content.media_type);
+            try json.objectField("fileUri");
+            try json.write(file.id);
+            try json.endObject();
+        },
+    }
+    if (content.thought_signature) |signature| {
+        try json.objectField("thoughtSignature");
+        try json.write(signature);
+    }
+    try json.endObject();
+}
+
 fn hasGenerationSettings(settings: model_types.ModelSettings) bool {
     return settings.temperature != null or settings.max_tokens != null or
         settings.stop_sequences != null or settings.seed != null or settings.reasoning_effort != null;
@@ -397,7 +458,44 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
                     .string => |text| text,
                     else => return error.InvalidProviderResponse,
                 };
-                try parts.append(allocator, .{ .text = value });
+                const is_thought = if (object.get("thought")) |thought_value| switch (thought_value) {
+                    .bool => |thought| thought,
+                    else => return error.InvalidProviderResponse,
+                } else false;
+                if (is_thought) {
+                    try parts.append(allocator, .{ .thinking = .{
+                        .content = value,
+                        .signature = try common.optionalObjectString(object, "thoughtSignature"),
+                    } });
+                } else try parts.append(allocator, .{ .text = value });
+            } else if (object.get("inlineData")) |inline_value| {
+                const inline_data = switch (inline_value) {
+                    .object => |value| value,
+                    else => return error.InvalidProviderResponse,
+                };
+                const content = model_types.Content{
+                    .source = .{ .bytes = try common.base64DecodeAlloc(
+                        allocator,
+                        try common.objectString(inline_data, "data"),
+                    ) },
+                    .media_type = try common.objectString(inline_data, "mimeType"),
+                    .thought_signature = try common.optionalObjectString(object, "thoughtSignature"),
+                };
+                try parts.append(allocator, richPart(content));
+            } else if (object.get("fileData")) |file_value| {
+                const file_data = switch (file_value) {
+                    .object => |value| value,
+                    else => return error.InvalidProviderResponse,
+                };
+                const content = model_types.Content{
+                    .source = .{ .provider_file = .{
+                        .id = try common.objectString(file_data, "fileUri"),
+                        .provider = "gcp.gen_ai",
+                    } },
+                    .media_type = try common.objectString(file_data, "mimeType"),
+                    .thought_signature = try common.optionalObjectString(object, "thoughtSignature"),
+                };
+                try parts.append(allocator, richPart(content));
             } else if (object.get("functionCall")) |call_value| {
                 const call = switch (call_value) {
                     .object => |value| value,
@@ -436,6 +534,14 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
         if (reason.kind == .stop and hasToolCalls(parts.items)) reason.kind = .tool_calls;
     }
     return .{ .parts = try parts.toOwnedSlice(allocator), .usage = usage, .finish_reason = finish_reason };
+}
+
+fn richPart(content: model_types.Content) model_types.Part {
+    if (std.mem.startsWith(u8, content.media_type, "image/")) return .{ .image = content };
+    if (std.mem.startsWith(u8, content.media_type, "audio/")) return .{ .audio = content };
+    if (std.mem.eql(u8, content.media_type, "application/pdf") or
+        std.mem.startsWith(u8, content.media_type, "text/")) return .{ .document = content };
+    return .{ .binary = content };
 }
 
 fn googleFinishReason(raw: []const u8) model_types.FinishReason {
@@ -523,6 +629,35 @@ test "encodes Gemini Google Search and URL Context tools" {
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"googleSearch\":{}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"urlContext\":{}") != null);
+}
+
+test "encodes and decodes Gemini rich content and thinking" {
+    const messages = [_]model_types.Message{
+        .{ .role = .user, .parts = &.{
+            .{ .audio = .{ .source = .{ .bytes = "mp3" }, .media_type = "audio/mpeg" } },
+            .{ .document = .{
+                .source = .{ .provider_file = .{ .id = "files/guide", .provider = "gcp.gen_ai" } },
+                .media_type = "application/pdf",
+            } },
+        } },
+        .{ .role = .assistant, .parts = &.{.{ .thinking = .{ .content = "private", .signature = "signed" } }} },
+    };
+    const body = try encodeRequest(std.testing.allocator, .{ .messages = &messages });
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"inlineData\":{\"mimeType\":\"audio/mpeg\",\"data\":\"bXAz\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"fileData\":{\"mimeType\":\"application/pdf\",\"fileUri\":\"files/guide\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"text\":\"private\",\"thought\":true,\"thoughtSignature\":\"signed\"") != null);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const response = try decodeResponse(
+        arena.allocator(),
+        "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"private\",\"thought\":true,\"thoughtSignature\":\"signed\"},{\"inlineData\":{\"mimeType\":\"image/png\",\"data\":\"cG5n\"},\"thoughtSignature\":\"image-signed\"}]},\"finishReason\":\"STOP\"}]}",
+    );
+    try std.testing.expectEqualStrings("private", response.parts[0].thinking.content);
+    try std.testing.expectEqualStrings("signed", response.parts[0].thinking.signature.?);
+    try std.testing.expectEqualSlices(u8, "png", response.parts[1].image.source.bytes);
+    try std.testing.expectEqualStrings("image-signed", response.parts[1].image.thought_signature.?);
 }
 
 test "decodes Gemini text, calls with and without ids, and usage" {

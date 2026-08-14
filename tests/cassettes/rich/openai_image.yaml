@@ -1,0 +1,108 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.openai.com/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-5-nano"
+        input:
+          - type: "message"
+            role: "user"
+            content:
+              - type: "input_image"
+                image_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII="
+          - type: "message"
+            role: "user"
+            content: "Name the single dominant color in this image. Answer with one word."
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "29999"
+      x-ratelimit-remaining-tokens:
+      - "180000000"
+    body:
+      type: json
+      content:
+        id: "resp_0936ec5e3d86e899006a7f5efbed50819d818a7beb455d1357"
+        object: "response"
+        created_at: 1786732284
+        status: "completed"
+        background: false
+        billing:
+          payer: "developer"
+        completed_at: 1786732291
+        error: null
+        frequency_penalty: 0
+        incomplete_details: null
+        instructions: null
+        max_output_tokens: null
+        max_tool_calls: null
+        model: "gpt-5-nano-2025-08-07"
+        moderation: null
+        output:
+          - id: "rs_0936ec5e3d86e899006a7f5efdd860819d88a69c1e3976486d"
+            type: "reasoning"
+            content: []
+            encrypted_content: |-
+              gAAAAABqf18D1bYkeYgIfuryBBXCvK4hlY5v_MOfCcF53UbeIcpGRzbj12T_8CYSNBMPIpHgrMF__sagOab1ukz2njQD2qhdGQMoUm4xFXu1zZjJNfvqWpGOXHVC6emHdEU5cIGyAHEQMh-X2GDF12KCiThH8Bf15YUOHpSsvNDmth9v0gMsnhB9Vsh73Pdd-N9aKu4NUdrHgG3J_uzc4Ddf-XloDbh5pXJjqyf-a39HJjZwEtVZB_HJ2jFUvchF_-tZzWm61OSyRCdQIBFMJ_cV0_jYT2w_YxIp8kbx7VkoH2eN01AtafR7OANqBDS0TVJ-nFNz2Nd7gsfbxqlvOFXn2-bO9ChTNeLhd2DZSjtwKFKc2qQgq03EJFwWJHmsYfeDAdhaSqVk4Ag6O555fcYnVrBxFzdmYdRIwKa01c71gnMtN6Uu3b0XaC_-EqPqtcISc1MRfTrBUPYSqKa_BONQN5cqhlw05nlXMnzyL6nR1ineAaX_GJlZErk00Cm1o_rWc_zYkXivWYYAhGGrn-nyOCp2T-vrEU7VvbeBuVJm_g0O7t759XO7mKbZmcrH71XmPLFedbidetpZQWzvHvS0ayEPAkxBgm4S9kCTkavO0kDqWQyVYIl2mqSSE92QQzJQMNl6PfHr1ef8cV5cxvVyOsiE3D1xUxac1wtcUyyUgj7k4Eikbj6u2kk_9Fa1BBtd9qOHi_nBzB89N-K2NY6okNRGya_O73GT8cvBRe-LvOPlFUufFgIdyiaWWZBzLiVmwe40scTd8cpthR0-BLRSxbLCD1vi3BEhXJ41wGVrW9zjao73MEuE3JLmh33VgtjCGwVMCt1ayxeqM2_DPUYQ7-JLDFPc_mn3KyKRHM9QwT-mOMpk8lMJHbnbyV-YXpyCQjrnM6fAdd9uEjyPKX61x_OYI-89olwWD5ldfzASIqVYJ7Nil4pTSKdEXqp9izZiAew8A6kAe9d-gMkJxG2WLtk65Uf7_YvsygxWUkjS1CLgcCsKopmLP-pIpIOPk1r78x9Tg3caPllAwHFRtUNsWM9q7E3aLZnvP4O2rCDAYP8WkxcXCoinF9dquL6T9MVCdlBfhHSND3iUklWaFIJuPe8xaS1w7CDGaLlHz2YgH8MqVjLDHYgrNpiKlMDjCP1f1Au4JZ3UK8jfxFHX6Zw_wMOvC32spOBPAzQFViCZxFeGOB792BJMjhEmXTd9uPacdRVE8H6yDm7jYEP3W_p3yPqIDAh2YhV480-UAXMudOxYPfrf9qi8OQpdyUkwx8nQbH-UZWCK5XsTXXl_QNJz-58psAWvC05dxNY99fv72GFo0o6p1uhWC-AyqEqEw_vTxwGmeXI9OKjJaO317clNQoD45zDc8ne1bJL5IKVX7P06lmBebNezeC7KfMJh7YTiF2FG9UMYPhv9pTuq8kFCSPmrRpDnvznmTxGe5TtFBs-7v5diE_dOrJClc9RFhcxC3Hxpsa6eOM2V5CHWMySNDr8nsh8HZtfcDKpldXKFsdXHsyeCPxCbdezbb05rB-JRJAqUkHeaI2flKYi4FGbcRTIsSallsMc1XDJ6kBUXOSZgdWuAkoFaryNT4Vv7HD1XFu400s8o61Iy_ACYZBC7MlpjMlSM7AUWHt6pExmkkdyc0vLRGgftYjBe1sB-trarKfTFXygI5a-u9Dcsd1BUlzdmW2KtNTlfKvE2RUF4PvD9g_GNFkVPKW7G7MQYtCck7YAhT0hz0GOSrTRkAdeMuN9LSuyIxPFs43cvn6o3QN7SNZfx4etePt7V1t4ssDJjeNtWtJh09-4J4yJ6gfCxjoY32e7G45doXNnMN29Jy0JM0kcxU5M=
+            summary: []
+          - id: "msg_0936ec5e3d86e899006a7f5f030138819dbe089c0bf8ce7aea"
+            type: "message"
+            status: "completed"
+            content:
+              - type: "output_text"
+                annotations: []
+                logprobs: []
+                text: "red"
+            role: "assistant"
+        parallel_tool_calls: true
+        presence_penalty: 0
+        previous_response_id: null
+        prompt_cache_key: null
+        prompt_cache_retention: "in_memory"
+        reasoning:
+          context: "current_turn"
+          effort: "medium"
+          mode: "standard"
+          summary: null
+        safety_identifier: null
+        service_tier: "default"
+        store: true
+        temperature: 1
+        text:
+          format:
+            type: "text"
+          verbosity: "medium"
+        tool_choice: "auto"
+        tool_usage:
+          image_gen:
+            input_tokens: 0
+            input_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            output_tokens: 0
+            output_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            total_tokens: 0
+          web_search:
+            num_requests: 0
+        tools: []
+        top_logprobs: 0
+        top_p: 1
+        truncation: "disabled"
+        usage:
+          input_tokens: 27
+          input_tokens_details:
+            cache_write_tokens: 0
+            cached_tokens: 0
+          output_tokens: 117
+          output_tokens_details:
+            reasoning_tokens: 64
+          total_tokens: 144
+        user: null
+        metadata: {}

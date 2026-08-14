@@ -9,9 +9,18 @@ pub const ScriptedModel = struct {
     request_count: usize = 0,
     inspectFn: ?*const fn (request_index: usize, request: model_types.ModelRequest) anyerror!void = null,
     profile: model_types.ModelProfile = .{},
+    provider_name: ?[]const u8 = null,
+    model_name: ?[]const u8 = null,
 
     pub fn model(self: *ScriptedModel) model_types.Model {
-        return .{ .context = self, .profile = self.profile, .requestFn = request, .streamFn = stream };
+        return .{
+            .context = self,
+            .profile = self.profile,
+            .provider_name = self.provider_name,
+            .model_name = self.model_name,
+            .requestFn = request,
+            .streamFn = stream,
+        };
     }
 
     fn request(context: *anyopaque, _: std.mem.Allocator, value: model_types.ModelRequest) !model_types.ModelResponse {
@@ -30,7 +39,7 @@ pub const ScriptedModel = struct {
         for (response.parts) |part| switch (part) {
             .text => |text| try sink.emit(.{ .text_delta = text }),
             .tool_call => |call| try sink.emit(.{ .tool_call = call }),
-            .tool_result => {},
+            else => {},
         };
         try sink.emit(.{ .usage = response.usage });
         return response;

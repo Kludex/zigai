@@ -24,6 +24,7 @@ conversation.
 - Buffered and streaming responses.
 - Tool calls, including parallel calls and typed Zig functions.
 - Provider-managed web search and fetch behind model capability checks.
+- Images, audio, documents, binary data, and provider file references.
 - Static and per-step dynamic toolsets with namespaces and metadata.
 - MCP toolsets over Streamable HTTP and stdio.
 - Serializable approval and deferred-tool pauses.
@@ -142,6 +143,39 @@ ZigAI maps these to OpenAI web search, Anthropic web search and fetch, and
 Gemini Google Search and URL Context. The selected model's profile is checked
 before the request. OpenAI does not currently expose standalone web fetch, so
 an agent requesting it fails locally instead of silently changing behavior.
+
+### Rich content
+
+Add media to the current user message with `RunOptions.prompt_parts`:
+
+```zig
+const image = zigai.Part{ .image = .{
+    .source = .{ .bytes = image_bytes },
+    .media_type = "image/png",
+} };
+
+var result = try agent.runWithOptions(
+    allocator,
+    "What is in this image?",
+    .{ .prompt_parts = &.{image} },
+);
+```
+
+A content source can be raw bytes, a URL, or a provider file ID or URI. Set
+`ProviderFile.provider` to guard a stored file against use with the wrong
+provider. Use the model's provider name: `openai`, `anthropic`, or
+`gcp.gen_ai`. Message and content metadata stay in ZigAI history and are not
+sent to providers.
+
+| Provider | Rich input |
+| --- | --- |
+| OpenAI | Images, documents, binary files |
+| Anthropic | Images, documents |
+| Google | Images, audio, documents, binary files |
+
+Anthropic and Google thinking parts, opaque signatures, and Gemini media
+signatures are preserved across history and follow-up turns. Unsupported
+content and invalid roles fail before the first request.
 
 Gemini tool schemas are converted to its supported JSON Schema subset. Thinking
 models' encrypted tool-call signatures are preserved automatically across

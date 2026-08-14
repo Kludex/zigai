@@ -77,6 +77,21 @@ local schema validation and receive the same correction behavior. Streaming
 deltas remain provisional, and the agent emits `final_output` only after
 validation succeeds.
 
+Rich message content is provider neutral too. `Part` distinguishes image,
+audio, document, arbitrary binary, and thinking content. Media uses one source
+union for bytes, URLs, or provider file references, with a MIME type and
+optional filename. `RunOptions.prompt_parts` places rich content before the
+current text prompt. Message and content metadata are application-owned and
+survives copying and versioned history serialization without crossing the
+provider boundary.
+
+Profiles advertise supported content kinds. The agent also validates content
+roles and optional provider guards on file references before network I/O.
+Adapters base64-encode bytes only at their wire boundary. Anthropic and Google
+decode and retain thinking state; Gemini output media keeps its opaque thought
+signature on the neutral content part so the next request can return it
+unchanged.
+
 Provider failures keep two layers separate. Stable error categories drive agent
 retry policy, while an optional synchronous observer receives the provider
 name, HTTP status, parsed code/message, and raw body. The view is borrowed;

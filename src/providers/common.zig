@@ -197,3 +197,15 @@ pub fn objectString(object: std.json.ObjectMap, field: []const u8) ![]const u8 {
     if (value != .string) return error.InvalidProviderResponse;
     return value.string;
 }
+pub fn base64Alloc(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const encoded = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(source.len));
+    _ = std.base64.standard.Encoder.encode(encoded, source);
+    return encoded;
+}
+
+pub fn base64DecodeAlloc(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
+    const size = try std.base64.standard.Decoder.calcSizeForSlice(source);
+    const decoded = try allocator.alloc(u8, size);
+    try std.base64.standard.Decoder.decode(decoded, source);
+    return decoded;
+}

@@ -1,0 +1,44 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent"
+    headers: {}
+    body:
+      type: json
+      content:
+        contents:
+          - role: "user"
+            parts:
+              - inlineData:
+                  mimeType: "image/png"
+                  data: "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII="
+              - text: "Name the single dominant color in this image. Answer with one word."
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        candidates:
+          - content:
+              parts:
+                - text: "Red"
+                  thoughtSignature: |-
+                    ErYECrMEARFNMg/KxGDigqgMZu+V1KOa/usymlChQVeUL6s36Gp219XVj0vE3Cj/TcR0Bjk8gVKS1biS4yvFzSGXFN6WhzSH/lAP8Oq1QMV4DHnGu/gewAUTuWCSsvS3qWaTqT+/b6YHHIC7O8lC3bRhT7/nPBVYhBNQV0muls5BSRQfoBT0zd+lA4Rm1+hcski539EnCFbOfB9eMT9EcFRnoZM64zPUlLR8DG84X2DJO0vOIDublt4CiyUIlf63wOI0iko4w2l+8CMO28og/oNb8+wtrCvlO8Nw8G/6ShWQaGt5fj9afu4CDGGzKLjImrCx4ZGuqHUkLLxJbz6qWyOMF+cbnXUwaXZTfxVsJ/U1gNZeY6dfYxNLPr263GIdsnYKcn+w9bfBWZanTq9OxX3aYNfknlFEHpogOUC4c0PCRMFp769HTAPddbAyFS3aJXyqojDq16oatOyigt2k6SThGoITHHPFMvmvIA+9qs70iwooQ+9L0H9j1HVpSYFnx3bLAcEGVUqKLcyCHtSlttva3ltGJdLh+8JzQTlvQrA4SgYcOi6h/Qu0htCkNcHJ7GoZnQi7bgEgUXaLYR1KEn9TeNZYSNylezxCARRyaDogyqq6knfYbyBZbJlgsPV0e/+KK9ArTiI3xpsI+/vKzzGwSak3G0nJSln7DBFrVQgEQ+x0bpcTA3YQqXPeD5/rlRm2fGlolh0ixEEr/pV11KcyEy2wANkNorRkWSJaEalPTu0mmhTaru8=
+              role: "model"
+            finishReason: "STOP"
+            index: 0
+        usageMetadata:
+          promptTokenCount: 1104
+          candidatesTokenCount: 1
+          totalTokenCount: 1235
+          promptTokensDetails:
+            - modality: "IMAGE"
+              tokenCount: 1089
+            - modality: "TEXT"
+              tokenCount: 15
+          thoughtsTokenCount: 130
+          serviceTier: "standard"
+        modelVersion: "gemini-3.5-flash"
+        responseId: "CV9_apqcCuDS28oP-Oih6AQ"

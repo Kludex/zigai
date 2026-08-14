@@ -21,7 +21,12 @@ const AgentError = error{
     InvalidTypedOutput,
     MaxModelRequestsExceeded,
     MaxToolCallsExceeded,
+    ModelDoesNotSupportAudio,
+    ModelDoesNotSupportBinaryContent,
+    ModelDoesNotSupportDocuments,
+    ModelDoesNotSupportImages,
     ModelDoesNotSupportSystemMessages,
+    ModelDoesNotSupportThinking,
     ModelDoesNotSupportTools,
     ModelDoesNotSupportWebFetch,
     ModelDoesNotSupportWebSearch,
@@ -37,6 +42,7 @@ const AgentError = error{
     OutputTokenLimitExceeded,
     ParallelToolCallsNotSupported,
     ParallelToolCallsRequireIo,
+    ProviderFileProviderMismatch,
     TotalTokenLimitExceeded,
     ToolConcurrencyUnavailable,
     ToolCallRequiresDeferredRun,
@@ -44,6 +50,7 @@ const AgentError = error{
     UnexpectedDeferredToolDecision,
     DeferredToolRequiresResult,
     InvalidDeferredState,
+    InvalidContentRole,
     UnknownTool,
     RetryBackoffRequiresIo,
 };
@@ -155,6 +162,8 @@ pub const Instruction = union(enum) {
 pub const RunOptions = struct {
     /// Earlier conversation messages. They are copied into the result arena.
     message_history: []const Message = &.{},
+    /// Rich parts inserted before the text prompt in the new user message.
+    prompt_parts: []const Part = &.{},
     /// Extra instructions appended after the agent's static and dynamic ones.
     instructions: []const []const u8 = &.{},
     /// Overrides agent dependencies when non-null.
@@ -818,6 +827,11 @@ pub const Agent = struct {
         const resolved_settings = self.model.settings.overrideWith(self.model_settings).overrideWith(options.model_settings);
         try requireModelSettings(self.model.profile, resolved_settings);
         try ensureBuiltinToolsSupported(self.model.profile, self.builtin_tools);
+        if (resume_state) |state|
+            try ensureContentSupported(self.model, state.messages)
+        else
+            try ensureContentSupported(self.model, options.message_history);
+        try ensurePartsSupported(self.model, .user, options.prompt_parts);
         try emitLifecycle(hooks, .{ .run_start = .{ .prompt = prompt, .model = self.model } });
 
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -850,7 +864,7 @@ pub const Agent = struct {
                 try appendTextMessage(memory, &messages, .system, system_prompt);
             }
             for (options.message_history) |message| try appendMessageCopy(memory, &messages, message);
-            try appendTextMessage(memory, &messages, .user, prompt);
+            try appendPromptMessage(memory, &messages, prompt, options.prompt_parts);
         }
 
         var model_requests: usize = if (resume_state) |state| state.model_requests else 0;
@@ -1788,10 +1802,41 @@ fn appendTextMessage(allocator: std.mem.Allocator, messages: *std.ArrayList(Mess
     try messages.append(allocator, .{ .role = role, .parts = parts });
 }
 
+fn appendPromptMessage(
+    allocator: std.mem.Allocator,
+    messages: *std.ArrayList(Message),
+    prompt: []const u8,
+    rich_parts: []const Part,
+) !void {
+    const extra: usize = if (prompt.len > 0) 1 else 0;
+    const parts = try allocator.alloc(Part, rich_parts.len + extra);
+    for (rich_parts, parts[0..rich_parts.len]) |part, *copy| copy.* = try copyPart(allocator, part);
+    if (prompt.len > 0) parts[rich_parts.len] = .{ .text = try allocator.dupe(u8, prompt) };
+    try messages.append(allocator, .{ .role = .user, .parts = parts });
+}
+
 fn appendMessageCopy(allocator: std.mem.Allocator, messages: *std.ArrayList(Message), message: Message) !void {
     const parts = try allocator.alloc(Part, message.parts.len);
-    for (message.parts, parts) |part, *copy| copy.* = switch (part) {
+    for (message.parts, parts) |part, *copy| copy.* = try copyPart(allocator, part);
+    try messages.append(allocator, .{
+        .role = message.role,
+        .parts = parts,
+        .metadata = try copyMetadata(allocator, message.metadata),
+    });
+}
+
+fn copyPart(allocator: std.mem.Allocator, part: Part) !Part {
+    return switch (part) {
         .text => |value| .{ .text = try allocator.dupe(u8, value) },
+        .image => |value| .{ .image = try copyContent(allocator, value) },
+        .audio => |value| .{ .audio = try copyContent(allocator, value) },
+        .document => |value| .{ .document = try copyContent(allocator, value) },
+        .binary => |value| .{ .binary = try copyContent(allocator, value) },
+        .thinking => |value| .{ .thinking = .{
+            .content = try allocator.dupe(u8, value.content),
+            .signature = if (value.signature) |signature| try allocator.dupe(u8, signature) else null,
+            .metadata = try copyMetadata(allocator, value.metadata),
+        } },
         .tool_call => |value| .{ .tool_call = .{
             .id = try allocator.dupe(u8, value.id),
             .name = try allocator.dupe(u8, value.name),
@@ -1808,7 +1853,32 @@ fn appendMessageCopy(allocator: std.mem.Allocator, messages: *std.ArrayList(Mess
             .is_error = value.is_error,
         } },
     };
-    try messages.append(allocator, .{ .role = message.role, .parts = parts });
+}
+
+fn copyContent(allocator: std.mem.Allocator, value: model_types.Content) !model_types.Content {
+    return .{
+        .source = switch (value.source) {
+            .bytes => |bytes| .{ .bytes = try allocator.dupe(u8, bytes) },
+            .url => |url| .{ .url = try allocator.dupe(u8, url) },
+            .provider_file => |file| .{ .provider_file = .{
+                .id = try allocator.dupe(u8, file.id),
+                .provider = if (file.provider) |provider| try allocator.dupe(u8, provider) else null,
+            } },
+        },
+        .media_type = try allocator.dupe(u8, value.media_type),
+        .filename = if (value.filename) |filename| try allocator.dupe(u8, filename) else null,
+        .thought_signature = if (value.thought_signature) |signature| try allocator.dupe(u8, signature) else null,
+        .metadata = try copyMetadata(allocator, value.metadata),
+    };
+}
+
+fn copyMetadata(allocator: std.mem.Allocator, source: []const model_types.Metadata) ![]const model_types.Metadata {
+    const result = try allocator.alloc(model_types.Metadata, source.len);
+    for (source, result) |item, *copy| copy.* = .{
+        .key = try allocator.dupe(u8, item.key),
+        .value = try allocator.dupe(u8, item.value),
+    };
+    return result;
 }
 
 fn resolveInstructions(
@@ -1961,6 +2031,57 @@ fn ensureBuiltinToolsSupported(
             .web_search => Agent.Error.ModelDoesNotSupportWebSearch,
             .web_fetch => Agent.Error.ModelDoesNotSupportWebFetch,
         };
+    }
+}
+
+fn ensureContentSupported(selected_model: model_types.Model, messages: []const Message) Agent.Error!void {
+    for (messages) |message| try ensurePartsSupported(selected_model, message.role, message.parts);
+}
+
+fn ensurePartsSupported(selected_model: model_types.Model, role: model_types.Role, parts: []const Part) Agent.Error!void {
+    for (parts) |part| switch (part) {
+        .image => |content| {
+            if (role != .user and role != .assistant) return Agent.Error.InvalidContentRole;
+            try ensureContentPartSupported(selected_model, .image, content);
+        },
+        .audio => |content| {
+            if (role != .user and role != .assistant) return Agent.Error.InvalidContentRole;
+            try ensureContentPartSupported(selected_model, .audio, content);
+        },
+        .document => |content| {
+            if (role != .user and role != .assistant) return Agent.Error.InvalidContentRole;
+            try ensureContentPartSupported(selected_model, .document, content);
+        },
+        .binary => |content| {
+            if (role != .user and role != .assistant) return Agent.Error.InvalidContentRole;
+            try ensureContentPartSupported(selected_model, .binary, content);
+        },
+        .thinking => {
+            if (role != .assistant) return Agent.Error.InvalidContentRole;
+            if (!selected_model.profile.supportsContentType(.thinking)) return Agent.Error.ModelDoesNotSupportThinking;
+        },
+        else => {},
+    };
+}
+
+fn ensureContentPartSupported(
+    selected_model: model_types.Model,
+    kind: model_types.ContentType,
+    content: model_types.Content,
+) Agent.Error!void {
+    if (!selected_model.profile.supportsContentType(kind)) return switch (kind) {
+        .image => Agent.Error.ModelDoesNotSupportImages,
+        .audio => Agent.Error.ModelDoesNotSupportAudio,
+        .document => Agent.Error.ModelDoesNotSupportDocuments,
+        .binary => Agent.Error.ModelDoesNotSupportBinaryContent,
+        .thinking => Agent.Error.ModelDoesNotSupportThinking,
+    };
+    switch (content.source) {
+        .provider_file => |file| if (file.provider) |expected| {
+            const actual = selected_model.provider_name orelse return Agent.Error.ProviderFileProviderMismatch;
+            if (!std.mem.eql(u8, expected, actual)) return Agent.Error.ProviderFileProviderMismatch;
+        },
+        else => {},
     }
 }
 

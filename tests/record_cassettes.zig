@@ -10,6 +10,8 @@ const system_prompt = "Always use the weather tool before answering.";
 const native_prompt = "Use the available web tools to read https://ziglang.org and answer with the site's main heading in one short sentence.";
 const native_google_prompt = "Use Google Search to identify the current stable Zig release. Answer in one short sentence.";
 const native_system_prompt = "Use the available provider-managed web tool before answering.";
+const rich_prompt = "Name the single dominant color in this image. Answer with one word.";
+const pixel_png_base64 = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII=";
 
 const NativeEntry = struct {
     provider: []const u8,
@@ -31,6 +33,21 @@ const native_google = NativeEntry{
     .provider = "google",
     .model = "gemini-3.5-flash",
     .cassette = "cassettes/native/google_web_search_fetch.yaml",
+};
+const rich_openai = NativeEntry{
+    .provider = "openai",
+    .model = "gpt-5-nano",
+    .cassette = "cassettes/rich/openai_image.yaml",
+};
+const rich_anthropic = NativeEntry{
+    .provider = "anthropic",
+    .model = "claude-sonnet-4-6",
+    .cassette = "cassettes/rich/anthropic_image.yaml",
+};
+const rich_google = NativeEntry{
+    .provider = "google",
+    .model = "gemini-3.5-flash",
+    .cassette = "cassettes/rich/google_image.yaml",
 };
 
 pub fn main(init: std.process.Init) !void {
@@ -60,6 +77,15 @@ pub fn main(init: std.process.Init) !void {
     }
     if (selectedNative(args, native_google)) {
         try recordNativeGoogle(init, http.transport(), google_key, native_google);
+    }
+    if (selectedRich(args, rich_openai)) {
+        try recordRichOpenAI(init, http.transport(), openai_key, rich_openai);
+    }
+    if (selectedRich(args, rich_anthropic)) {
+        try recordRichAnthropic(init, http.transport(), anthropic_key, rich_anthropic);
+    }
+    if (selectedRich(args, rich_google)) {
+        try recordRichGoogle(init, http.transport(), google_key, rich_google);
     }
 }
 
@@ -91,6 +117,24 @@ fn selectedNative(args: []const []const u8, entry: NativeEntry) bool {
             (std.mem.eql(u8, entry.provider, "anthropic") and std.mem.eql(u8, argument, "native-anthropic")) or
             (std.mem.eql(u8, entry.provider, "google") and std.mem.eql(u8, argument, "native-google"));
         if (std.mem.eql(u8, argument, "native-tools") or
+            provider_filter or
+            std.mem.eql(u8, argument, entry.provider) or
+            std.mem.eql(u8, argument, entry.model))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn selectedRich(args: []const []const u8, entry: NativeEntry) bool {
+    if (args.len <= 1) return true;
+    for (args[1..]) |argument| {
+        const provider_filter =
+            (std.mem.eql(u8, entry.provider, "openai") and std.mem.eql(u8, argument, "rich-openai")) or
+            (std.mem.eql(u8, entry.provider, "anthropic") and std.mem.eql(u8, argument, "rich-anthropic")) or
+            (std.mem.eql(u8, entry.provider, "google") and std.mem.eql(u8, argument, "rich-google"));
+        if (std.mem.eql(u8, argument, "rich-content") or
             provider_filter or
             std.mem.eql(u8, argument, entry.provider) or
             std.mem.eql(u8, argument, entry.model))
@@ -211,6 +255,58 @@ fn recordNativeGoogle(
     try writeNative(init, recording, entry);
 }
 
+fn recordRichOpenAI(
+    init: std.process.Init,
+    transport: zigai.transport.Transport,
+    api_key: []const u8,
+    entry: NativeEntry,
+) !void {
+    var recording = cassettes.RecordingTransport.init(init.gpa, transport);
+    defer recording.deinit();
+    var client = zigai.openai.Client{
+        .model_name = entry.model,
+        .api_key = api_key,
+        .transport = recording.transport(),
+    };
+    try runRichScenario(init, client.model());
+    try writeRich(init, recording, entry);
+}
+
+fn recordRichAnthropic(
+    init: std.process.Init,
+    transport: zigai.transport.Transport,
+    api_key: []const u8,
+    entry: NativeEntry,
+) !void {
+    var recording = cassettes.RecordingTransport.init(init.gpa, transport);
+    defer recording.deinit();
+    var client = zigai.anthropic.Client{
+        .model_name = entry.model,
+        .api_key = api_key,
+        .transport = recording.transport(),
+        .max_tokens = 64,
+    };
+    try runRichScenario(init, client.model());
+    try writeRich(init, recording, entry);
+}
+
+fn recordRichGoogle(
+    init: std.process.Init,
+    transport: zigai.transport.Transport,
+    api_key: []const u8,
+    entry: NativeEntry,
+) !void {
+    var recording = cassettes.RecordingTransport.init(init.gpa, transport);
+    defer recording.deinit();
+    var client = zigai.google.Client{
+        .model_name = entry.model,
+        .api_key = api_key,
+        .transport = recording.transport(),
+    };
+    try runRichScenario(init, client.model());
+    try writeRich(init, recording, entry);
+}
+
 fn runScenario(init: std.process.Init, model: zigai.Model) !void {
     var calls: u8 = 0;
     const tool = weatherTool(&calls);
@@ -239,6 +335,26 @@ fn runNativeScenario(
         .io = init.io,
         .limits = .{ .max_model_requests = 2 },
     }).run(init.gpa, scenario_prompt);
+    defer result.deinit();
+    if (result.output.len == 0 or result.usage.totalTokens() == 0) return error.UnexpectedModelBehavior;
+}
+
+fn runRichScenario(init: std.process.Init, model: zigai.Model) !void {
+    const decoded_size = try std.base64.standard.Decoder.calcSizeForSlice(pixel_png_base64);
+    const image_bytes = try init.gpa.alloc(u8, decoded_size);
+    defer init.gpa.free(image_bytes);
+    try std.base64.standard.Decoder.decode(image_bytes, pixel_png_base64);
+    const image = zigai.Part{ .image = .{
+        .source = .{ .bytes = image_bytes },
+        .media_type = "image/png",
+    } };
+    var observer_context: u8 = 0;
+    var result = try (zigai.Agent{
+        .model = model,
+        .io = init.io,
+        .limits = .{ .max_model_requests = 1 },
+        .provider_error_observer = .{ .context = &observer_context, .observeFn = logProviderError },
+    }).runWithOptions(init.gpa, rich_prompt, .{ .prompt_parts = &.{image} });
     defer result.deinit();
     if (result.output.len == 0 or result.usage.totalTokens() == 0) return error.UnexpectedModelBehavior;
 }
@@ -293,4 +409,15 @@ fn writeNative(
     defer init.gpa.free(path);
     try recording.writeCassetteAtomic(init.gpa, init.io, .cwd(), path);
     std.log.info("recorded {s} {s} native tools -> {s}", .{ entry.provider, entry.model, path });
+}
+
+fn writeRich(
+    init: std.process.Init,
+    recording: cassettes.RecordingTransport,
+    entry: NativeEntry,
+) !void {
+    const path = try std.fmt.allocPrint(init.gpa, "tests/{s}", .{entry.cassette});
+    defer init.gpa.free(path);
+    try recording.writeCassetteAtomic(init.gpa, init.io, .cwd(), path);
+    std.log.info("recorded {s} {s} rich content -> {s}", .{ entry.provider, entry.model, path });
 }

@@ -112,6 +112,24 @@ pub fn stringify(allocator: std.mem.Allocator, messages: []const model.Message) 
                     try json.objectField("text");
                     try json.write(value);
                 },
+                .image => |content| try writeContentPart(allocator, &json, "image", content),
+                .audio => |content| try writeContentPart(allocator, &json, "audio", content),
+                .document => |content| try writeContentPart(allocator, &json, "document", content),
+                .binary => |content| try writeContentPart(allocator, &json, "binary", content),
+                .thinking => |thinking| {
+                    try json.objectField("type");
+                    try json.write("thinking");
+                    try json.objectField("content");
+                    try json.write(thinking.content);
+                    if (thinking.signature) |signature| {
+                        try json.objectField("signature");
+                        try json.write(signature);
+                    }
+                    if (thinking.metadata.len > 0) {
+                        try json.objectField("metadata");
+                        try json.write(thinking.metadata);
+                    }
+                },
                 .tool_call => |call| {
                     try json.objectField("type");
                     try json.write("tool_call");
@@ -142,11 +160,66 @@ pub fn stringify(allocator: std.mem.Allocator, messages: []const model.Message) 
             try json.endObject();
         }
         try json.endArray();
+        if (message.metadata.len > 0) {
+            try json.objectField("metadata");
+            try json.write(message.metadata);
+        }
         try json.endObject();
     }
     try json.endArray();
     try json.endObject();
     return output.toOwnedSlice();
+}
+
+fn writeContentPart(
+    allocator: std.mem.Allocator,
+    json: *std.json.Stringify,
+    kind: []const u8,
+    content: model.Content,
+) !void {
+    try json.objectField("type");
+    try json.write(kind);
+    try json.objectField("media_type");
+    try json.write(content.media_type);
+    if (content.filename) |filename| {
+        try json.objectField("filename");
+        try json.write(filename);
+    }
+    if (content.thought_signature) |signature| {
+        try json.objectField("thought_signature");
+        try json.write(signature);
+    }
+    if (content.metadata.len > 0) {
+        try json.objectField("metadata");
+        try json.write(content.metadata);
+    }
+    switch (content.source) {
+        .bytes => |bytes| {
+            const encoded = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(bytes.len));
+            defer allocator.free(encoded);
+            _ = std.base64.standard.Encoder.encode(encoded, bytes);
+            try json.objectField("source");
+            try json.write("bytes");
+            try json.objectField("data");
+            try json.write(encoded);
+        },
+        .url => |url| {
+            try json.objectField("source");
+            try json.write("url");
+            try json.objectField("url");
+            try json.write(url);
+        },
+        .provider_file => |file| {
+            try json.objectField("source");
+            try json.write("provider_file");
+            try json.objectField("file_id");
+            try json.write(file.id);
+            if (file.provider) |provider| {
+                try json.objectField("provider");
+                try json.write(provider);
+            }
+        },
+    }
 }
 
 /// Parses an owned ZigAI history JSON document.
@@ -195,6 +268,20 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Owned {
             const part_type = try jsonString(part_object, "type");
             if (std.mem.eql(u8, part_type, "text")) {
                 part.* = .{ .text = try jsonString(part_object, "text") };
+            } else if (std.mem.eql(u8, part_type, "image")) {
+                part.* = .{ .image = try parseContent(memory, part_object) };
+            } else if (std.mem.eql(u8, part_type, "audio")) {
+                part.* = .{ .audio = try parseContent(memory, part_object) };
+            } else if (std.mem.eql(u8, part_type, "document")) {
+                part.* = .{ .document = try parseContent(memory, part_object) };
+            } else if (std.mem.eql(u8, part_type, "binary")) {
+                part.* = .{ .binary = try parseContent(memory, part_object) };
+            } else if (std.mem.eql(u8, part_type, "thinking")) {
+                part.* = .{ .thinking = .{
+                    .content = try jsonString(part_object, "content"),
+                    .signature = try optionalJsonString(part_object, "signature"),
+                    .metadata = try parseMetadata(memory, part_object.get("metadata")),
+                } };
             } else if (std.mem.eql(u8, part_type, "tool_call")) {
                 part.* = .{ .tool_call = .{
                     .id = try jsonString(part_object, "id"),
@@ -215,9 +302,59 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Owned {
                 } };
             } else return Error.InvalidHistory;
         }
-        message.* = .{ .role = role, .parts = parts };
+        message.* = .{
+            .role = role,
+            .parts = parts,
+            .metadata = try parseMetadata(memory, message_object.get("metadata")),
+        };
     }
     return .{ .arena = arena, .messages = messages };
+}
+
+fn parseContent(allocator: std.mem.Allocator, object: std.json.ObjectMap) !model.Content {
+    const source_name = try jsonString(object, "source");
+    const source: model.ContentSource = if (std.mem.eql(u8, source_name, "bytes")) blk: {
+        const encoded = try jsonString(object, "data");
+        const size = std.base64.standard.Decoder.calcSizeForSlice(encoded) catch return Error.InvalidHistory;
+        const decoded = try allocator.alloc(u8, size);
+        std.base64.standard.Decoder.decode(decoded, encoded) catch return Error.InvalidHistory;
+        break :blk .{ .bytes = decoded };
+    } else if (std.mem.eql(u8, source_name, "url"))
+        .{ .url = try jsonString(object, "url") }
+    else if (std.mem.eql(u8, source_name, "provider_file"))
+        .{ .provider_file = .{
+            .id = try jsonString(object, "file_id"),
+            .provider = try optionalJsonString(object, "provider"),
+        } }
+    else
+        return Error.InvalidHistory;
+    return .{
+        .source = source,
+        .media_type = try jsonString(object, "media_type"),
+        .filename = try optionalJsonString(object, "filename"),
+        .thought_signature = try optionalJsonString(object, "thought_signature"),
+        .metadata = try parseMetadata(allocator, object.get("metadata")),
+    };
+}
+
+fn parseMetadata(allocator: std.mem.Allocator, value: ?std.json.Value) ![]const model.Metadata {
+    const metadata_value = value orelse return &.{};
+    const values = switch (metadata_value) {
+        .array => |array| array.items,
+        else => return Error.InvalidHistory,
+    };
+    const metadata = try allocator.alloc(model.Metadata, values.len);
+    for (values, metadata) |item, *result| {
+        const object = switch (item) {
+            .object => |entry| entry,
+            else => return Error.InvalidHistory,
+        };
+        result.* = .{
+            .key = try jsonString(object, "key"),
+            .value = try jsonString(object, "value"),
+        };
+    }
+    return metadata;
 }
 
 /// Keeps system messages plus the newest `max_messages` non-system messages.
@@ -271,6 +408,9 @@ pub fn providerValid(allocator: std.mem.Allocator, messages: []const model.Messa
         var parts: std.ArrayList(model.Part) = .empty;
         for (message.parts) |part| switch (part) {
             .text => if (message.role != .tool) try parts.append(allocator, part),
+            .image, .audio, .document, .binary => if (message.role == .user or message.role == .assistant)
+                try parts.append(allocator, part),
+            .thinking => if (message.role == .assistant) try parts.append(allocator, part),
             .tool_call => |call| if (message.role == .assistant and try validJson(allocator, call.arguments_json)) {
                 try parts.append(allocator, part);
             },
@@ -279,6 +419,7 @@ pub fn providerValid(allocator: std.mem.Allocator, messages: []const model.Messa
         if (parts.items.len > 0) try cleaned.append(allocator, .{
             .role = message.role,
             .parts = try parts.toOwnedSlice(allocator),
+            .metadata = message.metadata,
         });
     }
 
@@ -301,6 +442,7 @@ pub fn providerValid(allocator: std.mem.Allocator, messages: []const model.Messa
             if (results.items.len > 0) try result.append(allocator, .{
                 .role = .tool,
                 .parts = try results.toOwnedSlice(allocator),
+                .metadata = message.metadata,
             });
             continue;
         }
@@ -324,6 +466,7 @@ pub fn providerValid(allocator: std.mem.Allocator, messages: []const model.Messa
             if (parts.items.len > 0) try result.append(allocator, .{
                 .role = message.role,
                 .parts = try parts.toOwnedSlice(allocator),
+                .metadata = message.metadata,
             });
             continue;
         }
@@ -394,6 +537,7 @@ fn validJson(allocator: std.mem.Allocator, source: []const u8) !bool {
 }
 
 fn textOnly(message: model.Message) bool {
+    if (message.metadata.len > 0) return false;
     for (message.parts) |part| if (part != .text) return false;
     return true;
 }
@@ -428,7 +572,27 @@ fn findResult(parts: []const model.Part, id: []const u8) bool {
 
 test "history JSON round trips every message part" {
     const messages = [_]model.Message{
-        .{ .role = .user, .parts = &.{.{ .text = "hello \"Zig\"" }} },
+        .{ .role = .user, .parts = &.{
+            .{ .text = "hello \"Zig\"" },
+            .{ .image = .{
+                .source = .{ .bytes = "\x00\xff" },
+                .media_type = "image/png",
+                .thought_signature = "image-signed",
+            } },
+            .{ .audio = .{ .source = .{ .url = "https://example.test/audio.mp3" }, .media_type = "audio/mpeg" } },
+            .{ .document = .{
+                .source = .{ .provider_file = .{ .id = "files/one", .provider = "gcp.gen_ai" } },
+                .media_type = "application/pdf",
+                .filename = "guide.pdf",
+                .metadata = &.{.{ .key = "source", .value = "manual" }},
+            } },
+            .{ .binary = .{ .source = .{ .bytes = "raw" }, .media_type = "application/octet-stream" } },
+        }, .metadata = &.{.{ .key = "thread", .value = "one" }} },
+        .{ .role = .assistant, .parts = &.{.{ .thinking = .{
+            .content = "reasoning",
+            .signature = "opaque",
+            .metadata = &.{.{ .key = "kind", .value = "private" }},
+        } }} },
         .{ .role = .assistant, .parts = &.{.{ .tool_call = .{
             .id = "call-1",
             .name = "lookup",
@@ -446,10 +610,16 @@ test "history JSON round trips every message part" {
     defer decoded.deinit();
     std.testing.allocator.free(encoded);
 
-    try std.testing.expectEqual(@as(usize, 3), decoded.messages.len);
+    try std.testing.expectEqual(@as(usize, 4), decoded.messages.len);
     try std.testing.expectEqualStrings("hello \"Zig\"", decoded.messages[0].parts[0].text);
-    try std.testing.expectEqualStrings("{\"value\":1}", decoded.messages[1].parts[0].tool_call.arguments_json);
-    try std.testing.expect(decoded.messages[2].parts[0].tool_result.is_error);
+    try std.testing.expectEqualSlices(u8, "\x00\xff", decoded.messages[0].parts[1].image.source.bytes);
+    try std.testing.expectEqualStrings("image-signed", decoded.messages[0].parts[1].image.thought_signature.?);
+    try std.testing.expectEqualStrings("files/one", decoded.messages[0].parts[3].document.source.provider_file.id);
+    try std.testing.expectEqualStrings("manual", decoded.messages[0].parts[3].document.metadata[0].value);
+    try std.testing.expectEqualStrings("one", decoded.messages[0].metadata[0].value);
+    try std.testing.expectEqualStrings("opaque", decoded.messages[1].parts[0].thinking.signature.?);
+    try std.testing.expectEqualStrings("{\"value\":1}", decoded.messages[2].parts[0].tool_call.arguments_json);
+    try std.testing.expect(decoded.messages[3].parts[0].tool_result.is_error);
     try std.testing.expectError(Error.UnsupportedVersion, parse(std.testing.allocator, "{\"version\":2,\"messages\":[]}"));
     try std.testing.expectError(Error.InvalidHistory, parse(std.testing.allocator, "{}"));
 }

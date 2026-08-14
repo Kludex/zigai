@@ -320,6 +320,84 @@ test "builtin web tools compose through capabilities and fail before unsupported
     );
 }
 
+test "rich prompt parts are copied and capability-checked before requests" {
+    const final = [_]zigai.model.Part{.{ .text = "Seen." }};
+    const Inspector = struct {
+        fn inspect(_: usize, request: zigai.model.ModelRequest) !void {
+            try std.testing.expectEqual(@as(usize, 1), request.messages.len);
+            try std.testing.expectEqual(@as(usize, 2), request.messages[0].parts.len);
+            try std.testing.expectEqualSlices(u8, "png", request.messages[0].parts[0].image.source.bytes);
+            try std.testing.expectEqualStrings("Describe it.", request.messages[0].parts[1].text);
+            try std.testing.expectEqualStrings("camera", request.messages[0].parts[0].image.metadata[0].value);
+        }
+    };
+    var supported = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &final }},
+        .profile = .{
+            .content_types = zigai.ModelProfile.ContentTypeSet.initMany(&.{.image}),
+        },
+        .provider_name = "openai",
+        .inspectFn = Inspector.inspect,
+    };
+    const image = [_]zigai.model.Part{.{ .image = .{
+        .source = .{ .bytes = "png" },
+        .media_type = "image/png",
+        .metadata = &.{.{ .key = "source", .value = "camera" }},
+    } }};
+    var result = try (zigai.Agent{ .model = supported.model() }).runWithOptions(
+        std.testing.allocator,
+        "Describe it.",
+        .{ .prompt_parts = &image },
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("camera", result.messages[0].parts[0].image.metadata[0].value);
+
+    var unsupported = zigai.testing.ScriptedModel{
+        .responses = &.{},
+        .profile = .{ .content_types = zigai.ModelProfile.ContentTypeSet.initMany(&.{.image}) },
+        .provider_name = "openai",
+    };
+    const audio = [_]zigai.model.Part{.{ .audio = .{
+        .source = .{ .bytes = "mp3" },
+        .media_type = "audio/mpeg",
+    } }};
+    try std.testing.expectError(
+        zigai.Agent.Error.ModelDoesNotSupportAudio,
+        (zigai.Agent{ .model = unsupported.model() }).runWithOptions(
+            std.testing.allocator,
+            "Listen.",
+            .{ .prompt_parts = &audio },
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 0), unsupported.request_count);
+
+    const wrong_provider = [_]zigai.model.Part{.{ .image = .{
+        .source = .{ .provider_file = .{ .id = "file_123", .provider = "anthropic" } },
+        .media_type = "image/png",
+    } }};
+    try std.testing.expectError(
+        zigai.Agent.Error.ProviderFileProviderMismatch,
+        (zigai.Agent{ .model = supported.model() }).runWithOptions(
+            std.testing.allocator,
+            "Describe it.",
+            .{ .prompt_parts = &wrong_provider },
+        ),
+    );
+
+    const invalid_history = [_]zigai.Message{.{
+        .role = .user,
+        .parts = &.{.{ .thinking = .{ .content = "private" } }},
+    }};
+    try std.testing.expectError(
+        zigai.Agent.Error.InvalidContentRole,
+        (zigai.Agent{ .model = supported.model() }).runWithOptions(
+            std.testing.allocator,
+            "Continue.",
+            .{ .message_history = &invalid_history },
+        ),
+    );
+}
+
 test "instructions compose for one run without entering message history" {
     const Dependencies = struct { audience: []const u8 };
     const DynamicState = struct {

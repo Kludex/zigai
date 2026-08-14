@@ -34,8 +34,51 @@ pub const ToolResult = struct {
     is_error: bool = false,
 };
 
+/// Application metadata retained in message history but never interpreted by
+/// provider adapters.
+pub const Metadata = struct {
+    key: []const u8,
+    value: []const u8,
+};
+
+pub const ProviderFile = struct {
+    /// Provider file identifier or URI.
+    id: []const u8,
+    /// Optional provider guard. When set, another provider must reject it.
+    provider: ?[]const u8 = null,
+};
+
+pub const ContentSource = union(enum) {
+    bytes: []const u8,
+    url: []const u8,
+    provider_file: ProviderFile,
+};
+
+/// Rich content with a semantic kind supplied by its enclosing `Part` tag.
+pub const Content = struct {
+    source: ContentSource,
+    media_type: []const u8,
+    filename: ?[]const u8 = null,
+    /// Opaque provider reasoning state attached to generated media.
+    thought_signature: ?[]const u8 = null,
+    metadata: []const Metadata = &.{},
+};
+
+/// Model reasoning retained for providers that require it on the next turn.
+/// Applications should treat signatures as opaque.
+pub const Thinking = struct {
+    content: []const u8,
+    signature: ?[]const u8 = null,
+    metadata: []const Metadata = &.{},
+};
+
 pub const Part = union(enum) {
     text: []const u8,
+    image: Content,
+    audio: Content,
+    document: Content,
+    binary: Content,
+    thinking: Thinking,
     tool_call: ToolCall,
     tool_result: ToolResult,
 };
@@ -43,6 +86,7 @@ pub const Part = union(enum) {
 pub const Message = struct {
     role: Role,
     parts: []const Part,
+    metadata: []const Metadata = &.{},
 };
 
 pub const ToolDefinition = struct {
@@ -52,10 +96,7 @@ pub const ToolDefinition = struct {
 };
 
 /// Application metadata carried with a tool and exposed to lifecycle hooks.
-pub const ToolMetadata = struct {
-    key: []const u8,
-    value: []const u8,
-};
+pub const ToolMetadata = Metadata;
 
 /// Determines whether an agent may execute a tool immediately or must pause.
 pub const ToolExecution = enum {
@@ -146,9 +187,11 @@ pub const ModelProfile = struct {
     supports_seed: bool = false,
     reasoning_efforts: ReasoningEffortSet = ReasoningEffortSet.initEmpty(),
     builtin_tools: BuiltinToolSet = BuiltinToolSet.initEmpty(),
+    content_types: ContentTypeSet = ContentTypeSet.initEmpty(),
 
     pub const ReasoningEffortSet = std.EnumSet(ReasoningEffort);
     pub const BuiltinToolSet = std.EnumSet(BuiltinToolKind);
+    pub const ContentTypeSet = std.EnumSet(ContentType);
 
     pub fn supportsReasoningEffort(self: ModelProfile, effort: ReasoningEffort) bool {
         return self.reasoning_efforts.contains(effort);
@@ -157,6 +200,18 @@ pub const ModelProfile = struct {
     pub fn supportsBuiltinTool(self: ModelProfile, kind: BuiltinToolKind) bool {
         return self.builtin_tools.contains(kind);
     }
+
+    pub fn supportsContentType(self: ModelProfile, kind: ContentType) bool {
+        return self.content_types.contains(kind);
+    }
+};
+
+pub const ContentType = enum {
+    image,
+    audio,
+    document,
+    binary,
+    thinking,
 };
 
 pub const BuiltinToolKind = enum {

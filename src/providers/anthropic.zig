@@ -34,6 +34,7 @@ pub const Client = struct {
             .max,
         }),
         .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{ .web_search, .web_fetch }),
+        .content_types = model_types.ModelProfile.ContentTypeSet.initMany(&.{ .image, .document, .thinking }),
     },
 
     pub fn model(self: *Client) model_types.Model {
@@ -54,14 +55,21 @@ pub const Client = struct {
         defer allocator.free(body);
         const url = try std.fmt.allocPrint(allocator, "{s}/messages", .{self.base_url});
         defer allocator.free(url);
+        const stable_headers = [_]http.Header{
+            .{ .name = "content-type", .value = "application/json" },
+            .{ .name = "x-api-key", .value = self.api_key, .sensitive = true },
+            .{ .name = "anthropic-version", .value = api_version },
+        };
+        const file_headers = [_]http.Header{
+            .{ .name = "content-type", .value = "application/json" },
+            .{ .name = "x-api-key", .value = self.api_key, .sensitive = true },
+            .{ .name = "anthropic-version", .value = api_version },
+            .{ .name = "anthropic-beta", .value = "files-api-2025-04-14" },
+        };
         const response = try self.transport.send(allocator, .{
             .method = .POST,
             .url = url,
-            .headers = &.{
-                .{ .name = "content-type", .value = "application/json" },
-                .{ .name = "x-api-key", .value = self.api_key, .sensitive = true },
-                .{ .name = "anthropic-version", .value = api_version },
-            },
+            .headers = if (hasProviderFiles(value.messages)) &file_headers else &stable_headers,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
@@ -80,16 +88,23 @@ pub const Client = struct {
         defer allocator.free(body);
         const url = try std.fmt.allocPrint(allocator, "{s}/messages", .{self.base_url});
         defer allocator.free(url);
+        const stable_headers = [_]http.Header{
+            .{ .name = "content-type", .value = "application/json" },
+            .{ .name = "x-api-key", .value = self.api_key, .sensitive = true },
+            .{ .name = "anthropic-version", .value = api_version },
+        };
+        const file_headers = [_]http.Header{
+            .{ .name = "content-type", .value = "application/json" },
+            .{ .name = "x-api-key", .value = self.api_key, .sensitive = true },
+            .{ .name = "anthropic-version", .value = api_version },
+            .{ .name = "anthropic-beta", .value = "files-api-2025-04-14" },
+        };
         var state = StreamState{ .allocator = allocator, .sink = sink };
         defer state.deinit();
         const response = try self.transport.streamLines(allocator, .{
             .method = .POST,
             .url = url,
-            .headers = &.{
-                .{ .name = "content-type", .value = "application/json" },
-                .{ .name = "x-api-key", .value = self.api_key, .sensitive = true },
-                .{ .name = "anthropic-version", .value = api_version },
-            },
+            .headers = if (hasProviderFiles(value.messages)) &file_headers else &stable_headers,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
@@ -98,7 +113,11 @@ pub const Client = struct {
             common.notifyProviderError(allocator, value.error_observer, "anthropic", response.status, state.error_body.items, response.metadata);
             return common.statusError(response.status);
         }
-        if (state.text.items.len > 0) try state.parts.insert(allocator, 0, .{ .text = try state.text.toOwnedSlice(allocator) });
+        if (state.text.items.len > 0) try state.parts.insert(
+            allocator,
+            leadingThinkingCount(state.parts.items),
+            .{ .text = try state.text.toOwnedSlice(allocator) },
+        );
         return .{
             .parts = try state.parts.toOwnedSlice(allocator),
             .usage = state.usage,
@@ -106,6 +125,22 @@ pub const Client = struct {
         };
     }
 };
+
+fn hasProviderFiles(messages: []const model_types.Message) bool {
+    for (messages) |message| for (message.parts) |part| switch (part) {
+        .image, .document => |content| switch (content.source) {
+            .provider_file => return true,
+            else => {},
+        },
+        else => {},
+    };
+    return false;
+}
+
+fn leadingThinkingCount(parts: []const model_types.Part) usize {
+    for (parts, 0..) |part, index| if (part != .thinking) return index;
+    return parts.len;
+}
 
 pub fn encodeStreamingRequest(allocator: std.mem.Allocator, model_name: []const u8, max_tokens: u32, request: model_types.ModelRequest) ![]u8 {
     const buffered = try encodeRequest(allocator, model_name, max_tokens, request);
@@ -126,6 +161,9 @@ const StreamState = struct {
     sink: model_types.ModelStreamSink,
     status: u16 = 0,
     text: std.ArrayList(u8) = .empty,
+    thinking: std.ArrayList(u8) = .empty,
+    thinking_signature: std.ArrayList(u8) = .empty,
+    thinking_index: ?u64 = null,
     parts: std.ArrayList(model_types.Part) = .empty,
     pending: std.ArrayList(PendingCall) = .empty,
     error_body: std.ArrayList(u8) = .empty,
@@ -134,6 +172,8 @@ const StreamState = struct {
 
     fn deinit(self: *StreamState) void {
         self.text.deinit(self.allocator);
+        self.thinking.deinit(self.allocator);
+        self.thinking_signature.deinit(self.allocator);
         self.parts.deinit(self.allocator);
         for (self.pending.items) |*call| call.arguments.deinit(self.allocator);
         self.pending.deinit(self.allocator);
@@ -177,6 +217,15 @@ const StreamState = struct {
                     .id = try common.objectString(block, "id"),
                     .name = try common.objectString(block, "name"),
                 });
+            } else if (std.mem.eql(u8, block_type, "thinking")) {
+                self.thinking_index = try common.objectInteger(object, "index");
+                if (try common.optionalObjectString(block, "thinking")) |thinking|
+                    try self.thinking.appendSlice(self.allocator, thinking);
+            } else if (std.mem.eql(u8, block_type, "redacted_thinking")) {
+                try self.parts.append(self.allocator, .{ .thinking = .{
+                    .content = "",
+                    .signature = try common.objectString(block, "data"),
+                } });
             }
         } else if (std.mem.eql(u8, kind, "content_block_delta")) {
             const delta = try common.requiredObject(root, "delta");
@@ -190,9 +239,24 @@ const StreamState = struct {
                 const call = self.findPending(try common.objectInteger(object, "index")) orelse return error.InvalidProviderResponse;
                 try call.arguments.appendSlice(self.allocator, partial);
                 try self.sink.emit(.{ .tool_call_delta = .{ .id = call.id, .name = call.name, .arguments_delta = partial } });
+            } else if (std.mem.eql(u8, delta_type, "thinking_delta")) {
+                try self.thinking.appendSlice(self.allocator, try common.objectString(delta, "thinking"));
+            } else if (std.mem.eql(u8, delta_type, "signature_delta")) {
+                try self.thinking_signature.appendSlice(self.allocator, try common.objectString(delta, "signature"));
             }
         } else if (std.mem.eql(u8, kind, "content_block_stop")) {
-            if (self.findPending(try common.objectInteger(object, "index"))) |pending| {
+            const index = try common.objectInteger(object, "index");
+            if (self.thinking_index != null and self.thinking_index.? == index) {
+                const signature = if (self.thinking_signature.items.len > 0)
+                    try self.thinking_signature.toOwnedSlice(self.allocator)
+                else
+                    null;
+                try self.parts.append(self.allocator, .{ .thinking = .{
+                    .content = try self.thinking.toOwnedSlice(self.allocator),
+                    .signature = signature,
+                } });
+                self.thinking_index = null;
+            } else if (self.findPending(index)) |pending| {
                 const arguments = if (pending.arguments.items.len == 0)
                     try self.allocator.dupe(u8, "{}")
                 else
@@ -291,6 +355,21 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
                 try json.write(text);
                 try json.endObject();
             },
+            .image => |content| try writeRichContent(allocator, &json, "image", content),
+            .document => |content| try writeRichContent(allocator, &json, "document", content),
+            .thinking => |thinking| {
+                try json.beginObject();
+                try json.objectField("type");
+                try json.write("thinking");
+                try json.objectField("thinking");
+                try json.write(thinking.content);
+                if (thinking.signature) |signature| {
+                    try json.objectField("signature");
+                    try json.write(signature);
+                }
+                try json.endObject();
+            },
+            .audio, .binary => return error.UnsupportedContentType,
             .tool_call => |call| {
                 try json.beginObject();
                 try json.objectField("type");
@@ -383,6 +462,49 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
     return output.toOwnedSlice();
 }
 
+fn writeRichContent(
+    allocator: std.mem.Allocator,
+    json: *std.json.Stringify,
+    kind: []const u8,
+    content: model_types.Content,
+) !void {
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write(kind);
+    try json.objectField("source");
+    try json.beginObject();
+    switch (content.source) {
+        .bytes => |bytes| {
+            const encoded = try common.base64Alloc(allocator, bytes);
+            defer allocator.free(encoded);
+            try json.objectField("type");
+            try json.write("base64");
+            try json.objectField("media_type");
+            try json.write(content.media_type);
+            try json.objectField("data");
+            try json.write(encoded);
+        },
+        .url => |url| {
+            try json.objectField("type");
+            try json.write("url");
+            try json.objectField("url");
+            try json.write(url);
+        },
+        .provider_file => |file| {
+            try json.objectField("type");
+            try json.write("file");
+            try json.objectField("file_id");
+            try json.write(file.id);
+        },
+    }
+    try json.endObject();
+    if (std.mem.eql(u8, kind, "document")) if (content.filename) |filename| {
+        try json.objectField("title");
+        try json.write(filename);
+    };
+    try json.endObject();
+}
+
 pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_types.ModelResponse {
     const root = try std.json.parseFromSliceLeaky(std.json.Value, allocator, body, .{});
     const root_object = switch (root) {
@@ -399,6 +521,15 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
         const kind = try common.objectString(object, "type");
         if (std.mem.eql(u8, kind, "text")) {
             try parts.append(allocator, .{ .text = try common.objectString(object, "text") });
+        } else if (std.mem.eql(u8, kind, "thinking") or std.mem.eql(u8, kind, "redacted_thinking")) {
+            try parts.append(allocator, .{ .thinking = .{
+                .content = if (std.mem.eql(u8, kind, "thinking"))
+                    try common.objectString(object, "thinking")
+                else
+                    "",
+                .signature = try common.optionalObjectString(object, "signature") orelse
+                    try common.optionalObjectString(object, "data"),
+            } });
         } else if (std.mem.eql(u8, kind, "tool_use")) {
             const input = object.get("input") orelse return error.InvalidProviderResponse;
             const arguments = try std.json.Stringify.valueAlloc(allocator, input, .{});
@@ -530,4 +661,55 @@ test "encodes Anthropic web search and web fetch server tools" {
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"web_search_20250305\",\"name\":\"web_search\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"web_fetch_20250910\",\"name\":\"web_fetch\"") != null);
+}
+
+test "encodes Anthropic rich inputs and preserves thinking" {
+    const messages = [_]model_types.Message{
+        .{ .role = .user, .parts = &.{
+            .{ .image = .{ .source = .{ .bytes = "png" }, .media_type = "image/png" } },
+            .{ .document = .{
+                .source = .{ .provider_file = .{ .id = "file_123", .provider = "anthropic" } },
+                .media_type = "application/pdf",
+                .filename = "Guide",
+            } },
+        } },
+        .{ .role = .assistant, .parts = &.{.{ .thinking = .{ .content = "private", .signature = "signed" } }} },
+    };
+    const body = try encodeRequest(std.testing.allocator, "claude-test", 20, .{ .messages = &messages });
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"cG5n\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"source\":{\"type\":\"file\",\"file_id\":\"file_123\"},\"title\":\"Guide\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"thinking\",\"thinking\":\"private\",\"signature\":\"signed\"") != null);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const response = try decodeResponse(
+        arena.allocator(),
+        "{\"content\":[{\"type\":\"thinking\",\"thinking\":\"private\",\"signature\":\"signed\"},{\"type\":\"text\",\"text\":\"answer\"}],\"stop_reason\":\"end_turn\"}",
+    );
+    try std.testing.expectEqualStrings("private", response.parts[0].thinking.content);
+    try std.testing.expectEqualStrings("signed", response.parts[0].thinking.signature.?);
+}
+
+test "Anthropic streaming preserves thinking deltas and signatures" {
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+    };
+    var unused: u8 = 0;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var state = StreamState{
+        .allocator = arena.allocator(),
+        .sink = .{ .context = &unused, .eventFn = Sink.emit },
+        .status = 200,
+    };
+    defer state.deinit();
+    try StreamState.line(&state, "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}");
+    try StreamState.line(&state, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"private\"}}");
+    try StreamState.line(&state, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"signed\"}}");
+    try StreamState.line(&state, "data: {\"type\":\"content_block_stop\",\"index\":0}");
+    try std.testing.expectEqual(@as(usize, 1), state.parts.items.len);
+    try std.testing.expectEqualStrings("private", state.parts.items[0].thinking.content);
+    try std.testing.expectEqualStrings("signed", state.parts.items[0].thinking.signature.?);
+    try std.testing.expectEqual(@as(usize, 1), leadingThinkingCount(state.parts.items));
 }

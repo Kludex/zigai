@@ -1,0 +1,51 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.anthropic.com/v1/messages"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "claude-sonnet-4-6"
+        max_tokens: 64
+        messages:
+          - role: "user"
+            content:
+              - type: "image"
+                source:
+                  type: "base64"
+                  media_type: "image/png"
+                  data: "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII="
+              - type: "text"
+                text: "Name the single dominant color in this image. Answer with one word."
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "19999"
+      x-ratelimit-remaining-tokens:
+      - "12000000"
+    body:
+      type: json
+      content:
+        model: "claude-sonnet-4-6"
+        id: "msg_011Ce37pMQ1BSMdUstQUJF3L"
+        type: "message"
+        role: "assistant"
+        content:
+          - type: "text"
+            text: "Red"
+        stop_reason: "end_turn"
+        stop_sequence: null
+        stop_details: null
+        usage:
+          input_tokens: 26
+          cache_creation_input_tokens: 0
+          cache_read_input_tokens: 0
+          cache_creation:
+            ephemeral_5m_input_tokens: 0
+            ephemeral_1h_input_tokens: 0
+          output_tokens: 4
+          service_tier: "standard"
+          inference_geo: "global"

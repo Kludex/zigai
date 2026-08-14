@@ -38,6 +38,9 @@ models from each first-party provider. The matrix is defined once in
 OpenAI web search, Anthropic web search plus fetch, and Google Search plus URL
 Context. These recordings verify the native request shapes and responses.
 
+`tests/cassettes/rich/` contains one real inline-image exchange for each
+first-party provider.
+
 Record the complete matrix with real credentials:
 
 ```console
@@ -51,6 +54,8 @@ zig build record-cassettes -- anthropic
 zig build record-cassettes -- gemini-3.5-flash
 zig build record-cassettes -- native-tools
 zig build record-cassettes -- native-google
+zig build record-cassettes -- rich-content
+zig build record-cassettes -- rich-anthropic
 ```
 
 The recorder accepts `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and either

@@ -123,6 +123,7 @@ fn commonProfile(models: []const model_types.Model) model_types.ModelProfile {
         profile.supports_seed = profile.supports_seed and other.supports_seed;
         profile.reasoning_efforts.setIntersection(other.reasoning_efforts);
         profile.builtin_tools.setIntersection(other.builtin_tools);
+        profile.content_types.setIntersection(other.content_types);
     }
     return profile;
 }
@@ -212,15 +213,19 @@ test "fallback profile intersects builtin tools" {
     const candidates = [_]model_types.Model{
         .{ .context = &unused, .profile = .{
             .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{ .web_search, .web_fetch }),
+            .content_types = model_types.ModelProfile.ContentTypeSet.initMany(&.{ .image, .audio }),
         }, .requestFn = Stub.request },
         .{ .context = &unused, .profile = .{
             .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{.web_search}),
+            .content_types = model_types.ModelProfile.ContentTypeSet.initMany(&.{.image}),
         }, .requestFn = Stub.request },
     };
     var fallback = Fallback{ .models = &candidates };
     const profile = fallback.model().profile;
     try std.testing.expect(profile.supportsBuiltinTool(.web_search));
     try std.testing.expect(!profile.supportsBuiltinTool(.web_fetch));
+    try std.testing.expect(profile.supportsContentType(.image));
+    try std.testing.expect(!profile.supportsContentType(.audio));
 }
 
 test "stream fallback stops after exposing output" {

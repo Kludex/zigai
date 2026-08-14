@@ -25,6 +25,7 @@ pub const Client = struct {
         .supports_max_tokens = true,
         .reasoning_efforts = model_types.ModelProfile.ReasoningEffortSet.initFull(),
         .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{.web_search}),
+        .content_types = model_types.ModelProfile.ContentTypeSet.initMany(&.{ .image, .document, .binary }),
     },
 
     pub fn model(self: *Client) model_types.Model {
@@ -227,6 +228,10 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
                 try json.write(text);
                 try json.endObject();
             },
+            .image => |content| try writeContentMessage(allocator, &json, message.role, .image, content),
+            .document => |content| try writeContentMessage(allocator, &json, message.role, .document, content),
+            .binary => |content| try writeContentMessage(allocator, &json, message.role, .binary, content),
+            .audio, .thinking => return error.UnsupportedContentType,
             .tool_call => |call| {
                 try json.beginObject();
                 try json.objectField("type");
@@ -321,6 +326,57 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
     }
     try json.endObject();
     return output.toOwnedSlice();
+}
+
+fn writeContentMessage(
+    allocator: std.mem.Allocator,
+    json: *std.json.Stringify,
+    role: model_types.Role,
+    kind: model_types.ContentType,
+    content: model_types.Content,
+) !void {
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write("message");
+    try json.objectField("role");
+    try json.write(@tagName(role));
+    try json.objectField("content");
+    try json.beginArray();
+    try json.beginObject();
+    try json.objectField("type");
+    try json.write(if (kind == .image) "input_image" else "input_file");
+    switch (content.source) {
+        .bytes => |bytes| {
+            const encoded = try common.base64Alloc(allocator, bytes);
+            defer allocator.free(encoded);
+            if (kind == .image) {
+                const data_url = try std.fmt.allocPrint(allocator, "data:{s};base64,{s}", .{ content.media_type, encoded });
+                defer allocator.free(data_url);
+                try json.objectField("image_url");
+                try json.write(data_url);
+            } else {
+                try json.objectField("file_data");
+                try json.write(encoded);
+                try json.objectField("filename");
+                try json.write(content.filename orelse "file");
+            }
+        },
+        .url => |url| {
+            try json.objectField(if (kind == .image) "image_url" else "file_url");
+            try json.write(url);
+            if (kind != .image) if (content.filename) |filename| {
+                try json.objectField("filename");
+                try json.write(filename);
+            };
+        },
+        .provider_file => |file| {
+            try json.objectField("file_id");
+            try json.write(file.id);
+        },
+    }
+    try json.endObject();
+    try json.endArray();
+    try json.endObject();
 }
 
 pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_types.ModelResponse {
@@ -515,4 +571,25 @@ test "encodes OpenAI web search and rejects standalone web fetch" {
         .messages = &.{},
         .builtin_tools = &.{.{ .web_fetch = .{} }},
     }));
+}
+
+test "encodes OpenAI image, document, and provider file inputs" {
+    const messages = [_]model_types.Message{.{ .role = .user, .parts = &.{
+        .{ .image = .{ .source = .{ .bytes = "png" }, .media_type = "image/png" } },
+        .{ .document = .{
+            .source = .{ .url = "https://example.test/guide.pdf" },
+            .media_type = "application/pdf",
+            .filename = "guide.pdf",
+        } },
+        .{ .binary = .{
+            .source = .{ .provider_file = .{ .id = "file_123", .provider = "openai" } },
+            .media_type = "application/octet-stream",
+        } },
+    } }};
+    const body = try encodeRequest(std.testing.allocator, "gpt-test", .{ .messages = &messages });
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"image_url\":\"data:image/png;base64,cG5n\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"file_url\":\"https://example.test/guide.pdf\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"filename\":\"guide.pdf\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"file_id\":\"file_123\"") != null);
 }
