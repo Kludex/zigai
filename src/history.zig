@@ -597,6 +597,7 @@ test "history JSON round trips every message part" {
             .id = "call-1",
             .name = "lookup",
             .arguments_json = "{\"value\":1}",
+            .thought_signature = "call-signed",
         } }} },
         .{ .role = .tool, .parts = &.{.{ .tool_result = .{
             .call_id = "call-1",
@@ -619,6 +620,7 @@ test "history JSON round trips every message part" {
     try std.testing.expectEqualStrings("one", decoded.messages[0].metadata[0].value);
     try std.testing.expectEqualStrings("opaque", decoded.messages[1].parts[0].thinking.signature.?);
     try std.testing.expectEqualStrings("{\"value\":1}", decoded.messages[2].parts[0].tool_call.arguments_json);
+    try std.testing.expectEqualStrings("call-signed", decoded.messages[2].parts[0].tool_call.thought_signature.?);
     try std.testing.expect(decoded.messages[3].parts[0].tool_result.is_error);
     try std.testing.expectError(Error.UnsupportedVersion, parse(std.testing.allocator, "{\"version\":2,\"messages\":[]}"));
     try std.testing.expectError(Error.InvalidHistory, parse(std.testing.allocator, "{}"));
@@ -634,16 +636,21 @@ test "provider-valid history removes orphans and repairs tool names" {
             .content = "ignored",
         } }} },
         .{ .role = .assistant, .parts = &.{
+            .{ .thinking = .{ .content = "considering" } },
             .{ .tool_call = .{ .id = "invalid", .name = "bad", .arguments_json = "{" } },
             .{ .tool_call = .{ .id = "valid", .name = "lookup", .arguments_json = "{}" } },
         } },
-        .{ .role = .tool, .parts = &.{.{ .tool_result = .{
-            .call_id = "valid",
-            .name = "stale-name",
-            .content = "ok",
-        } }} },
+        .{ .role = .tool, .parts = &.{
+            .{ .tool_result = .{ .call_id = "other", .name = "ignored", .content = "ignored" } },
+            .{ .tool_result = .{
+                .call_id = "valid",
+                .name = "stale-name",
+                .content = "ok",
+            } },
+        } },
         .{ .role = .user, .parts = &.{
             .{ .text = "continue" },
+            .{ .image = .{ .source = .{ .url = "https://example.test/image" }, .media_type = "image/png" } },
             .{ .tool_call = .{ .id = "wrong-role", .name = "bad", .arguments_json = "{}" } },
         } },
     };
@@ -651,11 +658,15 @@ test "provider-valid history removes orphans and repairs tool names" {
 
     try std.testing.expectEqual(@as(usize, 3), valid.len);
     try std.testing.expectEqual(model.Role.assistant, valid[0].role);
-    try std.testing.expectEqual(@as(usize, 1), valid[0].parts.len);
-    try std.testing.expectEqualStrings("valid", valid[0].parts[0].tool_call.id);
+    try std.testing.expectEqual(@as(usize, 2), valid[0].parts.len);
+    try std.testing.expectEqualStrings("considering", valid[0].parts[0].thinking.content);
+    try std.testing.expectEqualStrings("valid", valid[0].parts[1].tool_call.id);
     try std.testing.expectEqualStrings("lookup", valid[1].parts[0].tool_result.name);
-    try std.testing.expectEqual(@as(usize, 1), valid[2].parts.len);
+    try std.testing.expectEqual(@as(usize, 2), valid[2].parts.len);
     try std.testing.expectEqualStrings("continue", valid[2].parts[0].text);
+    try std.testing.expectEqualStrings("image/png", valid[2].parts[1].image.media_type);
+    try std.testing.expect(findCall(&.{.{ .text = "not a call" }}, "missing") == null);
+    try std.testing.expect(!findResult(&.{.{ .text = "not a result" }}, "missing"));
 }
 
 test "history processors trim compact and summarize in order" {
@@ -703,4 +714,48 @@ test "history processors trim compact and summarize in order" {
     try std.testing.expectEqual(@as(usize, 3), trimmed.len);
     try std.testing.expectEqual(model.Role.system, trimmed[0].role);
     try std.testing.expectEqualStrings("three", trimmed[1].parts[0].text);
+
+    const processor_trimmed = try (Processor{ .trim = .{ .max_messages = 1 } }).process(
+        arena.allocator(),
+        .{ .profile = .{}, .usage = .{}, .model_requests = 0 },
+        &messages,
+    );
+    try std.testing.expectEqual(@as(usize, 2), processor_trimmed.len);
+    const processor_compacted = try (@as(Processor, .compact)).process(
+        arena.allocator(),
+        .{ .profile = .{}, .usage = .{}, .model_requests = 0 },
+        &messages,
+    );
+    try std.testing.expectEqual(@as(usize, 4), processor_compacted.len);
+}
+
+test "history rejects malformed field and metadata types" {
+    const invalid = [_][]const u8{
+        "{\"version\":1,\"messages\":[{\"role\":1,\"parts\":[]}]}",
+        "{\"version\":1,\"messages\":[{\"role\":\"assistant\",\"parts\":[{\"type\":\"thinking\",\"content\":\"x\",\"signature\":false}]}]}",
+        "{\"version\":1,\"messages\":[{\"role\":\"user\",\"parts\":[],\"metadata\":[1]}]}",
+    };
+    for (invalid) |source| try std.testing.expectError(Error.InvalidHistory, parse(std.testing.allocator, source));
+}
+
+fn checkParseAllocationFailure(allocator: std.mem.Allocator) !void {
+    var owned = try parse(
+        allocator,
+        "{\"version\":1,\"messages\":[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"text\":\"hello\"}]}]}",
+    );
+    defer owned.deinit();
+}
+
+fn checkProviderValidationAllocationFailure(allocator: std.mem.Allocator) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    _ = try providerValid(arena.allocator(), &.{.{
+        .role = .assistant,
+        .parts = &.{.{ .tool_call = .{ .id = "call", .name = "lookup", .arguments_json = "{}" } }},
+    }});
+}
+
+test "history allocation failures clean up owned state" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkParseAllocationFailure, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkProviderValidationAllocationFailure, .{});
 }

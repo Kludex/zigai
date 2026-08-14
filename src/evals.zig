@@ -251,6 +251,17 @@ test "deterministic evaluators report failures and invalid configuration" {
     try std.testing.expect(!(try exactMatch().evaluate(std.testing.allocator, run)).passed);
     try std.testing.expect(!(try containsExpected().evaluate(std.testing.allocator, run)).passed);
     try std.testing.expect(!(try validJson().evaluate(std.testing.allocator, run)).passed);
+    const valid = try validJson().evaluate(std.testing.allocator, .{
+        .case = run.case,
+        .output = "{\"valid\":true}",
+        .usage = .{},
+    });
+    try std.testing.expect(valid.passed);
+    try std.testing.expectError(error.OutOfMemory, validJson().evaluate(std.testing.failing_allocator, .{
+        .case = run.case,
+        .output = "{\"valid\":true}",
+        .usage = .{},
+    }));
     try std.testing.expectError(error.MissingExpectedOutput, exactMatch().evaluate(std.testing.allocator, .{
         .case = .{ .name = "case", .prompt = "prompt" },
         .output = "anything",
@@ -278,4 +289,35 @@ test "model grader uses typed output" {
     try std.testing.expect(evaluation.passed);
     try std.testing.expectEqual(@as(f64, 0.9), evaluation.score.?);
     try std.testing.expectEqualStrings("correct", evaluation.reason.?);
+
+    const invalid_parts = [_]model_types.Part{.{ .text = "{\"passed\":true,\"score\":1.1,\"reason\":\"invalid\"}" }};
+    var invalid_scripted = testing.ScriptedModel{
+        .responses = &.{.{ .parts = &invalid_parts }},
+        .profile = .{ .supports_json_schema_output = true },
+    };
+    var invalid_grader = ModelGrader{
+        .agent = .{ .model = invalid_scripted.model() },
+        .rubric = "The score must be valid.",
+    };
+    try std.testing.expectError(Error.InvalidModelGrade, invalid_grader.evaluator().evaluate(std.testing.allocator, .{
+        .case = .{ .name = "invalid", .prompt = "prompt" },
+        .output = "output",
+        .usage = .{},
+    }));
+}
+
+fn checkDatasetAllocationFailure(allocator: std.mem.Allocator) !void {
+    const testing = @import("testing.zig");
+    const outputs = [_]model_types.Part{.{ .text = "ok" }};
+    var scripted = testing.ScriptedModel{ .responses = &.{.{ .parts = &outputs }} };
+    const evaluators = [_]Evaluator{validJson()};
+    var report = try (Dataset{
+        .cases = &.{.{ .name = "allocation", .prompt = "prompt" }},
+        .evaluators = &evaluators,
+    }).run(allocator, .{ .model = scripted.model() });
+    defer report.deinit();
+}
+
+test "dataset allocation failures release partial reports" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkDatasetAllocationFailure, .{});
 }
