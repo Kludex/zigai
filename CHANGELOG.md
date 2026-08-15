@@ -39,6 +39,11 @@
   extensions, reasoning replay, normalized finish reasons, and cache-aware
   usage. Mantle remains an explicitly named OpenAI-compatible adapter; binary
   ConverseStream support remains separate from line-oriented streaming.
+- Add an explicit Azure OpenAI `ResponsesClient` on the existing Azure provider
+  state. The GA v1 endpoint reuses the native OpenAI Responses codec while Azure
+  retains ownership of its resource API root, `api-key` authentication, and
+  deployment profiles; `ChatClient` and the legacy `Client` alias remain for
+  Chat Completions deployments.
 - Record and replay a redacted real Claude Sonnet 4.6 Converse tool loop. The
   recorder strips authentication, normalizes the AWS region, and verifies both
   the tool request and final response through a real `Agent`.

@@ -213,8 +213,12 @@ request policy, transport, and profile callbacks. The client owns only the
 model name, model settings, Chat Completions behavior, and optional
 gateway-specific idempotency header. Use
 `openai_compatible.Provider.initWithOptions` when the endpoint or identity is
-selected at runtime; Azure OpenAI exposes `apiBase`, while Bedrock Mantle
-exposes `mantleApiBase`, for deployment-specific roots.
+selected at runtime. Azure OpenAI exposes one provider state with
+`ResponsesClient` for its native GA v1 Responses endpoint and `ChatClient` for
+Chat Completions; both use `apiBase` and Azure `api-key` authentication. The
+Responses client deliberately shares OpenAI's Responses codec because Azure v1
+publishes the same wire contract. Bedrock Mantle exposes `mantleApiBase` for
+its deployment-specific Chat Completions root.
 
 Named compatible providers resolve model capabilities in four layers:
 

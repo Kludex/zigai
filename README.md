@@ -179,7 +179,7 @@ authentication style, or model profile overrides.
 | `zigai.providers.openai` | OpenAI Responses |
 | `zigai.providers.anthropic` | Anthropic Messages |
 | `zigai.providers.google` | Gemini GenerateContent |
-| `zigai.providers.azure_openai` | Azure OpenAI v1 |
+| `zigai.providers.azure_openai` | Azure OpenAI v1 Responses and Chat Completions |
 | `zigai.providers.bedrock` | Amazon Bedrock Converse; Mantle Chat Completions |
 | `zigai.providers.cerebras` | Cerebras Inference |
 | `zigai.providers.cohere` | Cohere Compatibility API |
@@ -221,11 +221,14 @@ var azure_provider = zigai.providers.azure_openai.Provider.initWithOptions(
     http.transport(),
     .{ .base_url = base_url },
 );
-var client = zigai.providers.azure_openai.Client{
-    .model_name = "gpt-4o",
+var client = zigai.providers.azure_openai.ResponsesClient{
+    .model_name = "gpt-4.1-nano",
     .provider = azure_provider.provider(),
 };
 ```
+
+Use `azure_openai.ChatClient` (or its backwards-compatible `Client` alias) only
+when a deployment requires Chat Completions.
 
 Bedrock's primary `Provider` and `Client` use the native Converse API. Construct
 the provider with an API key and region; use `MantleProvider`, `MantleClient`,
