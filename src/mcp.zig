@@ -1406,29 +1406,38 @@ fn validateMethodResult(method: []const u8, result: std.json.Value) !void {
             object.get("capabilities") orelse return error.InvalidMcpResponse,
             error.InvalidMcpResponse,
         );
+        try validateOptionalResponseString(object, "instructions");
         try validateCacheableResult(object);
     } else if (std.mem.eql(u8, method, methods.list_tools)) {
-        try requireArray(object, "tools");
+        for (try responseArray(object, "tools")) |tool| try validateTool(tool);
         try validatePaginatedCacheableResult(object);
     } else if (std.mem.eql(u8, method, methods.list_prompts)) {
-        try requireArray(object, "prompts");
+        for (try responseArray(object, "prompts")) |prompt| try validatePrompt(prompt);
         try validatePaginatedCacheableResult(object);
     } else if (std.mem.eql(u8, method, methods.list_resources)) {
-        try requireArray(object, "resources");
+        for (try responseArray(object, "resources")) |resource| try validateResource(resource, false);
         try validatePaginatedCacheableResult(object);
     } else if (std.mem.eql(u8, method, methods.list_resource_templates)) {
-        try requireArray(object, "resourceTemplates");
+        for (try responseArray(object, "resourceTemplates")) |resource| try validateResource(resource, true);
         try validatePaginatedCacheableResult(object);
     } else if (std.mem.eql(u8, method, methods.read_resource)) {
-        try requireArray(object, "contents");
+        for (try responseArray(object, "contents")) |content| try validateResourceContents(content);
         try validateCacheableResult(object);
     } else if (std.mem.eql(u8, method, methods.get_prompt)) {
-        try requireArray(object, "messages");
+        try validateOptionalResponseString(object, "description");
+        for (try responseArray(object, "messages")) |message_value| {
+            const message = try requiredObject(message_value);
+            try validateRole(message.get("role") orelse return error.InvalidMcpResponse);
+            try validateContentBlock(message.get("content") orelse return error.InvalidMcpResponse);
+        }
     } else if (std.mem.eql(u8, method, methods.call_tool)) {
-        try requireArray(object, "content");
+        for (try responseArray(object, "content")) |content| try validateContentBlock(content);
+        if (object.get("isError")) |is_error| if (is_error != .bool) return error.InvalidMcpResponse;
     } else if (std.mem.eql(u8, method, methods.complete)) {
         const completion = try requiredObject(object.get("completion") orelse return error.InvalidMcpResponse);
         try requireStringArray(completion, "values", 0, 100);
+        try validateOptionalResponseNumber(completion, "total", false);
+        if (completion.get("hasMore")) |has_more| if (has_more != .bool) return error.InvalidMcpResponse;
     } else if (std.mem.eql(u8, method, methods.listen)) {
         const meta = try requiredObject(object.get("_meta") orelse return error.InvalidMcpResponse);
         const subscription_id = meta.get("io.modelcontextprotocol/subscriptionId") orelse
@@ -1953,8 +1962,162 @@ fn validateCacheableResult(object: std.json.ObjectMap) !void {
     }
 }
 
-fn requireArray(object: std.json.ObjectMap, name: []const u8) !void {
-    if ((object.get(name) orelse return error.InvalidMcpResponse) != .array) return error.InvalidMcpResponse;
+fn validateTool(value: std.json.Value) !void {
+    const tool = try requiredObject(value);
+    try validateBaseMetadata(tool);
+    try validateOptionalResponseString(tool, "description");
+    const input_schema = try requiredObject(tool.get("inputSchema") orelse return error.InvalidMcpResponse);
+    if (!std.mem.eql(u8, optionalString(input_schema, "type") orelse "", "object")) {
+        return error.InvalidMcpResponse;
+    }
+    if (tool.get("outputSchema")) |schema| _ = try requiredObject(schema);
+    if (tool.get("annotations")) |annotations_value| {
+        const annotations = try requiredObject(annotations_value);
+        try validateOptionalResponseString(annotations, "title");
+        for ([_][]const u8{ "readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint" }) |name| {
+            if (annotations.get(name)) |hint| if (hint != .bool) return error.InvalidMcpResponse;
+        }
+    }
+}
+
+fn validatePrompt(value: std.json.Value) !void {
+    const prompt = try requiredObject(value);
+    try validateBaseMetadata(prompt);
+    try validateOptionalResponseString(prompt, "description");
+    if (prompt.get("arguments")) |arguments_value| {
+        const arguments = switch (arguments_value) {
+            .array => |array| array,
+            else => return error.InvalidMcpResponse,
+        };
+        for (arguments.items) |argument_value| {
+            const argument = try requiredObject(argument_value);
+            try validateBaseMetadata(argument);
+            try validateOptionalResponseString(argument, "description");
+            if (argument.get("required")) |required| if (required != .bool) return error.InvalidMcpResponse;
+        }
+    }
+}
+
+fn validateResource(value: std.json.Value, template: bool) !void {
+    const resource = try requiredObject(value);
+    try validateBaseMetadata(resource);
+    _ = try requiredString(resource, if (template) "uriTemplate" else "uri");
+    try validateOptionalResponseString(resource, "description");
+    try validateOptionalResponseString(resource, "mimeType");
+    if (!template) try validateOptionalResponseNumber(resource, "size", true);
+    try validateOptionalAnnotations(resource);
+}
+
+fn validateResourceContents(value: std.json.Value) !void {
+    const content = try requiredObject(value);
+    _ = try requiredString(content, "uri");
+    try validateOptionalResponseString(content, "mimeType");
+    const text = content.get("text");
+    const blob = content.get("blob");
+    if (text == null and blob == null) return error.InvalidMcpResponse;
+    if (text) |item| if (item != .string) return error.InvalidMcpResponse;
+    if (blob) |item| if (item != .string) return error.InvalidMcpResponse;
+}
+
+fn validateContentBlock(value: std.json.Value) !void {
+    const content = try requiredObject(value);
+    const content_type = try requiredString(content, "type");
+    if (std.mem.eql(u8, content_type, "text")) {
+        _ = try requiredString(content, "text");
+    } else if (std.mem.eql(u8, content_type, "image") or std.mem.eql(u8, content_type, "audio")) {
+        _ = try requiredString(content, "data");
+        _ = try requiredString(content, "mimeType");
+    } else if (std.mem.eql(u8, content_type, "resource_link")) {
+        try validateResource(value, false);
+    } else if (std.mem.eql(u8, content_type, "resource")) {
+        try validateResourceContents(content.get("resource") orelse return error.InvalidMcpResponse);
+    } else return error.InvalidMcpResponse;
+    try validateOptionalAnnotations(content);
+}
+
+fn validateBaseMetadata(object: std.json.ObjectMap) !void {
+    _ = try requiredString(object, "name");
+    try validateOptionalResponseString(object, "title");
+    if (object.get("icons")) |icons_value| {
+        const icons = switch (icons_value) {
+            .array => |array| array,
+            else => return error.InvalidMcpResponse,
+        };
+        for (icons.items) |icon_value| {
+            const icon = try requiredObject(icon_value);
+            _ = try requiredString(icon, "src");
+            try validateOptionalResponseString(icon, "mimeType");
+            if (icon.get("sizes")) |sizes| {
+                const size_values = switch (sizes) {
+                    .array => |array| array,
+                    else => return error.InvalidMcpResponse,
+                };
+                for (size_values.items) |size| if (size != .string) return error.InvalidMcpResponse;
+            }
+            if (optionalString(icon, "theme")) |theme| {
+                if (!std.mem.eql(u8, theme, "light") and !std.mem.eql(u8, theme, "dark")) {
+                    return error.InvalidMcpResponse;
+                }
+            } else if (icon.get("theme") != null) return error.InvalidMcpResponse;
+        }
+    }
+}
+
+fn validateOptionalAnnotations(object: std.json.ObjectMap) !void {
+    const value = object.get("annotations") orelse return;
+    const annotations = try requiredObject(value);
+    if (annotations.get("audience")) |audience_value| {
+        const audience = switch (audience_value) {
+            .array => |array| array,
+            else => return error.InvalidMcpResponse,
+        };
+        for (audience.items) |role| try validateRole(role);
+    }
+    if (annotations.get("priority")) |priority| {
+        const number = switch (priority) {
+            .integer => |integer| @as(f64, @floatFromInt(integer)),
+            .float => |float| float,
+            else => return error.InvalidMcpResponse,
+        };
+        if (!std.math.isFinite(number) or number < 0 or number > 1) return error.InvalidMcpResponse;
+    }
+    try validateOptionalResponseString(annotations, "lastModified");
+}
+
+fn validateRole(value: std.json.Value) !void {
+    const role = switch (value) {
+        .string => |string| string,
+        else => return error.InvalidMcpResponse,
+    };
+    if (!std.mem.eql(u8, role, "user") and !std.mem.eql(u8, role, "assistant")) {
+        return error.InvalidMcpResponse;
+    }
+}
+
+fn validateOptionalResponseString(object: std.json.ObjectMap, name: []const u8) !void {
+    if (object.get(name)) |value| if (value != .string) return error.InvalidMcpResponse;
+}
+
+fn validateOptionalResponseNumber(
+    object: std.json.ObjectMap,
+    name: []const u8,
+    nonnegative: bool,
+) !void {
+    if (object.get(name)) |value| {
+        const number = switch (value) {
+            .integer => |integer| @as(f64, @floatFromInt(integer)),
+            .float => |float| float,
+            else => return error.InvalidMcpResponse,
+        };
+        if (!std.math.isFinite(number) or (nonnegative and number < 0)) return error.InvalidMcpResponse;
+    }
+}
+
+fn responseArray(object: std.json.ObjectMap, name: []const u8) ![]const std.json.Value {
+    return switch (object.get(name) orelse return error.InvalidMcpResponse) {
+        .array => |array| array.items,
+        else => error.InvalidMcpResponse,
+    };
 }
 
 fn requireStringArray(
@@ -2250,6 +2413,75 @@ test "method result validation rejects every structural boundary" {
     defer result.deinit(std.testing.allocator);
     try result.put(std.testing.allocator, "completion", .{ .object = completion });
     try std.testing.expectError(error.InvalidMcpResponse, validateMethodResult(methods.complete, .{ .object = result }));
+}
+
+test "nested MCP result content matches every core schema family" {
+    const valid = [_]struct { []const u8, []const u8 }{
+        .{ methods.discover, "{\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{},\"instructions\":\"Use it\",\"ttlMs\":0,\"cacheScope\":\"public\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"name\":\"weather\",\"title\":\"Weather\",\"description\":\"Forecast\",\"icons\":[{\"src\":\"https://example.test/icon.png\",\"mimeType\":\"image/png\",\"sizes\":[\"48x48\"],\"theme\":\"light\"}],\"inputSchema\":{\"type\":\"object\"},\"outputSchema\":{},\"annotations\":{\"title\":\"Weather\",\"readOnlyHint\":true,\"destructiveHint\":false,\"idempotentHint\":true,\"openWorldHint\":false}}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_prompts, "{\"prompts\":[{\"name\":\"review\",\"description\":\"Review\",\"arguments\":[{\"name\":\"code\",\"title\":\"Code\",\"description\":\"Source\",\"required\":true}]}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_resources, "{\"resources\":[{\"name\":\"source\",\"uri\":\"file:///a\",\"mimeType\":\"text/plain\",\"size\":1,\"annotations\":{\"audience\":[\"user\",\"assistant\"],\"priority\":0.5,\"lastModified\":\"2026-01-01T00:00:00Z\"}}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_resource_templates, "{\"resourceTemplates\":[{\"name\":\"source\",\"uriTemplate\":\"file:///{path}\",\"description\":\"Source\",\"mimeType\":\"text/plain\"}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.read_resource, "{\"contents\":[{\"uri\":\"file:///a\",\"text\":\"hello\"},{\"uri\":\"file:///b\",\"mimeType\":\"image/png\",\"blob\":\"AA==\"}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.get_prompt, "{\"description\":\"Prompt\",\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"hello\"}},{\"role\":\"assistant\",\"content\":{\"type\":\"image\",\"data\":\"AA==\",\"mimeType\":\"image/png\"}},{\"role\":\"user\",\"content\":{\"type\":\"audio\",\"data\":\"AA==\",\"mimeType\":\"audio/wav\"}},{\"role\":\"assistant\",\"content\":{\"type\":\"resource_link\",\"name\":\"source\",\"uri\":\"file:///a\"}},{\"role\":\"user\",\"content\":{\"type\":\"resource\",\"resource\":{\"uri\":\"file:///a\",\"text\":\"source\"}}}]}" },
+        .{ methods.call_tool, "{\"content\":[{\"type\":\"text\",\"text\":\"done\",\"annotations\":{\"priority\":1}}],\"isError\":false,\"structuredContent\":{\"ok\":true}}" },
+        .{ methods.complete, "{\"completion\":{\"values\":[\"zig\"],\"total\":1.5,\"hasMore\":true}}" },
+    };
+    for (valid) |case| try testValidateMethodResult(case[0], case[1]);
+}
+
+test "nested MCP result content rejects malformed items" {
+    const invalid = [_]struct { []const u8, []const u8 }{
+        .{ methods.discover, "{\"supportedVersions\":[\"v\"],\"capabilities\":{},\"instructions\":1,\"ttlMs\":0,\"cacheScope\":\"public\"}" },
+        .{ methods.list_tools, "{\"tools\":[[]],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"inputSchema\":{\"type\":\"object\"}}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"name\":\"x\",\"description\":1,\"inputSchema\":{\"type\":\"object\"}}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"name\":\"x\",\"inputSchema\":[]}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"name\":\"x\",\"inputSchema\":{\"type\":\"string\"}}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"name\":\"x\",\"inputSchema\":{\"type\":\"object\"},\"outputSchema\":[]}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"name\":\"x\",\"inputSchema\":{\"type\":\"object\"},\"annotations\":[]}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"name\":\"x\",\"inputSchema\":{\"type\":\"object\"},\"annotations\":{\"readOnlyHint\":1}}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"name\":\"x\",\"icons\":{},\"inputSchema\":{\"type\":\"object\"}}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"name\":\"x\",\"icons\":[[]],\"inputSchema\":{\"type\":\"object\"}}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"name\":\"x\",\"icons\":[{}],\"inputSchema\":{\"type\":\"object\"}}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"name\":\"x\",\"icons\":[{\"src\":\"x\",\"sizes\":{}}],\"inputSchema\":{\"type\":\"object\"}}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"name\":\"x\",\"icons\":[{\"src\":\"x\",\"sizes\":[1]}],\"inputSchema\":{\"type\":\"object\"}}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"name\":\"x\",\"icons\":[{\"src\":\"x\",\"theme\":\"color\"}],\"inputSchema\":{\"type\":\"object\"}}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[{\"name\":\"x\",\"icons\":[{\"src\":\"x\",\"theme\":1}],\"inputSchema\":{\"type\":\"object\"}}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_prompts, "{\"prompts\":[{\"name\":\"x\",\"arguments\":{}}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_prompts, "{\"prompts\":[{\"name\":\"x\",\"arguments\":[[]]}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_prompts, "{\"prompts\":[{\"name\":\"x\",\"arguments\":[{\"name\":\"a\",\"required\":1}]}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_resources, "{\"resources\":[{\"name\":\"x\"}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_resources, "{\"resources\":[{\"name\":\"x\",\"uri\":\"x\",\"size\":-1}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_resource_templates, "{\"resourceTemplates\":[{\"name\":\"x\"}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.read_resource, "{\"contents\":[[]],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.read_resource, "{\"contents\":[{\"uri\":\"x\"}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.read_resource, "{\"contents\":[{\"uri\":\"x\",\"text\":1}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.read_resource, "{\"contents\":[{\"uri\":\"x\",\"blob\":1}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.get_prompt, "{\"description\":1,\"messages\":[]}" },
+        .{ methods.get_prompt, "{\"messages\":[[]]}" },
+        .{ methods.get_prompt, "{\"messages\":[{\"role\":\"system\",\"content\":{\"type\":\"text\",\"text\":\"x\"}}]}" },
+        .{ methods.get_prompt, "{\"messages\":[{\"role\":1,\"content\":{\"type\":\"text\",\"text\":\"x\"}}]}" },
+        .{ methods.call_tool, "{\"content\":[[]]}" },
+        .{ methods.call_tool, "{\"content\":[{}]}" },
+        .{ methods.call_tool, "{\"content\":[{\"type\":\"future\"}]}" },
+        .{ methods.call_tool, "{\"content\":[{\"type\":\"text\"}]}" },
+        .{ methods.call_tool, "{\"content\":[{\"type\":\"image\",\"data\":\"x\"}]}" },
+        .{ methods.call_tool, "{\"content\":[{\"type\":\"resource_link\",\"uri\":\"x\"}]}" },
+        .{ methods.call_tool, "{\"content\":[{\"type\":\"resource\"}]}" },
+        .{ methods.call_tool, "{\"content\":[],\"isError\":1}" },
+        .{ methods.call_tool, "{\"content\":[{\"type\":\"text\",\"text\":\"x\",\"annotations\":[]}]}" },
+        .{ methods.call_tool, "{\"content\":[{\"type\":\"text\",\"text\":\"x\",\"annotations\":{\"audience\":{}}}]}" },
+        .{ methods.call_tool, "{\"content\":[{\"type\":\"text\",\"text\":\"x\",\"annotations\":{\"audience\":[\"system\"]}}]}" },
+        .{ methods.call_tool, "{\"content\":[{\"type\":\"text\",\"text\":\"x\",\"annotations\":{\"priority\":2}}]}" },
+        .{ methods.call_tool, "{\"content\":[{\"type\":\"text\",\"text\":\"x\",\"annotations\":{\"priority\":true}}]}" },
+        .{ methods.complete, "{\"completion\":{\"values\":[],\"total\":true}}" },
+        .{ methods.complete, "{\"completion\":{\"values\":[],\"hasMore\":1}}" },
+    };
+    for (invalid) |case| try std.testing.expectError(
+        error.InvalidMcpResponse,
+        testValidateMethodResult(case[0], case[1]),
+    );
 }
 
 test "JSON-RPC response and MCP error envelopes are exact" {
@@ -3291,7 +3523,7 @@ test "toolset paginates, mirrors headers, and renders rich results" {
                     try std.testing.expectEqualStrings("Madrid", findHeader(request.headers, "mcp-param-city").?);
                     break :blk allocator.dupe(
                         u8,
-                        "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resultType\":\"complete\",\"content\":[{\"type\":\"text\",\"text\":\"sunny\"},{\"type\":\"image\",\"data\":\"abc\"}]}}",
+                        "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resultType\":\"complete\",\"content\":[{\"type\":\"text\",\"text\":\"sunny\"},{\"type\":\"image\",\"data\":\"abc\",\"mimeType\":\"image/png\"}]}}",
                     );
                 },
                 else => error.InvalidMcpResponse,
