@@ -110,4 +110,7 @@ the production parsers apply their stricter documented limits after that.
 The pinned Zig 0.16.0 test runner requires error-return tracing to be disabled
 in fuzz mode. The script applies that workaround only to the fuzz compilation;
 normal checks retain the default tracing behavior. CI runs a 1,000-iteration
-bounded campaign on Linux for every push and pull request.
+bounded campaign on macOS for every push and pull request. Zig 0.16.0 currently
+emits an empty fuzzer coverage record on Linux before the targets start, while
+the same targets run normally on macOS; Linux still runs the corpus smoke tests
+and the 100% line-coverage gate.

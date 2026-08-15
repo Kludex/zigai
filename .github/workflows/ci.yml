@@ -35,7 +35,7 @@ jobs:
           path: coverage/merged/kcov-merged
 
   fuzz-smoke:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
       - uses: mlugg/setup-zig@v2
