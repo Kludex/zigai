@@ -810,7 +810,13 @@ test "run control drains cancellation and supports cooperative fallback" {
     try std.testing.expect(!state.active.load(.seq_cst));
 
     var live_token: CancellationToken = .{};
-    try (RunControl{ .io = io, .cancellation = &live_token }).invoke(void, State.succeed, .{});
+    try (RunControl{
+        .io = io,
+        .deadline = std.Io.Clock.Timestamp.fromNow(io, .{
+            .raw = .fromSeconds(10),
+            .clock = .awake,
+        }),
+    }).invoke(void, State.succeed, .{});
     try (RunControl{ .cancellation = &live_token }).invoke(void, State.succeed, .{});
 
     var cooperative_token: CancellationToken = .{};

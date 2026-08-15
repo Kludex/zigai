@@ -2763,14 +2763,16 @@ test "tool control drains work at deadlines and cancellation" {
             return allocator.dupe(u8, "ok");
         }
     };
-    var live_token: CancellationToken = .{};
     const succeeded = executeToolControlled(io, .{
         .definition = .{ .name = "fast", .description = "", .parameters_json_schema = "{}" },
         .context = &state,
         .executeFn = Fast.execute,
     }, .{}, std.testing.allocator, .{
         .io = io,
-        .cancellation = &live_token,
+        .deadline = std.Io.Clock.Timestamp.fromNow(io, .{
+            .raw = .fromSeconds(10),
+            .clock = .awake,
+        }),
     }, "{}");
     defer std.testing.allocator.free(succeeded.success.content);
     try std.testing.expectEqualStrings("ok", succeeded.success.content);
