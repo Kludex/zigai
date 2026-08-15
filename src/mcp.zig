@@ -6548,9 +6548,27 @@ test "Streamable HTTP delivers SSE incrementally and accepts streamed JSON" {
         },
     ));
 
+    const oversized_json = try std.testing.allocator.alloc(
+        u8,
+        json_limits.defaults.mcp_message.max_document_bytes + 1,
+    );
+    defer std.testing.allocator.free(oversized_json);
+    oversized_json[0] = '{';
+    @memset(oversized_json[1..], '0');
+    const oversized_lines = [_][]const u8{oversized_json};
+    stub.lines = &oversized_lines;
+    stub.fail_after_lines = false;
+    try std.testing.expectError(error.McpMessageTooLarge, streamable.transport().send(
+        std.testing.allocator,
+        .{
+            .message = request.message,
+            .method = request.method,
+            .events = .{ .context = &events, .eventFn = Events.emit },
+        },
+    ));
+
     stub.status = 503;
     stub.lines = &sse_lines;
-    stub.fail_after_lines = false;
     try std.testing.expectError(error.McpHttpRequestFailed, streamable.transport().send(
         std.testing.allocator,
         .{
