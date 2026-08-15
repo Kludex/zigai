@@ -75,7 +75,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add on-demand capabilities and capability discovery/loading with names,
   metadata, dependency declarations, conflict diagnostics, unload policy, and
   deterministic composition across agent, run, and nested/subagent scopes.
-- [ ] Add agent specifications in JSON/YAML with strict schema validation,
+- [x] Add agent specifications in JSON/YAML with strict schema validation,
   environment interpolation policy, provider/model resolution, capability
   loading, secret references, and a dry-run validator CLI.
 
