@@ -36,6 +36,17 @@ Provider cassettes live in `tests/cassettes/`. Their codec, recorder, replay
 transport, and body filters live in `tests/support/`; none are exported by the
 library or compiled into the command-line clients.
 
+`tests/fixtures/pydantic_ai/` contains cross-language message golden files.
+Regenerate the pinned v2 fixture with the official upstream adapter:
+
+```console
+uv run --with pydantic-ai-slim==2.31.0 \
+  python scripts/generate-pydantic-ai-messages-fixture.py \
+  tests/fixtures/pydantic_ai/messages-v2.31.0.json
+```
+
+The generator checks the installed package version before writing the fixture.
+
 `tests/cassettes/models/` contains real tool-loop recordings for eight models
 from each first-party provider. The matrix spans multiple model generations and
 size tiers. It is defined once in

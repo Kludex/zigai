@@ -52,6 +52,16 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_integration_tests = b.addRunArtifact(integration_tests);
+    const pydantic_ai_codec_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/pydantic_ai_codec.zig"),
+            .target = target,
+            .optimize = optimize,
+            .error_tracing = error_tracing,
+            .imports = &.{.{ .name = "zigai", .module = zigai }},
+        }),
+    });
+    const run_pydantic_ai_codec_tests = b.addRunArtifact(pydantic_ai_codec_tests);
     const cassette_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/provider_cassettes.zig"),
@@ -107,6 +117,7 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run the complete test suite");
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&run_integration_tests.step);
+    test_step.dependOn(&run_pydantic_ai_codec_tests.step);
     test_step.dependOn(&run_cassette_tests.step);
     test_step.dependOn(&run_cli_common_tests.step);
     test_step.dependOn(&run_fuzz_tests.step);
@@ -114,6 +125,7 @@ pub fn build(b: *std.Build) void {
     const check = b.step("check", "Compile all public packages");
     check.dependOn(&tests.step);
     check.dependOn(&integration_tests.step);
+    check.dependOn(&pydantic_ai_codec_tests.step);
     check.dependOn(&cassette_tests.step);
     check.dependOn(&cli_common_tests.step);
     check.dependOn(&fuzz_tests.step);

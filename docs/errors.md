@@ -141,6 +141,7 @@ suppressed; `sensitive_data_redacted` reports when this changed visible detail.
 | `json_schema` | `OutputSchemaValidationFailed` | Output does not satisfy the schema. |
 | `history` | `InvalidHistory` | History JSON or message sequence is invalid. |
 | `history` | `UnsupportedVersion` | The history version is unsupported. |
+| `codecs.pydantic_ai` | `InvalidMessages` | Valid JSON does not have the PydanticAI stable-v2 message shape. |
 | `context_budget` | `ContextSizeOverflow` | Byte or estimate arithmetic overflowed. |
 | `evals` | `MissingExpectedOutput` | An evaluator requires an absent expected value. |
 | `evals` | `InvalidModelGrade` | A model grader returned an invalid grade. |

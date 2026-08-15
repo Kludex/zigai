@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a separate PydanticAI `2.31.0` stable-v2 JSON codec with bounded parsing,
+  lossless arbitrary JSON values and number lexemes, an arena-owned result,
+  strict message-role validation, and an upstream-generated golden fixture.
 - Complete provider-neutral message vocabulary aligned with PydanticAI,
   including structured instructions, part provenance, video, uploaded files,
   cache points, rich tool outcomes, compaction, speech, native tools, tool

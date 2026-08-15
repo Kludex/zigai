@@ -16,6 +16,7 @@ pub const providers = @import("providers.zig");
 pub const models = @import("models.zig");
 pub const telemetry = @import("telemetry.zig");
 pub const mcp = @import("mcp.zig");
+pub const codecs = @import("codecs/root.zig");
 // Compatibility aliases for the original top-level provider imports.
 pub const openai = providers.openai;
 pub const openai_compatible = providers.openai_compatible;
@@ -154,4 +155,5 @@ test {
     _ = @import("models.zig");
     _ = @import("telemetry.zig");
     _ = @import("mcp.zig");
+    _ = @import("codecs/root.zig");
 }

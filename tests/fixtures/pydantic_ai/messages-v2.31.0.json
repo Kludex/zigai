@@ -1,0 +1,482 @@
+[
+  {
+    "parts": [
+      {
+        "content": "Be concise.",
+        "timestamp": "2026-08-15T12:34:56.789000Z",
+        "dynamic_ref": "policy",
+        "part_kind": "system-prompt"
+      },
+      {
+        "content": [
+          "Inspect these files.",
+          {
+            "content": "caption",
+            "metadata": {
+              "string": "value",
+              "number": 42,
+              "nested": {
+                "ok": true
+              }
+            },
+            "kind": "text-content"
+          },
+          {
+            "url": "https://example.com/image.png",
+            "force_download": false,
+            "vendor_metadata": {
+              "detail": "high"
+            },
+            "kind": "image-url",
+            "media_type": "image/png",
+            "identifier": "image-1"
+          },
+          {
+            "url": "https://example.com/audio.mp3",
+            "force_download": true,
+            "vendor_metadata": null,
+            "kind": "audio-url",
+            "media_type": "audio/mpeg",
+            "identifier": "audio-1"
+          },
+          {
+            "url": "https://example.com/report.pdf",
+            "force_download": "allow-local",
+            "vendor_metadata": null,
+            "kind": "document-url",
+            "media_type": "application/pdf",
+            "identifier": "document-1"
+          },
+          {
+            "url": "https://example.com/video.mp4",
+            "force_download": false,
+            "vendor_metadata": null,
+            "kind": "video-url",
+            "media_type": "video/mp4",
+            "identifier": "video-1"
+          },
+          {
+            "data": "AAEC",
+            "media_type": "application/octet-stream",
+            "vendor_metadata": {
+              "origin": "fixture"
+            },
+            "kind": "binary",
+            "identifier": "binary-1"
+          },
+          {
+            "file_id": "file_123",
+            "provider_name": "openai",
+            "vendor_metadata": {
+              "purpose": "assistants"
+            },
+            "kind": "uploaded-file",
+            "media_type": "application/pdf",
+            "identifier": "upload-1"
+          },
+          {
+            "kind": "cache-point",
+            "ttl": "1h"
+          }
+        ],
+        "timestamp": "2026-08-15T12:34:56.789000Z",
+        "part_kind": "user-prompt"
+      },
+      {
+        "speaker": "user",
+        "transcript": "Hello",
+        "audio": {
+          "data": "AQID",
+          "media_type": "audio/wav",
+          "vendor_metadata": null,
+          "kind": "binary",
+          "identifier": "703780"
+        },
+        "interrupted_at_ms": null,
+        "id": "speech-user-1",
+        "provider_name": "openai",
+        "provider_details": {
+          "nested": {
+            "enabled": true
+          },
+          "sequence": [
+            1,
+            null,
+            "three"
+          ]
+        },
+        "part_kind": "speech"
+      },
+      {
+        "tool_name": "weather",
+        "content": {
+          "temperature": 21,
+          "conditions": [
+            "sunny"
+          ]
+        },
+        "tool_call_id": "call-weather",
+        "tool_kind": null,
+        "metadata": {
+          "string": "value",
+          "number": 42,
+          "nested": {
+            "ok": true
+          }
+        },
+        "timestamp": "2026-08-15T12:34:56.789000Z",
+        "outcome": "success",
+        "part_kind": "tool-return"
+      },
+      {
+        "tool_name": "search_tools",
+        "content": {
+          "discovered_tools": [
+            {
+              "name": "lookup"
+            },
+            {
+              "name": "summarize"
+            }
+          ],
+          "message": "Two tools found."
+        },
+        "tool_call_id": "call-search",
+        "tool_kind": "tool-search",
+        "metadata": null,
+        "timestamp": "2026-08-15T12:34:56.789000Z",
+        "outcome": "success",
+        "part_kind": "tool-return"
+      },
+      {
+        "tool_name": "load_capability",
+        "content": {
+          "instructions": "Use the finance policy."
+        },
+        "tool_call_id": "call-capability",
+        "tool_kind": "capability-load",
+        "metadata": null,
+        "timestamp": "2026-08-15T12:34:56.789000Z",
+        "outcome": "success",
+        "part_kind": "tool-return"
+      },
+      {
+        "content": [
+          {
+            "type": "int_parsing",
+            "loc": [
+              "amount"
+            ],
+            "msg": "Input should be an integer",
+            "input": "many",
+            "ctx": {
+              "expected": "integer"
+            }
+          }
+        ],
+        "tool_name": "charge",
+        "tool_call_id": "call-charge",
+        "timestamp": "2026-08-15T12:34:56.789000Z",
+        "part_kind": "retry-prompt"
+      },
+      {
+        "tools_added": [
+          "lookup",
+          "summarize"
+        ],
+        "tool_call_id": "call-search",
+        "part_kind": "tool-availability-delta"
+      }
+    ],
+    "timestamp": "2026-08-15T12:34:56.789000Z",
+    "instructions": "Be concise.\nUse tools when useful.",
+    "kind": "request",
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "metadata": {
+      "string": "value",
+      "number": 42,
+      "nested": {
+        "ok": true
+      }
+    },
+    "state": "interrupted"
+  },
+  {
+    "parts": [
+      {
+        "content": "Working on it.",
+        "id": "text-1",
+        "provider_name": "openai",
+        "provider_details": {
+          "nested": {
+            "enabled": true
+          },
+          "sequence": [
+            1,
+            null,
+            "three"
+          ]
+        },
+        "part_kind": "text"
+      },
+      {
+        "content": "I should call a tool.",
+        "id": "thinking-1",
+        "signature": "opaque-signature",
+        "provider_name": "anthropic",
+        "provider_details": {
+          "nested": {
+            "enabled": true
+          },
+          "sequence": [
+            1,
+            null,
+            "three"
+          ]
+        },
+        "part_kind": "thinking"
+      },
+      {
+        "tool_name": "weather",
+        "args": {
+          "city": "Madrid",
+          "days": 2
+        },
+        "tool_call_id": "call-weather",
+        "tool_kind": null,
+        "id": "provider-item-1",
+        "provider_name": "openai",
+        "provider_details": {
+          "nested": {
+            "enabled": true
+          },
+          "sequence": [
+            1,
+            null,
+            "three"
+          ]
+        },
+        "part_kind": "tool-call"
+      },
+      {
+        "tool_name": "search_tools",
+        "args": {
+          "queries": [
+            "weather",
+            "forecast"
+          ]
+        },
+        "tool_call_id": "call-search",
+        "tool_kind": "tool-search",
+        "id": null,
+        "provider_name": null,
+        "provider_details": null,
+        "part_kind": "tool-call"
+      },
+      {
+        "tool_name": "load_capability",
+        "args": {
+          "id": "finance"
+        },
+        "tool_call_id": "call-capability",
+        "tool_kind": "capability-load",
+        "id": null,
+        "provider_name": null,
+        "provider_details": null,
+        "part_kind": "tool-call"
+      },
+      {
+        "tool_name": "web_search",
+        "args": "{\"query\":\"Zig\"}",
+        "tool_call_id": "native-call",
+        "tool_kind": null,
+        "id": "native-item-1",
+        "provider_name": "openai",
+        "provider_details": {
+          "nested": {
+            "enabled": true
+          },
+          "sequence": [
+            1,
+            null,
+            "three"
+          ]
+        },
+        "part_kind": "builtin-tool-call"
+      },
+      {
+        "tool_name": "tool_search",
+        "args": {
+          "queries": [
+            "compiler"
+          ]
+        },
+        "tool_call_id": "native-search",
+        "tool_kind": "tool-search",
+        "id": null,
+        "provider_name": "anthropic",
+        "provider_details": null,
+        "part_kind": "builtin-tool-call"
+      },
+      {
+        "tool_name": "web_search",
+        "content": [
+          "result",
+          {
+            "data": "BAUG",
+            "media_type": "image/png",
+            "vendor_metadata": null,
+            "kind": "binary",
+            "identifier": "e809c5"
+          }
+        ],
+        "tool_call_id": "native-call",
+        "tool_kind": null,
+        "metadata": {
+          "string": "value",
+          "number": 42,
+          "nested": {
+            "ok": true
+          }
+        },
+        "timestamp": "2026-08-15T12:34:56.789000Z",
+        "outcome": "success",
+        "provider_name": "openai",
+        "provider_details": {
+          "nested": {
+            "enabled": true
+          },
+          "sequence": [
+            1,
+            null,
+            "three"
+          ]
+        },
+        "part_kind": "builtin-tool-return"
+      },
+      {
+        "tool_name": "tool_search",
+        "content": {
+          "discovered_tools": [
+            {
+              "name": "compile"
+            }
+          ],
+          "message": "One tool found."
+        },
+        "tool_call_id": "native-search",
+        "tool_kind": "tool-search",
+        "metadata": null,
+        "timestamp": "2026-08-15T12:34:56.789000Z",
+        "outcome": "success",
+        "provider_name": "anthropic",
+        "provider_details": null,
+        "part_kind": "builtin-tool-return"
+      },
+      {
+        "content": {
+          "data": "BwgJ",
+          "media_type": "image/png",
+          "vendor_metadata": null,
+          "kind": "binary",
+          "identifier": "generated-image"
+        },
+        "id": "file-1",
+        "provider_name": "google",
+        "provider_details": {
+          "nested": {
+            "enabled": true
+          },
+          "sequence": [
+            1,
+            null,
+            "three"
+          ]
+        },
+        "part_kind": "file"
+      },
+      {
+        "speaker": "assistant",
+        "transcript": "Done",
+        "audio": {
+          "data": "CgsM",
+          "media_type": "audio/wav",
+          "vendor_metadata": null,
+          "kind": "binary",
+          "identifier": "be99d8"
+        },
+        "interrupted_at_ms": 250,
+        "id": "speech-assistant-1",
+        "provider_name": "openai",
+        "provider_details": {
+          "nested": {
+            "enabled": true
+          },
+          "sequence": [
+            1,
+            null,
+            "three"
+          ]
+        },
+        "part_kind": "speech"
+      },
+      {
+        "content": "Earlier context summarized.",
+        "id": "compaction-1",
+        "provider_name": "anthropic",
+        "provider_details": {
+          "nested": {
+            "enabled": true
+          },
+          "sequence": [
+            1,
+            null,
+            "three"
+          ]
+        },
+        "part_kind": "compaction"
+      }
+    ],
+    "usage": {
+      "input_tokens": 120,
+      "cache_write_tokens": 10,
+      "cache_read_tokens": 20,
+      "output_tokens": 45,
+      "input_audio_tokens": 3,
+      "cache_audio_read_tokens": 2,
+      "output_audio_tokens": 4,
+      "details": {
+        "reasoning_tokens": 11
+      },
+      "cost": "0.0123"
+    },
+    "model_name": "fixture-model",
+    "timestamp": "2026-08-15T12:34:56.789000Z",
+    "kind": "response",
+    "provider_name": "openai",
+    "provider_url": "https://api.openai.com/v1",
+    "provider_details": {
+      "nested": {
+        "enabled": true
+      },
+      "sequence": [
+        1,
+        null,
+        "three"
+      ]
+    },
+    "provider_response_id": "response-1",
+    "finish_reason": "tool_call",
+    "run_id": "run-1",
+    "conversation_id": "conversation-1",
+    "metadata": {
+      "string": "value",
+      "number": 42,
+      "nested": {
+        "ok": true
+      }
+    },
+    "state": "suspended"
+  }
+]

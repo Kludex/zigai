@@ -22,6 +22,19 @@ test "fuzz history envelope parser" {
     } });
 }
 
+fn fuzzPydanticAiMessages(_: void, smith: *std.testing.Smith) !void {
+    var buffer: [max_input_bytes]u8 = undefined;
+    var parsed = zigai.codecs.pydantic_ai.parse(std.testing.allocator, input(smith, &buffer)) catch return;
+    parsed.deinit();
+}
+
+test "fuzz PydanticAI message codec" {
+    try std.testing.fuzz({}, fuzzPydanticAiMessages, .{ .corpus = &.{
+        "\x02\x00\x00\x00[]",
+        "\x1f\x00\x00\x00[{\"kind\":\"request\",\"parts\":[]}]",
+    } });
+}
+
 fn fuzzResumeDecisions(_: void, smith: *std.testing.Smith) !void {
     var buffer: [max_input_bytes]u8 = undefined;
     var parsed = zigai.parseResumeDecisions(std.testing.allocator, input(smith, &buffer)) catch return;

@@ -312,6 +312,21 @@ Version 2 preserves the complete vocabulary, request and response state,
 instructions, usage, finish reason, and provider provenance. The parser also
 migrates version-1 role-based ZigAI histories.
 
+PydanticAI JSON is a different persistence contract. Use the dedicated codec
+when exchanging message documents with Python:
+
+```zig
+var document = try zigai.codecs.pydantic_ai.parse(allocator, pydantic_json);
+defer document.deinit();
+
+const encoded = try zigai.codecs.pydantic_ai.stringify(allocator, document.messages);
+defer allocator.free(encoded);
+```
+
+The codec targets PydanticAI `2.31.0` and returns an owned JSON value graph so
+arbitrary metadata, provider details, usage details, and tool content survive
+without coercion. It does not add a ZigAI history version envelope.
+
 History processors change only the view sent to the provider:
 
 ```zig

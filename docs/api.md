@@ -59,6 +59,7 @@ Use these namespaces for the rest of the API:
 | Namespace | Purpose |
 | --- | --- |
 | `zigai.messages` | Provider-neutral request/response messages and parts |
+| `zigai.codecs.pydantic_ai` | Lossless PydanticAI stable-v2 JSON interchange |
 | `zigai.security` | Outbound URL validation and diagnostic redaction |
 | `zigai.providers` | Native and named OpenAI-compatible provider clients |
 | `zigai.models` | Fallback and application-selected model routing |
@@ -87,6 +88,7 @@ ZigAI follows one rule for high-level operations: a returned type with a
 | `RunOutcome` / `PausedRun` | Owns completed or serialized paused state until `deinit` |
 | `OwnedResumeDecisions` | Owns parsed decisions until `deinit` |
 | `history.Owned` | Owns parsed history until `deinit` |
+| `codecs.pydantic_ai.Owned` | Owns the complete PydanticAI JSON value graph until `deinit` |
 | `evals.Report` | Owns every case and evaluation result until `deinit` |
 | `transport.Response` | Caller frees `body` with the allocator passed to `send` |
 
@@ -100,8 +102,9 @@ is accepted; the next byte returns `error.ResponseTooLarge` or
 Inputs, callback events, stream events, lifecycle events, and provider error
 observer values are borrowed unless their documentation says otherwise. Copy
 data inside the callback if it must outlive the call. Functions such as
-`history.stringify`, `stringifyResumeDecisions`, and provider request encoders
-return a slice owned by the caller's allocator.
+`history.stringify`, `codecs.pydantic_ai.stringify`,
+`stringifyResumeDecisions`, and provider request encoders return a slice owned
+by the caller's allocator.
 
 Direct `Model.request`, `Model.stream`, and provider decoder calls build nested
 response data with the supplied allocator. Use an arena and release the arena
@@ -117,8 +120,9 @@ The public named error categories are:
   non-success provider responses;
 - `providers.<name>.Error` for provider encoding and decoding failures plus the
   normalized provider request errors;
-- `history.Error`, `json_schema.Error`, `evals.Error`, `mcp.Error`, and
-  `transport.Error` for their subsystem-defined failures.
+- `history.Error`, `codecs.pydantic_ai.Error`, `json_schema.Error`,
+  `evals.Error`, `mcp.Error`, and `transport.Error` for their
+  subsystem-defined failures.
 
 `transport.Error.ResponseTooLarge` and `transport.Error.StreamLineTooLarge`
 are stable policy failures. They apply to decompressed bytes, so compression

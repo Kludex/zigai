@@ -14,6 +14,13 @@ provider adapters translate them at the model boundary. `model` re-exports the
 message types as compatibility aliases, but new code can use
 `zigai.messages.Message` when the distinction matters.
 
+External persistence formats stay outside this contract. The
+`codecs.pydantic_ai` module validates and round-trips the PydanticAI `2.31.0`
+stable-v2 JSON schema as an owned `std.json.Value` graph. It deliberately does
+not coerce arbitrary JSON metadata, provider details, rich tool content, or
+extended usage into narrower ZigAI runtime fields. `history` remains ZigAI's
+separately versioned persistence envelope.
+
 ## Model contract
 
 `Model` is a small vtable: context, capabilities, and one request function. It
