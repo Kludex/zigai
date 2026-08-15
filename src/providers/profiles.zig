@@ -358,6 +358,7 @@ test "named compatible providers resolve known families and reject unknown ones"
     try std.testing.expect(deepseek("other") == null);
 
     try std.testing.expect(doubleword("openai/gpt-oss-20b").?.supportsReasoningEffort(.low));
+    try std.testing.expect(doubleword("anthropic/claude-sonnet-4").?.supports_tools);
     try std.testing.expect(doubleword("unknown/model") == null);
     try std.testing.expect(!groq("openai/gpt-oss-20b").?.supports_logprobs);
     try std.testing.expect(groq("llama-3.3").?.supports_tools);

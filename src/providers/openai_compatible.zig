@@ -1186,6 +1186,10 @@ test "named compatible providers layer built-in and application profiles" {
 
     var marker: u8 = 0;
     const transport = http.Transport{ .context = &marker, .sendFn = Stub.send };
+    try std.testing.expectError(error.UnexpectedRequest, transport.send(std.testing.allocator, .{
+        .method = .GET,
+        .url = "https://example.test",
+    }));
     var provider_state = NamedProvider.initWithOptions("secret", transport, .{
         .model_profiles = .{
             .context = &marker,
@@ -1217,6 +1221,11 @@ test "named compatible providers layer built-in and application profiles" {
         .model_profiles = .{ .context = &marker, .lookupFn = Application.lookup },
     });
     try std.testing.expect(lookup_only.provider().modelProfile("shared", .{}).supports_json_schema_output);
+
+    var override_only = Provider.initWithOptions("secret", transport, .{
+        .model_profiles = .{ .context = &marker, .overrideFn = Application.override },
+    });
+    try std.testing.expect(!override_only.provider().modelProfile("unknown", .{}).supports_tools);
 }
 
 test "compatible responses classify malformed buffered and streamed tools" {

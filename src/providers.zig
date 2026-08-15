@@ -29,6 +29,16 @@ pub const ovhcloud = @import("providers/ovhcloud.zig");
 pub const pydantic_gateway = @import("providers/pydantic_gateway.zig");
 pub const together = @import("providers/together.zig");
 
+const TestTransport = struct {
+    calls: usize = 0,
+
+    fn send(context: *anyopaque, _: std.mem.Allocator, _: transport.Request) !transport.Response {
+        const self: *@This() = @ptrCast(@alignCast(context));
+        self.calls += 1;
+        return error.UnexpectedRequest;
+    }
+};
+
 test {
     _ = openai;
     _ = http;
@@ -52,13 +62,8 @@ test {
 }
 
 fn namedCompatibleProfile(comptime ProviderType: type, comptime ClientType: type, model_name: []const u8) model.ModelProfile {
-    const Stub = struct {
-        fn send(_: *anyopaque, _: std.mem.Allocator, _: transport.Request) !transport.Response {
-            return error.UnexpectedRequest;
-        }
-    };
-    var marker: u8 = 0;
-    var provider_state = ProviderType.init("unused", .{ .context = &marker, .sendFn = Stub.send });
+    var transport_state: TestTransport = .{};
+    var provider_state = ProviderType.init("unused", .{ .context = &transport_state, .sendFn = TestTransport.send });
     var client = ClientType{
         .model_name = model_name,
         .provider = provider_state.provider(),
@@ -87,23 +92,20 @@ test "named compatible clients use their provider model profiles" {
 }
 
 test "named compatible profiles reject unsupported requests before transport" {
-    const CountingTransport = struct {
-        calls: usize = 0,
-
-        fn send(context: *anyopaque, _: std.mem.Allocator, _: transport.Request) !transport.Response {
-            const self: *@This() = @ptrCast(@alignCast(context));
-            self.calls += 1;
-            return error.UnexpectedRequest;
-        }
-    };
     const Tool = struct {
         fn execute(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]const u8 {
             return allocator.dupe(u8, "ok");
         }
     };
 
-    var transport_state: CountingTransport = .{};
-    const counting_transport = transport.Transport{ .context = &transport_state, .sendFn = CountingTransport.send };
+    var transport_state: TestTransport = .{};
+    const counting_transport = transport.Transport{ .context = &transport_state, .sendFn = TestTransport.send };
+    try std.testing.expectError(error.UnexpectedRequest, counting_transport.send(std.testing.allocator, .{
+        .method = .GET,
+        .url = "https://example.test",
+    }));
+    try std.testing.expectEqual(@as(usize, 1), transport_state.calls);
+    transport_state.calls = 0;
     var deepseek_provider = deepseek.Provider.init("unused", counting_transport);
     var deepseek_client = deepseek.Client{
         .model_name = "deepseek-v4-flash",
@@ -129,6 +131,9 @@ test "named compatible profiles reject unsupported requests before transport" {
         .context = &tool_marker,
         .executeFn = Tool.execute,
     };
+    const tool_output = try tool.execute(std.testing.allocator, "{}");
+    defer std.testing.allocator.free(tool_output);
+    try std.testing.expectEqualStrings("ok", tool_output);
     try std.testing.expectError(agent.Agent.Error.ModelDoesNotSupportTools, (agent.Agent{
         .model = groq_client.model(),
         .tools = &.{tool},
