@@ -25,7 +25,7 @@ const native_profile: model_types.ModelProfile = .{
     .supports_json_object_output = true,
     .supports_system_messages = true,
     .supports_thinking = true,
-    .supports_streaming = false,
+    .supports_streaming = true,
     .supports_temperature = true,
     .supports_max_tokens = true,
     .supports_stop_sequences = true,
@@ -89,6 +89,7 @@ pub const Client = struct {
             .model_name = self.model_name,
             .settings = self.settings,
             .requestFn = request,
+            .streamFn = stream,
         };
     }
 
@@ -127,7 +128,404 @@ pub const Client = struct {
         decoded.model_name = self.model_name;
         return decoded;
     }
+
+    fn stream(
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        value: model_types.ModelRequest,
+        sink: model_types.ModelStreamSink,
+    ) !model_types.ModelResponse {
+        const self: *Client = @ptrCast(@alignCast(context));
+        const body = try encodeRequestForProvider(allocator, self.provider.name, self.model_name, value, true);
+        defer allocator.free(body);
+        var headers: std.ArrayList(http.Header) = .empty;
+        defer headers.deinit(allocator);
+        try headers.append(allocator, .{ .name = "content-type", .value = "application/json" });
+        try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
+        var state = StreamState{ .allocator = allocator, .sink = sink };
+        defer state.deinit();
+        const response = self.provider.streamLines(allocator, .{
+            .method = .POST,
+            .endpoint = "/v2/chat",
+            .headers = headers.items,
+            .body = body,
+            .timeout_ms = value.timeout_ms,
+            .cancellation = value.cancellation,
+            .url_policy = value.url_policy,
+        }, state.lineSink()) catch |failure| return common.transportError(failure);
+        if (response.status < 200 or response.status >= 300) {
+            self.provider.observeError(
+                allocator,
+                response.status,
+                state.error_body.items,
+                response.metadata,
+                value.error_observer,
+                value.error_policy,
+            );
+            return common.statusError(response.status);
+        }
+        if (!state.ended) return error.ProviderResponseDecodeError;
+        return .{
+            .parts = try state.parts.toOwnedSlice(allocator),
+            .usage = state.usage,
+            .provider_name = self.provider.name,
+            .provider_url = self.provider.base_url,
+            .provider_details = try state.providerDetails(),
+            .provider_response_id = state.response_id,
+            .model_name = self.model_name,
+            .finish_reason = state.finish_reason,
+        };
+    }
 };
+
+const StreamContent = struct {
+    const Kind = enum { text, thinking };
+
+    provider_index: usize,
+    part_index: usize,
+    kind: Kind,
+    content: std.ArrayList(u8) = .empty,
+    ended: bool = false,
+};
+
+const StreamToolCall = struct {
+    provider_index: usize,
+    part_index: usize,
+    id: []const u8,
+    name: []const u8,
+    arguments: std.ArrayList(u8) = .empty,
+    ended: bool = false,
+};
+
+const StreamState = struct {
+    allocator: std.mem.Allocator,
+    sink: model_types.ModelStreamSink,
+    status: u16 = 0,
+    parts: std.ArrayList(model_types.ResponsePart) = .empty,
+    contents: std.ArrayList(StreamContent) = .empty,
+    calls: std.ArrayList(StreamToolCall) = .empty,
+    tool_plan: std.ArrayList(u8) = .empty,
+    tool_plan_index: ?usize = null,
+    citations: std.ArrayList(std.json.Value) = .empty,
+    billed_units: ?std.json.Value = null,
+    error_body: std.ArrayList(u8) = .empty,
+    response_id: ?[]const u8 = null,
+    usage: model_types.Usage = .{},
+    finish_reason: ?model_types.FinishReason = null,
+    ended: bool = false,
+
+    fn deinit(self: *StreamState) void {
+        for (self.contents.items) |*content| content.content.deinit(self.allocator);
+        for (self.calls.items) |*call| call.arguments.deinit(self.allocator);
+        self.parts.deinit(self.allocator);
+        self.contents.deinit(self.allocator);
+        self.calls.deinit(self.allocator);
+        self.tool_plan.deinit(self.allocator);
+        self.citations.deinit(self.allocator);
+        self.error_body.deinit(self.allocator);
+    }
+
+    fn lineSink(self: *StreamState) http.LineSink {
+        return .{ .context = self, .startFn = start, .lineFn = line };
+    }
+
+    fn start(context: *anyopaque, response: http.StreamResponse) !void {
+        const self: *StreamState = @ptrCast(@alignCast(context));
+        self.status = response.status;
+    }
+
+    fn line(context: *anyopaque, value: []const u8) !void {
+        const self: *StreamState = @ptrCast(@alignCast(context));
+        if (self.status < 200 or self.status >= 300) {
+            if (self.error_body.items.len != 0) try self.error_body.append(self.allocator, '\n');
+            return self.error_body.appendSlice(self.allocator, value);
+        }
+        if (!std.mem.startsWith(u8, value, "data:")) return;
+        const data = std.mem.trim(u8, value["data:".len..], " ");
+        if (data.len == 0 or std.mem.eql(u8, data, "[DONE]")) return;
+        const root = try json_limits.parseLeaky(
+            std.json.Value,
+            self.allocator,
+            data,
+            json_limits.defaults.provider_response,
+            .{ .allocate = .alloc_always },
+            error.InvalidProviderResponse,
+        );
+        const object = switch (root) {
+            .object => |entry| entry,
+            else => return error.InvalidProviderResponse,
+        };
+        const event_type = try common.objectString(object, "type");
+        if (std.mem.eql(u8, event_type, "message-start")) {
+            self.response_id = try common.objectString(object, "id");
+        } else if (std.mem.eql(u8, event_type, "content-start")) {
+            try self.contentStart(root);
+        } else if (std.mem.eql(u8, event_type, "content-delta")) {
+            try self.contentDelta(root);
+        } else if (std.mem.eql(u8, event_type, "content-end")) {
+            try self.contentEnd(root);
+        } else if (std.mem.eql(u8, event_type, "tool-plan-delta")) {
+            try self.toolPlanDelta(root);
+        } else if (std.mem.eql(u8, event_type, "tool-call-start")) {
+            try self.toolCallStart(root);
+        } else if (std.mem.eql(u8, event_type, "tool-call-delta")) {
+            try self.toolCallDelta(root);
+        } else if (std.mem.eql(u8, event_type, "tool-call-end")) {
+            try self.toolCallEnd(root);
+        } else if (std.mem.eql(u8, event_type, "citation-start")) {
+            try self.citationStart(root);
+        } else if (std.mem.eql(u8, event_type, "message-end")) {
+            try self.messageEnd(root);
+        } else if (!std.mem.eql(u8, event_type, "citation-end") and !std.mem.eql(u8, event_type, "debug")) {
+            return error.InvalidProviderResponse;
+        }
+    }
+
+    fn contentStart(self: *StreamState, root: std.json.Value) !void {
+        const index = try streamIndex(root);
+        if (self.findContent(index) != null) return error.InvalidProviderResponse;
+        const content = try streamMessageField(root, "content");
+        const object = switch (content) {
+            .object => |value| value,
+            else => return error.InvalidProviderResponse,
+        };
+        const raw_kind = try common.objectString(object, "type");
+        const kind: StreamContent.Kind = if (std.mem.eql(u8, raw_kind, "text"))
+            .text
+        else if (std.mem.eql(u8, raw_kind, "thinking"))
+            .thinking
+        else
+            return error.InvalidProviderResponse;
+        const part_index = self.parts.items.len;
+        const initial: model_types.ResponsePart = switch (kind) {
+            .text => .{ .text = "" },
+            .thinking => .{ .thinking = .{
+                .content = "",
+                .provider = .{
+                    .provider_name = "cohere",
+                    .provider_details = try markerDetails(self.allocator, "thinking"),
+                },
+            } },
+        };
+        try self.parts.append(self.allocator, initial);
+        try self.contents.append(self.allocator, .{
+            .provider_index = index,
+            .part_index = part_index,
+            .kind = kind,
+        });
+        try self.sink.emit(.{ .part_start = .{ .index = part_index, .part = initial } });
+    }
+
+    fn contentDelta(self: *StreamState, root: std.json.Value) !void {
+        const index = try streamIndex(root);
+        const content = self.findContent(index) orelse return error.InvalidProviderResponse;
+        if (content.ended) return error.InvalidProviderResponse;
+        const value = try streamMessageField(root, "content");
+        const object = switch (value) {
+            .object => |entry| entry,
+            else => return error.InvalidProviderResponse,
+        };
+        const field = if (content.kind == .text) "text" else "thinking";
+        const delta = try common.objectString(object, field);
+        try content.content.appendSlice(self.allocator, delta);
+        try self.sink.emit(.{ .part_delta = .{
+            .index = content.part_index,
+            .delta = if (content.kind == .text)
+                .{ .text = .{ .content_delta = delta } }
+            else
+                .{ .thinking = .{
+                    .content_delta = delta,
+                    .provider = .{
+                        .provider_name = "cohere",
+                        .provider_details = try markerDetails(self.allocator, "thinking"),
+                    },
+                } },
+        } });
+    }
+
+    fn contentEnd(self: *StreamState, root: std.json.Value) !void {
+        const content = self.findContent(try streamIndex(root)) orelse return error.InvalidProviderResponse;
+        if (content.ended) return error.InvalidProviderResponse;
+        const owned = try content.content.toOwnedSlice(self.allocator);
+        const part: model_types.ResponsePart = switch (content.kind) {
+            .text => .{ .text = owned },
+            .thinking => .{ .thinking = .{
+                .content = owned,
+                .provider = .{
+                    .provider_name = "cohere",
+                    .provider_details = try markerDetails(self.allocator, "thinking"),
+                },
+            } },
+        };
+        self.parts.items[content.part_index] = part;
+        content.ended = true;
+        try self.sink.emit(.{ .part_end = .{ .index = content.part_index, .part = part } });
+    }
+
+    fn toolPlanDelta(self: *StreamState, root: std.json.Value) !void {
+        const value = try streamMessageField(root, "tool_plan");
+        const delta = switch (value) {
+            .string => |text| text,
+            else => return error.InvalidProviderResponse,
+        };
+        if (self.tool_plan_index == null) {
+            const index = self.parts.items.len;
+            const initial = model_types.ResponsePart{ .thinking = .{
+                .content = "",
+                .provider = .{
+                    .provider_name = "cohere",
+                    .provider_details = try markerDetails(self.allocator, "tool_plan"),
+                },
+            } };
+            self.tool_plan_index = index;
+            try self.parts.append(self.allocator, initial);
+            try self.sink.emit(.{ .part_start = .{ .index = index, .part = initial } });
+        }
+        try self.tool_plan.appendSlice(self.allocator, delta);
+        try self.sink.emit(.{ .part_delta = .{
+            .index = self.tool_plan_index.?,
+            .delta = .{ .thinking = .{
+                .content_delta = delta,
+                .provider = .{
+                    .provider_name = "cohere",
+                    .provider_details = try markerDetails(self.allocator, "tool_plan"),
+                },
+            } },
+        } });
+    }
+
+    fn toolCallStart(self: *StreamState, root: std.json.Value) !void {
+        const index = try streamIndex(root);
+        if (self.findCall(index) != null) return error.InvalidProviderResponse;
+        const value = try streamMessageField(root, "tool_calls");
+        const object = switch (value) {
+            .object => |entry| entry,
+            else => return error.InvalidProviderResponse,
+        };
+        if (!std.mem.eql(u8, try common.objectString(object, "type"), "function"))
+            return error.InvalidProviderResponse;
+        const function = try common.requiredObject(value, "function");
+        const id = try common.objectString(object, "id");
+        const name = try common.objectString(function, "name");
+        const initial = model_types.ResponsePart{ .tool_call = .{
+            .id = id,
+            .name = name,
+            .arguments_json = "",
+            .provider = .{ .provider_name = "cohere" },
+        } };
+        const part_index = self.parts.items.len;
+        try self.parts.append(self.allocator, initial);
+        try self.calls.append(self.allocator, .{
+            .provider_index = index,
+            .part_index = part_index,
+            .id = id,
+            .name = name,
+        });
+        try self.sink.emit(.{ .part_start = .{ .index = part_index, .part = initial } });
+    }
+
+    fn toolCallDelta(self: *StreamState, root: std.json.Value) !void {
+        const call = self.findCall(try streamIndex(root)) orelse return error.InvalidProviderResponse;
+        if (call.ended) return error.InvalidProviderResponse;
+        const value = try streamMessageField(root, "tool_calls");
+        const function = try common.requiredObject(value, "function");
+        const delta = try common.objectString(function, "arguments");
+        try call.arguments.appendSlice(self.allocator, delta);
+        try self.sink.emit(.{ .part_delta = .{
+            .index = call.part_index,
+            .delta = .{ .tool_call = .{
+                .id = call.id,
+                .name = call.name,
+                .arguments_delta = delta,
+                .provider = .{ .provider_name = "cohere" },
+            } },
+        } });
+    }
+
+    fn toolCallEnd(self: *StreamState, root: std.json.Value) !void {
+        const call = self.findCall(try streamIndex(root)) orelse return error.InvalidProviderResponse;
+        if (call.ended) return error.InvalidProviderResponse;
+        const part = model_types.ResponsePart{ .tool_call = .{
+            .id = call.id,
+            .name = call.name,
+            .arguments_json = try call.arguments.toOwnedSlice(self.allocator),
+            .provider = .{ .provider_name = "cohere" },
+        } };
+        self.parts.items[call.part_index] = part;
+        call.ended = true;
+        try self.sink.emit(.{ .part_end = .{ .index = call.part_index, .part = part } });
+    }
+
+    fn citationStart(self: *StreamState, root: std.json.Value) !void {
+        try self.citations.append(self.allocator, try streamMessageField(root, "citations"));
+    }
+
+    fn messageEnd(self: *StreamState, root: std.json.Value) !void {
+        if (self.ended) return error.InvalidProviderResponse;
+        for (self.contents.items) |content| if (!content.ended) return error.InvalidProviderResponse;
+        for (self.calls.items) |call| if (!call.ended) return error.InvalidProviderResponse;
+        if (self.tool_plan_index) |index| {
+            const part = model_types.ResponsePart{ .thinking = .{
+                .content = try self.tool_plan.toOwnedSlice(self.allocator),
+                .provider = .{
+                    .provider_name = "cohere",
+                    .provider_details = try markerDetails(self.allocator, "tool_plan"),
+                },
+            } };
+            self.parts.items[index] = part;
+            try self.sink.emit(.{ .part_end = .{ .index = index, .part = part } });
+        }
+        const delta = try common.requiredObject(root, "delta");
+        self.finish_reason = decodeFinishReason(try common.objectString(delta, "finish_reason"));
+        self.usage = try decodeUsage(delta);
+        if (delta.get("usage")) |usage| if (usage == .object) {
+            self.billed_units = usage.object.get("billed_units");
+            self.usage.cache_read_tokens = (try common.optionalObjectInteger(usage.object, "cached_tokens")) orelse 0;
+            if (usage.object.get("tokens")) |tokens| if (tokens == .object) {
+                self.usage.reasoning_tokens = (try common.optionalObjectInteger(tokens.object, "reasoning_tokens")) orelse 0;
+            };
+        };
+        if (self.usage.hasValues()) try self.sink.emit(.{ .usage = self.usage });
+        self.ended = true;
+    }
+
+    fn providerDetails(self: *StreamState) !?model_types.ProviderDetails {
+        if (self.citations.items.len == 0 and self.billed_units == null) return null;
+        var object = try std.json.ObjectMap.init(self.allocator, &.{}, &.{});
+        if (self.citations.items.len != 0) {
+            var citations = std.json.Array.init(self.allocator);
+            try citations.appendSlice(self.citations.items);
+            try object.put(self.allocator, "citations", .{ .array = citations });
+        }
+        if (self.billed_units) |value| try object.put(self.allocator, "billed_units", value);
+        return try model_types.ProviderDetails.fromValue(.{ .object = object });
+    }
+
+    fn findContent(self: *StreamState, index: usize) ?*StreamContent {
+        for (self.contents.items) |*content| if (content.provider_index == index) return content;
+        return null;
+    }
+
+    fn findCall(self: *StreamState, index: usize) ?*StreamToolCall {
+        for (self.calls.items) |*call| if (call.provider_index == index) return call;
+        return null;
+    }
+};
+
+fn streamIndex(root: std.json.Value) !usize {
+    const object = switch (root) {
+        .object => |value| value,
+        else => return error.InvalidProviderResponse,
+    };
+    const index = try common.objectInteger(object, "index");
+    return std.math.cast(usize, index) orelse error.InvalidProviderResponse;
+}
+
+fn streamMessageField(root: std.json.Value, field: []const u8) !std.json.Value {
+    const delta = try common.requiredObject(root, "delta");
+    const message = try common.requiredObject(.{ .object = delta }, "message");
+    return message.get(field) orelse error.InvalidProviderResponse;
+}
 
 pub fn encodeRequest(
     allocator: std.mem.Allocator,
@@ -684,4 +1082,121 @@ test "native Cohere client owns endpoint identity and provider errors" {
     try std.testing.expectEqual(model_types.ExtraBodyKind.cohere, client.model().profile.extra_body_kind.?);
     state.status = 429;
     try std.testing.expectError(error.ProviderRateLimited, client.model().request(arena.allocator(), .{ .messages = &.{} }));
+}
+
+test "native Cohere v2 stream preserves every part lifecycle" {
+    const State = struct {
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, _: http.Request) !http.Response {
+            return .{ .status = 200, .body = try allocator.dupe(u8, "{}") };
+        }
+
+        fn stream(_: *anyopaque, _: std.mem.Allocator, request: http.Request, sink: http.LineSink) !http.StreamResponse {
+            try std.testing.expectEqualStrings("https://api.cohere.com/v2/chat", request.url);
+            try std.testing.expect(std.mem.indexOf(u8, request.body, "\"stream\":true") != null);
+            try sink.start(.{ .status = 200 });
+            try sink.line("event: message-start");
+            try sink.line("data: {\"id\":\"chat_1\",\"type\":\"message-start\",\"delta\":{\"message\":{\"role\":\"assistant\"}}}");
+            try sink.line("data: {\"type\":\"content-start\",\"index\":0,\"delta\":{\"message\":{\"content\":{\"type\":\"thinking\",\"thinking\":\"\"}}}}");
+            try sink.line("data: {\"type\":\"content-delta\",\"index\":0,\"delta\":{\"message\":{\"content\":{\"thinking\":\"Think.\"}}}}");
+            try sink.line("data: {\"type\":\"content-end\",\"index\":0}");
+            try sink.line("data: {\"type\":\"content-start\",\"index\":1,\"delta\":{\"message\":{\"content\":{\"type\":\"text\",\"text\":\"\"}}}}");
+            try sink.line("data: {\"type\":\"content-delta\",\"index\":1,\"delta\":{\"message\":{\"content\":{\"text\":\"Working.\"}}}}");
+            try sink.line("data: {\"type\":\"content-end\",\"index\":1}");
+            try sink.line("data: {\"type\":\"tool-plan-delta\",\"delta\":{\"message\":{\"tool_plan\":\"Call weather.\"}}}");
+            try sink.line("data: {\"type\":\"tool-call-start\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"weather\",\"arguments\":\"\"}}}}}");
+            try sink.line("data: {\"type\":\"tool-call-delta\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"function\":{\"arguments\":\"{\\\"city\\\":\\\"Madrid\\\"}\"}}}}}");
+            try sink.line("data: {\"type\":\"tool-call-end\",\"index\":0}");
+            try sink.line("data: {\"type\":\"citation-start\",\"index\":0,\"delta\":{\"message\":{\"citations\":{\"start\":0,\"end\":7}}}}");
+            try sink.line("data: {\"type\":\"citation-end\",\"index\":0}");
+            try sink.line("data: {\"type\":\"debug\",\"delta\":{}}");
+            try sink.line("data: {\"type\":\"message-end\",\"delta\":{\"finish_reason\":\"TOOL_CALL\",\"usage\":{\"billed_units\":{\"input_tokens\":2,\"output_tokens\":3},\"tokens\":{\"input_tokens\":4,\"output_tokens\":5,\"reasoning_tokens\":1},\"cached_tokens\":2}}}");
+            try sink.line("data: [DONE]");
+            return .{ .status = 200 };
+        }
+    };
+    const Events = struct {
+        starts: usize = 0,
+        deltas: usize = 0,
+        ends: usize = 0,
+        usages: usize = 0,
+
+        fn emit(context: *anyopaque, event: model_types.ModelStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event) {
+                .part_start => self.starts += 1,
+                .part_delta => self.deltas += 1,
+                .part_end => self.ends += 1,
+                .usage => self.usages += 1,
+            }
+        }
+    };
+    var marker: u8 = 0;
+    var provider = Provider.init("secret", .{
+        .context = &marker,
+        .sendFn = State.send,
+        .streamLinesFn = State.stream,
+    });
+    var client = Client{ .model_name = "command-a-03-2025", .provider = provider.provider() };
+    var events: Events = .{};
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const response = try client.model().stream(arena.allocator(), .{ .messages = &.{} }, .{
+        .context = &events,
+        .eventFn = Events.emit,
+    });
+    try std.testing.expectEqual(@as(usize, 4), response.parts.len);
+    try std.testing.expectEqualStrings("Think.", response.parts[0].thinking.content);
+    try std.testing.expectEqualStrings("Working.", response.parts[1].text);
+    try std.testing.expectEqualStrings("Call weather.", response.parts[2].thinking.content);
+    try std.testing.expectEqualStrings("{\"city\":\"Madrid\"}", response.parts[3].tool_call.arguments_json);
+    try std.testing.expectEqual(@as(u64, 2), response.usage.cache_read_tokens);
+    try std.testing.expectEqual(@as(u64, 1), response.usage.reasoning_tokens);
+    try std.testing.expect(response.provider_details != null);
+    try std.testing.expectEqual(@as(usize, 4), events.starts);
+    try std.testing.expectEqual(@as(usize, 4), events.deltas);
+    try std.testing.expectEqual(@as(usize, 4), events.ends);
+    try std.testing.expectEqual(@as(usize, 1), events.usages);
+}
+
+test "native Cohere stream maps status and protocol failures" {
+    const State = struct {
+        mode: enum { status, incomplete, unknown } = .status,
+
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, _: http.Request) !http.Response {
+            return .{ .status = 200, .body = try allocator.dupe(u8, "{}") };
+        }
+
+        fn stream(context: *anyopaque, _: std.mem.Allocator, _: http.Request, sink: http.LineSink) !http.StreamResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.mode == .status) {
+                try sink.start(.{ .status = 500 });
+                try sink.line("{\"message\":\"failed\"}");
+                return .{ .status = 500 };
+            }
+            try sink.start(.{ .status = 200 });
+            if (self.mode == .unknown)
+                try sink.line("data: {\"type\":\"future-event\"}")
+            else
+                try sink.line("data: {\"id\":\"chat_1\",\"type\":\"message-start\",\"delta\":{\"message\":{}}}");
+            return .{ .status = 200 };
+        }
+    };
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+    };
+    var state: State = .{};
+    var provider = Provider.init("secret", .{
+        .context = &state,
+        .sendFn = State.send,
+        .streamLinesFn = State.stream,
+    });
+    var client = Client{ .model_name = "command-a-03-2025", .provider = provider.provider() };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sink = model_types.ModelStreamSink{ .context = &state, .eventFn = Sink.emit };
+    try std.testing.expectError(error.ProviderServerError, client.model().stream(arena.allocator(), .{ .messages = &.{} }, sink));
+    state.mode = .incomplete;
+    try std.testing.expectError(error.ProviderResponseDecodeError, client.model().stream(arena.allocator(), .{ .messages = &.{} }, sink));
+    state.mode = .unknown;
+    try std.testing.expectError(error.ProviderResponseDecodeError, client.model().stream(arena.allocator(), .{ .messages = &.{} }, sink));
 }
