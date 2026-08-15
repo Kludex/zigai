@@ -4542,6 +4542,140 @@ test "tool preparation policies compose after toolsets" {
     try std.testing.expectEqual(@as(usize, 2), second.calls);
 }
 
+test "tool policy failure and parallel retry branches are explicit" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tool_context: u8 = 0;
+    const Executor = struct {
+        fn execute(_: *anyopaque, memory: std.mem.Allocator, _: []const u8) ![]const u8 {
+            return memory.dupe(u8, "raw");
+        }
+    };
+    const tool = model_types.Tool{
+        .definition = .{ .name = "demo", .description = "", .parameters_json_schema = "{}" },
+        .context = &tool_context,
+        .executeFn = Executor.execute,
+    };
+    var retries = ToolRetryTracker{ .allocator = allocator };
+    const malformed_call = Part{ .tool_call = .{
+        .id = "malformed",
+        .name = "demo",
+        .arguments_json = "{",
+    } };
+    const malformed = try resolveToolCalls(
+        &.{tool},
+        allocator,
+        &.{malformed_call},
+        1,
+        .{ .model_format = .text, .validation_format = .text },
+        &retries,
+        .{},
+        &.{},
+        &.{},
+    );
+    try std.testing.expectEqual(error.InvalidToolArguments, malformed[0].validation_failure.?);
+
+    const PolicyFailure = struct {
+        stage: enum { arguments, call, return_value },
+
+        fn apply(context: *anyopaque, _: std.mem.Allocator, event: tool_policy.Event) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event) {
+                .arguments => if (self.stage == .arguments) return error.ArgumentPolicyFailed,
+                .call => if (self.stage == .call) return error.CallPolicyFailed,
+                .return_value => if (self.stage == .return_value) return error.ReturnPolicyFailed,
+                else => {},
+            }
+        }
+    };
+    var failure = PolicyFailure{ .stage = .arguments };
+    const policy = tool_policy.Policy{ .context = &failure, .applyFn = PolicyFailure.apply };
+    const valid_call = Part{ .tool_call = .{ .id = "valid", .name = "demo", .arguments_json = "{}" } };
+    try std.testing.expectError(error.ArgumentPolicyFailed, resolveToolCalls(
+        &.{tool},
+        allocator,
+        &.{valid_call},
+        1,
+        .{ .model_format = .text, .validation_format = .text },
+        &retries,
+        .{},
+        &.{policy},
+        &.{},
+    ));
+
+    const work = ToolWork{
+        .call = valid_call.tool_call,
+        .tool_index = 0,
+        .arguments_json = "{}",
+        .execution = .immediate,
+    };
+    failure.stage = .call;
+    try std.testing.expectEqual(error.CallPolicyFailed, executeToolWork(
+        tool,
+        .{},
+        allocator,
+        .{},
+        work,
+        &.{policy},
+    ).failure);
+    failure.stage = .return_value;
+    try std.testing.expectEqual(error.ReturnPolicyFailed, executeToolWork(
+        tool,
+        .{},
+        allocator,
+        .{},
+        work,
+        &.{policy},
+    ).failure);
+
+    try std.testing.expect(findResumeDecision(&.{}, "missing") == null);
+    try std.testing.expect(findToolWork(&.{work}, "missing") == null);
+
+    const Stub = struct {
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            return error.UnusedModel;
+        }
+    };
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    const other = model_types.Tool{
+        .definition = .{ .name = "other", .description = "", .parameters_json_schema = "{}" },
+        .context = &tool_context,
+        .executeFn = Executor.execute,
+    };
+    const parallel_work = [_]ToolWork{
+        .{
+            .call = .{ .id = "retry", .name = "demo", .arguments_json = "{}" },
+            .tool_index = 0,
+            .arguments_json = "{}",
+            .execution = .immediate,
+            .retry_message = "retry",
+        },
+        .{
+            .call = .{ .id = "invalid", .name = "other", .arguments_json = "{}" },
+            .tool_index = 1,
+            .arguments_json = "{}",
+            .execution = .immediate,
+            .validation_failure = error.InvalidArguments,
+        },
+    };
+    var parallel_retries = ToolRetryTracker{ .allocator = allocator };
+    const batch = try executeToolCalls(
+        .{ .model = .{ .context = &tool_context, .profile = .{}, .requestFn = Stub.request }, .io = io },
+        &.{ tool, other },
+        allocator,
+        &parallel_work,
+        &parallel_retries,
+        .{ .io = io },
+        &.{},
+        &.{},
+    );
+    try std.testing.expectEqualStrings("retry", batch.parts[0].tool_return.content);
+    try std.testing.expect(batch.parts[1].tool_return.is_error);
+}
+
 fn collectText(allocator: std.mem.Allocator, parts: []const ResponsePart) ![]const u8 {
     var output: std.ArrayList(u8) = .empty;
     for (parts) |part| switch (part) {
