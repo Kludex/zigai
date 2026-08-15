@@ -10,8 +10,12 @@ const common = @import("../common.zig");
 const profiles = @import("../profiles.zig");
 const json_limits = @import("../../json.zig");
 const model_types = @import("../../model.zig");
+const message_types = @import("../../messages.zig");
 const provider_types = @import("../../provider.zig");
 const transport = @import("../../transport.zig");
+
+const NativeToolCall = message_types.NativeToolCall;
+const NativeToolResult = message_types.NativeToolResult;
 
 pub const api_base = "https://api.mistral.ai/v1";
 
@@ -32,7 +36,7 @@ const default_profile = model_types.ModelProfile{
     .supports_json_schema_output = true,
     .supports_json_object_output = true,
     .supports_system_messages = true,
-    .supports_streaming = false,
+    .supports_streaming = true,
     .supports_temperature = true,
     .supports_max_tokens = true,
     .supports_stop_sequences = true,
@@ -112,6 +116,7 @@ pub const Client = struct {
             .model_name = self.model_name,
             .settings = self.settings,
             .requestFn = request,
+            .streamFn = stream,
         };
     }
 
@@ -152,6 +157,50 @@ pub const Client = struct {
         }
         return decodeResponse(allocator, response.body) catch |failure| return common.responseDecodeError(failure);
     }
+
+    fn stream(
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        value: model_types.ModelRequest,
+        sink: model_types.ModelStreamSink,
+    ) !model_types.ModelResponse {
+        const self: *Client = @ptrCast(@alignCast(context));
+        const body = try encodeStreamingRequest(allocator, self.model_name, value, self.managed_tools);
+        defer allocator.free(body);
+        var headers: std.ArrayList(transport.Header) = .empty;
+        defer headers.deinit(allocator);
+        try headers.append(allocator, .{ .name = "content-type", .value = "application/json" });
+        try headers.append(allocator, .{ .name = "accept", .value = "text/event-stream" });
+        if (value.request_id) |request_id|
+            try headers.append(allocator, .{ .name = "x-client-request-id", .value = request_id });
+        try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
+        var state = StreamState{ .allocator = allocator, .sink = sink };
+        defer state.deinit();
+        const response = self.provider.streamLines(allocator, .{
+            .method = .POST,
+            .endpoint = "/conversations",
+            .headers = headers.items,
+            .body = body,
+            .timeout_ms = value.timeout_ms,
+            .cancellation = value.cancellation,
+            .url_policy = value.url_policy,
+        }, state.lineSink()) catch |failure| return common.transportError(failure);
+        if (response.status < 200 or response.status >= 300) {
+            self.provider.observeError(
+                allocator,
+                response.status,
+                state.error_body.items,
+                response.metadata,
+                value.error_observer,
+                value.error_policy,
+            );
+            return common.statusError(response.status);
+        }
+        return state.finish() catch |failure| switch (failure) {
+            error.InvalidProviderResponse => error.ProviderResponseDecodeError,
+            else => failure,
+        };
+    }
 };
 
 /// Encodes one stateless native Conversations request.
@@ -160,6 +209,26 @@ pub fn encodeRequest(
     model_name: []const u8,
     request: model_types.ModelRequest,
     managed_tools: []const ManagedTool,
+) ![]u8 {
+    return encodeRequestMode(allocator, model_name, request, managed_tools, false);
+}
+
+/// Encodes one stateless streaming Conversations request.
+pub fn encodeStreamingRequest(
+    allocator: std.mem.Allocator,
+    model_name: []const u8,
+    request: model_types.ModelRequest,
+    managed_tools: []const ManagedTool,
+) ![]u8 {
+    return encodeRequestMode(allocator, model_name, request, managed_tools, true);
+}
+
+fn encodeRequestMode(
+    allocator: std.mem.Allocator,
+    model_name: []const u8,
+    request: model_types.ModelRequest,
+    managed_tools: []const ManagedTool,
+    streaming: bool,
 ) ![]u8 {
     request.settings.validate() catch return error.InvalidRequestEncoding;
     try validateSettings(request.settings);
@@ -185,7 +254,7 @@ pub fn encodeRequest(
     try json.objectField("store");
     try json.write(false);
     try json.objectField("stream");
-    try json.write(false);
+    try json.write(streaming);
     try common.writeExtraBodyFields(
         allocator,
         &json,
@@ -426,6 +495,7 @@ fn writeResponseMessage(
             defer allocator.free(portable.arguments_json);
             try writeFunctionCall(allocator, json, portable);
         },
+        .native_tool_call => {},
         .native_tool_return => |value| try writeNativeEntry(json, value.provider),
         .thinking => |value| try writeThinking(json, value),
         else => return error.UnsupportedContentType,
@@ -704,6 +774,386 @@ fn writeCompletionArgs(
     try json.endObject();
 }
 
+const StreamState = struct {
+    allocator: std.mem.Allocator,
+    sink: model_types.ModelStreamSink,
+    status: u16 = 0,
+    text: std.ArrayList(u8) = .empty,
+    parts: std.ArrayList(model_types.ResponsePart) = .empty,
+    error_body: std.ArrayList(u8) = .empty,
+    function_calls: std.ArrayList(PendingFunctionCall) = .empty,
+    tool_executions: std.ArrayList(PendingToolExecution) = .empty,
+    usage: model_types.Usage = .{},
+    conversation_id: ?[]const u8 = null,
+    text_index: ?usize = null,
+    next_part_index: usize = 0,
+    pending_event: ?EventKind = null,
+    saw_done: bool = false,
+
+    const EventKind = enum {
+        response_started,
+        response_done,
+        response_error,
+        message_output,
+        tool_started,
+        tool_delta,
+        tool_done,
+        function_call,
+        other,
+    };
+
+    const PendingFunctionCall = struct {
+        output_index: usize,
+        part_index: usize,
+        id: []const u8,
+        entry_id: ?[]const u8,
+        name: []const u8,
+        arguments: std.ArrayList(u8) = .empty,
+    };
+
+    const PendingToolExecution = struct {
+        output_index: usize,
+        part_index: usize,
+        id: []const u8,
+        name: []const u8,
+        arguments: std.ArrayList(u8) = .empty,
+        ended: bool = false,
+    };
+
+    fn deinit(self: *StreamState) void {
+        self.text.deinit(self.allocator);
+        self.parts.deinit(self.allocator);
+        self.error_body.deinit(self.allocator);
+        for (self.function_calls.items) |*call| call.arguments.deinit(self.allocator);
+        self.function_calls.deinit(self.allocator);
+        for (self.tool_executions.items) |*execution| execution.arguments.deinit(self.allocator);
+        self.tool_executions.deinit(self.allocator);
+    }
+
+    fn lineSink(self: *StreamState) transport.LineSink {
+        return .{ .context = self, .startFn = start, .lineFn = line };
+    }
+
+    fn start(context: *anyopaque, response: transport.StreamResponse) !void {
+        const self: *StreamState = @ptrCast(@alignCast(context));
+        self.status = response.status;
+    }
+
+    fn line(context: *anyopaque, value: []const u8) !void {
+        const self: *StreamState = @ptrCast(@alignCast(context));
+        if (self.status < 200 or self.status >= 300) {
+            if (self.error_body.items.len > 0) try self.error_body.append(self.allocator, '\n');
+            return self.error_body.appendSlice(self.allocator, value);
+        }
+        if (std.mem.startsWith(u8, value, "event:")) {
+            self.pending_event = eventKind(std.mem.trim(u8, value["event:".len..], " "));
+            return;
+        }
+        if (!std.mem.startsWith(u8, value, "data:")) return;
+        const data = std.mem.trim(u8, value["data:".len..], " ");
+        if (data.len == 0 or std.mem.eql(u8, data, "[DONE]")) return;
+        const root = try json_limits.parseLeaky(
+            std.json.Value,
+            self.allocator,
+            data,
+            json_limits.defaults.provider_response,
+            .{},
+            error.InvalidProviderResponse,
+        );
+        const object = switch (root) {
+            .object => |item| item,
+            else => return error.InvalidProviderResponse,
+        };
+        const kind = if (try common.optionalObjectString(object, "type")) |name| eventKind(name) else self.pending_event orelse .other;
+        self.pending_event = null;
+        switch (kind) {
+            .response_started => self.conversation_id = try common.objectString(object, "conversation_id"),
+            .response_done => {
+                if (object.get("usage")) |usage| self.usage = try decodeUsage(self.allocator, usage);
+                try self.sink.emit(.{ .usage = self.usage });
+                self.saw_done = true;
+            },
+            .response_error => return error.InvalidProviderResponse,
+            .message_output => try self.messageDelta(object),
+            .function_call => try self.functionCallDelta(object),
+            .tool_started => try self.toolStarted(object),
+            .tool_delta => try self.toolDelta(object),
+            .tool_done => try self.toolDone(object),
+            .other => {},
+        }
+    }
+
+    fn messageDelta(self: *StreamState, object: std.json.ObjectMap) !void {
+        const content = object.get("content") orelse return error.InvalidProviderResponse;
+        const text = switch (content) {
+            .string => |value| value,
+            .object => |chunk| if (std.mem.eql(u8, try common.objectString(chunk, "type"), "text"))
+                try common.objectString(chunk, "text")
+            else
+                null,
+            else => return error.InvalidProviderResponse,
+        };
+        if (text) |delta| {
+            const index = try self.ensureTextPart();
+            try self.text.appendSlice(self.allocator, delta);
+            try self.sink.emit(.{ .part_delta = .{
+                .index = index,
+                .delta = .{ .text = .{ .content_delta = delta, .provider = .{ .provider_name = "mistral" } } },
+            } });
+            return;
+        }
+        const before = self.parts.items.len;
+        try decodeContentChunk(self.allocator, &self.parts, content);
+        for (self.parts.items[before..]) |part| {
+            const index = self.next_part_index;
+            self.next_part_index += 1;
+            try model_types.emitCompletePart(self.sink, index, part);
+        }
+    }
+
+    fn functionCallDelta(self: *StreamState, object: std.json.ObjectMap) !void {
+        const output_index = try outputIndex(object);
+        const call = try self.findOrCreateFunctionCall(
+            output_index,
+            try common.objectString(object, "tool_call_id"),
+            try common.optionalObjectString(object, "id"),
+            try common.objectString(object, "name"),
+        );
+        const delta = try common.objectString(object, "arguments");
+        try call.arguments.appendSlice(self.allocator, delta);
+        try self.sink.emit(.{ .part_delta = .{
+            .index = call.part_index,
+            .delta = .{ .tool_call = .{
+                .id = call.id,
+                .name = call.name,
+                .arguments_delta = delta,
+                .provider = .{ .id = call.entry_id, .provider_name = "mistral" },
+            } },
+        } });
+    }
+
+    fn findOrCreateFunctionCall(
+        self: *StreamState,
+        output_index: usize,
+        id: []const u8,
+        entry_id: ?[]const u8,
+        name: []const u8,
+    ) !*PendingFunctionCall {
+        for (self.function_calls.items) |*call| if (call.output_index == output_index) return call;
+        const part_index = self.next_part_index;
+        self.next_part_index += 1;
+        try self.function_calls.append(self.allocator, .{
+            .output_index = output_index,
+            .part_index = part_index,
+            .id = id,
+            .entry_id = entry_id,
+            .name = name,
+        });
+        try self.sink.emit(.{ .part_start = .{ .index = part_index, .part = .{ .tool_call = .{
+            .id = id,
+            .name = name,
+            .arguments_json = "",
+            .provider = .{ .id = entry_id, .provider_name = "mistral" },
+        } } } });
+        return &self.function_calls.items[self.function_calls.items.len - 1];
+    }
+
+    fn toolStarted(self: *StreamState, object: std.json.ObjectMap) !void {
+        const execution = try self.findOrCreateToolExecution(
+            try outputIndex(object),
+            try common.objectString(object, "id"),
+            try common.objectString(object, "name"),
+        );
+        const arguments = try common.objectString(object, "arguments");
+        try execution.arguments.appendSlice(self.allocator, arguments);
+        if (arguments.len > 0) try self.sink.emit(.{ .part_delta = .{
+            .index = execution.part_index,
+            .delta = .{ .native_tool_call = .{
+                .id = execution.id,
+                .name = execution.name,
+                .arguments_delta = arguments,
+                .provider = .{ .id = execution.id, .provider_name = "mistral" },
+            } },
+        } });
+    }
+
+    fn toolDelta(self: *StreamState, object: std.json.ObjectMap) !void {
+        const execution = try self.findOrCreateToolExecution(
+            try outputIndex(object),
+            try common.objectString(object, "id"),
+            try common.objectString(object, "name"),
+        );
+        const delta = try common.objectString(object, "arguments");
+        try execution.arguments.appendSlice(self.allocator, delta);
+        try self.sink.emit(.{ .part_delta = .{
+            .index = execution.part_index,
+            .delta = .{ .native_tool_call = .{
+                .id = execution.id,
+                .name = execution.name,
+                .arguments_delta = delta,
+                .provider = .{ .id = execution.id, .provider_name = "mistral" },
+            } },
+        } });
+    }
+
+    fn findOrCreateToolExecution(
+        self: *StreamState,
+        output_index: usize,
+        id: []const u8,
+        name: []const u8,
+    ) !*PendingToolExecution {
+        for (self.tool_executions.items) |*execution| if (execution.output_index == output_index) return execution;
+        const part_index = self.next_part_index;
+        self.next_part_index += 1;
+        try self.tool_executions.append(self.allocator, .{
+            .output_index = output_index,
+            .part_index = part_index,
+            .id = id,
+            .name = name,
+        });
+        try self.sink.emit(.{ .part_start = .{ .index = part_index, .part = .{ .native_tool_call = .{
+            .id = id,
+            .name = name,
+            .arguments_json = "",
+            .provider = .{ .id = id, .provider_name = "mistral" },
+        } } } });
+        return &self.tool_executions.items[self.tool_executions.items.len - 1];
+    }
+
+    fn toolDone(self: *StreamState, object: std.json.ObjectMap) !void {
+        const execution = try self.findOrCreateToolExecution(
+            try outputIndex(object),
+            try common.objectString(object, "id"),
+            try common.objectString(object, "name"),
+        );
+        if (execution.ended) return error.InvalidProviderResponse;
+        execution.ended = true;
+        const arguments = if (execution.arguments.items.len == 0) "{}" else execution.arguments.items;
+        const call = NativeToolCall{
+            .id = execution.id,
+            .name = execution.name,
+            .arguments_json = try self.allocator.dupe(u8, arguments),
+            .provider = .{ .id = execution.id, .provider_name = "mistral" },
+        };
+        try self.sink.emit(.{ .part_end = .{ .index = execution.part_index, .part = .{ .native_tool_call = call } } });
+        try self.parts.append(self.allocator, .{ .native_tool_call = call });
+
+        const info = object.get("info") orelse std.json.Value{ .null = {} };
+        const content = if (info == .null) "" else try std.json.Stringify.valueAlloc(self.allocator, info, .{});
+        const details = try makeToolExecutionDetails(
+            self.allocator,
+            execution.id,
+            execution.name,
+            arguments,
+            info,
+        );
+        const result = NativeToolResult{
+            .call_id = execution.id,
+            .name = execution.name,
+            .content = content,
+            .provider = .{ .id = execution.id, .provider_name = "mistral", .provider_details = details },
+        };
+        const result_index = self.next_part_index;
+        self.next_part_index += 1;
+        try model_types.emitCompletePart(self.sink, result_index, .{ .native_tool_return = result });
+        try self.parts.append(self.allocator, .{ .native_tool_return = result });
+    }
+
+    fn ensureTextPart(self: *StreamState) !usize {
+        if (self.text_index) |index| return index;
+        const index = self.next_part_index;
+        self.next_part_index += 1;
+        self.text_index = index;
+        try self.sink.emit(.{ .part_start = .{ .index = index, .part = .{ .text_part = .{
+            .content = "",
+            .provider = .{ .provider_name = "mistral" },
+        } } } });
+        return index;
+    }
+
+    fn finish(self: *StreamState) !model_types.ModelResponse {
+        if (!self.saw_done) return error.InvalidProviderResponse;
+        if (self.text_index) |index| {
+            const text = try self.text.toOwnedSlice(self.allocator);
+            const part = model_types.ResponsePart{ .text_part = .{
+                .content = text,
+                .provider = .{ .provider_name = "mistral" },
+            } };
+            try self.sink.emit(.{ .part_end = .{ .index = index, .part = part } });
+            try self.parts.insert(self.allocator, @min(index, self.parts.items.len), part);
+            self.text_index = null;
+        }
+        for (self.function_calls.items) |*pending| {
+            const arguments = if (pending.arguments.items.len == 0)
+                try self.allocator.dupe(u8, "{}")
+            else
+                try pending.arguments.toOwnedSlice(self.allocator);
+            const call = model_types.ToolCall{
+                .id = pending.id,
+                .name = pending.name,
+                .arguments_json = arguments,
+                .provider = .{ .id = pending.entry_id, .provider_name = "mistral" },
+            };
+            try self.sink.emit(.{ .part_end = .{ .index = pending.part_index, .part = .{ .tool_call = call } } });
+            try self.parts.append(self.allocator, .{ .tool_call = call });
+        }
+        return .{
+            .parts = try self.parts.toOwnedSlice(self.allocator),
+            .usage = self.usage,
+            .conversation_id = self.conversation_id,
+            .provider_response_id = self.conversation_id,
+            .finish_reason = .{
+                .kind = if (self.function_calls.items.len > 0) .tool_calls else .stop,
+                .raw = "completed",
+            },
+        };
+    }
+};
+
+fn eventKind(value: []const u8) StreamState.EventKind {
+    if (std.mem.eql(u8, value, "conversation.response.started")) return .response_started;
+    if (std.mem.eql(u8, value, "conversation.response.done")) return .response_done;
+    if (std.mem.eql(u8, value, "conversation.response.error")) return .response_error;
+    if (std.mem.eql(u8, value, "message.output.delta")) return .message_output;
+    if (std.mem.eql(u8, value, "tool.execution.started")) return .tool_started;
+    if (std.mem.eql(u8, value, "tool.execution.delta")) return .tool_delta;
+    if (std.mem.eql(u8, value, "tool.execution.done")) return .tool_done;
+    if (std.mem.eql(u8, value, "function.call.delta")) return .function_call;
+    return .other;
+}
+
+fn outputIndex(object: std.json.ObjectMap) !usize {
+    const value = try common.optionalObjectInteger(object, "output_index") orelse 0;
+    return std.math.cast(usize, value) orelse error.InvalidProviderResponse;
+}
+
+fn makeToolExecutionDetails(
+    allocator: std.mem.Allocator,
+    id: []const u8,
+    name: []const u8,
+    arguments: []const u8,
+    info: std.json.Value,
+) !model_types.ProviderDetails {
+    const encoded = try std.json.Stringify.valueAlloc(allocator, .{
+        .object = "entry",
+        .type = "tool.execution",
+        .id = id,
+        .name = name,
+        .arguments = arguments,
+        .info = info,
+    }, .{});
+    defer allocator.free(encoded);
+    const value = try json_limits.parseLeaky(
+        std.json.Value,
+        allocator,
+        encoded,
+        json_limits.defaults.provider_response,
+        .{},
+        error.InvalidProviderResponse,
+    );
+    return model_types.ProviderDetails.fromValue(value);
+}
+
 /// Decodes one buffered native Conversations response.
 pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_types.ModelResponse {
     const root = try json_limits.parseLeaky(
@@ -759,6 +1209,29 @@ fn decodeOutput(
             .name = try common.objectString(object, "name"),
             .arguments_json = arguments,
             .provider = .{ .id = try common.optionalObjectString(object, "id"), .provider_name = "mistral" },
+        } });
+        return;
+    }
+    if (std.mem.eql(u8, kind, "tool.execution")) {
+        const details = try model_types.ProviderDetails.fromValue(output);
+        const id = try common.optionalObjectString(object, "id") orelse kind;
+        const name = try common.objectString(object, "name");
+        const arguments = try common.objectString(object, "arguments");
+        try parts.append(allocator, .{ .native_tool_call = .{
+            .id = id,
+            .name = name,
+            .arguments_json = arguments,
+            .provider = .{ .id = id, .provider_name = "mistral" },
+        } });
+        const content = if (object.get("info")) |info|
+            try std.json.Stringify.valueAlloc(allocator, info, .{})
+        else
+            "";
+        try parts.append(allocator, .{ .native_tool_return = .{
+            .call_id = id,
+            .name = name,
+            .content = content,
+            .provider = .{ .id = id, .provider_name = "mistral", .provider_details = details },
         } });
         return;
     }
@@ -945,8 +1418,9 @@ test "native response distinguishes local calls from managed execution" {
     const response = try decodeResponse(arena.allocator(), body);
     try std.testing.expectEqualStrings("conv_1", response.conversation_id.?);
     try std.testing.expectEqualStrings("Hello", response.parts[0].text_part.content);
-    try std.testing.expectEqualStrings("web_search", response.parts[1].native_tool_return.name);
-    try std.testing.expectEqualStrings("weather", response.parts[2].tool_call.name);
+    try std.testing.expectEqualStrings("web_search", response.parts[1].native_tool_call.name);
+    try std.testing.expectEqualStrings("web_search", response.parts[2].native_tool_return.name);
+    try std.testing.expectEqualStrings("weather", response.parts[3].tool_call.name);
     try std.testing.expectEqual(@as(u64, 3), response.usage.input_tokens);
     try std.testing.expectEqual(@as(?u64, 2), response.usage.detail("connector.web_search.tokens"));
     try std.testing.expectEqual(model_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
@@ -978,4 +1452,68 @@ test "native client uses Conversations authentication and endpoint" {
     try std.testing.expectEqualStrings("pong", response.parts[0].text);
     try std.testing.expect(client.model().profile.supportsBuiltinTool(.web_search));
     try std.testing.expectEqual(model_types.ExtraBodyKind.mistral, client.model().profile.extra_body_kind.?);
+}
+
+test "native client streams text local calls and managed executions" {
+    const State = struct {
+        fn send(_: *anyopaque, _: std.mem.Allocator, _: transport.Request) !transport.Response {
+            return error.UnexpectedRequest;
+        }
+
+        fn stream(_: *anyopaque, _: std.mem.Allocator, request: transport.Request, sink: transport.LineSink) !transport.StreamResponse {
+            try std.testing.expectEqualStrings("https://api.mistral.ai/v1/conversations", request.url);
+            try std.testing.expect(std.mem.indexOf(u8, request.body, "\"stream\":true") != null);
+            try sink.start(.{ .status = 200 });
+            try sink.line("event: conversation.response.started");
+            try sink.line("data: {\"conversation_id\":\"conv_stream\"}");
+            try sink.line("data: {\"type\":\"message.output.delta\",\"id\":\"msg_1\",\"content\":\"po\"}");
+            try sink.line("data: {\"type\":\"message.output.delta\",\"id\":\"msg_1\",\"content\":{\"type\":\"text\",\"text\":\"ng\"}}");
+            try sink.line("data: {\"type\":\"tool.execution.started\",\"output_index\":1,\"id\":\"exec_1\",\"name\":\"web_search\",\"arguments\":\"{\"}");
+            try sink.line("data: {\"type\":\"tool.execution.delta\",\"output_index\":1,\"id\":\"exec_1\",\"name\":\"web_search\",\"arguments\":\"}\"}");
+            try sink.line("data: {\"type\":\"tool.execution.done\",\"output_index\":1,\"id\":\"exec_1\",\"name\":\"web_search\",\"info\":{\"results\":1}}");
+            try sink.line("data: {\"type\":\"function.call.delta\",\"output_index\":2,\"id\":\"entry_1\",\"tool_call_id\":\"call_1\",\"name\":\"weather\",\"arguments\":\"{}\"}");
+            try sink.line("data: {\"type\":\"conversation.response.done\",\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}");
+            return .{ .status = 200 };
+        }
+    };
+    const Capture = struct {
+        starts: usize = 0,
+        deltas: usize = 0,
+        ends: usize = 0,
+        usage_events: usize = 0,
+
+        fn emit(context: *anyopaque, event: model_types.ModelStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event) {
+                .part_start => self.starts += 1,
+                .part_delta => self.deltas += 1,
+                .part_end => self.ends += 1,
+                .usage => self.usage_events += 1,
+            }
+        }
+    };
+    var marker: u8 = 0;
+    var provider = Provider.init("secret", .{
+        .context = &marker,
+        .sendFn = State.send,
+        .streamLinesFn = State.stream,
+    });
+    var client = Client{ .model_name = "mistral-small-latest", .provider = provider.provider() };
+    var capture: Capture = .{};
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const response = try client.model().stream(arena.allocator(), .{ .messages = &.{} }, .{
+        .context = &capture,
+        .eventFn = Capture.emit,
+    });
+    try std.testing.expectEqualStrings("conv_stream", response.conversation_id.?);
+    try std.testing.expectEqualStrings("pong", response.parts[0].text_part.content);
+    try std.testing.expectEqualStrings("{}", response.parts[1].native_tool_call.arguments_json);
+    try std.testing.expectEqualStrings("web_search", response.parts[2].native_tool_return.name);
+    try std.testing.expectEqualStrings("weather", response.parts[3].tool_call.name);
+    try std.testing.expectEqual(@as(u64, 2), response.usage.input_tokens);
+    try std.testing.expectEqual(@as(usize, 4), capture.starts);
+    try std.testing.expectEqual(@as(usize, 5), capture.deltas);
+    try std.testing.expectEqual(@as(usize, 4), capture.ends);
+    try std.testing.expectEqual(@as(usize, 1), capture.usage_events);
 }

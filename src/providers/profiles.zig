@@ -394,7 +394,7 @@ pub fn mistral(model_name: []const u8) ?model.ModelProfile {
 pub fn mistralConversations(model_name: []const u8) ?model.ModelProfile {
     var profile = mistral(model_name) orelse return null;
     profile.supports_parallel_tool_calls = false;
-    profile.supports_streaming = false;
+    profile.supports_streaming = true;
     profile.supports_logprobs = false;
     profile.supports_parallel_tool_call_setting = false;
     profile.supports_top_k = false;
