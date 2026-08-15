@@ -12,6 +12,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
         .error_tracing = error_tracing,
+        .imports = &.{.{ .name = "yaml", .module = yaml }},
     });
     _ = b.addModule("zopenai", .{
         .root_source_file = b.path("src/zopenai.zig"),

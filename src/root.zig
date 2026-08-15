@@ -10,6 +10,7 @@ pub const usage = @import("usage.zig");
 pub const pricing = @import("pricing.zig");
 pub const security = @import("security.zig");
 pub const agent = @import("agent.zig");
+pub const agent_spec = @import("agent_spec.zig");
 pub const testing = @import("testing.zig");
 pub const transport = @import("transport.zig");
 pub const json_schema = @import("json_schema.zig");
