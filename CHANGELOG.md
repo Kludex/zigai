@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Separate agent output strategies from provider wire formats, with native
+  structured unions, prompted output with JSON-mode fallback, mandatory local
+  validation, bounded preparation, and explicit run-arena ownership.
 - Complete provider-neutral model settings with sampling, penalties,
   log-probabilities, tool and parallel-call policy, thinking budgets, service
   tiers, truncation, safe request headers, profile preflight, and tagged bounded

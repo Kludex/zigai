@@ -632,6 +632,26 @@ share one result arena. Keep them only until `result.deinit()`. Use
 corresponding run modes. Invalid output is returned to the model for up to
 `max_output_retries` correction attempts.
 
+For hand-written schemas, configure `Agent.output` with an `OutputSpec`:
+
+```zig
+const choices = [_]zigai.OutputChoice{
+    .{ .name = "answer", .schema = answer_schema },
+    .{ .name = "refusal", .schema = refusal_schema },
+};
+
+const agent = zigai.Agent{
+    .model = model,
+    .output = .{ .native = .{ .name = "result", .choices = &choices } },
+};
+```
+
+`.native` sends one strict schema to a capable provider. `.prompted` appends a
+schema instruction and uses JSON-object mode when available, otherwise text.
+Prompted results are always checked locally and retried when invalid. Schemas,
+choices, and custom prompt templates are borrowed for the run; prepared data
+lives in the result arena.
+
 ## Streaming and resilience
 
 Use `Agent.runStream` with an `AgentStreamSink`. Model output arrives as an

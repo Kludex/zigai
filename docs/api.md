@@ -132,6 +132,19 @@ Direct `Model.request`, `Model.stream`, and provider decoder calls build nested
 response data with the supplied allocator. Use an arena and release the arena
 as one unit. Normal `Agent` calls already provide this ownership boundary.
 
+## Output strategies
+
+`Agent.output` is an `OutputSpec`, separate from the provider wire
+`OutputFormat`. The concise `.json_schema` form accepts one named schema;
+`.native` accepts named alternatives and combines them with `anyOf`;
+`.prompted` accepts the same alternatives plus an optional template containing
+one `{schema}` marker. Prompted output requires system instructions, selects
+JSON-object mode when the profile supports it, and otherwise uses text mode.
+Its result is always validated locally.
+
+Specification slices are borrowed for the run. Combined schemas and rendered
+instructions live in the run arena and follow the result ownership boundary.
+
 ## Streaming events
 
 `ModelStreamEvent` represents provider response parts with `part_start`,

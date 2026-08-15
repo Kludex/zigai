@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const model_types = @import("model.zig");
+const output_types = @import("output.zig");
 const json_schema = @import("json_schema.zig");
 const reflect = @import("reflect.zig");
 const history = @import("history.zig");
@@ -48,6 +49,8 @@ const AgentError = error{
     InputTokenLimitExceeded,
     /// Typed output could not be decoded after validation.
     InvalidTypedOutput,
+    /// The output specification has invalid names, schemas, or prompt templates.
+    InvalidOutputSpec,
     /// A model setting is malformed or outside its provider-neutral range.
     InvalidModelSettings,
     /// Structured output could not be decoded for its final stream snapshot.
@@ -80,6 +83,8 @@ const AgentError = error{
     ModelDoesNotSupportJsonObjectOutput,
     /// JSON Schema output was requested from an unsupported model profile.
     ModelDoesNotSupportJsonSchemaOutput,
+    /// Prompted structured output requires model instructions.
+    ModelDoesNotSupportPromptedOutput,
     /// `max_tokens` was set for a model profile that rejects it.
     ModelDoesNotSupportMaxTokens,
     /// The requested reasoning effort is absent from the model profile.
@@ -860,7 +865,7 @@ pub const Agent = struct {
     history_processors: []const history.Processor = &.{},
     system_prompt: ?[]const u8 = null,
     instructions: []const Instruction = &.{},
-    output: model_types.OutputFormat = .text,
+    output: output_types.Spec = .text,
     /// Re-check structured provider output locally before returning it. This is
     /// intentionally opt-in because JSON Schema support is a documented subset.
     validate_output_locally: bool = false,
@@ -1305,17 +1310,6 @@ pub const Agent = struct {
         if (self.system_prompt != null and !self.model.profile.supports_system_messages) {
             return Error.ModelDoesNotSupportSystemMessages;
         }
-        switch (self.output) {
-            .text => {},
-            .json_object => try requireCapability(
-                self.model.profile.supports_json_object_output,
-                Error.ModelDoesNotSupportJsonObjectOutput,
-            ),
-            .json_schema => try requireCapability(
-                self.model.profile.supports_json_schema_output,
-                Error.ModelDoesNotSupportJsonSchemaOutput,
-            ),
-        }
         const resolved_settings = self.model.settings.overrideWith(self.model_settings).overrideWith(options.model_settings);
         try requireModelSettings(self.model.profile, resolved_settings);
         try ensureBuiltinToolsSupported(self.model.profile, self.builtin_tools);
@@ -1331,8 +1325,18 @@ pub const Agent = struct {
         errdefer arena.deinit();
         const memory = arena.allocator();
 
+        const prepared_output = output_types.prepare(memory, self.output, self.model.profile) catch |failure| {
+            return switch (failure) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.InvalidOutputSpec => Error.InvalidOutputSpec,
+                error.JsonObjectOutputNotSupported => Error.ModelDoesNotSupportJsonObjectOutput,
+                error.NativeOutputNotSupported => Error.ModelDoesNotSupportJsonSchemaOutput,
+                error.PromptedOutputNotSupported => Error.ModelDoesNotSupportPromptedOutput,
+            };
+        };
+
         const dependencies = options.dependencies orelse self.dependencies;
-        const resolved_instructions = if (resume_state) |state|
+        var resolved_instructions = if (resume_state) |state|
             try copyStrings(memory, state.instructions)
         else
             try resolveInstructions(memory, self.instructions, options.instructions, .{
@@ -1340,6 +1344,9 @@ pub const Agent = struct {
                 .prompt = prompt,
                 .control = control,
             });
+        if (resume_state == null) if (prepared_output.prompted_instruction) |instruction| {
+            resolved_instructions = try appendString(memory, resolved_instructions, instruction);
+        };
         if (resolved_instructions.len > 0 and !self.model.profile.supports_system_messages) {
             return Error.ModelDoesNotSupportSystemMessages;
         }
@@ -1464,7 +1471,7 @@ pub const Agent = struct {
                     .instructions = resolved_instructions,
                     .tools = definitions.items,
                     .builtin_tools = self.builtin_tools,
-                    .output = self.output,
+                    .output = prepared_output.model_format,
                     .settings = resolved_settings,
                 },
                 control,
@@ -1493,7 +1500,7 @@ pub const Agent = struct {
                     .instructions = resolved_instructions,
                     .tools = definitions.items,
                     .builtin_tools = self.builtin_tools,
-                    .output = self.output,
+                    .output = prepared_output.model_format,
                     .error_observer = provider_errors.observer(),
                     .error_policy = self.provider_error_policy,
                     .url_policy = self.url_policy,
@@ -1620,7 +1627,13 @@ pub const Agent = struct {
                     .output = output,
                     .retry_number = output_retries,
                 } });
-                validateFinalOutput(self, memory, output, output_validator) catch |err| {
+                validateFinalOutput(
+                    memory,
+                    prepared_output.validation_format,
+                    self.validate_output_locally or prepared_output.validation_required,
+                    output,
+                    output_validator,
+                ) catch |err| {
                     const will_retry = err != error.OutOfMemory and output_retries < self.max_output_retries;
                     try emitLifecycle(hooks, .{ .output_validation_error = .{
                         .output = output,
@@ -1651,7 +1664,11 @@ pub const Agent = struct {
                 )) continue;
                 if (stream_sink) |sink| try emitStreamEvent(hooks, sink, .{ .final_result = .{
                     .output = output,
-                    .structured_output = try structuredOutputSnapshot(memory, self.output, output),
+                    .structured_output = try structuredOutputSnapshot(
+                        memory,
+                        prepared_output.validation_format,
+                        output,
+                    ),
                 } });
                 addRunDuration(&total_usage, self.io, invocation_started) catch return Error.UsageOverflow;
                 try emitLifecycle(hooks, .{ .run_end = .{
@@ -1749,6 +1766,17 @@ fn copyStrings(allocator: std.mem.Allocator, values: []const []const u8) ![]cons
     const copied = try allocator.alloc([]const u8, values.len);
     for (values, copied) |value, *target| target.* = try allocator.dupe(u8, value);
     return copied;
+}
+
+fn appendString(
+    allocator: std.mem.Allocator,
+    values: []const []const u8,
+    value: []const u8,
+) ![]const []const u8 {
+    const appended = try allocator.alloc([]const u8, values.len + 1);
+    @memcpy(appended[0..values.len], values);
+    appended[values.len] = value;
+    return appended;
 }
 
 fn hasDeferredToolCall(tools: []const model_types.Tool, parts: []const Part) bool {
@@ -2046,12 +2074,13 @@ fn typedOutputValidator(comptime Output: type) OutputValidator {
 }
 
 fn validateFinalOutput(
-    agent: Agent,
     allocator: std.mem.Allocator,
+    output_format: model_types.OutputFormat,
+    validate_locally: bool,
     output: []const u8,
     output_validator: ?OutputValidator,
 ) !void {
-    if (agent.validate_output_locally) try json_schema.validate(allocator, agent.output, output);
+    if (validate_locally) try json_schema.validate(allocator, output_format, output);
     if (output_validator) |validator| try validator.validate(allocator, output);
 }
 

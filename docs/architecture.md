@@ -95,10 +95,18 @@ and reasoning and audio output are included in output. Unknown integer counters
 retain their provider names. Optional pricing uses immutable tables, exact
 nano-USD arithmetic, and explicit snapshot versions; missing rates stay unknown.
 
-Structured output is provider neutral at the agent boundary. JSON-object mode
-and named, strict JSON Schema mode are encoded as `text.format` for OpenAI and
-`output_config.format` for Anthropic, and `generationConfig` for Google. A
-profile mismatch fails before network I/O.
+Structured output has two layers. `OutputSpec` owns agent behavior: text,
+JSON-object, native schema, native schema unions, or prompted schema output.
+The run prepares that contract into the smaller provider-facing
+`OutputFormat`: text, JSON-object, or one JSON Schema. Provider adapters only
+encode that wire contract as `text.format` for OpenAI,
+`output_config.format` for Anthropic, or `generationConfig` for Google.
+
+Native unions become one `anyOf` schema. Prompted output appends an instruction
+and uses provider JSON-object mode when available, otherwise text mode; the
+agent always validates the returned JSON locally. Capability mismatches and
+malformed output specifications fail before network I/O. Borrowed schemas and
+templates are prepared into the run arena.
 
 `Agent.runTyped` derives that schema from a Zig output type and decodes the
 final JSON into the same type. Its typed value, original JSON, and message

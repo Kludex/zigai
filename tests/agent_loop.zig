@@ -1184,7 +1184,7 @@ test "instruction failures and unsupported system capability stop before request
 test "agent optionally validates structured output before returning it" {
     const valid_parts = [_]zigai.model.Part{.{ .text = "{\"answer\":42}" }};
     const invalid_parts = [_]zigai.model.Part{.{ .text = "{\"answer\":\"no\"}" }};
-    const schema: zigai.model.OutputFormat = .{ .json_schema = .{
+    const schema: zigai.OutputSpec = .{ .json_schema = .{
         .name = "answer",
         .schema = "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"integer\"}},\"required\":[\"answer\"],\"additionalProperties\":false}",
     } };
@@ -1245,6 +1245,105 @@ test "invalid structured output is returned to the model for correction" {
     defer result.deinit();
     try std.testing.expectEqualStrings("{\"answer\":42}", result.output);
     try std.testing.expectEqual(@as(usize, 2), result.model_requests);
+}
+
+test "native output unions use one provider schema and validate every alternative" {
+    const choices = [_]zigai.OutputChoice{
+        .{
+            .name = "answer",
+            .schema = "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"integer\"}}," ++
+                "\"required\":[\"answer\"],\"additionalProperties\":false}",
+        },
+        .{
+            .name = "refusal",
+            .schema = "{\"type\":\"object\",\"properties\":{\"refusal\":{\"type\":\"string\"}}," ++
+                "\"required\":[\"refusal\"],\"additionalProperties\":false}",
+        },
+    };
+    const parts = [_]zigai.model.Part{.{ .text = "{\"refusal\":\"unsafe\"}" }};
+    const Inspector = struct {
+        fn inspect(_: usize, request: zigai.ModelRequest) !void {
+            const format = request.output.json_schema;
+            try std.testing.expectEqualStrings("result", format.name);
+            try std.testing.expect(std.mem.indexOf(u8, format.schema, "\"anyOf\"") != null);
+            try std.testing.expect(std.mem.indexOf(u8, format.schema, "\"answer\"") != null);
+            try std.testing.expect(std.mem.indexOf(u8, format.schema, "\"refusal\"") != null);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .inspectFn = Inspector.inspect,
+        .profile = .{ .supports_json_schema_output = true },
+    };
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .output = .{ .native = .{ .choices = &choices, .name = "result" } },
+        .validate_output_locally = true,
+    }).run(std.testing.allocator, "answer or refuse");
+    defer result.deinit();
+    try std.testing.expectEqualStrings(parts[0].text, result.output);
+}
+
+test "prompted output falls back to text and always retries invalid JSON" {
+    const choices = [_]zigai.OutputChoice{.{
+        .name = "answer",
+        .schema = "{\"type\":\"object\",\"properties\":{\"answer\":{\"type\":\"integer\"}}," ++
+            "\"required\":[\"answer\"],\"additionalProperties\":false}",
+    }};
+    const invalid_parts = [_]zigai.model.Part{.{ .text = "{\"answer\":\"no\"}" }};
+    const valid_parts = [_]zigai.model.Part{.{ .text = "{\"answer\":42}" }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.ModelRequest) !void {
+            try std.testing.expectEqual(zigai.model.OutputFormat.text, request.output);
+            try std.testing.expectEqual(@as(usize, 1), request.instructions.len);
+            try std.testing.expect(std.mem.indexOf(u8, request.instructions[0], "JSON Schema:") != null);
+            try std.testing.expect(std.mem.indexOf(u8, request.instructions[0], "\"answer\"") != null);
+            if (index == 1) try std.testing.expectEqual(@as(usize, 3), request.messages.len);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &invalid_parts }, .{ .parts = &valid_parts } },
+        .inspectFn = Inspector.inspect,
+        .profile = .{ .supports_system_messages = true },
+    };
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .output = .{ .prompted = .{ .output = .{ .choices = &choices, .description = "An integer answer." } } },
+        .max_output_retries = 1,
+    }).run(std.testing.allocator, "answer");
+    defer result.deinit();
+    try std.testing.expectEqualStrings(valid_parts[0].text, result.output);
+    try std.testing.expectEqual(@as(usize, 2), result.model_requests);
+}
+
+test "prompted output uses JSON-object mode and rejects unsupported models" {
+    const choices = [_]zigai.OutputChoice{.{ .name = "answer", .schema = "{\"type\":\"object\"}" }};
+    const parts = [_]zigai.model.Part{.{ .text = "{}" }};
+    const Inspector = struct {
+        fn inspect(_: usize, request: zigai.ModelRequest) !void {
+            try std.testing.expectEqual(zigai.model.OutputFormat.json_object, request.output);
+        }
+    };
+    var supported = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .inspectFn = Inspector.inspect,
+        .profile = .{ .supports_system_messages = true, .supports_json_object_output = true },
+    };
+    var result = try (zigai.Agent{
+        .model = supported.model(),
+        .output = .{ .prompted = .{ .output = .{ .choices = &choices } } },
+    }).run(std.testing.allocator, "answer");
+    defer result.deinit();
+
+    var unsupported = zigai.testing.ScriptedModel{
+        .responses = &.{},
+        .profile = .{ .supports_system_messages = false },
+    };
+    try std.testing.expectError(zigai.Agent.Error.ModelDoesNotSupportPromptedOutput, (zigai.Agent{
+        .model = unsupported.model(),
+        .output = .{ .prompted = .{ .output = .{ .choices = &choices } } },
+    }).run(std.testing.allocator, "answer"));
+    try std.testing.expectEqual(@as(usize, 0), unsupported.request_count);
 }
 
 test "typed agent output derives its schema and owns decoded data" {

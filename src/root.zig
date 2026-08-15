@@ -2,6 +2,7 @@
 
 pub const model = @import("model.zig");
 pub const settings = @import("settings.zig");
+pub const output = @import("output.zig");
 pub const messages = @import("messages.zig");
 pub const usage = @import("usage.zig");
 pub const pricing = @import("pricing.zig");
@@ -100,6 +101,10 @@ pub const ToolChoice = model.ToolChoice;
 pub const RequestHeader = model.RequestHeader;
 pub const ExtraBodyKind = model.ExtraBodyKind;
 pub const ProviderExtraBody = model.ProviderExtraBody;
+pub const OutputSpec = output.Spec;
+pub const OutputChoice = output.Choice;
+pub const StructuredOutput = output.Structured;
+pub const PromptedOutput = output.Prompted;
 pub const FinishReason = messages.FinishReason;
 pub const Usage = messages.Usage;
 pub const RequestUsage = usage.RequestUsage;
@@ -185,6 +190,7 @@ test {
     _ = @import("testing.zig");
     _ = @import("transport.zig");
     _ = @import("json_schema.zig");
+    _ = @import("output.zig");
     _ = @import("json.zig");
     _ = @import("reflect.zig");
     _ = @import("history.zig");
