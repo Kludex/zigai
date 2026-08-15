@@ -1611,6 +1611,50 @@ test "tool output validators receive the selected name and transform output" {
     try std.testing.expectEqual(@as(usize, 2), state.calls);
 }
 
+test "thrown tool output validator errors abort and emit lifecycle failure" {
+    const Callback = struct {
+        fn validate(
+            _: *anyopaque,
+            _: std.mem.Allocator,
+            _: zigai.output.RunContext,
+            _: ?[]const u8,
+            _: []const u8,
+        ) !zigai.OutputValidatorResult {
+            return error.ValidatorBackendFailed;
+        }
+    };
+    const Hook = struct {
+        failures: usize = 0,
+        fn event(context: *anyopaque, value: zigai.LifecycleEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (value) {
+                .output_validation_error => |event_value| {
+                    try std.testing.expectEqual(error.ValidatorBackendFailed, event_value.failure);
+                    try std.testing.expect(!event_value.will_retry);
+                    self.failures += 1;
+                },
+                else => {},
+            }
+        }
+    };
+    const choices = [_]zigai.OutputChoice{.{ .name = "finish", .schema = "{\"type\":\"object\"}" }};
+    const call = [_]zigai.Part{.{ .tool_call = .{
+        .id = "finish-1",
+        .name = "finish",
+        .arguments_json = "{}",
+    } }};
+    var scripted = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &call }} };
+    var context: u8 = 0;
+    var hook: Hook = .{};
+    try std.testing.expectError(error.ValidatorBackendFailed, (zigai.Agent{
+        .model = scripted.model(),
+        .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
+        .output_validators = &.{.{ .context = &context, .validateFn = Callback.validate }},
+        .hooks = &.{.{ .context = &hook, .eventFn = Hook.event }},
+    }).run(std.testing.allocator, "finish"));
+    try std.testing.expectEqual(@as(usize, 1), hook.failures);
+}
+
 test "output validator retry limits and thrown errors stay distinct" {
     const Callbacks = struct {
         fn retry(
