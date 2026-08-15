@@ -52,6 +52,8 @@ cases relevant to the application, then propagate the remainder.
 | `InvalidTypedOutput` | Validated structured output could not decode as the requested Zig type. |
 | `InvalidStructuredOutput` | Structured output could not decode for the final stream snapshot. |
 | `ProviderFileProviderMismatch` | A provider-managed file belongs to another provider. |
+| `PendingMessageQueueAlreadyUsed` | A one-run pending-message queue was attached again. |
+| `PendingMessageQueueClosed` | A message was submitted after the queue stopped accepting input. |
 
 ### Tools and deferred runs
 

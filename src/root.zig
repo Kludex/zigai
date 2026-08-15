@@ -41,6 +41,7 @@ pub const RetryHook = agent.RetryHook;
 pub const Instruction = agent.Instruction;
 pub const InstructionContext = agent.InstructionContext;
 pub const RunOptions = agent.RunOptions;
+pub const PendingMessageQueue = agent.PendingMessageQueue;
 pub const TypedResult = agent.TypedResult;
 pub const Capability = agent.Capability;
 pub const CapabilityContext = agent.CapabilityContext;

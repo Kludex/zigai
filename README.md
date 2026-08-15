@@ -603,6 +603,31 @@ output it includes a borrowed parsed JSON snapshot.
 Use `runUntilPauseStream` and `resumeRunStream` when approval or externally
 executed tools must remain in the same event flow.
 
+To add user work while a run is active, pass a one-run
+`PendingMessageQueue` in `RunOptions`:
+
+```zig
+var pending = zigai.PendingMessageQueue.init(allocator, io);
+defer pending.deinit();
+
+try pending.enqueue(&.{.{
+    .parts = &.{.{ .user_prompt = .{ .text = "Also compare Madrid." } }},
+}});
+
+var result = try agent.runStreamWithOptions(
+    allocator,
+    "Compare Lisbon.",
+    .{ .pending_messages = &pending },
+    sink,
+);
+defer result.deinit();
+```
+
+The queue copies each batch and applies batches FIFO between model/tool steps.
+Messages accepted during a final response trigger another model step. A pause
+stores them for resume; cancellation discards them. The queue closes atomically
+before a final result or pause, so late submissions fail explicitly.
+
 The same loop supports:
 
 - cancellation with drained in-flight work;

@@ -325,6 +325,221 @@ test "streamed pause and resume expose deferred request and result events" {
     try std.testing.expectEqual(@as(u8, 1), executions);
 }
 
+test "pending messages are copied ordered streamed and persisted in result history" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var queue = zigai.PendingMessageQueue.init(std.testing.allocator, threaded.io());
+    defer queue.deinit();
+
+    var first_text = [_]u8{ 'f', 'i', 'r', 's', 't' };
+    try queue.enqueue(&.{.{ .parts = &.{.{ .user_prompt = .{ .text = &first_text } }} }});
+    first_text[0] = 'X';
+    try queue.enqueue(&.{.{ .parts = &.{.{ .user_prompt = .{ .text = "second" } }} }});
+
+    const State = struct {
+        queue: *zigai.PendingMessageQueue,
+        calls: usize = 0,
+
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: zigai.ModelRequest) !zigai.ModelResponse {
+            return error.UnexpectedBufferedRequest;
+        }
+
+        fn stream(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            request_value: zigai.ModelRequest,
+            sink: zigai.ModelStreamSink,
+        ) !zigai.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.calls == 0) {
+                try std.testing.expectEqualStrings("first", request_value.messages[1].request.parts[0].user_prompt.text);
+                try std.testing.expectEqualStrings("second", request_value.messages[2].request.parts[0].user_prompt.text);
+                try self.queue.enqueue(&.{.{ .parts = &.{.{ .user_prompt = .{ .text = "during" } }} }});
+                self.calls += 1;
+                try zigai.model.emitCompletePart(sink, 0, .{ .text = "draft" });
+                return .{ .parts = &.{.{ .text = "draft" }} };
+            }
+            try std.testing.expectEqual(@as(usize, 5), request_value.messages.len);
+            try std.testing.expectEqualStrings("draft", request_value.messages[3].response.parts[0].text);
+            try std.testing.expectEqualStrings("during", request_value.messages[4].request.parts[0].user_prompt.text);
+            self.calls += 1;
+            try zigai.model.emitCompletePart(sink, 0, .{ .text = "final" });
+            return .{ .parts = &.{.{ .text = "final" }} };
+        }
+    };
+    const Capture = struct {
+        enqueued: usize = 0,
+        finals: usize = 0,
+
+        fn event(context: *anyopaque, value: zigai.AgentStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (value) {
+                .enqueued_messages => |event_value| self.enqueued += event_value.messages.len,
+                .final_result => self.finals += 1,
+                else => {},
+            }
+        }
+    };
+    var state = State{ .queue = &queue };
+    var capture: Capture = .{};
+    const model = zigai.Model{
+        .context = &state,
+        .profile = .{ .supports_streaming = true },
+        .requestFn = State.request,
+        .streamFn = State.stream,
+    };
+    var result = try (zigai.Agent{ .model = model }).runStreamWithOptions(
+        std.testing.allocator,
+        "prompt",
+        .{ .pending_messages = &queue },
+        .{ .context = &capture, .eventFn = Capture.event },
+    );
+    defer result.deinit();
+    try std.testing.expectEqualStrings("final", result.output);
+    try std.testing.expectEqual(@as(usize, 2), state.calls);
+    try std.testing.expectEqual(@as(usize, 3), capture.enqueued);
+    try std.testing.expectEqual(@as(usize, 1), capture.finals);
+    try std.testing.expectEqual(@as(usize, 6), result.messages.len);
+    try std.testing.expectError(
+        zigai.Agent.Error.PendingMessageQueueClosed,
+        queue.enqueue(&.{.{ .parts = &.{.{ .user_prompt = .{ .text = "late" } }} }}),
+    );
+}
+
+test "pending messages survive a pause after deferred tool results" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var queue = zigai.PendingMessageQueue.init(std.testing.allocator, threaded.io());
+    defer queue.deinit();
+
+    const State = struct {
+        queue: *zigai.PendingMessageQueue,
+        calls: usize = 0,
+
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: zigai.ModelRequest) !zigai.ModelResponse {
+            return error.UnexpectedBufferedRequest;
+        }
+
+        fn stream(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            request_value: zigai.ModelRequest,
+            sink: zigai.ModelStreamSink,
+        ) !zigai.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.calls == 0) {
+                try self.queue.enqueue(&.{.{ .parts = &.{.{ .user_prompt = .{ .text = "after approval" } }} }});
+                self.calls += 1;
+                const parts = &struct {
+                    const value = [_]zigai.Part{.{ .tool_call = .{
+                        .id = "approval",
+                        .name = "tool",
+                        .arguments_json = "{}",
+                    } }};
+                }.value;
+                try zigai.model.emitCompletePart(sink, 0, parts[0]);
+                return .{ .parts = parts };
+            }
+            try std.testing.expectEqual(@as(usize, 5), request_value.messages.len);
+            try std.testing.expect(request_value.messages[2].request.parts[0] == .tool_return);
+            try std.testing.expectEqualStrings(
+                "after approval",
+                request_value.messages[3].request.parts[0].user_prompt.text,
+            );
+            try std.testing.expectEqualStrings(
+                "during resume",
+                request_value.messages[4].request.parts[0].user_prompt.text,
+            );
+            self.calls += 1;
+            try zigai.model.emitCompletePart(sink, 0, .{ .text = "done" });
+            return .{ .parts = &.{.{ .text = "done" }} };
+        }
+    };
+    const Capture = struct {
+        enqueued: usize = 0,
+        fn event(context: *anyopaque, value: zigai.AgentStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (value == .enqueued_messages) self.enqueued += value.enqueued_messages.messages.len;
+        }
+    };
+    var state = State{ .queue = &queue };
+    var executions: u8 = 0;
+    var tool = successfulTool(&executions);
+    tool.execution = .requires_approval;
+    const model = zigai.Model{
+        .context = &state,
+        .profile = .{ .supports_streaming = true },
+        .requestFn = State.request,
+        .streamFn = State.stream,
+    };
+    const agent = zigai.Agent{ .model = model, .tools = &.{tool} };
+    var capture: Capture = .{};
+    const sink = zigai.AgentStreamSink{ .context = &capture, .eventFn = Capture.event };
+    var first = try agent.runUntilPauseStreamWithOptions(
+        std.testing.allocator,
+        "go",
+        .{ .pending_messages = &queue },
+        sink,
+    );
+    defer first.deinit();
+    const state_json = switch (first) {
+        .complete => return error.ExpectedPausedRun,
+        .paused => |paused| paused.state_json,
+    };
+    var resume_queue = zigai.PendingMessageQueue.init(std.testing.allocator, threaded.io());
+    defer resume_queue.deinit();
+    try resume_queue.enqueue(&.{.{ .parts = &.{.{ .user_prompt = .{ .text = "during resume" } }} }});
+    var resumed = try agent.resumeRunStreamWithOptions(
+        std.testing.allocator,
+        state_json,
+        &.{.{ .call_id = "approval", .action = .approve }},
+        .{ .pending_messages = &resume_queue },
+        sink,
+    );
+    defer resumed.deinit();
+    try std.testing.expect(resumed == .complete);
+    try std.testing.expectEqual(@as(usize, 2), capture.enqueued);
+    try std.testing.expectEqual(@as(usize, 2), state.calls);
+}
+
+test "pending message queues close and discard accepted input on cancellation" {
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var queue = zigai.PendingMessageQueue.init(std.testing.allocator, threaded.io());
+    defer queue.deinit();
+
+    const State = struct {
+        queue: *zigai.PendingMessageQueue,
+        calls: usize = 0,
+
+        fn request(context: *anyopaque, _: std.mem.Allocator, _: zigai.ModelRequest) !zigai.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            try self.queue.enqueue(&.{.{ .parts = &.{.{ .user_prompt = .{ .text = "discard me" } }} }});
+            return error.Cancelled;
+        }
+    };
+    var state = State{ .queue = &queue };
+    const agent = zigai.Agent{ .model = .{
+        .context = &state,
+        .profile = .{},
+        .requestFn = State.request,
+    } };
+    try std.testing.expectError(
+        error.Cancelled,
+        agent.runWithOptions(std.testing.allocator, "go", .{ .pending_messages = &queue }),
+    );
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
+    try std.testing.expectError(
+        zigai.Agent.Error.PendingMessageQueueClosed,
+        queue.enqueue(&.{.{ .parts = &.{.{ .user_prompt = .{ .text = "late" } }} }}),
+    );
+    try std.testing.expectError(
+        zigai.Agent.Error.PendingMessageQueueAlreadyUsed,
+        agent.runWithOptions(std.testing.allocator, "again", .{ .pending_messages = &queue }),
+    );
+}
+
 test "resuming mixed deferred calls handles every decision path" {
     const calls = [_]zigai.model.Part{
         .{ .tool_call = .{ .id = "immediate", .name = "immediate", .arguments_json = "{}" } },

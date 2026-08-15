@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a thread-safe, one-run pending-message queue with deep-copy ownership,
+  deterministic batch ordering, stream events, pause-state persistence, and
+  atomic final/cancellation closure.
 - Replace flat streaming deltas with stable indexed part start/delta/end
   lifecycles, complete thinking/media/native-tool delta types, streamed
   deferred pause/resume events, and one validated final-result event carrying

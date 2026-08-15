@@ -136,6 +136,10 @@ const AgentError = error{
     InvalidDeferredState,
     /// A follow-up message contains a part invalid for its request role.
     InvalidContentRole,
+    /// A pending-message queue was attached to more than one run.
+    PendingMessageQueueAlreadyUsed,
+    /// A pending message was submitted after its run stopped accepting input.
+    PendingMessageQueueClosed,
     /// A tool follow-up message violates provider request invariants.
     InvalidToolFollowUpMessage,
     /// The model requested a tool that is not currently available.
@@ -346,6 +350,115 @@ pub const RunOptions = struct {
     request_id: ?[]const u8 = null,
     /// Tightens `Agent.run_timeout_ms` for this invocation.
     timeout_ms: ?u64 = null,
+    /// A one-run, thread-safe queue for request messages submitted while the
+    /// agent is working. The caller owns and deinitializes the queue.
+    pending_messages: ?*PendingMessageQueue = null,
+};
+
+/// A one-run FIFO for injecting owned request messages at safe agent-loop
+/// boundaries. Enqueue order is the order calls acquire the queue lock. The
+/// queue closes atomically before a final result, pause, cancellation, or
+/// failure, and rejects all later submissions.
+pub const PendingMessageQueue = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    mutex: std.Io.Mutex = .init,
+    state: State = .ready,
+    batches: std.ArrayList(Batch) = .empty,
+
+    const State = enum { ready, active, closed };
+
+    const Batch = struct {
+        arena: std.heap.ArenaAllocator,
+        messages: []const model_types.RequestMessage,
+
+        fn deinit(self: *Batch) void {
+            self.arena.deinit();
+            self.* = undefined;
+        }
+    };
+
+    const Drained = struct {
+        allocator: std.mem.Allocator,
+        batches: std.ArrayList(Batch),
+
+        fn deinit(self: *Drained) void {
+            for (self.batches.items) |*batch| batch.deinit();
+            self.batches.deinit(self.allocator);
+            self.* = undefined;
+        }
+    };
+
+    pub fn init(allocator: std.mem.Allocator, io: std.Io) PendingMessageQueue {
+        return .{ .allocator = allocator, .io = io };
+    }
+
+    /// Copies one ordered batch. The source can be released as soon as this
+    /// method returns.
+    pub fn enqueue(self: *PendingMessageQueue, messages_to_add: []const model_types.RequestMessage) !void {
+        if (messages_to_add.len == 0) return;
+        var arena = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer arena.deinit();
+        const copies = try arena.allocator().alloc(model_types.RequestMessage, messages_to_add.len);
+        for (messages_to_add, copies) |message, *copy| {
+            copy.* = try copyRequestMessage(arena.allocator(), message);
+        }
+
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.state == .closed) return AgentError.PendingMessageQueueClosed;
+        try self.batches.append(self.allocator, .{ .arena = arena, .messages = copies });
+    }
+
+    /// Releases queued copies. The queue must outlive any run that uses it.
+    pub fn deinit(self: *PendingMessageQueue) void {
+        self.close();
+        self.batches.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    fn activate(self: *PendingMessageQueue) !void {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.state != .ready) return AgentError.PendingMessageQueueAlreadyUsed;
+        self.state = .active;
+    }
+
+    fn drain(self: *PendingMessageQueue) ?Drained {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.batches.items.len == 0) return null;
+        const batches = self.batches;
+        self.batches = .empty;
+        return .{ .allocator = self.allocator, .batches = batches };
+    }
+
+    fn drainOrClose(self: *PendingMessageQueue) ?Drained {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        if (self.batches.items.len == 0) {
+            self.state = .closed;
+            return null;
+        }
+        const batches = self.batches;
+        self.batches = .empty;
+        return .{ .allocator = self.allocator, .batches = batches };
+    }
+
+    fn closeAndDrain(self: *PendingMessageQueue) ?Drained {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
+        self.state = .closed;
+        if (self.batches.items.len == 0) return null;
+        const batches = self.batches;
+        self.batches = .empty;
+        return .{ .allocator = self.allocator, .batches = batches };
+    }
+
+    fn close(self: *PendingMessageQueue) void {
+        var drained = self.closeAndDrain() orelse return;
+        drained.deinit();
+    }
 };
 
 pub const DeferredToolCall = struct {
@@ -443,6 +556,7 @@ const SerializedPause = struct {
     output_retries: usize,
     tool_retries: []const SerializedToolRetry,
     calls: []const DeferredToolCall,
+    pending_history_json: ?[]const u8 = null,
 };
 
 const ResumeState = struct {
@@ -454,6 +568,7 @@ const ResumeState = struct {
     output_retries: usize,
     tool_retries: []const SerializedToolRetry,
     calls: []const DeferredToolCall,
+    pending_messages: []const Message,
 };
 
 pub const CapabilityContext = struct {
@@ -933,6 +1048,11 @@ pub const Agent = struct {
         var owned_history = history.parse(allocator, parsed.value.history_json) catch
             return Error.InvalidDeferredState;
         defer owned_history.deinit();
+        var owned_pending: ?history.Owned = if (parsed.value.pending_history_json) |pending_json|
+            history.parse(allocator, pending_json) catch return Error.InvalidDeferredState
+        else
+            null;
+        defer if (owned_pending) |*pending| pending.deinit();
         return self.runOutcomeInternal(
             allocator,
             parsed.value.prompt,
@@ -949,6 +1069,7 @@ pub const Agent = struct {
                 .output_retries = parsed.value.output_retries, // kcov-ignore
                 .tool_retries = parsed.value.tool_retries, // kcov-ignore
                 .calls = parsed.value.calls,
+                .pending_messages = if (owned_pending) |pending| pending.messages else &.{},
             },
             decisions,
         );
@@ -1040,6 +1161,8 @@ pub const Agent = struct {
             earliestTimeout(self.run_timeout_ms, options.timeout_ms),
         );
         try control.check();
+        if (options.pending_messages) |queue| try queue.activate();
+        defer if (options.pending_messages) |queue| queue.close();
         var sink_adapter: ControlledStreamSink = undefined;
         const controlled_stream_sink: ?AgentStreamSink = if (stream_sink) |sink| sink: {
             sink_adapter = .{ .sink = sink, .control = control };
@@ -1206,6 +1329,16 @@ pub const Agent = struct {
         var total_retry_delay_ms: u64 = 0;
         var resume_pending = resume_state != null;
         while (true) {
+            if (!resume_pending) _ = try appendQueuedMessages(
+                options.pending_messages,
+                false,
+                self.model,
+                self.url_policy,
+                memory,
+                &messages,
+                stream_sink,
+                hooks,
+            );
             const available_tools = try prepareTools(memory, self.tools, self.toolsets, .{
                 .messages = messages.items,
                 .usage = total_usage,
@@ -1241,6 +1374,16 @@ pub const Agent = struct {
                 });
                 try messages.append(memory, .{ .request = .{ .parts = tool_batch.parts } });
                 try appendToolFollowUps(self.model, self.url_policy, memory, &messages, tool_batch.follow_up_messages);
+                const restored = try appendPendingMessageCopies(
+                    self.model,
+                    self.url_policy,
+                    memory,
+                    &messages,
+                    resume_state.?.pending_messages,
+                );
+                if (restored.len > 0) if (stream_sink) |sink| try emitStreamEvent(hooks, sink, .{
+                    .enqueued_messages = .{ .messages = restored },
+                });
                 resume_pending = false;
                 continue;
             }
@@ -1396,6 +1539,16 @@ pub const Agent = struct {
             };
 
             if (tool_call_count == 0) {
+                if (try appendQueuedMessages(
+                    options.pending_messages,
+                    false,
+                    self.model,
+                    self.url_policy,
+                    memory,
+                    &messages,
+                    stream_sink,
+                    hooks,
+                )) continue;
                 const output = try collectText(memory, response.parts);
                 try emitLifecycle(hooks, .{ .output_validation_start = .{
                     .output = output,
@@ -1420,6 +1573,16 @@ pub const Agent = struct {
                     .output = output,
                     .retry_number = output_retries,
                 } });
+                if (try appendQueuedMessages(
+                    options.pending_messages,
+                    true,
+                    self.model,
+                    self.url_policy,
+                    memory,
+                    &messages,
+                    stream_sink,
+                    hooks,
+                )) continue;
                 if (stream_sink) |sink| try emitStreamEvent(hooks, sink, .{ .final_result = .{
                     .output = output,
                     .structured_output = try structuredOutputSnapshot(memory, self.output, output),
@@ -1448,6 +1611,12 @@ pub const Agent = struct {
             }
             if (hasDeferredToolCall(available_tools, response.parts)) {
                 if (!allow_pause) return Error.ToolCallRequiresDeferredRun;
+                const pending = try closeAndCopyPendingMessages(
+                    options.pending_messages,
+                    self.model,
+                    self.url_policy,
+                    memory,
+                );
                 const paused = try createPausedRun(
                     &arena,
                     memory,
@@ -1461,6 +1630,7 @@ pub const Agent = struct {
                     tool_retries.entries.items,
                     available_tools,
                     response.parts,
+                    pending,
                 );
                 if (stream_sink) |sink| try emitStreamEvent(hooks, sink, .{
                     .deferred_tool_requests = .{ .requests = paused.calls },
@@ -1533,6 +1703,7 @@ fn createPausedRun(
     retry_entries: []const ToolRetryTracker.Entry,
     tools: []const model_types.Tool,
     parts: []const Part,
+    pending_messages: []const Message,
 ) !PausedRun {
     var calls: std.ArrayList(DeferredToolCall) = .empty;
     for (parts) |part| switch (part) {
@@ -1555,6 +1726,10 @@ fn createPausedRun(
         .count = entry.count,
     };
     const history_json = try history.stringify(allocator, messages);
+    const pending_history_json = if (pending_messages.len > 0)
+        try history.stringify(allocator, pending_messages)
+    else
+        null;
     const state_json = try std.json.Stringify.valueAlloc(allocator, SerializedPause{
         .version = 1,
         .prompt = prompt,
@@ -1566,6 +1741,7 @@ fn createPausedRun(
         .output_retries = output_retries,
         .tool_retries = retries,
         .calls = paused_calls,
+        .pending_history_json = pending_history_json,
     }, .{});
     return .{
         .arena = arena.*,
@@ -2753,6 +2929,73 @@ fn appendMessageCopy(allocator: std.mem.Allocator, messages: *std.ArrayList(Mess
     });
 }
 
+fn appendPendingMessageCopies(
+    selected_model: model_types.Model,
+    url_policy: security.UrlPolicy,
+    allocator: std.mem.Allocator,
+    messages: *std.ArrayList(Message),
+    source: []const Message,
+) ![]const Message {
+    const start = messages.items.len;
+    for (source) |message| switch (message) {
+        .request => {
+            try ensureContentSupported(selected_model, url_policy, &.{message});
+            try appendMessageCopy(allocator, messages, message);
+        },
+        .response => return Agent.Error.InvalidContentRole,
+    };
+    return messages.items[start..];
+}
+
+fn appendDrainedPendingMessages(
+    selected_model: model_types.Model,
+    url_policy: security.UrlPolicy,
+    allocator: std.mem.Allocator,
+    messages: *std.ArrayList(Message),
+    drained: *const PendingMessageQueue.Drained,
+) ![]const Message {
+    const start = messages.items.len;
+    for (drained.batches.items) |batch| for (batch.messages) |request| {
+        const message = Message{ .request = request };
+        try ensureContentSupported(selected_model, url_policy, &.{message});
+        try appendMessageCopy(allocator, messages, message);
+    };
+    return messages.items[start..];
+}
+
+fn appendQueuedMessages(
+    queue: ?*PendingMessageQueue,
+    close_when_empty: bool,
+    selected_model: model_types.Model,
+    url_policy: security.UrlPolicy,
+    allocator: std.mem.Allocator,
+    messages: *std.ArrayList(Message),
+    stream_sink: ?AgentStreamSink,
+    hooks: []const LifecycleHook,
+) !bool {
+    const pending = queue orelse return false;
+    var drained = (if (close_when_empty) pending.drainOrClose() else pending.drain()) orelse return false;
+    defer drained.deinit();
+    const added = try appendDrainedPendingMessages(selected_model, url_policy, allocator, messages, &drained);
+    if (stream_sink) |sink| try emitStreamEvent(hooks, sink, .{
+        .enqueued_messages = .{ .messages = added },
+    });
+    return true;
+}
+
+fn closeAndCopyPendingMessages(
+    queue: ?*PendingMessageQueue,
+    selected_model: model_types.Model,
+    url_policy: security.UrlPolicy,
+    allocator: std.mem.Allocator,
+) ![]const Message {
+    const pending = queue orelse return &.{};
+    var drained = pending.closeAndDrain() orelse return &.{};
+    defer drained.deinit();
+    var messages: std.ArrayList(Message) = .empty;
+    return appendDrainedPendingMessages(selected_model, url_policy, allocator, &messages, &drained);
+}
+
 fn appendToolFollowUps(
     selected_model: model_types.Model,
     url_policy: security.UrlPolicy,
@@ -3374,6 +3617,70 @@ test "cancellation tokens and retry hooks expose stable state" {
     try std.testing.expect(capture.called);
 }
 
+test "pending message final drains close only after the FIFO is empty" {
+    var queue = PendingMessageQueue.init(std.testing.allocator, std.testing.io);
+    defer queue.deinit();
+    try queue.enqueue(&.{});
+    try queue.enqueue(&.{.{ .parts = &.{.{ .user_prompt = .{ .text = "queued" } }} }});
+    try queue.activate();
+    var drained = queue.drainOrClose().?;
+    defer drained.deinit();
+    try std.testing.expectEqual(@as(usize, 1), drained.batches.items.len);
+    try std.testing.expect(queue.drainOrClose() == null);
+    try std.testing.expectError(
+        Agent.Error.PendingMessageQueueClosed,
+        queue.enqueue(&.{.{ .parts = &.{.{ .user_prompt = .{ .text = "late" } }} }}),
+    );
+}
+
+test "pending message queue serializes concurrent producers" {
+    var runtime = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+    const io = runtime.io();
+    var queue = PendingMessageQueue.init(std.testing.allocator, io);
+    defer queue.deinit();
+    const Producer = struct {
+        fn enqueue(target: *PendingMessageQueue, text: []const u8) !void {
+            try target.enqueue(&.{.{ .parts = &.{.{ .user_prompt = .{ .text = text } }} }});
+        }
+    };
+    var first = try io.concurrent(Producer.enqueue, .{ &queue, "first" });
+    var second = try io.concurrent(Producer.enqueue, .{ &queue, "second" });
+    try first.await(io);
+    try second.await(io);
+    try queue.activate();
+    var drained = queue.drain().?;
+    defer drained.deinit();
+    try std.testing.expectEqual(@as(usize, 2), drained.batches.items.len);
+    var saw_first = false;
+    var saw_second = false;
+    for (drained.batches.items) |batch| {
+        const text = batch.messages[0].parts[0].user_prompt.text;
+        saw_first = saw_first or std.mem.eql(u8, text, "first");
+        saw_second = saw_second or std.mem.eql(u8, text, "second");
+    }
+    try std.testing.expect(saw_first and saw_second);
+}
+
+test "pending message copies reject response roles" {
+    const Stub = struct {
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            return error.Unused;
+        }
+    };
+    var unused: u8 = 0;
+    const selected_model = model_types.Model{ .context = &unused, .profile = .{}, .requestFn = Stub.request };
+    try std.testing.expectError(error.Unused, selected_model.request(std.testing.allocator, .{ .messages = &.{} }));
+    var messages: std.ArrayList(Message) = .empty;
+    try std.testing.expectError(Agent.Error.InvalidContentRole, appendPendingMessageCopies(
+        selected_model,
+        .{},
+        std.testing.allocator,
+        &messages,
+        &.{.{ .response = .{ .parts = &.{.{ .text = "invalid" }} } }},
+    ));
+}
+
 fn checkResumeDecisionAllocationFailure(allocator: std.mem.Allocator) !void {
     var decisions = try parseResumeDecisions(
         allocator,
@@ -3391,9 +3698,16 @@ fn checkControlledHooksAllocationFailure(allocator: std.mem.Allocator) !void {
     defer controlled.deinit(allocator);
 }
 
+fn checkPendingMessageQueueAllocationFailure(allocator: std.mem.Allocator) !void {
+    var queue = PendingMessageQueue.init(allocator, std.testing.io);
+    defer queue.deinit();
+    try queue.enqueue(&.{.{ .parts = &.{.{ .user_prompt = .{ .text = "copied" } }} }});
+}
+
 test "agent private helpers cover ownership settings retries and rich content" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, checkResumeDecisionAllocationFailure, .{});
     try std.testing.checkAllAllocationFailures(std.testing.allocator, checkControlledHooksAllocationFailure, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkPendingMessageQueueAllocationFailure, .{});
 
     try std.testing.expectError(Agent.Error.ToolFollowUpOverflow, validateToolOutput(.{
         .content = "",
@@ -3736,6 +4050,7 @@ test "paused state serializes retries and rejects mismatched calls" {
         &.{.{ .name = "approval", .count = 1 }},
         &.{approval},
         &.{call},
+        &.{},
     );
     defer paused.deinit();
     try std.testing.expect(std.mem.indexOf(u8, paused.state_json, "\"tool_retries\":[{\"name\":\"approval\",\"count\":1}]") != null);

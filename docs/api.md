@@ -130,6 +130,20 @@ borrowed for the callback; copy them before returning if they must be retained.
 approval and external-tool boundaries. Providers restart part indexes for each
 model response in a multi-request agent run.
 
+`PendingMessageQueue` is an allocator-owned, thread-safe, one-run FIFO. It
+deep-copies `RequestMessage` batches and requires a `std.Io` runtime for its
+mutex. Attach it through `RunOptions.pending_messages`; keep it alive until the
+run returns, then call `deinit`. Accepted batches enter history only at safe
+boundaries: before a model request, after tool results, or after a provisional
+final response. Each insertion emits `enqueued_messages` for streaming runs.
+
+If a run pauses, accepted messages are stored separately in the serialized
+pause state and inserted immediately after deferred tool results on resume.
+Cancellation or another terminal failure closes the queue and discards batches
+that did not enter history. Finalization checks and closes the queue under the
+same lock, so an enqueue is either accepted for another model step or rejected
+with `PendingMessageQueueClosed`; it cannot disappear behind a final result.
+
 ## Errors
 
 The public named error categories are:
