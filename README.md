@@ -260,6 +260,21 @@ with `SNOWFLAKE_TOKEN`. Use `snowflake.apiBase` rather than assembling an
 account hostname manually; it validates the identifier before the token can be
 sent. `SNOWFLAKE_MODEL` optionally selects the Cortex model.
 
+Claude reasoning stays typed on `snowflake.Client`:
+
+```zig
+var client = zigai.providers.snowflake.Client{
+    .model_name = "claude-sonnet-4-5",
+    .provider = provider.provider(),
+    .reasoning = .{ .effort = .high },
+};
+```
+
+Choose either `effort` or `max_tokens`. Cortex requires temperature `1` for
+Claude reasoning; ZigAI supplies it when absent and rejects conflicting values
+before transport. Raw Snowflake extensions use the isolated `.snowflake` tag
+and cannot replace the typed `reasoning` object.
+
 Z.AI uses bearer authentication from `ZAI_API_KEY` and defaults the compiled
 example to `glm-5.1`. GLM 5.2 reasoning-effort settings and JSON-object output
 are profiled explicitly; unknown model IDs remain fail-closed.

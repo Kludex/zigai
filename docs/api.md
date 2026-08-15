@@ -400,6 +400,13 @@ labels before authentication. Cortex profiles distinguish OpenAI, Claude, and
 text-only families so ignored or rejected tool and structured-output fields do
 not reach the network. Unknown models remain fail-closed.
 
+`snowflake.Client.reasoning` accepts exactly one of `effort` (`low`, `medium`,
+or `high`) and `max_tokens`. It is limited to Claude model IDs. When set, the
+client supplies Cortex's required temperature `1`, or rejects a conflicting
+temperature before I/O. Buffered and streaming requests delegate to the shared
+Chat Completions codec after this typed preparation. Snowflake-only raw fields
+use `ProviderExtraBody.snowflake`; `reasoning` is reserved to the typed API.
+
 Z.AI's named provider uses the general `/api/paas/v4` Chat Completions root and
 native `glm-*` model IDs. The compatibility client supports the portable GLM
 surface, including JSON-object output and GLM 5.2 reasoning effort. Z.AI's

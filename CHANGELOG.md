@@ -12,6 +12,9 @@
   checks, and a compiled example.
 - Add a compiled custom-provider example with explicit endpoint,
   authentication, identity, model-profile, and fail-closed validation rules.
+- Add typed Snowflake Cortex Claude reasoning controls for buffered and
+  streaming requests, with exclusive effort/token modes and the required
+  temperature invariant enforced before I/O.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and
