@@ -191,4 +191,19 @@ percent=$(awk -F'"' '/"percent_covered"/ { value=$4 } END { print value }' "$rep
 covered=$(awk '/"covered_lines"/ { value=$2 } END { gsub(/,/, "", value); print value }' "$report")
 total=$(awk '/"total_lines"/ { value=$2 } END { gsub(/,/, "", value); print value }' "$report")
 echo "Coverage: $covered/$total lines ($percent%)"
+if [ "$percent" != "100.00" ]; then
+    awk '
+        /^    ".*\.zig": \{$/ {
+            file = $0
+            sub(/^    "/, "", file)
+            sub(/": \{$/, "", file)
+            next
+        }
+        /^      "[0-9]+": 0,?$/ && file != "" {
+            line = $1
+            gsub(/[":]/, "", line)
+            print "uncovered: src/" file ":" line
+        }
+    ' "$coverage_dir/merged/kcov-merged/codecov.json"
+fi
 test "$percent" = "100.00"
