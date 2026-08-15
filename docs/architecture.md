@@ -362,9 +362,12 @@ Multi round-trip requests replace server-initiated JSON-RPC calls. When a
 result requires sampling, roots, or elicitation, the configured `InputHandler`
 answers each item and the client retries with `inputResponses` and opaque
 `requestState`. The handler receives one borrowed `InputRequest` whose enum
-identifies the validated input family. `subscriptions/listen` forwards
-request-scoped SSE or stdio notifications to an `EventSink` until the final
-response closes the stream.
+identifies the validated input family. `InputResponse` provides owned builders
+for elicitation actions and primitive form values, file roots, and sampling
+role/content/model results; the client still validates the encoded response
+against the original input method before retrying. `subscriptions/listen`
+forwards request-scoped SSE or stdio notifications to an `EventSink` until the
+final response closes the stream.
 
 `StreamableHttpTransport` emits the required protocol, method, name, and tool
 parameter headers. It accepts direct JSON and request-scoped SSE responses.

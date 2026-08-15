@@ -14,7 +14,7 @@ The executable method inventory lives in `tests/mcp_conformance.zig`.
 | Client requests | `server/discover`, completion, prompts, resources, subscriptions, and tools | Typed request values and `Client` helpers, plus JSON escape hatches for extensions |
 | Client notifications | `notifications/cancelled` | `cancel` or `notify` |
 | Server notifications | cancellation, progress, logging, resource updates, list changes, and subscription acknowledgement | Typed `Notification` encoding; borrowed JSON through `EventSink` |
-| MRTR input | elicitation, roots, and sampling | Typed `InputRequest` through `InputHandler`, followed by a validated retry |
+| MRTR input | elicitation, roots, and sampling | Typed `InputRequest` and `InputResponse` builders through `InputHandler`, followed by a validated retry |
 
 Roots, Sampling, and Logging are deprecated compatibility paths in this
 revision. They remain supported without being promoted into the main agent

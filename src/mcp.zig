@@ -26,6 +26,7 @@ pub const CompletionReference = primitives.CompletionReference;
 pub const CompletionRequest = primitives.CompletionRequest;
 pub const InputKind = primitives.InputKind;
 pub const InputRequest = primitives.InputRequest;
+pub const InputResponse = primitives.InputResponse;
 pub const LoggingLevel = primitives.LoggingLevel;
 pub const Notification = primitives.Notification;
 pub const PromptRequest = primitives.PromptRequest;
@@ -150,6 +151,8 @@ pub const Error = error{
     InvalidExtensionIdentifier,
     /// An MRTR input method is not elicitation, roots, or sampling.
     InvalidInputRequest,
+    /// A typed MRTR response violates its input family's contract.
+    InvalidInputResponse,
     /// A typed notification has invalid data or missing stream correlation.
     InvalidNotification,
     /// A typed MCP request contains malformed embedded JSON.
@@ -4531,7 +4534,10 @@ test "client completes multi round-trip input requests" {
             try std.testing.expectEqualStrings("confirm", request.key);
             try std.testing.expectEqual(InputKind.elicitation, request.kind);
             try std.testing.expect(std.mem.indexOf(u8, request.request_json, request.kind.method()) != null);
-            return allocator.dupe(u8, "{\"action\":\"accept\",\"content\":{\"confirmed\":true}}");
+            return (InputResponse{ .elicitation = .{
+                .action = .accept,
+                .content_json = "{\"confirmed\":true}",
+            } }).stringifyAlloc(allocator);
         }
     };
     var stub: Stub = .{};

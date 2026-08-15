@@ -509,7 +509,9 @@ there is no initialize handshake or protocol session. The client handles
 discovery, every core request, pagination, SSE subscriptions, cancellation,
 and multi-round-trip sampling, roots, and elicitation through an `InputHandler`.
 Its borrowed `InputRequest` carries a typed kind, key, and validated request
-JSON, so handlers do not dispatch on method strings.
+JSON, so handlers do not dispatch on method strings. `InputResponse` builds
+validated elicitation, roots, or sampling JSON while preserving the callback's
+explicit caller-owned byte lifetime.
 Tool arguments marked with `x-mcp-header` are mirrored for Streamable HTTP.
 
 Optional client behavior must be advertised on every request. Build the

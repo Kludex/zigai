@@ -6,8 +6,9 @@
   capability documents, validated experimental/extension objects, prefixed
   extension identifiers, typed subscription filters and notifications,
   prompt/completion requests, typed MRTR input dispatch, correlation and
-  numeric guards, deterministic serialization, and raw JSON escape hatches for
-  future protocol fields.
+  response builders for elicitation/roots/sampling, correlation and numeric
+  guards, deterministic serialization, and raw JSON escape hatches for future
+  protocol fields.
 - Add MCP `2026-07-28` HTTP authorization and deployment security with bounded
   RFC 9728/RFC 8414/OIDC discovery, exact issuer and resource binding, PKCE
   checks, owned token callbacks, bounded refresh and scope step-up, pre-dispatch

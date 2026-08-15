@@ -11,6 +11,7 @@ pub const Error = error{
     InvalidCapabilities,
     InvalidExtensionIdentifier,
     InvalidInputRequest,
+    InvalidInputResponse,
     InvalidNotification,
     InvalidRequest,
 };
@@ -208,6 +209,100 @@ pub const InputRequest = struct {
     kind: InputKind,
     /// Complete input-request JSON, borrowed for the callback duration.
     request_json: []const u8,
+};
+
+pub const ElicitationAction = enum {
+    accept,
+    decline,
+    cancel,
+};
+
+pub const ElicitationResponse = struct {
+    action: ElicitationAction,
+    /// Accepted form values as one bounded JSON object.
+    content_json: ?[]const u8 = null,
+};
+
+pub const Root = struct {
+    uri: []const u8,
+    name: ?[]const u8 = null,
+};
+
+pub const RootsResponse = struct {
+    roots: []const Root,
+};
+
+pub const SamplingRole = enum {
+    user,
+    assistant,
+};
+
+pub const SamplingResponse = struct {
+    role: SamplingRole,
+    /// One content block or an array of blocks encoded as bounded JSON.
+    content_json: []const u8,
+    model: []const u8,
+    stop_reason: ?[]const u8 = null,
+};
+
+/// Typed response builders for all MRTR input families.
+pub const InputResponse = union(enum) {
+    elicitation: ElicitationResponse,
+    roots: RootsResponse,
+    sampling: SamplingResponse,
+
+    pub fn kind(self: InputResponse) InputKind {
+        return switch (self) {
+            .elicitation => .elicitation,
+            .roots => .roots,
+            .sampling => .sampling,
+        };
+    }
+
+    pub fn stringifyAlloc(self: InputResponse, allocator: std.mem.Allocator) ![]u8 {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const memory = arena.allocator();
+        var object: std.json.ObjectMap = .{};
+        switch (self) {
+            .elicitation => |response| {
+                try object.put(memory, "action", .{ .string = @tagName(response.action) });
+                if (response.content_json) |source| {
+                    if (response.action != .accept) return error.InvalidInputResponse;
+                    const content = try parseInputObject(memory, source);
+                    try validateElicitationContent(content);
+                    try object.put(memory, "content", .{ .object = content });
+                }
+            },
+            .roots => |response| {
+                var roots: std.json.Array = .init(memory);
+                for (response.roots) |root| {
+                    if (!std.mem.startsWith(u8, root.uri, "file://")) return error.InvalidInputResponse;
+                    var value: std.json.ObjectMap = .{};
+                    try value.put(memory, "uri", .{ .string = root.uri });
+                    if (root.name) |name| try value.put(memory, "name", .{ .string = name });
+                    try roots.append(.{ .object = value });
+                }
+                try object.put(memory, "roots", .{ .array = roots });
+            },
+            .sampling => |response| {
+                const content = try json_limits.parseLeaky(
+                    std.json.Value,
+                    memory,
+                    response.content_json,
+                    json_limits.defaults.mcp_message,
+                    .{},
+                    error.InvalidInputResponse,
+                );
+                if (content != .object and content != .array) return error.InvalidInputResponse;
+                try object.put(memory, "role", .{ .string = @tagName(response.role) });
+                try object.put(memory, "content", content);
+                try object.put(memory, "model", .{ .string = response.model });
+                if (response.stop_reason) |reason| try object.put(memory, "stopReason", .{ .string = reason });
+            },
+        }
+        return std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = object }, .{});
+    }
 };
 
 /// Parameters for `prompts/get`.
@@ -457,6 +552,30 @@ fn parseRequestObject(allocator: std.mem.Allocator, source: []const u8) !std.jso
     };
 }
 
+fn parseInputObject(allocator: std.mem.Allocator, source: []const u8) !std.json.ObjectMap {
+    const value = try json_limits.parseLeaky(
+        std.json.Value,
+        allocator,
+        source,
+        json_limits.defaults.mcp_message,
+        .{},
+        error.InvalidInputResponse,
+    );
+    return switch (value) {
+        .object => |object| object,
+        else => error.InvalidInputResponse,
+    };
+}
+
+fn validateElicitationContent(object: std.json.ObjectMap) Error!void {
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| switch (entry.value_ptr.*) {
+        .string, .integer, .float, .bool => {},
+        .array => |items| for (items.items) |item| if (item != .string) return error.InvalidInputResponse,
+        else => return error.InvalidInputResponse,
+    };
+}
+
 fn validateObjectValues(object: std.json.ObjectMap, comptime invalid_error: anytype) !void {
     var iterator = object.iterator();
     while (iterator.next()) |entry| if (entry.value_ptr.* != .object) return invalid_error;
@@ -547,6 +666,98 @@ test "typed MCP input kinds map every MRTR method" {
     const kinds = [_]InputKind{ .elicitation, .roots, .sampling };
     for (kinds) |kind| try std.testing.expectEqual(kind, try InputKind.fromMethod(kind.method()));
     try std.testing.expectError(error.InvalidInputRequest, InputKind.fromMethod("com.example/input"));
+}
+
+test "typed MCP input responses serialize elicitation roots and sampling" {
+    const responses = [_]struct {
+        value: InputResponse,
+        kind: InputKind,
+        marker: []const u8,
+    }{
+        .{
+            .value = .{ .elicitation = .{
+                .action = .accept,
+                .content_json = "{\"confirmed\":true,\"tags\":[\"safe\"]}",
+            } },
+            .kind = .elicitation,
+            .marker = "\"action\":\"accept\"",
+        },
+        .{
+            .value = .{ .roots = .{ .roots = &.{
+                .{ .uri = "file:///workspace", .name = "workspace" },
+                .{ .uri = "file:///tmp" },
+            } } },
+            .kind = .roots,
+            .marker = "file:///workspace",
+        },
+        .{
+            .value = .{ .sampling = .{
+                .role = .assistant,
+                .content_json = "[{\"type\":\"text\",\"text\":\"done\"}]",
+                .model = "example-model",
+                .stop_reason = "end_turn",
+            } },
+            .kind = .sampling,
+            .marker = "example-model",
+        },
+    };
+    for (responses) |response| {
+        try std.testing.expectEqual(response.kind, response.value.kind());
+        const source = try response.value.stringifyAlloc(std.testing.allocator);
+        defer std.testing.allocator.free(source);
+        try std.testing.expect(std.mem.indexOf(u8, source, response.marker) != null);
+    }
+    const declined = try (InputResponse{ .elicitation = .{ .action = .decline } }).stringifyAlloc(
+        std.testing.allocator,
+    );
+    defer std.testing.allocator.free(declined);
+    try std.testing.expectEqualStrings("{\"action\":\"decline\"}", declined);
+}
+
+test "typed MCP input responses reject invalid content and roots" {
+    try std.testing.expectError(
+        error.InvalidInputResponse,
+        (InputResponse{ .elicitation = .{
+            .action = .cancel,
+            .content_json = "{\"value\":true}",
+        } }).stringifyAlloc(std.testing.allocator),
+    );
+    try std.testing.expectError(
+        error.InvalidInputResponse,
+        (InputResponse{ .elicitation = .{
+            .action = .accept,
+            .content_json = "{\"value\":{}}",
+        } }).stringifyAlloc(std.testing.allocator),
+    );
+    try std.testing.expectError(
+        error.InvalidInputResponse,
+        (InputResponse{ .elicitation = .{
+            .action = .accept,
+            .content_json = "{\"values\":[1]}",
+        } }).stringifyAlloc(std.testing.allocator),
+    );
+    try std.testing.expectError(
+        error.InvalidInputResponse,
+        (InputResponse{ .roots = .{ .roots = &.{.{ .uri = "https://example.com" }} } }).stringifyAlloc(
+            std.testing.allocator,
+        ),
+    );
+    try std.testing.expectError(
+        error.InvalidInputResponse,
+        (InputResponse{ .sampling = .{
+            .role = .user,
+            .content_json = "\"text\"",
+            .model = "example-model",
+        } }).stringifyAlloc(std.testing.allocator),
+    );
+    try std.testing.expectError(
+        error.InvalidInputResponse,
+        (InputResponse{ .sampling = .{
+            .role = .user,
+            .content_json = "{",
+            .model = "example-model",
+        } }).stringifyAlloc(std.testing.allocator),
+    );
 }
 
 test "typed MCP prompt and completion requests preserve arguments" {
@@ -722,6 +933,23 @@ test "typed MCP capability serialization releases every partial allocation" {
                 .context_arguments_json = "{\"root\":\"project\"}",
             }).stringifyAlloc(allocator);
             defer allocator.free(completion);
+            const elicitation = try (InputResponse{ .elicitation = .{
+                .action = .accept,
+                .content_json = "{\"confirmed\":true}",
+            } }).stringifyAlloc(allocator);
+            defer allocator.free(elicitation);
+            const roots = try (InputResponse{ .roots = .{ .roots = &.{
+                .{ .uri = "file:///workspace", .name = "workspace" },
+                .{ .uri = "file:///tmp" },
+            } } }).stringifyAlloc(allocator);
+            defer allocator.free(roots);
+            const sampling = try (InputResponse{ .sampling = .{
+                .role = .assistant,
+                .content_json = "{\"type\":\"text\",\"text\":\"done\"}",
+                .model = "example-model",
+                .stop_reason = "end_turn",
+            } }).stringifyAlloc(allocator);
+            defer allocator.free(sampling);
         }
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
