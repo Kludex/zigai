@@ -227,6 +227,8 @@ pub const Error = error{
     TaskStoreTooLarge,
     /// Durable task resumption was requested without a configured store.
     MissingMcpTaskStore,
+    /// An MCP transport concurrency or buffering limit is invalid.
+    InvalidMcpTransportConfiguration,
     /// Streamable HTTP did not provide the required SSE response stream.
     MissingMcpSseResponse,
     /// Elicitation exceeded the configured request/response round-trip limit.
@@ -277,6 +279,8 @@ pub const Transport = struct {
 pub const StreamableHttpOptions = struct {
     url_policy: security.UrlPolicy = .{},
     authorization: ?auth.ClientPolicy = null,
+    /// Maximum requests admitted to the underlying HTTP transport at once.
+    max_in_flight: usize = 64,
 };
 
 pub const StreamableHttpTransport = struct {
@@ -286,7 +290,8 @@ pub const StreamableHttpTransport = struct {
     headers: []const http.Header = &.{},
     url_policy: security.UrlPolicy = .{},
     authorization: ?auth.ClientPolicy = null,
-    mutex: std.Io.Mutex = .init,
+    max_in_flight: usize = 64,
+    in_flight: std.Io.Semaphore = .{ .permits = 64 },
 
     pub fn init(io: std.Io, inner: http.Transport, endpoint: []const u8) StreamableHttpTransport {
         return initWithPolicy(io, inner, endpoint, .{});
@@ -315,6 +320,8 @@ pub const StreamableHttpTransport = struct {
             .endpoint = endpoint,
             .url_policy = options.url_policy,
             .authorization = options.authorization,
+            .max_in_flight = options.max_in_flight,
+            .in_flight = .{ .permits = options.max_in_flight },
         };
     }
 
@@ -330,8 +337,9 @@ pub const StreamableHttpTransport = struct {
             if (!std.mem.eql(u8, authorization.resource, self.endpoint)) return error.InvalidResourceUri;
         }
         try validateMcpMessage(allocator, request.message);
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
+        if (self.max_in_flight == 0) return error.InvalidMcpTransportConfiguration;
+        try self.in_flight.wait(self.io);
+        defer self.in_flight.post(self.io);
 
         var scopes: [][]u8 = &.{};
         defer auth.deinitScopes(allocator, scopes);
@@ -6243,6 +6251,90 @@ test "HTTP transport handles SSE, notifications, and status failures" {
     try std.testing.expectError(
         error.McpMessageTooLarge,
         streamable.transport().send(std.testing.allocator, request),
+    );
+}
+
+test "Streamable HTTP bounds concurrent in-flight requests" {
+    const Stub = struct {
+        io: std.Io,
+        active: std.atomic.Value(usize) = .init(0),
+        overlapped: std.atomic.Value(bool) = .init(false),
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: http.Request) !http.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.active.fetchAdd(1, .seq_cst) > 0) self.overlapped.store(true, .seq_cst);
+            defer _ = self.active.fetchSub(1, .seq_cst);
+            try sleepForTaskPoll(self.io, 10);
+            const parsed = try std.json.parseFromSlice(std.json.Value, allocator, request.body, .{});
+            defer parsed.deinit();
+            return .{
+                .status = 200,
+                .body = try std.json.Stringify.valueAlloc(allocator, .{
+                    .jsonrpc = "2.0",
+                    .id = (try requiredObject(parsed.value)).get("id").?,
+                    .result = .{},
+                }, .{}),
+            };
+        }
+    };
+    const Worker = struct {
+        fn send(transport_value: Transport, allocator: std.mem.Allocator, id: u8) !void {
+            const message = try std.fmt.allocPrint(
+                allocator,
+                "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"method\":\"server/discover\"}}",
+                .{id},
+            );
+            defer allocator.free(message);
+            const response = try transport_value.send(allocator, .{
+                .message = message,
+                .method = methods.discover,
+            });
+            allocator.free(response);
+        }
+    };
+
+    var runtime = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+    const io = runtime.io();
+    const allocator = std.heap.smp_allocator;
+
+    var parallel_stub = Stub{ .io = io };
+    var parallel = StreamableHttpTransport.initWithOptions(
+        io,
+        .{ .context = &parallel_stub, .sendFn = Stub.send },
+        "https://example.test/mcp",
+        .{ .max_in_flight = 2 },
+    );
+    var first = try io.concurrent(Worker.send, .{ parallel.transport(), allocator, 1 });
+    var second = try io.concurrent(Worker.send, .{ parallel.transport(), allocator, 2 });
+    try first.await(io);
+    try second.await(io);
+    try std.testing.expect(parallel_stub.overlapped.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 0), parallel_stub.active.load(.seq_cst));
+
+    var serial_stub = Stub{ .io = io };
+    var serial = StreamableHttpTransport.initWithOptions(
+        io,
+        .{ .context = &serial_stub, .sendFn = Stub.send },
+        "https://example.test/mcp",
+        .{ .max_in_flight = 1 },
+    );
+    var third = try io.concurrent(Worker.send, .{ serial.transport(), allocator, 3 });
+    var fourth = try io.concurrent(Worker.send, .{ serial.transport(), allocator, 4 });
+    try third.await(io);
+    try fourth.await(io);
+    try std.testing.expect(!serial_stub.overlapped.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 0), serial_stub.active.load(.seq_cst));
+
+    var invalid = StreamableHttpTransport.initWithOptions(
+        io,
+        .{ .context = &serial_stub, .sendFn = Stub.send },
+        "https://example.test/mcp",
+        .{ .max_in_flight = 0 },
+    );
+    try std.testing.expectError(
+        error.InvalidMcpTransportConfiguration,
+        Worker.send(invalid.transport(), std.testing.allocator, 5),
     );
 }
 

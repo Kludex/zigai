@@ -492,6 +492,10 @@ const agent = zigai.Agent{
 };
 ```
 
+Streamable HTTP admits up to 64 requests at once. Set
+`StreamableHttpOptions.max_in_flight` with `initWithOptions` to match the
+upstream server's capacity; excess requests wait at the transport boundary.
+
 For a local server, start it over stdio and use the same client:
 
 ```zig

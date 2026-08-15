@@ -415,6 +415,9 @@ final response closes the stream.
 
 `StreamableHttpTransport` emits the required protocol, method, name, and tool
 parameter headers. It accepts direct JSON and request-scoped SSE responses.
+Independent POST requests run concurrently up to `max_in_flight`; an I/O
+semaphore applies backpressure before the underlying transport and keeps OAuth
+refresh state request-local.
 `StdioTransport` frames one JSON-RPC message per line and correlates response
 IDs. The separate `mcp.auth` module owns transport-level authorization
 contracts: bounded protected-resource and authorization-server discovery,

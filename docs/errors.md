@@ -226,6 +226,7 @@ validation never invokes it.
 | `InvalidMcpMessage` | A JSON-RPC message is malformed. |
 | `InvalidMcpResponse` | A result does not match its method shape. |
 | `InvalidMcpToolArguments` | Tool arguments are not a bounded JSON object. |
+| `InvalidMcpTransportConfiguration` | An MCP transport concurrency or buffering limit is invalid. |
 | `InvalidTaskStore` | A durable task snapshot is malformed or has an unsupported version. |
 | `McpHttpRequestFailed` | Streamable HTTP returned a non-success response. |
 | `McpMessageTooLarge` | An MCP message exceeded its byte limit. |

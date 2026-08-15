@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Allow bounded concurrent MCP Streamable HTTP requests with configurable
+  in-flight backpressure and request-local authorization retries.
 - Add bounded, arena-owned task result parsing, typed client helpers, extension
   negotiation, task-ID routing, validated task status subscriptions, and
   bounded polling with deduplicated input handling and cooperative
