@@ -10,6 +10,7 @@ const json_limits = @import("../json.zig");
 pub const Error = error{
     InvalidCapabilities,
     InvalidExtensionIdentifier,
+    InvalidInputRequest,
     InvalidNotification,
 };
 
@@ -176,6 +177,36 @@ pub const RequestId = union(enum) {
             .string => |value| .{ .string = value },
         };
     }
+};
+
+/// The three input families a server may request through MRTR.
+pub const InputKind = enum {
+    elicitation,
+    roots,
+    sampling,
+
+    pub fn fromMethod(method_name: []const u8) Error!InputKind {
+        if (std.mem.eql(u8, method_name, "elicitation/create")) return .elicitation;
+        if (std.mem.eql(u8, method_name, "roots/list")) return .roots;
+        if (std.mem.eql(u8, method_name, "sampling/createMessage")) return .sampling;
+        return error.InvalidInputRequest;
+    }
+
+    pub fn method(self: InputKind) []const u8 {
+        return switch (self) {
+            .elicitation => "elicitation/create",
+            .roots => "roots/list",
+            .sampling => "sampling/createMessage",
+        };
+    }
+};
+
+/// Borrowed, already-validated MRTR input presented to application code.
+pub const InputRequest = struct {
+    key: []const u8,
+    kind: InputKind,
+    /// Complete input-request JSON, borrowed for the callback duration.
+    request_json: []const u8,
 };
 
 pub const LoggingLevel = enum {
@@ -428,6 +459,12 @@ test "typed MCP subscription filters serialize selected notifications" {
     const empty = try (SubscriptionFilter{}).stringifyAlloc(std.testing.allocator);
     defer std.testing.allocator.free(empty);
     try std.testing.expectEqualStrings("{}", empty);
+}
+
+test "typed MCP input kinds map every MRTR method" {
+    const kinds = [_]InputKind{ .elicitation, .roots, .sampling };
+    for (kinds) |kind| try std.testing.expectEqual(kind, try InputKind.fromMethod(kind.method()));
+    try std.testing.expectError(error.InvalidInputRequest, InputKind.fromMethod("com.example/input"));
 }
 
 test "typed MCP notifications serialize every standardized event" {

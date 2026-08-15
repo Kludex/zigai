@@ -22,6 +22,8 @@ const security = @import("security.zig");
 pub const protocol_version = "2026-07-28";
 
 pub const ClientCapabilities = primitives.ClientCapabilities;
+pub const InputKind = primitives.InputKind;
+pub const InputRequest = primitives.InputRequest;
 pub const LoggingLevel = primitives.LoggingLevel;
 pub const Notification = primitives.Notification;
 pub const RequestId = primitives.RequestId;
@@ -143,6 +145,8 @@ pub const Error = error{
     InvalidCapabilities,
     /// An extension capability lacks a valid reverse-DNS prefix.
     InvalidExtensionIdentifier,
+    /// An MRTR input method is not elicitation, roots, or sampling.
+    InvalidInputRequest,
     /// A typed notification has invalid data or missing stream correlation.
     InvalidNotification,
     /// An OAuth token, response, or metadata document names another issuer.
@@ -535,17 +539,15 @@ pub const InputHandler = struct {
     handleFn: *const fn (
         context: *anyopaque,
         allocator: std.mem.Allocator,
-        key: []const u8,
-        request_json: []const u8,
+        request: InputRequest,
     ) anyerror![]u8,
 
     pub fn handle(
         self: InputHandler,
         allocator: std.mem.Allocator,
-        key: []const u8,
-        request_json: []const u8,
+        request: InputRequest,
     ) ![]u8 {
-        return self.handleFn(self.context, allocator, key, request_json);
+        return self.handleFn(self.context, allocator, request);
     }
 };
 
@@ -1436,7 +1438,11 @@ fn answerInputRequests(
             const input_method = try requiredString(input_request, "method");
             const request_json = try std.json.Stringify.valueAlloc(allocator, entry.value_ptr.*, .{});
             defer allocator.free(request_json);
-            const response_json = try handler.handle(allocator, entry.key_ptr.*, request_json);
+            const response_json = try handler.handle(allocator, .{
+                .key = entry.key_ptr.*,
+                .kind = try InputKind.fromMethod(input_method),
+                .request_json = request_json,
+            });
             defer allocator.free(response_json);
             const response = try parseResponse(arena.allocator(), response_json);
             try validateInputResponse(input_method, response);
@@ -4496,9 +4502,10 @@ test "client completes multi round-trip input requests" {
                 "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resultType\":\"complete\",\"content\":[]}}",
             );
         }
-        fn input(_: *anyopaque, allocator: std.mem.Allocator, key: []const u8, request: []const u8) ![]u8 {
-            try std.testing.expectEqualStrings("confirm", key);
-            try std.testing.expect(std.mem.indexOf(u8, request, "elicitation/create") != null);
+        fn input(_: *anyopaque, allocator: std.mem.Allocator, request: InputRequest) ![]u8 {
+            try std.testing.expectEqualStrings("confirm", request.key);
+            try std.testing.expectEqual(InputKind.elicitation, request.kind);
+            try std.testing.expect(std.mem.indexOf(u8, request.request_json, request.kind.method()) != null);
             return allocator.dupe(u8, "{\"action\":\"accept\",\"content\":{\"confirmed\":true}}");
         }
     };

@@ -508,6 +508,8 @@ ZigAI implements MCP `2026-07-28`. Requests are stateless and self-describing;
 there is no initialize handshake or protocol session. The client handles
 discovery, every core request, pagination, SSE subscriptions, cancellation,
 and multi-round-trip sampling, roots, and elicitation through an `InputHandler`.
+Its borrowed `InputRequest` carries a typed kind, key, and validated request
+JSON, so handlers do not dispatch on method strings.
 Tool arguments marked with `x-mcp-header` are mirrored for Streamable HTTP.
 
 Optional client behavior must be advertised on every request. Build the

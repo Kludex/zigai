@@ -357,8 +357,10 @@ policy before serialization.
 Multi round-trip requests replace server-initiated JSON-RPC calls. When a
 result requires sampling, roots, or elicitation, the configured `InputHandler`
 answers each item and the client retries with `inputResponses` and opaque
-`requestState`. `subscriptions/listen` forwards request-scoped SSE or stdio
-notifications to an `EventSink` until the final response closes the stream.
+`requestState`. The handler receives one borrowed `InputRequest` whose enum
+identifies the validated input family. `subscriptions/listen` forwards
+request-scoped SSE or stdio notifications to an `EventSink` until the final
+response closes the stream.
 
 `StreamableHttpTransport` emits the required protocol, method, name, and tool
 parameter headers. It accepts direct JSON and request-scoped SSE responses.
