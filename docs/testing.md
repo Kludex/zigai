@@ -139,6 +139,15 @@ the committed fixtures. `.github/workflows/mcp-interop.yml` runs those checks
 only through `workflow_dispatch`; normal CI remains deterministic and
 network-free beyond dependency installation.
 
+The same manual workflow checks out the pinned official conformance framework
+and runs its complete `2026-07-28` client requirements against
+`zigai-mcp-conformance-client`. This adapter is test-only and deliberately
+thin: it translates runner scenarios into public ZigAI calls instead of adding
+conformance hooks to the library. `tests/mcp/conformance-baseline.yaml` names
+every scenario that is not supported yet. The runner fails for a new
+regression, an unlisted failure, or a stale baseline entry that has started to
+pass, so the file doubles as an executable interoperability backlog.
+
 ## Fuzzing
 
 ZigAI fuzzes every untrusted parser family: history and deferred state, JSON

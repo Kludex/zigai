@@ -53,3 +53,30 @@ jobs:
         working-directory: .interop/python-sdk
         run: uv sync --frozen --package mcp-everything-server
       - run: ./scripts/mcp-interop python .interop/python-sdk
+
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+      - id: upstream
+        run: echo "revision=$(zig build mcp-upstream -- conformance)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          repository: modelcontextprotocol/conformance
+          ref: ${{ steps.upstream.outputs.revision }}
+          path: .interop/conformance
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: .interop/conformance/package-lock.json
+      - run: zig build mcp-conformance-client
+      - name: Run frozen 2026-07-28 client requirements
+        working-directory: .interop/conformance
+        run: |
+          npm ci
+          npm start -- client \
+            --command "$GITHUB_WORKSPACE/zig-out/bin/zigai-mcp-conformance-client" \
+            --requirements 2026-07-28 \
+            --expected-failures "$GITHUB_WORKSPACE/tests/mcp/conformance-baseline.yaml"

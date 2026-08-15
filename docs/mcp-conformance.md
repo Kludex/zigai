@@ -7,6 +7,13 @@ matrix follows the authoritative
 and [versioning rules](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning).
 The executable method inventory lives in `tests/mcp_conformance.zig`.
 
+The manually dispatched interoperability workflow also runs the pinned
+official conformance framework's complete `2026-07-28` client suite. Its thin
+test adapter currently exercises tool discovery/calls and preserves referenced
+JSON Schemas without dereferencing. Unsupported scenarios remain explicit in
+`tests/mcp/conformance-baseline.yaml`; stale expected failures make the job
+fail and must be removed as support lands.
+
 ## Messages
 
 | Flow | Methods | ZigAI API |

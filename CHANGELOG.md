@@ -11,6 +11,9 @@
   captured from pinned official TypeScript and Python MCP reference servers.
 - Add a manually dispatched, immutable-action MCP interoperability workflow
   that rebuilds pinned official SDKs and fails on live transcript drift.
+- Run the pinned official MCP `2026-07-28` client requirements through a thin
+  test-only ZigAI adapter, with unsupported scenarios tracked by a strict
+  expected-failure baseline that rejects stale entries.
 - Allow bounded concurrent MCP Streamable HTTP requests with configurable
   in-flight backpressure and request-local authorization retries.
 - Add a standalone bounded SSE parser with standard multi-line data framing

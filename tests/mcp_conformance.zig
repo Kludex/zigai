@@ -8,11 +8,13 @@ const zigai = @import("zigai");
 const upstreams = @import("mcp/upstreams.zig");
 const transcripts = @import("mcp/transcripts.zig");
 const interop_fixtures = @import("mcp/interop_fixtures.zig");
+const conformance_client = @import("mcp_conformance_client.zig");
 
 comptime {
     _ = upstreams;
     _ = transcripts;
     _ = interop_fixtures;
+    _ = conformance_client;
 }
 
 const Flow = enum {
