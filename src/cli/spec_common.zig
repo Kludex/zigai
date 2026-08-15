@@ -149,8 +149,8 @@ const DryRunProvider = struct {
         _: *anyopaque,
         _: std.mem.Allocator,
         _: zigai.agent_spec.ProviderInput,
-    ) !zigai.agent_spec.ModelHandle {
-        return error.DryRunOnly;
+    ) !zigai.agent_spec.ModelHandle { // kcov-ignore
+        return error.DryRunOnly; // kcov-ignore
     }
 };
 
@@ -229,6 +229,7 @@ test "agent spec CLI validates JSON and YAML without building a model" {
         .environment_names = &.{},
         .capability_ids = &.{},
     }, TestEnvironment.value());
+    try std.testing.expect(TestEnvironment.value().get("MISSING") == null);
 }
 
 test "agent spec CLI reports provider URL environment and capability failures" {

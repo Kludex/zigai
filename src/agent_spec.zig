@@ -224,7 +224,7 @@ pub fn resolve(gpa: std.mem.Allocator, spec: Spec, options: ResolutionOptions) !
     var model_handle = try options.provider.build(prepared.arena.allocator(), prepared.provider);
     errdefer model_handle.deinit();
     return .{
-        .arena = prepared.arena,
+        .arena = prepared.arena, // kcov-ignore
         .model_handle = model_handle,
         .agent = .{
             .model = model_handle.model,
@@ -662,6 +662,7 @@ const ResolutionTestState = struct {
     expected_base_url: []const u8 = "https://api.example.test/${literal}",
     expected_key: []const u8 = "secret",
     expected_has_api_key: bool = true,
+    fail_build: bool = false,
 
     fn environment(_: *anyopaque, name: []const u8) ?[]const u8 {
         if (std.mem.eql(u8, name, "MODEL")) return "model-prod";
@@ -684,6 +685,7 @@ const ResolutionTestState = struct {
     fn build(context: *anyopaque, arena: std.mem.Allocator, input: ProviderInput) !ModelHandle {
         const self: *@This() = @ptrCast(@alignCast(context));
         self.build_count += 1;
+        if (self.fail_build) return error.TestBuildFailed;
         if (self.expected_has_api_key and !std.mem.eql(u8, input.api_key.?, self.expected_key)) {
             return error.InvalidProviderConfiguration;
         }
@@ -789,6 +791,8 @@ test "agent resolution is dry-runnable and builds an owned agent" {
     try std.testing.expectEqual(capability_types.UnloadPolicy.run_end, resolved.agent.capabilities[0].unload_policy);
     try std.testing.expectEqualStrings("auth", resolved.agent.capabilities[1].id.?);
     try std.testing.expectEqualStrings("model-prod", resolved.agent.model.model_name.?);
+    const response = try resolved.agent.model.request(std.testing.allocator, .{ .messages = &.{} });
+    try std.testing.expectEqual(@as(usize, 0), response.parts.len);
     resolved.deinit();
     try std.testing.expectEqual(@as(usize, 1), state.cleanup_count);
 }
@@ -892,6 +896,30 @@ test "agent resolution reports environment capability and provider failures" {
 
     state.expected_model = "other";
     try std.testing.expectError(error.UnknownModel, validateResolution(std.testing.allocator, base, options));
+
+    state.expected_model = "model-prod";
+    state.expected_key = "different";
+    state.expected_has_api_key = true;
+    try std.testing.expectError(error.InvalidProviderConfiguration, resolve(std.testing.allocator, .{
+        .version = 1,
+        .provider = .{
+            .name = "openai",
+            .model = "model-prod",
+            .base_url = "https://api.example.test/plain",
+            .api_key = .{ .env = "API_KEY" },
+        },
+    }, options));
+    state.expected_key = "secret";
+    state.fail_build = true;
+    try std.testing.expectError(error.TestBuildFailed, resolve(std.testing.allocator, .{
+        .version = 1,
+        .provider = .{
+            .name = "openai",
+            .model = "model-prod",
+            .base_url = "https://api.example.test/plain",
+            .api_key = .{ .env = "API_KEY" },
+        },
+    }, options));
 }
 
 fn checkResolutionAllocationFailure(gpa: std.mem.Allocator) !void {
