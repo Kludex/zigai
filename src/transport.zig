@@ -91,9 +91,16 @@ pub const ResponseMetadata = struct {
     rate_limit_remaining_tokens: ?u64 = null,
     /// Bounded copy of the provider's response correlation ID.
     provider_request_id: ?MetadataText = null,
+    /// Bounded OAuth challenge retained after the HTTP request closes.
+    www_authenticate: ?MetadataText = null,
 
     pub fn requestId(self: *const ResponseMetadata) ?[]const u8 {
         if (self.provider_request_id) |*value| return value.slice();
+        return null;
+    }
+
+    pub fn wwwAuthenticate(self: *const ResponseMetadata) ?[]const u8 {
+        if (self.www_authenticate) |*value| return value.slice();
         return null;
     }
 };
@@ -414,6 +421,8 @@ fn responseMetadata(head: std.http.Client.Response.Head) ResponseMetadata {
             std.ascii.eqlIgnoreCase(header.name, "x-goog-request-id"))
         {
             metadata.provider_request_id = MetadataText.init(header.value);
+        } else if (std.ascii.eqlIgnoreCase(header.name, "www-authenticate")) {
+            metadata.www_authenticate = MetadataText.init(header.value);
         } else if (std.ascii.eqlIgnoreCase(header.name, "x-ratelimit-remaining-requests") or
             std.ascii.eqlIgnoreCase(header.name, "anthropic-ratelimit-requests-remaining"))
         {
@@ -568,6 +577,7 @@ test "response metadata parses retry and provider rate-limit headers" {
             "x-request-id: req_123\r\n" ++
             "x-ratelimit-remaining-requests: 0\r\n" ++
             "anthropic-ratelimit-tokens-remaining: 12\r\n" ++
+            "www-authenticate: Bearer error=\"invalid_token\"\r\n" ++
             "x-ignored: not-a-number\r\n\r\n",
     );
     const metadata = responseMetadata(head);
@@ -575,6 +585,7 @@ test "response metadata parses retry and provider rate-limit headers" {
     try std.testing.expectEqual(@as(?u64, 0), metadata.rate_limit_remaining_requests);
     try std.testing.expectEqual(@as(?u64, 12), metadata.rate_limit_remaining_tokens);
     try std.testing.expectEqualStrings("req_123", metadata.requestId().?);
+    try std.testing.expectEqualStrings("Bearer error=\"invalid_token\"", metadata.wwwAuthenticate().?);
 }
 
 test "response metadata parses HTTP-date retry delays and bounds request IDs" {
