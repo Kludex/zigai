@@ -144,9 +144,13 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   `clear_thinking` without leaking those fields into generic compatibility.
 - [x] Add provider file lifecycle APIs: upload, inspect, reuse, download where
   safe, and delete, with provider ownership checks and cassette redaction.
-- [ ] Add model discovery and explicit model-ID resolution with aliases,
-  deprecation metadata, context/output limits, capability profiles, and a
-  generated compatibility snapshot that can be updated independently.
+- [ ] Define a provider-neutral model catalog and resolver with exact IDs,
+  aliases, deprecation metadata, context/output limits, capability profiles,
+  deterministic lookup, and explicit ownership.
+- [ ] Merge provider discovery results with catalog metadata without allowing
+  provider payloads to widen trusted capability profiles.
+- [ ] Add a versioned generated compatibility snapshot plus an independent,
+  deterministic update/check tool and documented review workflow.
 - [ ] Expand real cassettes to buffered, streaming, tool, structured-output,
   thinking, rich-media, native-tool, retry, and error cases for every provider
   with an available key; keep secrets filtered and fixtures deterministic.
