@@ -127,8 +127,16 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   without leaking OpenRouter extensions into the generic OpenAI-compatible API.
 - [x] Add a Google Cloud Vertex AI provider boundary that reuses the Gemini
   GenerateContent codec without coupling Google AI Studio credentials or URLs.
-- [ ] Add focused Ollama, Crusoe, Snowflake Cortex, Z.AI, and custom-provider
-  examples with provider-specific profiles and pre-I/O validation.
+- [ ] Add a focused Ollama example with an explicit local-endpoint policy,
+  provider-specific profiles, and pre-I/O validation.
+- [ ] Add a focused Crusoe example with provider-specific profiles and pre-I/O
+  validation.
+- [ ] Add a focused Snowflake Cortex example with provider-specific profiles
+  and pre-I/O validation.
+- [ ] Add a focused Z.AI example with provider-specific profiles and pre-I/O
+  validation.
+- [ ] Add a focused custom-provider example with an explicit authentication,
+  endpoint, profile, and pre-I/O validation contract.
 - [x] Add provider file lifecycle APIs: upload, inspect, reuse, download where
   safe, and delete, with provider ownership checks and cassette redaction.
 - [ ] Add model discovery and explicit model-ID resolution with aliases,
