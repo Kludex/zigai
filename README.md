@@ -547,7 +547,10 @@ subscriptions; `SubscriptionFilter` selects list and resource updates without
 hand-written JSON, while `PromptRequest` and `CompletionRequest` model their
 standardized parameters. Cancellation accepts the protocol's integer-or-string
 `RequestId`; `RequestOptions.metadata` adds a progress token and per-request
-logging opt-in. Tasks have typed helpers; capability negotiation and the
+logging opt-in. `listenWithRecovery` can reissue a fresh stateless subscription
+after a classified transport interruption. Its retry count, delay, deadline,
+and cancellation are explicit; event callbacks may observe duplicates across
+attempts. Tasks have typed helpers; capability negotiation and the
 `Mcp-Name` task route are applied automatically:
 
 ```zig

@@ -359,6 +359,11 @@ forward-compatibility boundary for revisions ZigAI does not know yet.
 requires subscription correlation for update streams, validates finite
 progress, and parses arbitrary logging data through the bounded MCP JSON
 policy before serialization.
+`listenWithRecovery` and its raw-JSON counterpart wrap each attempt in a fresh
+event proxy. Application callback failures escape immediately; classified
+transport interruptions can reissue the original filter under an explicit
+retry bound, delay, cancellation token, and monotonic deadline. Recovery never
+retains a session or Last-Event-ID and provides at-least-once event delivery.
 Prompt retrieval and completion use `PromptRequest` and `CompletionRequest`;
 their embedded argument maps are bounded objects and their reference union
 makes prompt names distinct from resource URI templates. Explicitly named

@@ -238,6 +238,7 @@ validation never invokes it.
 | `MissingMcpClientCapability` | A Tasks operation was attempted without the extension capability. |
 | `MissingMcpTaskStore` | Durable task resumption was requested without a store. |
 | `MissingMcpSseResponse` | Streamable HTTP did not produce the required SSE stream. |
+| `SubscriptionRecoveryRequiresIo` | A nonzero subscription recovery delay has no I/O runtime. |
 | `TaskPollingRequiresIo` | A nonzero task polling delay has no I/O runtime. |
 | `TaskStoreTooLarge` | A durable task snapshot exceeded its configured byte bound. |
 | `TooManyMcpPages` | Tool discovery exceeded the configured page limit. |

@@ -224,6 +224,8 @@ pub const Error = error{
     MissingMcpClientCapability,
     /// Polling a non-terminal task needs an I/O runtime for the next delay.
     TaskPollingRequiresIo,
+    /// Subscription recovery configured a delay without an I/O runtime.
+    SubscriptionRecoveryRequiresIo,
     /// A durable task snapshot is malformed or has an unsupported version.
     InvalidTaskStore,
     /// A durable task snapshot exceeds its configured byte bound.
@@ -734,6 +736,65 @@ pub const RequestOptions = struct {
     metadata: RequestMetadata = .{},
 };
 
+/// Classifies whether a failed subscription attempt may be re-established.
+pub const SubscriptionRetryClassifier = struct {
+    context: ?*anyopaque = null,
+    retryFn: *const fn (context: ?*anyopaque, failure: anyerror) bool = retrySubscriptionInterruption,
+
+    pub fn shouldRetry(self: SubscriptionRetryClassifier, failure: anyerror) bool {
+        return self.retryFn(self.context, failure);
+    }
+};
+
+/// Bounded policy for reissuing a stateless `subscriptions/listen` request.
+/// Re-establishment starts from the original filter and can therefore deliver
+/// an event more than once across attempts.
+pub const SubscriptionRecoveryPolicy = struct {
+    max_reestablishments: usize = 2,
+    delay_ms: u64 = 250,
+    control: model.RunControl = .{},
+    classifier: SubscriptionRetryClassifier = .{},
+};
+
+fn retrySubscriptionInterruption(_: ?*anyopaque, failure: anyerror) bool {
+    return switch (failure) {
+        error.McpProcessClosed,
+        error.MissingMcpSseResponse,
+        error.McpHttpRequestFailed,
+        error.EndOfStream,
+        error.ReadFailed,
+        error.WriteFailed,
+        error.BrokenPipe,
+        error.ConnectionResetByPeer,
+        error.ConnectionRefused,
+        error.NetworkUnreachable,
+        error.HostUnreachable,
+        error.TemporaryNameServerFailure,
+        error.NameServerFailure,
+        error.ServerError,
+        error.Unexpected,
+        => true,
+        else => false,
+    };
+}
+
+const SubscriptionEventProxy = struct {
+    downstream: EventSink,
+    failed: bool = false,
+
+    fn eventSink(self: *@This()) EventSink {
+        return .{ .context = self, .eventFn = emit };
+    }
+
+    fn emit(context: *anyopaque, message_json: []const u8) !void {
+        const self: *@This() = @ptrCast(@alignCast(context));
+        self.downstream.emit(message_json) catch |failure| {
+            self.failed = true;
+            return failure;
+        };
+    }
+};
+
 /// Runtime policy for waiting until a task reaches a terminal state.
 pub const TaskWaitOptions = struct {
     /// Runtime used for polling delays. `control.io` takes precedence.
@@ -895,6 +956,20 @@ pub const Client = struct {
         return self.listenJson(allocator, filter_json, events);
     }
 
+    /// Re-establishes a typed subscription from its original filter after a
+    /// bounded, classified transport interruption.
+    pub fn listenWithRecovery(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        filter: primitives.SubscriptionFilter,
+        events: EventSink,
+        policy: SubscriptionRecoveryPolicy,
+    ) ![]u8 {
+        const filter_json = try filter.stringifyAlloc(allocator);
+        defer allocator.free(filter_json);
+        return self.listenJsonWithRecovery(allocator, filter_json, events, policy);
+    }
+
     /// Raw JSON escape hatch for subscription filters added by future MCP
     /// revisions or extensions.
     pub fn listenJson(
@@ -906,6 +981,40 @@ pub const Client = struct {
         const params = try std.fmt.allocPrint(allocator, "{{\"notifications\":{s}}}", .{filter_json});
         defer allocator.free(params);
         return self.requestWithOptions(allocator, methods.listen, params, .{ .events = events });
+    }
+
+    /// Raw JSON subscription recovery escape hatch. Every recovery attempt is
+    /// a fresh stateless request; no session or Last-Event-ID state is reused.
+    pub fn listenJsonWithRecovery(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        filter_json: []const u8,
+        events: EventSink,
+        policy: SubscriptionRecoveryPolicy,
+    ) ![]u8 {
+        const params = try std.fmt.allocPrint(allocator, "{{\"notifications\":{s}}}", .{filter_json});
+        defer allocator.free(params);
+        var reestablishments: usize = 0;
+        while (true) {
+            try policy.control.check();
+            var proxy = SubscriptionEventProxy{ .downstream = events };
+            const result = self.requestWithOptions(
+                allocator,
+                methods.listen,
+                params,
+                .{ .events = proxy.eventSink() },
+            ) catch |failure| {
+                if (proxy.failed or reestablishments >= policy.max_reestablishments or
+                    !policy.classifier.shouldRetry(failure))
+                {
+                    return failure;
+                }
+                reestablishments += 1;
+                try waitForSubscriptionRecovery(policy);
+                continue;
+            };
+            return result;
+        }
     }
 
     pub fn cancel(self: *Client, allocator: std.mem.Allocator, request_id: RequestId, reason: ?[]const u8) !void {
@@ -2092,6 +2201,13 @@ fn waitForTaskPoll(options: TaskWaitOptions, delay_ms: u64) !void {
     if (delay_ms == 0) return;
     const io = options.control.io orelse options.io orelse return error.TaskPollingRequiresIo;
     return options.control.invoke(void, sleepForTaskPoll, .{ io, delay_ms });
+}
+
+fn waitForSubscriptionRecovery(policy: SubscriptionRecoveryPolicy) !void {
+    try policy.control.check();
+    if (policy.delay_ms == 0) return;
+    const io = policy.control.io orelse return error.SubscriptionRecoveryRequiresIo;
+    return policy.control.invoke(void, sleepForTaskPoll, .{ io, policy.delay_ms });
 }
 
 fn sleepForTaskPoll(io: std.Io, delay_ms: u64) !void {
@@ -6333,6 +6449,151 @@ test "subscription streams enforce acknowledgement order and requested filters" 
         }
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
+test "subscription recovery reissues bounded stateless requests" {
+    const Events = struct {
+        count: usize = 0,
+        failure: ?anyerror = null,
+
+        fn emit(context: *anyopaque, _: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.count += 1;
+            if (self.failure) |failure| return failure;
+        }
+    };
+    const Stub = struct {
+        attempts: usize = 0,
+        failures: usize = 0,
+        first_id: ?i64 = null,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.attempts += 1;
+            const parsed = try std.json.parseFromSlice(std.json.Value, allocator, request.message, .{});
+            defer parsed.deinit();
+            const id = switch ((try requiredObject(parsed.value)).get("id").?) {
+                .integer => |value| value,
+                else => return error.InvalidMcpMessage,
+            };
+            if (self.first_id) |first| {
+                if (first == id) return error.SubscriptionRequestIdWasReused;
+            } else self.first_id = id;
+            const events = request.events orelse return error.MissingEventSink;
+            try events.emit(
+                "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\"," ++
+                    "\"params\":{\"notifications\":{\"toolsListChanged\":true}," ++
+                    "\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":1}}}",
+            );
+            try events.emit(
+                "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"," ++
+                    "\"params\":{\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":1}}}",
+            );
+            if (self.attempts <= self.failures) return error.EndOfStream;
+            return std.json.Stringify.valueAlloc(allocator, .{
+                .jsonrpc = "2.0",
+                .id = id,
+                .result = .{
+                    .resultType = "complete",
+                    ._meta = .{ .@"io.modelcontextprotocol/subscriptionId" = 1 },
+                },
+            }, .{});
+        }
+    };
+    var events: Events = .{};
+    var stub = Stub{ .failures = 1 };
+    var client = Client{ .transport = .{ .context = &stub, .sendFn = Stub.send } };
+    const result = try client.listenWithRecovery(
+        std.testing.allocator,
+        .{ .tools_list_changed = true },
+        .{ .context = &events, .eventFn = Events.emit },
+        .{
+            .delay_ms = 1,
+            .control = .{ .io = std.testing.io },
+        },
+    );
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqual(@as(usize, 2), stub.attempts);
+    try std.testing.expectEqual(@as(usize, 4), events.count);
+    try std.testing.expect(std.mem.indexOf(u8, result, "resultType") != null);
+
+    stub = .{ .failures = 3 };
+    events.count = 0;
+    try std.testing.expectError(error.EndOfStream, client.listenJsonWithRecovery(
+        std.testing.allocator,
+        "{\"toolsListChanged\":true}",
+        .{ .context = &events, .eventFn = Events.emit },
+        .{ .max_reestablishments = 1, .delay_ms = 0 },
+    ));
+    try std.testing.expectEqual(@as(usize, 2), stub.attempts);
+
+    stub = .{ .failures = 1 };
+    try std.testing.expectError(error.SubscriptionRecoveryRequiresIo, client.listenJsonWithRecovery(
+        std.testing.allocator,
+        "{\"toolsListChanged\":true}",
+        .{ .context = &events, .eventFn = Events.emit },
+        .{ .delay_ms = 1 },
+    ));
+    try std.testing.expectEqual(@as(usize, 1), stub.attempts);
+}
+
+test "subscription recovery preserves event and classifier failures" {
+    const Events = struct {
+        fn emit(_: *anyopaque, _: []const u8) !void {
+            return error.EventRejected;
+        }
+    };
+    const Stub = struct {
+        attempts: usize = 0,
+
+        fn send(context: *anyopaque, _: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.attempts += 1;
+            try request.events.?.emit("{}");
+            return error.EndOfStream;
+        }
+    };
+    const Classifier = struct {
+        calls: usize = 0,
+        decision: bool,
+
+        fn retry(context: ?*anyopaque, _: anyerror) bool {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.calls += 1;
+            return self.decision;
+        }
+    };
+    var unused: u8 = 0;
+    var stub: Stub = .{};
+    var classifier = Classifier{ .decision = true };
+    var client = Client{ .transport = .{ .context = &stub, .sendFn = Stub.send } };
+    try std.testing.expectError(error.EventRejected, client.listenJsonWithRecovery(
+        std.testing.allocator,
+        "{}",
+        .{ .context = &unused, .eventFn = Events.emit },
+        .{
+            .delay_ms = 0,
+            .classifier = .{ .context = &classifier, .retryFn = Classifier.retry },
+        },
+    ));
+    try std.testing.expectEqual(@as(usize, 1), stub.attempts);
+    try std.testing.expectEqual(@as(usize, 0), classifier.calls);
+
+    classifier.decision = false;
+    const SilentEvents = struct {
+        fn emit(_: *anyopaque, _: []const u8) !void {}
+    };
+    try std.testing.expectError(error.EndOfStream, client.listenJsonWithRecovery(
+        std.testing.allocator,
+        "{}",
+        .{ .context = &unused, .eventFn = SilentEvents.emit },
+        .{
+            .delay_ms = 0,
+            .classifier = .{ .context = &classifier, .retryFn = Classifier.retry },
+        },
+    ));
+    try std.testing.expectEqual(@as(usize, 2), stub.attempts);
+    try std.testing.expectEqual(@as(usize, 1), classifier.calls);
 }
 
 test "stdio transport runs a modern MCP tool server child process" {
