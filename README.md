@@ -22,6 +22,7 @@ conversation.
 - Provider-managed web search and fetch behind model capability checks.
 - Images, audio, documents, binary data, and provider file references.
 - Static and per-step dynamic toolsets with namespaces and metadata.
+- Eager and on-demand capability bundles with dependencies and scoped composition.
 - MCP toolsets over Streamable HTTP and stdio.
 - Serializable approval and deferred-tool pauses.
 - Static, dynamic, and run-specific instructions.
@@ -374,25 +375,48 @@ for one invocation.
 
 ## Capabilities
 
-Capabilities package one reusable agent feature:
+Capabilities keep one feature together: its instructions, tools, policies,
+hooks, settings, and optional model selection.
 
 ```zig
-const capability = zigai.Capability{
-    .tools = &tools,
-    .instructions = &.{.{ .text = "Use the knowledge base." }},
-    .model_settings = .{ .reasoning_effort = .medium },
+const research = zigai.Capability{
+    .id = "research",
+    .description = "Search the knowledge base and cite its sources.",
+    .loading = .on_demand,
+    .tools = &.{search_tool},
+    .instructions = &.{.{ .text = "Cite every knowledge-base result." }},
 };
 
 const agent = zigai.Agent{
     .model = model,
-    .capabilities = &.{capability},
+    .capabilities = &.{research},
 };
 ```
 
-A capability can contribute tools, provider-managed tools, toolsets,
-instructions, history processors, hooks, model settings, and a model selector.
-Multiple capabilities apply from left to right. Duplicate tool names or
-provider-managed tools fail before the first model request.
+At first, the model sees only the capability catalog and a
+`load_capability` tool. Loading `research` activates its complete bundle on the
+next model request. Its instructions are returned by the load call, so they
+remain in normal message history.
+
+Capabilities may depend on other capability IDs. Dependencies load first and
+the whole change is atomic. Conflicts, missing dependencies, cycles, duplicate
+IDs, and malformed declarations fail deterministically.
+
+Use `.unload_policy = .history` to restore a successful load in later runs that
+receive the same history. Use `.run_end` for a capability that should survive a
+paused-run continuation but disappear from a new run.
+
+Composition always follows this order:
+
+1. inherited
+2. agent
+3. run
+4. nested
+5. subagent
+
+`RunOptions.capabilities` adds run-scoped bundles. `CapabilityLayer` supplies
+the other scopes explicitly. Declaration order is stable within each scope;
+the order of the layer slice cannot change scope precedence.
 
 ## Toolsets
 

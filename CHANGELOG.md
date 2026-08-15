@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add bounded on-demand capability discovery and atomic dependency-first
+  loading, conflict diagnostics, history/run-end unload policy, fixed scoped
+  composition, callback snapshots, and portable load replay across every
+  provider adapter.
 - Add a separate ordered tool-policy pipeline with preparation, transforming
   argument and return validation, history-aware approval, call short-circuiting,
   shared per-tool retries, persisted decisions, sequential-only scheduling,

@@ -78,6 +78,11 @@ cases relevant to the application, then propagate the remainder.
 | --- | --- |
 | `DuplicateToolName` | Two local tools have the same provider-visible name. |
 | `DuplicateBuiltinTool` | A provider-managed tool kind was registered twice. |
+| `DuplicateCapabilityId` | Two composed capability scopes declare the same stable ID. |
+| `InvalidCapability` | A capability ID, metadata list, dependency, conflict, limit, or active-state declaration is invalid. |
+| `MissingCapabilityDependency` | A dependency ID is absent from the composed capability registry. |
+| `CapabilityDependencyCycle` | Capability dependencies contain a cycle. |
+| `CapabilityConflict` | Initial capability composition would activate two conflicting bundles. |
 | `UnknownTool` | The model requested a tool unavailable in the current step. |
 | `ParallelToolCallsNotSupported` | The model emitted parallel calls while policy disabled them. |
 | `ParallelToolCallsRequireIo` | Parallel execution requires an `Io` runtime. |
@@ -94,6 +99,12 @@ cases relevant to the application, then propagate the remainder.
 | `InvalidDeferredState` | Paused state or resume JSON is malformed or incompatible. |
 | `InvalidContentRole` | A follow-up part is invalid for a request message. |
 | `InvalidToolFollowUpMessage` | A follow-up violates provider message invariants. |
+
+On-demand load failures such as `UnknownCapability`,
+`CapabilityAlreadyAvailable`, `InvalidCapabilityArguments`, and a dynamic
+`CapabilityConflict` are ordinary recoverable tool failures. They are returned
+to the model from `load_capability`; they do not escape as an agent setup error
+or partially activate a bundle.
 
 ### Runtime control
 

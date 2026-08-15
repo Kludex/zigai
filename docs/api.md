@@ -46,6 +46,45 @@ approval is evaluated after valid arguments and persisted across pause/resume.
 `Tool.sequential` provides scheduler-wide exclusivity. Return schemas are
 local unless `return_schema_visibility` opts into provider descriptions.
 
+## Capabilities
+
+`Capability` is a borrowed implementation bundle. It can contribute local and
+provider-managed tools, toolsets, instructions, lifecycle hooks, tool policies,
+history processors, output validators, model settings, and a model selector.
+Anonymous capabilities are eager-only. A capability needs a stable `id` when
+it is on demand or declares dependencies or conflicts.
+
+Set `loading = .on_demand` to keep the bundle out of the first provider
+request. ZigAI adds a catalog instruction and a sequential `load_capability`
+function instead. A successful call resolves dependencies in declaration
+order, returns their instructions in dependency-first order, and activates all
+contributions together before the next model request. OpenAI Responses,
+OpenAI-compatible Chat Completions, Anthropic Messages, and Google Gemini replay
+typed capability-load history through their ordinary function-call protocols.
+
+Loads are atomic: a conflict, callback failure, or allocation failure cannot
+leave a partial bundle active. Structural errors are detected before the first
+model request. `CapabilityRegistry` exposes the same bounded validation and
+dependency planning without executing an agent; `LoadResolution` owns its
+arena and must be deinitialized.
+
+`CapabilityUnloadPolicy.history` reconstructs successful loads from canonical
+history. `.run_end` forgets them between independent invocations while keeping
+them active through serialized pause/resume. Unsuccessful load results never
+restore state.
+
+Capabilities compose in fixed scope order: inherited, agent, run, nested, then
+subagent. Direct `Agent.capabilities` occupy the agent scope and
+`RunOptions.capabilities` occupy the run scope. `RunOptions.capability_layers`
+adds explicit scopes; declaration order is stable within a scope regardless of
+the layer slice order.
+
+`CapabilitySnapshot` is borrowed and exposes active IDs plus the subset loaded
+on demand. It is available to dynamic instructions, toolsets, tools, tool
+policies, output validators, and model selectors. Nested agents can use the
+snapshot to construct an inherited `CapabilityLayer`; ZigAI does not infer
+subagent ownership from an opaque dependency pointer.
+
 The short `system_prompt`, `user_prompt`, `retry_prompt`, and `text` variants
 are convenient when no part metadata is needed. Their `*_part` counterparts
 retain timestamps, IDs, and provider replay data. Provider-bound parts carry a
@@ -71,6 +110,7 @@ Use these namespaces for the rest of the API:
 | Namespace | Purpose |
 | --- | --- |
 | `zigai.messages` | Provider-neutral request/response messages and parts |
+| `zigai.capability` | Capability descriptors, scopes, diagnostics, and dependency planning |
 | `zigai.settings` | Portable model controls and tagged provider extensions |
 | `zigai.usage` | Per-request and aggregate run usage, exact costs, and native counters |
 | `zigai.pricing` | Explicit versioned price tables and deterministic estimates |
@@ -109,6 +149,7 @@ ZigAI follows one rule for high-level operations: a returned type with a
 | `OwnedResumeDecisions` | Owns parsed decisions until `deinit` |
 | `history.Owned` | Owns parsed history until `deinit` |
 | `codecs.pydantic_ai.Owned` | Owns the complete PydanticAI JSON value graph until `deinit` |
+| `capability.LoadResolution` | Owns its dependency plan and diagnostic until `deinit` |
 | `evals.Report` | Owns every case and evaluation result until `deinit` |
 | `transport.Response` | Caller frees `body` with the allocator passed to `send` |
 

@@ -59,12 +59,27 @@ of their profiles. It never falls back after a stream event has been delivered.
 the application declares the common profile its routing policy guarantees.
 Neither adapter adds a branch to the agent loop.
 
-Capabilities are ordered feature bundles. The agent starts with its direct
-tools, provider-managed tools, and instructions, then appends each capability's
-contributions from left to right. Capabilities can contribute toolsets as well.
-Capability settings override earlier capabilities; direct agent and run
-settings remain higher precedence. Model selectors receive the model chosen so
-far, and capability lifecycle hooks run in the same stable order.
+Capabilities are ordered feature bundles. Composition uses fixed inherited,
+agent, run, nested, and subagent tiers, then declaration order within a tier.
+The input order of explicit layers cannot change tier precedence. Direct agent
+configuration remains the base; active capability settings override earlier
+capability settings, while direct agent and run settings retain higher
+precedence. Model selectors receive the model chosen so far.
+
+Eager bundles activate during run setup. On-demand bundles contribute only
+catalog metadata and the framework-owned `load_capability` tool. A load plan is
+dependency-first and checked against all active and earlier planned conflicts.
+Instruction resolution completes before pending state is mutated, and pending
+loads commit only after execution of the complete tool batch. The next loop
+generation reassembles tools, provider-managed tools, toolsets, policies,
+processors, validators, settings, model selection, and callback snapshots as
+one unit.
+
+Canonical successful load traffic reconstructs `.history` capabilities on a
+later invocation. `.run_end` loads are reconstructed only while resuming the
+same serialized paused run. Typed load parts translate to ordinary provider
+function calls at adapter boundaries, keeping the durable message vocabulary
+provider-neutral.
 
 Toolsets group static tools or prepare them again before each model step. A
 preparer can inspect messages, usage, request count, and typed dependencies,
@@ -74,7 +89,7 @@ and remains application-only. Duplicate prepared names are rejected before the
 provider request.
 
 Lifecycle hooks form one synchronous ordered stream. Direct agent hooks run
-first, followed by capability hooks. Each provider request, tool dispatch,
+first, followed by hooks from currently active capabilities. Each provider request, tool dispatch,
 tool execution, output check, and delivered stream event has explicit
 start/end or before/after events plus an error event where failure is possible.
 Hook payloads are borrowed. Hook failures stop the run; terminal failures emit
