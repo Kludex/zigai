@@ -45,7 +45,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 
 ## P1 — Message and agent completeness
 
-- [ ] Complete the PydanticAI-compatible message vocabulary. Add instruction
+- [x] Complete the PydanticAI-compatible message vocabulary. Add instruction
   parts, per-part timestamps/IDs/provider details, cache points, video, uploaded
   files, rich tool returns with outcomes/metadata, compaction, speech, native
   tool call/return, tool-search, capability-load, and tool-availability parts.
