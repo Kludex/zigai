@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add strict, bounded JSON/YAML agent specifications with data-only parsing,
+  deny-by-default interpolation and secret references, secret-free provider
+  validation, application-owned model and capability resolution, transitive
+  capability loading, deterministic cleanup, fuzzing, and a network-free
+  validator CLI.
 - Add bounded on-demand capability discovery and atomic dependency-first
   loading, conflict diagnostics, history/run-end unload policy, fixed scoped
   composition, callback snapshots, and portable load replay across every

@@ -319,6 +319,20 @@ stable error while preserving allocation failure. Named profiles keep history,
 deferred state, provider, tool, MCP, schema, and CLI boundaries consistent
 without making a leaf parser depend on an agent or provider.
 
+## Agent specifications
+
+`agent_spec` keeps configuration in three explicit phases. Parsing creates a
+strict data-only arena. Dry-run resolution reads only allowlisted environment
+names and invokes secret-free provider validation plus borrowed capability
+lookup. Full resolution then constructs the model through an application
+vtable and assembles an owned `Agent`.
+
+This boundary intentionally does not import concrete providers. It avoids a
+second provider abstraction inside configuration parsing and leaves client
+ownership, model discovery, and application capability catalogs replaceable.
+Transitive capability dependencies are resolved before registry validation;
+provider construction happens only after all local checks pass.
+
 ## MCP toolsets
 
 `mcp.Client` implements the stateless MCP `2026-07-28` envelope. Every request

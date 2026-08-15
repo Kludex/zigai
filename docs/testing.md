@@ -104,8 +104,9 @@ unless the final line rate is exactly 100%. CI runs the same command. macOS
 ## Fuzzing
 
 ZigAI fuzzes every untrusted parser family: history and deferred state, JSON
-Schema output, buffered and streaming provider responses, Cassetter YAML, MCP
-JSON-RPC and SSE framing, CLI tool manifests, and HTTP retry metadata.
+Schema output, JSON/YAML agent specifications, buffered and streaming provider
+responses, Cassetter YAML, MCP JSON-RPC and SSE framing, CLI tool manifests,
+and HTTP retry metadata.
 
 Run a bounded local campaign with an iteration limit:
 

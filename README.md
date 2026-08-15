@@ -26,12 +26,14 @@ conversation.
 - MCP toolsets over Streamable HTTP and stdio.
 - Serializable approval and deferred-tool pauses.
 - Static, dynamic, and run-specific instructions.
+- Strict JSON/YAML agent specifications with explicit environment policy.
 - Typed output plus JSON-object and JSON Schema modes.
 - Preserved finish reasons with distinct truncation, filtering, and incomplete-call errors.
 - Timeouts, cancellation, retries, backoff, and usage limits.
 - Readable YAML cassettes, including a real-model compatibility matrix.
 - Dataset evaluations with deterministic and optional model-graded checks.
 - Small command-line clients for OpenAI, Anthropic, and Google.
+- A network-free agent-spec validator.
 
 ## Quick start
 
@@ -139,6 +141,22 @@ The typed value becomes the normal tool result. Follow-up requests are copied
 after it, in tool-call order, and checked before the next model request. They
 can contain only `user_prompt` parts. Manual tools can return the same shape
 through `Tool.executeOutputFn`.
+
+## Agent specifications
+
+Agent configuration can live in strict JSON or YAML without coupling parsing
+to provider clients or application code. Secrets use explicit environment
+references; interpolation and environment names are denied until the
+application allows them.
+
+```console
+zigai-agent-spec validate agent.yaml --allow-env OPENAI_API_KEY
+```
+
+Validation performs no network requests. Applications provide the provider,
+model, and capability resolvers used to build the final `Agent`. See
+[Agent specifications](docs/agent-specs.md) for the schema, ownership rules,
+interpolation policy, and CLI options.
 
 ## Providers
 

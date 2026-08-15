@@ -79,3 +79,12 @@ reports that suppression.
 
 ZigAI does not persist API keys. Applications should keep credentials outside
 message history, metadata, tool results, paused state, and cassette fixtures.
+
+Agent specifications cannot contain literal API keys. A structured
+`api_key.env` reference is read only when its name appears in
+`EnvironmentPolicy.secret_names`, and an empty or missing value is rejected.
+String interpolation is separate, field-specific, disabled by default, and
+restricted to `interpolation_names`. Dry-run provider callbacks receive only a
+`has_api_key` bit; credential bytes are passed exclusively to model
+construction. Treat the specification CLI's `--allow-env` flags as explicit
+authority to read those process variables.

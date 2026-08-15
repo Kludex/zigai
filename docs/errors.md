@@ -179,6 +179,26 @@ suppressed; `sensitive_data_redacted` reports when this changed visible detail.
 | `evals` | `MissingExpectedOutput` | An evaluator requires an absent expected value. |
 | `evals` | `InvalidModelGrade` | A model grader returned an invalid grade. |
 
+### Agent specification errors
+
+| Error | Meaning |
+| --- | --- |
+| `InvalidAgentSpec` | JSON/YAML shape, identifier, value, duplicate, or bound is invalid. |
+| `UnsupportedAgentSpecVersion` | The document version is not supported. |
+| `InvalidEnvironmentInterpolation` | A placeholder is malformed. |
+| `EnvironmentVariableNotAllowed` | A secret reference or placeholder is outside its explicit allowlist. |
+| `MissingEnvironmentVariable` | An allowed environment value is unavailable. |
+| `EmptySecret` | An allowed secret variable exists but is empty. |
+| `UnknownProvider` / `UnknownModel` | The application resolver does not recognize the selection. |
+| `InvalidProviderConfiguration` | The resolver rejects the expanded endpoint or provider fields. |
+| `UnknownCapability` | No implementation exists for a declared capability or dependency. |
+| `InvalidCapabilityImplementation` | A catalog entry is anonymous or returns a different ID. |
+| `InvalidCapabilityComposition` | The resolved registry has a structural, dependency, cycle, or conflict diagnostic. |
+
+`ProviderResolver.buildFn` is an application extension point. Its allocation,
+client-construction, and application errors propagate unchanged. Dry-run
+validation never invokes it.
+
 ## MCP errors
 
 | Error | Meaning |

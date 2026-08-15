@@ -111,6 +111,7 @@ Use these namespaces for the rest of the API:
 | --- | --- |
 | `zigai.messages` | Provider-neutral request/response messages and parts |
 | `zigai.capability` | Capability descriptors, scopes, diagnostics, and dependency planning |
+| `zigai.agent_spec` | Strict JSON/YAML agent configuration, dry-run validation, and resolution |
 | `zigai.settings` | Portable model controls and tagged provider extensions |
 | `zigai.usage` | Per-request and aggregate run usage, exact costs, and native counters |
 | `zigai.pricing` | Explicit versioned price tables and deterministic estimates |
@@ -130,6 +131,14 @@ Use these namespaces for the rest of the API:
 Provider `Client.model()` values borrow their client. Keep the client and its
 transport alive for every agent run that uses the model. The same rule applies
 to model routers, MCP clients, callback contexts, dependencies, and toolsets.
+
+`agent_spec.Owned` owns parsed configuration in an arena. It is data-only and
+does not read secrets or construct clients. `validateResolution` uses
+application-supplied provider and capability catalogs without building a
+model. `agent_spec.Resolved` owns copied configuration and the model context
+allocated through its resolver; its optional cleanup callback runs before the
+arena is released. Capability implementations remain borrowed. See
+[Agent specifications](agent-specs.md) for the complete contract.
 
 `ModelSettings` also borrows stop strings, tool names, request headers, and
 provider-extension JSON. Those values need to live only until the model request
