@@ -64,6 +64,11 @@
   messages, thinking, tool plans and calls, strict tools, structured output,
   normalized usage, citations, log probabilities, and isolated `.cohere`
   extensions. A redacted real Command A tool loop verifies replay and citations.
+- Add typed OpenRouter provider routing without forking its Chat Completions
+  wire codec. The client supports endpoint ordering and filters, fallback and
+  parameter policy, ZDR and data-collection controls, quantization, performance
+  sorting and thresholds, price ceilings, isolated `.openrouter` extensions,
+  and opt-in structured router metadata for buffered and streamed responses.
 - Record and replay a redacted real Azure OpenAI `gpt-4o` Responses function
   tool loop, normalizing the resource endpoint and omitting authentication.
 - Record and replay a redacted real Claude Sonnet 4.6 Converse tool loop. The

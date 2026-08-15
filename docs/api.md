@@ -290,6 +290,35 @@ citation options, safety mode, and priority use the isolated `.cohere`
 extension body. Authentication stays on `ChatProvider`; compatibility clients
 continue to use `Provider` and `Client`.
 
+OpenRouter uses Chat Completions as its wire format and keeps router policy on
+its own client:
+
+```zig
+var provider = zigai.providers.openrouter.Provider.init(api_key, transport);
+var client = zigai.providers.openrouter.Client{
+    .model_name = "anthropic/claude-sonnet-4.5",
+    .provider = provider.provider(),
+    .routing = .{
+        .order = &.{ "anthropic", "google-vertex" },
+        .allow_fallbacks = false,
+        .require_parameters = true,
+        .data_collection = .deny,
+        .zdr = true,
+    },
+    .include_router_metadata = true,
+};
+```
+
+`Routing` also supports allowlists, denylists, quantization filters, price,
+latency, and throughput preferences, plus simple or cross-model partitioned
+sorting. Invalid names, conflicting allow/deny rules, empty percentile or
+price objects, and non-finite or negative limits fail before HTTP. Raw
+OpenRouter-only fields use the `.openrouter` extension tag and cannot replace
+the typed `provider` object. Metadata opt-in follows OpenRouter's
+[`X-OpenRouter-Metadata`](https://openrouter.ai/docs/guides/features/router-metadata)
+contract; returned `openrouter_metadata` remains structured in
+`ModelResponse.provider_details` for buffered and streaming calls.
+
 OpenAI-compatible modules follow the same rule. Each named module exports a
 matching `Provider` and `Client` built from shared compile-time defaults. The
 provider owns the API root, provider identity, authentication style, headers,

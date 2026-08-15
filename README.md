@@ -243,6 +243,12 @@ Cohere follows the same compatibility rule. `Provider` and `Client` keep the
 existing Compatibility API; use `ChatProvider` and `ChatClient` for native v2
 messages, tool plans, strict tools, thinking, citations, and streaming.
 
+OpenRouter keeps the Chat Completions wire format, but its routing policy is
+typed on `openrouter.Client.routing`. Provider order, fallbacks, data policy,
+performance preferences, and price limits never leak into the generic
+compatible client. Set `include_router_metadata` to preserve the selected
+route as structured provider details.
+
 Every first-party and OpenAI-compatible provider can discover the models
 visible to the configured credential:
 

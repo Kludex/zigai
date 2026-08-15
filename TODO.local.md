@@ -123,7 +123,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   streamed entries, and explicit stored-session operations.
 - [x] Add the native Cohere v2 Chat adapter while preserving the existing
   Compatibility API aliases.
-- [ ] Add typed OpenRouter routing, provider-selection, and response metadata
+- [x] Add typed OpenRouter routing, provider-selection, and response metadata
   without leaking OpenRouter extensions into the generic OpenAI-compatible API.
 - [ ] Add a Google Cloud Vertex AI provider boundary that reuses the Gemini
   GenerateContent codec without coupling Google AI Studio credentials or URLs.
