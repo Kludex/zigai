@@ -113,6 +113,23 @@ Direct `Model.request`, `Model.stream`, and provider decoder calls build nested
 response data with the supplied allocator. Use an arena and release the arena
 as one unit. Normal `Agent` calls already provide this ownership boundary.
 
+## Streaming events
+
+`ModelStreamEvent` represents provider response parts with `part_start`,
+`part_delta`, and `part_end`; every event for a part uses the same `index`.
+`ResponsePartDelta` covers text, thinking, function and native tools, native
+tool returns, media, speech, and compaction. Usage is reported separately.
+
+`AgentStreamEvent` wraps model events and adds function-tool call/result,
+tool-availability, deferred request/result, enqueued-message, and
+`final_result` events. Only `final_result` is accepted output. JSON object and
+schema modes attach a validated `std.json.Value` snapshot. All values are
+borrowed for the callback; copy them before returning if they must be retained.
+
+`runUntilPauseStream` and `resumeRunStream` preserve the event flow across
+approval and external-tool boundaries. Providers restart part indexes for each
+model response in a multi-request agent run.
+
 ## Errors
 
 The public named error categories are:

@@ -586,8 +586,22 @@ corresponding run modes. Invalid output is returned to the model for up to
 
 ## Streaming and resilience
 
-Use `Agent.runStream` with an `AgentStreamSink` to receive text, tool calls,
-tool results, usage, and the final output.
+Use `Agent.runStream` with an `AgentStreamSink`. Model output arrives as an
+indexed part lifecycle:
+
+- `part_start` — initial part snapshot;
+- `part_delta` — text, thinking, tool, native-tool, media, speech, or
+  compaction fragment;
+- `part_end` — complete part;
+- `usage` — provider token totals.
+
+Agent events add function-tool calls/results, deferred work, tool-availability
+changes, enqueued messages, and one `final_result`. Model parts are provisional;
+`final_result` is emitted only after output validation succeeds. For structured
+output it includes a borrowed parsed JSON snapshot.
+
+Use `runUntilPauseStream` and `resumeRunStream` when approval or externally
+executed tools must remain in the same event flow.
 
 The same loop supports:
 

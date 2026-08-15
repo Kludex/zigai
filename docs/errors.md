@@ -50,6 +50,7 @@ cases relevant to the application, then propagate the remainder.
 | `IncompleteToolCall` | Generation ended inside a tool call. |
 | `ModelOutputTruncated` | Length termination prevented a complete result. |
 | `InvalidTypedOutput` | Validated structured output could not decode as the requested Zig type. |
+| `InvalidStructuredOutput` | Structured output could not decode for the final stream snapshot. |
 | `ProviderFileProviderMismatch` | A provider-managed file belongs to another provider. |
 
 ### Tools and deferred runs

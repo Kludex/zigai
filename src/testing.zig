@@ -36,11 +36,7 @@ pub const ScriptedModel = struct {
 
     fn stream(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest, sink: model_types.ModelStreamSink) !model_types.ModelResponse {
         const response = try request(context, allocator, value);
-        for (response.parts) |part| switch (part) {
-            .text => |text| try sink.emit(.{ .text_delta = text }),
-            .tool_call => |call| try sink.emit(.{ .tool_call = call }),
-            else => {},
-        };
+        for (response.parts, 0..) |part, index| try model_types.emitCompletePart(sink, index, part);
         try sink.emit(.{ .usage = response.usage });
         return response;
     }

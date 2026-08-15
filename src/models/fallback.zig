@@ -247,7 +247,10 @@ test "stream fallback stops after exposing output" {
             const self: *@This() = @ptrCast(@alignCast(context));
             self.calls += 1;
             if (self.succeeds) return .{ .parts = &.{.{ .text = "recovered" }} };
-            if (self.emit_before_failure) try sink.emit(.{ .text_delta = "visible" });
+            if (self.emit_before_failure) try sink.emit(.{ .part_delta = .{
+                .index = 0,
+                .delta = .{ .text = .{ .content_delta = "visible" } },
+            } });
             return error.ProviderServerError;
         }
     };

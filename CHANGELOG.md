@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Replace flat streaming deltas with stable indexed part start/delta/end
+  lifecycles, complete thinking/media/native-tool delta types, streamed
+  deferred pause/resume events, and one validated final-result event carrying
+  a structured JSON snapshot when applicable.
 - Replace provider-detail JSON strings with owned structured JSON objects,
   preserving unknown fields across copies and history serialization while
   making malformed provider JSON unrepresentable.

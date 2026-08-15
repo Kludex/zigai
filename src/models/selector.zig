@@ -110,7 +110,7 @@ test "selector routes streaming requests and merges settings" {
             self.calls += 1;
             try std.testing.expectEqual(@as(?f64, 0.4), request_value.settings.temperature);
             try std.testing.expectEqual(@as(?u64, 80), request_value.settings.max_tokens);
-            try sink.emit(.{ .text_delta = "selected" });
+            try model_types.emitCompletePart(sink, 0, .{ .text = "selected" });
             return .{ .parts = &.{.{ .text = "selected" }} };
         }
     };
@@ -128,7 +128,10 @@ test "selector routes streaming requests and merges settings" {
         events: usize = 0,
         fn emit(context: *anyopaque, event: model_types.ModelStreamEvent) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
-            try std.testing.expectEqualStrings("selected", event.text_delta);
+            if (event == .part_delta) switch (event.part_delta.delta) {
+                .text => |delta| try std.testing.expectEqualStrings("selected", delta.content_delta),
+                else => return error.UnexpectedPartDelta,
+            };
             self.events += 1;
         }
     };
@@ -150,6 +153,6 @@ test "selector routes streaming requests and merges settings" {
     try std.testing.expectEqualStrings("selected", response.parts[0].text);
     try std.testing.expectEqual(@as(usize, 1), route.calls);
     try std.testing.expectEqual(@as(usize, 1), selected.calls);
-    try std.testing.expectEqual(@as(usize, 1), sink.events);
+    try std.testing.expectEqual(@as(usize, 3), sink.events);
     try std.testing.expectError(error.Unused, route.model_value.request(std.testing.allocator, .{ .messages = &.{} }));
 }

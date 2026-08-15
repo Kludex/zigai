@@ -217,6 +217,7 @@ const StreamState = struct {
     thinking: std.ArrayList(u8) = .empty,
     thinking_signature: std.ArrayList(u8) = .empty,
     thinking_index: ?u64 = null,
+    text_index: ?u64 = null,
     parts: std.ArrayList(model_types.Part) = .empty,
     pending: std.ArrayList(PendingCall) = .empty,
     error_body: std.ArrayList(u8) = .empty,
@@ -271,38 +272,76 @@ const StreamState = struct {
         } else if (std.mem.eql(u8, kind, "content_block_start")) {
             const block = try common.requiredObject(root, "content_block");
             const block_type = try common.objectString(block, "type");
+            const index = try common.objectInteger(object, "index");
             if (std.mem.eql(u8, block_type, "tool_use")) {
                 try self.pending.append(self.allocator, .{
-                    .index = try common.objectInteger(object, "index"),
+                    .index = index,
                     .id = try common.objectString(block, "id"),
                     .name = try common.objectString(block, "name"),
                 });
+                const call = self.pending.items[self.pending.items.len - 1];
+                try self.sink.emit(.{ .part_start = .{ .index = @intCast(index), .part = .{ .tool_call = .{
+                    .id = call.id,
+                    .name = call.name,
+                    .arguments_json = "{}",
+                } } } });
+            } else if (std.mem.eql(u8, block_type, "text")) {
+                self.text_index = index;
+                const initial = try common.optionalObjectString(block, "text") orelse "";
+                if (initial.len > 0) try self.text.appendSlice(self.allocator, initial);
+                try self.sink.emit(.{ .part_start = .{ .index = @intCast(index), .part = .{ .text = initial } } });
             } else if (std.mem.eql(u8, block_type, "thinking")) {
-                self.thinking_index = try common.objectInteger(object, "index");
-                if (try common.optionalObjectString(block, "thinking")) |thinking|
-                    try self.thinking.appendSlice(self.allocator, thinking);
+                self.thinking_index = index;
+                const initial = try common.optionalObjectString(block, "thinking") orelse "";
+                if (initial.len > 0) try self.thinking.appendSlice(self.allocator, initial);
+                try self.sink.emit(.{ .part_start = .{ .index = @intCast(index), .part = .{ .thinking = .{
+                    .content = initial,
+                } } } });
             } else if (std.mem.eql(u8, block_type, "redacted_thinking")) {
-                try self.parts.append(self.allocator, .{ .thinking = .{
+                const part: model_types.ResponsePart = .{ .thinking = .{
                     .content = "",
                     .signature = try common.objectString(block, "data"),
-                } });
+                } };
+                try self.parts.append(self.allocator, part);
+                try model_types.emitCompletePart(self.sink, @intCast(index), part);
             }
         } else if (std.mem.eql(u8, kind, "content_block_delta")) {
             const delta = try common.requiredObject(root, "delta");
             const delta_type = try common.objectString(delta, "type");
+            const index: usize = @intCast(try common.objectInteger(object, "index"));
             if (std.mem.eql(u8, delta_type, "text_delta")) {
                 const text = try common.objectString(delta, "text");
+                if (self.text_index == null) {
+                    self.text_index = @intCast(index);
+                    try self.sink.emit(.{ .part_start = .{ .index = index, .part = .{ .text = "" } } });
+                }
                 try self.text.appendSlice(self.allocator, text);
-                try self.sink.emit(.{ .text_delta = text });
+                try self.sink.emit(.{ .part_delta = .{
+                    .index = index,
+                    .delta = .{ .text = .{ .content_delta = text } },
+                } });
             } else if (std.mem.eql(u8, delta_type, "input_json_delta")) {
                 const partial = try common.objectString(delta, "partial_json");
-                const call = self.findPending(try common.objectInteger(object, "index")) orelse return error.InvalidProviderResponse;
+                const call = self.findPending(@intCast(index)) orelse return error.InvalidProviderResponse;
                 try call.arguments.appendSlice(self.allocator, partial);
-                try self.sink.emit(.{ .tool_call_delta = .{ .id = call.id, .name = call.name, .arguments_delta = partial } });
+                try self.sink.emit(.{ .part_delta = .{
+                    .index = index,
+                    .delta = .{ .tool_call = .{ .id = call.id, .name = call.name, .arguments_delta = partial } },
+                } });
             } else if (std.mem.eql(u8, delta_type, "thinking_delta")) {
-                try self.thinking.appendSlice(self.allocator, try common.objectString(delta, "thinking"));
+                const content = try common.objectString(delta, "thinking");
+                try self.thinking.appendSlice(self.allocator, content);
+                try self.sink.emit(.{ .part_delta = .{
+                    .index = index,
+                    .delta = .{ .thinking = .{ .content_delta = content } },
+                } });
             } else if (std.mem.eql(u8, delta_type, "signature_delta")) {
-                try self.thinking_signature.appendSlice(self.allocator, try common.objectString(delta, "signature"));
+                const signature = try common.objectString(delta, "signature");
+                try self.thinking_signature.appendSlice(self.allocator, signature);
+                try self.sink.emit(.{ .part_delta = .{
+                    .index = index,
+                    .delta = .{ .thinking = .{ .signature_delta = signature } },
+                } });
             }
         } else if (std.mem.eql(u8, kind, "content_block_stop")) {
             const index = try common.objectInteger(object, "index");
@@ -311,11 +350,19 @@ const StreamState = struct {
                     try self.thinking_signature.toOwnedSlice(self.allocator)
                 else
                     null;
-                try self.parts.append(self.allocator, .{ .thinking = .{
+                const part: model_types.ResponsePart = .{ .thinking = .{
                     .content = try self.thinking.toOwnedSlice(self.allocator),
                     .signature = signature,
-                } });
+                } };
+                try self.parts.append(self.allocator, part);
+                try self.sink.emit(.{ .part_end = .{ .index = @intCast(index), .part = part } });
                 self.thinking_index = null;
+            } else if (self.text_index != null and self.text_index.? == index) {
+                try self.sink.emit(.{ .part_end = .{
+                    .index = @intCast(index),
+                    .part = .{ .text = self.text.items },
+                } });
+                self.text_index = null;
             } else if (self.findPending(index)) |pending| {
                 const arguments = if (pending.arguments.items.len == 0)
                     try self.allocator.dupe(u8, "{}")
@@ -323,7 +370,7 @@ const StreamState = struct {
                     try pending.arguments.toOwnedSlice(self.allocator);
                 const call = model_types.ToolCall{ .id = pending.id, .name = pending.name, .arguments_json = arguments };
                 try self.parts.append(self.allocator, .{ .tool_call = call });
-                try self.sink.emit(.{ .tool_call = call });
+                try self.sink.emit(.{ .part_end = .{ .index = @intCast(index), .part = .{ .tool_call = call } } });
             }
         } else if (std.mem.eql(u8, kind, "message_delta")) {
             if (object.get("delta")) |delta_value| {
@@ -922,12 +969,16 @@ test "Anthropic streaming preserves thinking deltas and signatures" {
     try StreamState.line(&state, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"signed\"}}");
     try StreamState.line(&state, "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"redacted\"}}");
     try StreamState.line(&state, "data: {\"type\":\"content_block_stop\",\"index\":0}");
-    try state.sink.emit(.{ .text_delta = "covered" });
+    try state.sink.emit(.{ .part_delta = .{
+        .index = 0,
+        .delta = .{ .text = .{ .content_delta = "covered" } },
+    } });
     try std.testing.expectEqual(@as(usize, 2), state.parts.items.len);
     try std.testing.expectEqualStrings("redacted", state.parts.items[0].thinking.signature.?);
     try std.testing.expectEqualStrings("private", state.parts.items[1].thinking.content);
     try std.testing.expectEqualStrings("signed", state.parts.items[1].thinking.signature.?);
     try std.testing.expectEqual(@as(usize, 2), leadingThinkingCount(state.parts.items));
+    try std.testing.expect(state.findPending(99) == null);
 }
 
 test "covers Anthropic rich and streaming response edges" {

@@ -93,8 +93,9 @@ and streaming typed runs use the same path. Invalid output is appended to
 history with a correction request, bounded by `max_output_retries`.
 Applications using `run` directly can still opt into provider-independent
 local schema validation and receive the same correction behavior. Streaming
-deltas remain provisional, and the agent emits `final_output` only after
-validation succeeds.
+parts use stable indexes and explicit start/delta/end events. Deltas remain
+provisional, and the agent emits one `final_result` only after validation
+succeeds; structured results include a parsed JSON snapshot.
 
 Rich message content is provider neutral too. `UserContent` covers text,
 tagged text, images, audio, video, documents, arbitrary binary data, uploaded

@@ -269,6 +269,62 @@ test "denied approval becomes an error tool result" {
     try std.testing.expectEqual(@as(u8, 0), executions);
 }
 
+test "streamed pause and resume expose deferred request and result events" {
+    const call = [_]zigai.Part{.{ .tool_call = .{
+        .id = "approval",
+        .name = "tool",
+        .arguments_json = "{}",
+    } }};
+    const final = [_]zigai.Part{.{ .text = "Executed." }};
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &call }, .{ .parts = &final } },
+        .profile = .{ .supports_streaming = true },
+    };
+    var executions: u8 = 0;
+    var tool = successfulTool(&executions);
+    tool.execution = .requires_approval;
+    const agent = zigai.Agent{ .model = scripted.model(), .tools = &.{tool} };
+    const Capture = struct {
+        requests: usize = 0,
+        results: usize = 0,
+        finals: usize = 0,
+
+        fn event(context: *anyopaque, value: zigai.AgentStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (value) {
+                .deferred_tool_requests => |event_value| {
+                    self.requests += event_value.requests.len;
+                    try std.testing.expectEqualStrings("approval", event_value.requests[0].call_id);
+                },
+                .deferred_tool_results => |event_value| {
+                    self.results += event_value.results.len;
+                    try std.testing.expectEqualStrings("ok", event_value.results[0].tool_return.content);
+                },
+                .final_result => self.finals += 1,
+                else => {},
+            }
+        }
+    };
+    var capture: Capture = .{};
+    const sink = zigai.AgentStreamSink{ .context = &capture, .eventFn = Capture.event };
+    var first = try agent.runUntilPauseStream(std.testing.allocator, "do it", sink);
+    defer first.deinit();
+    const state = switch (first) {
+        .complete => return error.ExpectedPausedRun,
+        .paused => |paused| paused.state_json,
+    };
+    var resumed = try agent.resumeRunStream(std.testing.allocator, state, &.{.{
+        .call_id = "approval",
+        .action = .approve,
+    }}, sink);
+    defer resumed.deinit();
+    try std.testing.expect(resumed == .complete);
+    try std.testing.expectEqual(@as(usize, 1), capture.requests);
+    try std.testing.expectEqual(@as(usize, 1), capture.results);
+    try std.testing.expectEqual(@as(usize, 1), capture.finals);
+    try std.testing.expectEqual(@as(u8, 1), executions);
+}
+
 test "resuming mixed deferred calls handles every decision path" {
     const calls = [_]zigai.model.Part{
         .{ .tool_call = .{ .id = "immediate", .name = "immediate", .arguments_json = "{}" } },
@@ -1054,10 +1110,22 @@ test "typed agent output is available after streaming completes" {
     };
     const Capture = struct {
         finals: usize = 0,
+        snapshot_answer: ?[]const u8 = null,
         fn event(context: *anyopaque, value: zigai.AgentStreamEvent) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
             switch (value) {
-                .final_output => self.finals += 1,
+                .final_result => |event_value| {
+                    self.finals += 1;
+                    const snapshot = event_value.structured_output orelse return error.MissingStructuredSnapshot;
+                    const object = switch (snapshot) {
+                        .object => |item| item,
+                        else => return error.ExpectedObjectSnapshot,
+                    };
+                    self.snapshot_answer = switch (object.get("answer") orelse return error.MissingSnapshotAnswer) {
+                        .string => |item| item,
+                        else => return error.ExpectedStringSnapshot,
+                    };
+                },
                 else => {},
             }
         }
@@ -1072,6 +1140,7 @@ test "typed agent output is available after streaming completes" {
     defer result.deinit();
     try std.testing.expectEqualStrings("yes", result.output.answer);
     try std.testing.expectEqual(@as(usize, 1), capture.finals);
+    try std.testing.expectEqualStrings("yes", capture.snapshot_answer.?);
 }
 
 test "streaming validation suppresses the final event for invalid output" {
@@ -1085,7 +1154,7 @@ test "streaming validation suppresses the final event for invalid output" {
         fn event(context: *anyopaque, value: zigai.agent.AgentStreamEvent) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
             switch (value) {
-                .final_output => self.finals += 1,
+                .final_result => self.finals += 1,
                 else => {},
             }
         }
@@ -1595,7 +1664,7 @@ test "lifecycle hooks wrap every emitted stream event" {
         .{ .context = &capture, .eventFn = Capture.stream },
     );
     defer result.deinit();
-    try std.testing.expectEqual(@as(usize, 3), capture.sink);
+    try std.testing.expectEqual(@as(usize, 5), capture.sink);
     try std.testing.expectEqual(capture.sink, capture.before);
     try std.testing.expectEqual(capture.sink, capture.after);
 }
@@ -2969,14 +3038,15 @@ test "streaming agent uses the same tool loop and emits ordered events" {
             const self: *@This() = @ptrCast(@alignCast(context));
             switch (value) {
                 .model => self.model_events += 1,
-                .tool_result => |result| {
+                .function_tool_result => |tool_event| {
                     self.tool_results += 1;
-                    try std.testing.expectEqualStrings("ok", result.content);
+                    try std.testing.expectEqualStrings("ok", tool_event.result.content);
                 },
-                .final_output => |output| {
+                .final_result => |final_event| {
                     self.finals += 1;
-                    try std.testing.expectEqualStrings("done", output);
+                    try std.testing.expectEqualStrings("done", final_event.output);
                 },
+                else => {},
             }
         }
     };
@@ -2989,7 +3059,7 @@ test "streaming agent uses the same tool loop and emits ordered events" {
     );
     defer result.deinit();
     try std.testing.expectEqualStrings("done", result.output);
-    try std.testing.expectEqual(@as(usize, 4), capture.model_events);
+    try std.testing.expectEqual(@as(usize, 7), capture.model_events);
     try std.testing.expectEqual(@as(usize, 1), capture.tool_results);
     try std.testing.expectEqual(@as(usize, 1), capture.finals);
 }
@@ -3013,7 +3083,10 @@ test "streaming capability is checked and emitted streams are never retried" {
         fn stream(context: *anyopaque, _: std.mem.Allocator, _: zigai.model.ModelRequest, model_sink: zigai.model.ModelStreamSink) !zigai.model.ModelResponse {
             const self: *@This() = @ptrCast(@alignCast(context));
             self.calls += 1;
-            try model_sink.emit(.{ .text_delta = "partial" });
+            try model_sink.emit(.{ .part_delta = .{
+                .index = 0,
+                .delta = .{ .text = .{ .content_delta = "partial" } },
+            } });
             return error.ProviderRateLimited;
         }
     };

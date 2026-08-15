@@ -157,7 +157,10 @@ fn printStreamEvent(context: *anyopaque, event: zigai.AgentStreamEvent) !void {
     const io: *std.Io = @ptrCast(@alignCast(context));
     const text = switch (event) {
         .model => |model_event| switch (model_event) {
-            .text_delta => |value| value,
+            .part_delta => |part_event| switch (part_event.delta) {
+                .text => |delta| delta.content_delta,
+                else => return,
+            },
             else => return,
         },
         else => return,

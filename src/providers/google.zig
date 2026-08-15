@@ -142,6 +142,7 @@ const StreamState = struct {
     error_body: std.ArrayList(u8) = .empty,
     usage: model_types.Usage = .{},
     finish_reason: ?model_types.FinishReason = null,
+    next_part_index: usize = 0,
 
     fn lineSink(self: *StreamState) http.LineSink {
         return .{ .context = self, .startFn = start, .lineFn = line };
@@ -165,11 +166,8 @@ const StreamState = struct {
         defer self.allocator.free(chunk.parts);
         for (chunk.parts) |part| {
             try self.parts.append(self.allocator, part);
-            switch (part) {
-                .text => |text| try self.sink.emit(.{ .text_delta = text }),
-                .tool_call => |call| try self.sink.emit(.{ .tool_call = call }),
-                else => {},
-            }
+            try model_types.emitCompletePart(self.sink, self.next_part_index, part);
+            self.next_part_index += 1;
         }
         if (chunk.usage.input_tokens != 0 or chunk.usage.output_tokens != 0) {
             self.usage = chunk.usage;

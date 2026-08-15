@@ -569,19 +569,115 @@ pub const OutputFormat = union(enum) {
 /// `Agent` copies the response into its own owned result arena.
 pub const ModelResponse = ResponseMessage;
 
-pub const ToolCallDelta = struct {
+/// A text fragment for one response part.
+pub const TextPartDelta = struct {
+    content_delta: []const u8,
+    provider: ProviderPart = .{},
+};
+
+/// A reasoning fragment. Providers may deliver content and signature bytes in
+/// separate events, so either field can be empty.
+pub const ThinkingPartDelta = struct {
+    content_delta: []const u8 = "",
+    signature_delta: []const u8 = "",
+    provider: ProviderPart = .{},
+};
+
+/// A function-tool fragment. IDs and names are optional because some provider
+/// protocols deliver arguments before the remaining fields.
+pub const ToolCallPartDelta = struct {
     id: ?[]const u8 = null,
     name: ?[]const u8 = null,
     arguments_delta: []const u8 = "",
+    provider: ProviderPart = .{},
+};
+
+/// Compatibility alias; new code should use `ToolCallPartDelta`.
+pub const ToolCallDelta = ToolCallPartDelta;
+
+/// A provider-executed tool fragment.
+pub const NativeToolCallPartDelta = ToolCallPartDelta;
+
+/// A fragment of a provider-executed tool result.
+pub const NativeToolReturnPartDelta = struct {
+    content_delta: []const u8 = "",
+    provider: ProviderPart = .{},
+};
+
+/// The semantic kind of streamed media bytes.
+pub const MediaKind = enum {
+    image,
+    audio,
+    video,
+    document,
+    binary,
+};
+
+/// A binary media fragment. Bytes are borrowed for the duration of the sink
+/// callback and are not necessarily a complete file.
+pub const MediaPartDelta = struct {
+    kind: MediaKind,
+    bytes_delta: []const u8,
+    media_type: ?[]const u8 = null,
+    identifier: ?[]const u8 = null,
+    provider: ProviderPart = .{},
+};
+
+/// A streaming speech fragment. Audio and transcript fragments may arrive
+/// independently.
+pub const SpeechPartDelta = struct {
+    speaker: ?SpeechPart.Speaker = null,
+    transcript_delta: []const u8 = "",
+    audio_delta: []const u8 = "",
+    provider: ProviderPart = .{},
+};
+
+/// A provider-generated history-compaction fragment.
+pub const CompactionPartDelta = struct {
+    content_delta: []const u8,
+    provider: ProviderPart = .{},
+};
+
+/// Provider-neutral fragments for every response part that can arrive
+/// incrementally.
+pub const ResponsePartDelta = union(enum) {
+    text: TextPartDelta,
+    thinking: ThinkingPartDelta,
+    tool_call: ToolCallPartDelta,
+    native_tool_call: NativeToolCallPartDelta,
+    native_tool_return: NativeToolReturnPartDelta,
+    media: MediaPartDelta,
+    speech: SpeechPartDelta,
+    compaction: CompactionPartDelta,
+};
+
+/// Starts one response part. `part` is a borrowed initial snapshot and `index`
+/// remains stable for all subsequent events for that part.
+pub const PartStartEvent = struct {
+    index: usize,
+    part: ResponsePart,
+};
+
+/// Applies one borrowed fragment to the part at `index`.
+pub const PartDeltaEvent = struct {
+    index: usize,
+    delta: ResponsePartDelta,
+};
+
+/// Ends one response part with its complete borrowed value.
+pub const PartEndEvent = struct {
+    index: usize,
+    part: ResponsePart,
 };
 
 /// Borrowed events emitted synchronously while a model response is arriving.
-/// Providers return the same accumulated `ModelResponse` used by buffered
-/// requests after the final event, so the agent loop has one source of truth.
+/// A part has exactly one start and at most one end, and its index never changes
+/// during the stream. Providers return the same accumulated `ModelResponse`
+/// used by buffered requests after all part events.
 pub const ModelStreamEvent = union(enum) {
-    text_delta: []const u8,
-    tool_call_delta: ToolCallDelta,
-    tool_call: ToolCall,
+    part_start: PartStartEvent,
+    part_delta: PartDeltaEvent,
+    part_end: PartEndEvent,
     usage: Usage,
 };
 
@@ -593,6 +689,38 @@ pub const ModelStreamSink = struct {
         return self.eventFn(self.context, event);
     }
 };
+
+/// Emits a complete part through the same lifecycle used by incremental
+/// providers. Text and thinking include a delta; atomic parts emit start/end.
+pub fn emitCompletePart(sink: ModelStreamSink, index: usize, part: ResponsePart) !void {
+    const initial: ResponsePart = switch (part) {
+        .text => .{ .text = "" },
+        .text_part => |value| .{ .text_part = .{ .content = "", .provider = value.provider } },
+        .thinking => |value| .{ .thinking = .{ .content = "", .provider = value.provider } },
+        else => part,
+    };
+    try sink.emit(.{ .part_start = .{ .index = index, .part = initial } });
+    switch (part) {
+        .text => |content| try sink.emit(.{ .part_delta = .{
+            .index = index,
+            .delta = .{ .text = .{ .content_delta = content } },
+        } }),
+        .text_part => |value| try sink.emit(.{ .part_delta = .{
+            .index = index,
+            .delta = .{ .text = .{ .content_delta = value.content, .provider = value.provider } },
+        } }),
+        .thinking => |value| try sink.emit(.{ .part_delta = .{
+            .index = index,
+            .delta = .{ .thinking = .{
+                .content_delta = value.content,
+                .signature_delta = value.signature orelse "",
+                .provider = value.provider,
+            } },
+        } }),
+        else => {},
+    }
+    try sink.emit(.{ .part_end = .{ .index = index, .part = part } });
+}
 
 /// A small Zig vtable keeps the agent independent from every provider package
 /// without forcing provider implementations to allocate wrapper objects.
@@ -778,7 +906,8 @@ test "model stream sinks propagate events and unsupported models fail" {
         requests: usize = 0,
         fn event(context: *anyopaque, value: ModelStreamEvent) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
-            self.called = std.mem.eql(u8, value.text_delta, "hello");
+            self.called = value == .part_delta and value.part_delta.delta == .text and
+                std.mem.eql(u8, value.part_delta.delta.text.content_delta, "hello");
         }
         fn request(context: *anyopaque, _: std.mem.Allocator, _: ModelRequest) !ModelResponse {
             const self: *@This() = @ptrCast(@alignCast(context));
@@ -788,13 +917,78 @@ test "model stream sinks propagate events and unsupported models fail" {
     };
     var capture: Capture = .{};
     const sink = ModelStreamSink{ .context = &capture, .eventFn = Capture.event };
-    try sink.emit(.{ .text_delta = "hello" });
+    try sink.emit(.{ .part_delta = .{
+        .index = 0,
+        .delta = .{ .text = .{ .content_delta = "hello" } },
+    } });
     try std.testing.expect(capture.called);
     const value = Model{ .context = &capture, .profile = .{}, .requestFn = Capture.request };
     const response = try value.request(std.testing.allocator, .{ .messages = &.{} });
     try std.testing.expectEqual(@as(usize, 0), response.parts.len);
     try std.testing.expectEqual(@as(usize, 1), capture.requests);
     try std.testing.expectError(error.StreamingNotSupported, value.stream(std.testing.allocator, .{ .messages = &.{} }, sink));
+}
+
+test "complete parts use stable start delta end indexes" {
+    const Capture = struct {
+        sequence: [9]u8 = undefined,
+        indexes: [9]usize = undefined,
+        count: usize = 0,
+
+        fn event(context: *anyopaque, value: ModelStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const index = switch (value) {
+                .part_start => |event_value| event_value.index,
+                .part_delta => |event_value| event_value.index,
+                .part_end => |event_value| event_value.index,
+                .usage => return error.UnexpectedUsage,
+            };
+            self.indexes[self.count] = index;
+            self.sequence[self.count] = switch (value) {
+                .part_start => 1,
+                .part_delta => 2,
+                .part_end => 3,
+                .usage => unreachable,
+            };
+            self.count += 1;
+        }
+    };
+    var capture: Capture = .{};
+    const sink = ModelStreamSink{ .context = &capture, .eventFn = Capture.event };
+    try emitCompletePart(sink, 4, .{ .text = "hello" });
+    try emitCompletePart(sink, 5, .{ .text_part = .{ .content = "world" } });
+    try emitCompletePart(sink, 6, .{ .thinking = .{ .content = "reason", .signature = "sig" } });
+    try std.testing.expectError(error.UnexpectedUsage, sink.emit(.{ .usage = .{} }));
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 1, 2, 3, 1, 2, 3 }, &capture.sequence);
+    try std.testing.expectEqualSlices(usize, &.{ 4, 4, 4, 5, 5, 5, 6, 6, 6 }, &capture.indexes);
+}
+
+test "stream delta vocabulary covers thinking media native tools speech and compaction" {
+    const Capture = struct {
+        seen: std.EnumSet(std.meta.Tag(ResponsePartDelta)) = .initEmpty(),
+
+        fn event(context: *anyopaque, value: ModelStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (value) {
+                .part_delta => |event_value| self.seen.insert(std.meta.activeTag(event_value.delta)),
+                else => return error.ExpectedPartDelta,
+            }
+        }
+    };
+    var capture: Capture = .{};
+    const sink = ModelStreamSink{ .context = &capture, .eventFn = Capture.event };
+    const deltas = [_]ResponsePartDelta{
+        .{ .text = .{ .content_delta = "text" } },
+        .{ .thinking = .{ .content_delta = "thought", .signature_delta = "signature" } },
+        .{ .tool_call = .{ .id = "call", .name = "tool", .arguments_delta = "{}" } },
+        .{ .native_tool_call = .{ .id = "native", .name = "search", .arguments_delta = "{}" } },
+        .{ .native_tool_return = .{ .content_delta = "result" } },
+        .{ .media = .{ .kind = .audio, .bytes_delta = "bytes", .media_type = "audio/pcm" } },
+        .{ .speech = .{ .speaker = .assistant, .transcript_delta = "hello", .audio_delta = "audio" } },
+        .{ .compaction = .{ .content_delta = "summary" } },
+    };
+    for (deltas, 0..) |delta, index| try sink.emit(.{ .part_delta = .{ .index = index, .delta = delta } });
+    try std.testing.expectEqual(@typeInfo(ResponsePartDelta).@"union".fields.len, capture.seen.count());
 }
 
 test "tool execution adapters preserve rich outputs" {

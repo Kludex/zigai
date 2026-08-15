@@ -205,6 +205,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
                 return common.statusError(response.status);
             }
             try state.finalizeCalls();
+            try state.finishText();
             if (state.text.items.len > 0) {
                 try state.parts.insert(allocator, 0, .{ .text = try state.text.toOwnedSlice(allocator) });
             }
@@ -535,6 +536,7 @@ fn decodeUsage(root: std.json.Value) !model_types.Usage {
 
 const PendingCall = struct {
     index: u64,
+    part_index: usize,
     id: std.ArrayList(u8) = .empty,
     name: std.ArrayList(u8) = .empty,
     arguments: std.ArrayList(u8) = .empty,
@@ -557,6 +559,8 @@ const StreamState = struct {
     error_body: std.ArrayList(u8) = .empty,
     usage: model_types.Usage = .{},
     finish_reason: ?model_types.FinishReason = null,
+    text_index: ?usize = null,
+    next_part_index: usize = 0,
 
     fn deinit(self: *StreamState) void {
         self.text.deinit(self.allocator);
@@ -607,8 +611,12 @@ const StreamState = struct {
         const delta = try common.requiredObject(.{ .object = choice }, "delta");
         if (delta.get("content")) |content| switch (content) {
             .string => |text| if (text.len > 0) {
+                const index = try self.ensureTextPart();
                 try self.text.appendSlice(self.allocator, text);
-                try self.sink.emit(.{ .text_delta = text });
+                try self.sink.emit(.{ .part_delta = .{
+                    .index = index,
+                    .delta = .{ .text = .{ .content_delta = text } },
+                } });
             },
             .null => {},
             else => return error.InvalidProviderResponse,
@@ -647,16 +655,26 @@ const StreamState = struct {
             try pending.name.appendSlice(self.allocator, name);
             try pending.arguments.appendSlice(self.allocator, arguments);
         }
-        try self.sink.emit(.{ .tool_call_delta = .{
-            .id = if (id.len > 0) id else null,
-            .name = if (name.len > 0) name else null,
-            .arguments_delta = arguments,
+        try self.sink.emit(.{ .part_delta = .{
+            .index = pending.part_index,
+            .delta = .{ .tool_call = .{
+                .id = if (id.len > 0) id else null,
+                .name = if (name.len > 0) name else null,
+                .arguments_delta = arguments,
+            } },
         } });
     }
 
     fn findOrAppend(self: *StreamState, index: u64) !*PendingCall {
         for (self.pending.items) |*call| if (call.index == index) return call;
-        try self.pending.append(self.allocator, .{ .index = index });
+        const part_index = self.next_part_index;
+        self.next_part_index += 1;
+        try self.pending.append(self.allocator, .{ .index = index, .part_index = part_index });
+        try self.sink.emit(.{ .part_start = .{ .index = part_index, .part = .{ .tool_call = .{
+            .id = "",
+            .name = "",
+            .arguments_json = "{}",
+        } } } });
         return &self.pending.items[self.pending.items.len - 1];
     }
 
@@ -686,8 +704,26 @@ const StreamState = struct {
             };
             pending.finalized = true;
             try self.parts.append(self.allocator, .{ .tool_call = call });
-            try self.sink.emit(.{ .tool_call = call });
+            try self.sink.emit(.{ .part_end = .{
+                .index = pending.part_index,
+                .part = .{ .tool_call = call },
+            } });
         }
+    }
+
+    fn ensureTextPart(self: *StreamState) !usize {
+        if (self.text_index) |index| return index;
+        const index = self.next_part_index;
+        self.next_part_index += 1;
+        self.text_index = index;
+        try self.sink.emit(.{ .part_start = .{ .index = index, .part = .{ .text = "" } } });
+        return index;
+    }
+
+    fn finishText(self: *StreamState) !void {
+        const index = self.text_index orelse return;
+        try self.sink.emit(.{ .part_end = .{ .index = index, .part = .{ .text = self.text.items } } });
+        self.text_index = null;
     }
 };
 

@@ -110,9 +110,7 @@ pub const Client = struct {
         });
         if (value.request_id) |request_id| try headers.append(allocator, .{ .name = "x-client-request-id", .value = request_id });
         var state = StreamState{ .allocator = allocator, .sink = sink };
-        defer state.text.deinit(allocator);
-        defer state.parts.deinit(allocator);
-        defer state.error_body.deinit(allocator);
+        defer state.deinit();
         const response = self.transport.streamLines(allocator, .{
             .method = .POST,
             .url = url,
@@ -134,6 +132,7 @@ pub const Client = struct {
             );
             return common.statusError(response.status);
         }
+        try state.finishText();
         if (state.text.items.len > 0) try state.parts.insert(allocator, 0, .{ .text = try state.text.toOwnedSlice(allocator) });
         return .{
             .parts = try state.parts.toOwnedSlice(allocator),
@@ -160,6 +159,22 @@ const StreamState = struct {
     usage: model_types.Usage = .{},
     finish_reason: ?model_types.FinishReason = null,
     saw_tool_call_delta: bool = false,
+    text_index: ?usize = null,
+    next_part_index: usize = 0,
+    tool_indexes: std.ArrayList(ToolPartIndex) = .empty,
+
+    const ToolPartIndex = struct {
+        id: []const u8,
+        index: usize,
+        ended: bool = false,
+    };
+
+    fn deinit(self: *StreamState) void {
+        self.text.deinit(self.allocator);
+        self.parts.deinit(self.allocator);
+        self.error_body.deinit(self.allocator);
+        self.tool_indexes.deinit(self.allocator);
+    }
 
     fn lineSink(self: *StreamState) http.LineSink {
         return .{ .context = self, .startFn = start, .lineFn = line };
@@ -194,14 +209,20 @@ const StreamState = struct {
         const kind = try common.objectString(object, "type");
         if (std.mem.eql(u8, kind, "response.output_text.delta")) {
             const delta = try common.objectString(object, "delta");
+            const index = try self.ensureTextPart();
             try self.text.appendSlice(self.allocator, delta);
-            try self.sink.emit(.{ .text_delta = delta });
+            try self.sink.emit(.{ .part_delta = .{
+                .index = index,
+                .delta = .{ .text = .{ .content_delta = delta } },
+            } });
         } else if (std.mem.eql(u8, kind, "response.function_call_arguments.delta")) {
             self.saw_tool_call_delta = true;
             const delta = try common.objectString(object, "delta");
-            try self.sink.emit(.{ .tool_call_delta = .{
-                .id = try common.objectString(object, "item_id"),
-                .arguments_delta = delta,
+            const id = try common.objectString(object, "item_id");
+            const index = try self.ensureToolPart(id);
+            try self.sink.emit(.{ .part_delta = .{
+                .index = index,
+                .delta = .{ .tool_call = .{ .id = id, .arguments_delta = delta } },
             } });
         } else if (std.mem.eql(u8, kind, "response.function_call_arguments.done")) {
             const call = model_types.ToolCall{
@@ -210,7 +231,11 @@ const StreamState = struct {
                 .arguments_json = try common.objectString(object, "arguments"),
             };
             try self.parts.append(self.allocator, .{ .tool_call = call });
-            try self.sink.emit(.{ .tool_call = call });
+            const tool_part = try self.findOrCreateToolPart(call.id);
+            if (!tool_part.ended) {
+                try self.sink.emit(.{ .part_end = .{ .index = tool_part.index, .part = .{ .tool_call = call } } });
+                tool_part.ended = true;
+            }
         } else if (std.mem.eql(u8, kind, "response.refusal.delta")) {
             self.finish_reason = .{ .kind = .content_filter, .raw = "refusal" };
         } else if (std.mem.eql(u8, kind, "response.completed") or
@@ -245,6 +270,38 @@ const StreamState = struct {
                 try self.sink.emit(.{ .usage = self.usage });
             }
         }
+    }
+
+    fn ensureTextPart(self: *StreamState) !usize {
+        if (self.text_index) |index| return index;
+        const index = self.next_part_index;
+        self.next_part_index += 1;
+        self.text_index = index;
+        try self.sink.emit(.{ .part_start = .{ .index = index, .part = .{ .text = "" } } });
+        return index;
+    }
+
+    fn finishText(self: *StreamState) !void {
+        const index = self.text_index orelse return;
+        try self.sink.emit(.{ .part_end = .{ .index = index, .part = .{ .text = self.text.items } } });
+        self.text_index = null;
+    }
+
+    fn ensureToolPart(self: *StreamState, id: []const u8) !usize {
+        return (try self.findOrCreateToolPart(id)).index;
+    }
+
+    fn findOrCreateToolPart(self: *StreamState, id: []const u8) !*ToolPartIndex {
+        for (self.tool_indexes.items) |*part| if (std.mem.eql(u8, part.id, id)) return part;
+        const index = self.next_part_index;
+        self.next_part_index += 1;
+        try self.tool_indexes.append(self.allocator, .{ .id = id, .index = index });
+        try self.sink.emit(.{ .part_start = .{ .index = index, .part = .{ .tool_call = .{
+            .id = id,
+            .name = "",
+            .arguments_json = "{}",
+        } } } });
+        return &self.tool_indexes.items[self.tool_indexes.items.len - 1];
     }
 };
 
@@ -807,7 +864,10 @@ test "covers Responses API refusal, incomplete, and malformed edges" {
         .status = 200,
     };
     try StreamState.line(&refusal, "data: {\"type\":\"response.refusal.delta\"}");
-    try refusal.sink.emit(.{ .text_delta = "covered" });
+    try refusal.sink.emit(.{ .part_delta = .{
+        .index = 0,
+        .delta = .{ .text = .{ .content_delta = "covered" } },
+    } });
     try std.testing.expectEqual(model_types.FinishReason.Kind.content_filter, refusal.finish_reason.?.kind);
 
     var incomplete = StreamState{

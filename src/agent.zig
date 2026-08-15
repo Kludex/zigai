@@ -46,6 +46,8 @@ const AgentError = error{
     InputTokenLimitExceeded,
     /// Typed output could not be decoded after validation.
     InvalidTypedOutput,
+    /// Structured output could not be decoded for its final stream snapshot.
+    InvalidStructuredOutput,
     /// The run attempted more model requests than allowed.
     MaxModelRequestsExceeded,
     /// The run attempted more local tool calls than allowed.
@@ -206,10 +208,55 @@ fn invokeRetryHook(hook: RetryHook, event: RetryEvent) !void {
     return hook.wait(event);
 }
 
+/// A validated function-tool call about to enter the local dispatcher.
+pub const FunctionToolCallEvent = struct {
+    call: model_types.ToolCall,
+};
+
+/// A completed local function-tool invocation.
+pub const FunctionToolResultEvent = struct {
+    result: model_types.ToolResult,
+};
+
+/// Calls that paused the run for approval or external execution.
+pub const DeferredToolRequestsEvent = struct {
+    requests: []const DeferredToolCall,
+};
+
+/// Results accepted while continuing a previously paused run.
+pub const DeferredToolResultsEvent = struct {
+    results: []const RequestPart,
+};
+
+/// Messages added to an active run. The event is part of the stable stream
+/// vocabulary; pending-message injection emits it when messages enter history.
+pub const EnqueuedMessagesEvent = struct {
+    messages: []const Message,
+};
+
+/// A change to the tools visible to the model.
+pub const ToolAvailabilityDeltaEvent = struct {
+    part: model_types.ToolAvailabilityDeltaPart,
+};
+
+/// The one accepted final output for a run. `structured_output` is a borrowed,
+/// validated JSON snapshot for JSON object/schema outputs and null for text.
+pub const FinalResultEvent = struct {
+    output: []const u8,
+    structured_output: ?std.json.Value = null,
+};
+
+/// Borrowed agent-run events. Model part events are provisional; only
+/// `final_result` means output validation succeeded.
 pub const AgentStreamEvent = union(enum) {
     model: model_types.ModelStreamEvent,
-    tool_result: model_types.ToolResult,
-    final_output: []const u8,
+    function_tool_call: FunctionToolCallEvent,
+    function_tool_result: FunctionToolResultEvent,
+    tool_availability_delta: ToolAvailabilityDeltaEvent,
+    deferred_tool_requests: DeferredToolRequestsEvent,
+    deferred_tool_results: DeferredToolResultsEvent,
+    enqueued_messages: EnqueuedMessagesEvent,
+    final_result: FinalResultEvent,
 };
 
 pub const AgentStreamSink = struct {
@@ -791,6 +838,26 @@ pub const Agent = struct {
         return self.runOutcomeInternal(allocator, prompt, options, null, null, true, null, &.{});
     }
 
+    /// Streams until final output or a tool requires approval or external execution.
+    pub fn runUntilPauseStream(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        prompt: []const u8,
+        sink: AgentStreamSink,
+    ) !RunOutcome {
+        return self.runUntilPauseStreamWithOptions(allocator, prompt, .{}, sink);
+    }
+
+    pub fn runUntilPauseStreamWithOptions(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        prompt: []const u8,
+        options: RunOptions,
+        sink: AgentStreamSink,
+    ) !RunOutcome {
+        return self.runOutcomeInternal(allocator, prompt, options, sink, null, true, null, &.{});
+    }
+
     /// Continues a serialized paused run. Decisions must cover every paused
     /// approval or external tool call exactly once.
     pub fn resumeRun(
@@ -820,6 +887,39 @@ pub const Agent = struct {
         decisions: []const ResumeDecision,
         options: RunOptions,
     ) !RunOutcome {
+        return self.resumeRunInternal(allocator, state_json, decisions, options, null);
+    }
+
+    /// Continues a paused run and emits deferred-result and subsequent model events.
+    pub fn resumeRunStream(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        state_json: []const u8,
+        decisions: []const ResumeDecision,
+        sink: AgentStreamSink,
+    ) !RunOutcome {
+        return self.resumeRunStreamWithOptions(allocator, state_json, decisions, .{}, sink);
+    }
+
+    pub fn resumeRunStreamWithOptions(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        state_json: []const u8,
+        decisions: []const ResumeDecision,
+        options: RunOptions,
+        sink: AgentStreamSink,
+    ) !RunOutcome {
+        return self.resumeRunInternal(allocator, state_json, decisions, options, sink);
+    }
+
+    fn resumeRunInternal(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        state_json: []const u8,
+        decisions: []const ResumeDecision,
+        options: RunOptions,
+        stream_sink: ?AgentStreamSink,
+    ) !RunOutcome {
         const parsed = try json_limits.parse(
             SerializedPause,
             allocator,
@@ -837,7 +937,7 @@ pub const Agent = struct {
             allocator,
             parsed.value.prompt,
             options,
-            null,
+            stream_sink,
             null,
             true,
             .{
@@ -1136,6 +1236,9 @@ pub const Agent = struct {
                     },
                     hooks,
                 );
+                if (stream_sink) |sink| try emitStreamEvent(hooks, sink, .{
+                    .deferred_tool_results = .{ .results = tool_batch.parts },
+                });
                 try messages.append(memory, .{ .request = .{ .parts = tool_batch.parts } });
                 try appendToolFollowUps(self.model, self.url_policy, memory, &messages, tool_batch.follow_up_messages);
                 resume_pending = false;
@@ -1317,7 +1420,10 @@ pub const Agent = struct {
                     .output = output,
                     .retry_number = output_retries,
                 } });
-                if (stream_sink) |sink| try emitStreamEvent(hooks, sink, .{ .final_output = output });
+                if (stream_sink) |sink| try emitStreamEvent(hooks, sink, .{ .final_result = .{
+                    .output = output,
+                    .structured_output = try structuredOutputSnapshot(memory, self.output, output),
+                } });
                 try emitLifecycle(hooks, .{ .run_end = .{
                     .output = output,
                     .usage = total_usage,
@@ -1342,7 +1448,7 @@ pub const Agent = struct {
             }
             if (hasDeferredToolCall(available_tools, response.parts)) {
                 if (!allow_pause) return Error.ToolCallRequiresDeferredRun;
-                return .{ .paused = try createPausedRun(
+                const paused = try createPausedRun(
                     &arena,
                     memory,
                     prompt,
@@ -1355,8 +1461,19 @@ pub const Agent = struct {
                     tool_retries.entries.items,
                     available_tools,
                     response.parts,
-                ) };
+                );
+                if (stream_sink) |sink| try emitStreamEvent(hooks, sink, .{
+                    .deferred_tool_requests = .{ .requests = paused.calls },
+                });
+                return .{ .paused = paused };
             }
+
+            if (stream_sink) |sink| for (response.parts) |part| switch (part) {
+                .tool_call => |call| try emitStreamEvent(hooks, sink, .{
+                    .function_tool_call = .{ .call = call },
+                }),
+                else => {},
+            };
 
             const tool_batch = try executeToolCalls(
                 self,
@@ -1376,7 +1493,9 @@ pub const Agent = struct {
                 hooks,
             );
             if (stream_sink) |sink| for (tool_batch.parts) |part| {
-                try emitStreamEvent(hooks, sink, .{ .tool_result = part.tool_return });
+                try emitStreamEvent(hooks, sink, .{
+                    .function_tool_result = .{ .result = part.tool_return },
+                });
             };
             try messages.append(memory, .{ .request = .{ .parts = tool_batch.parts } });
             try appendToolFollowUps(self.model, self.url_policy, memory, &messages, tool_batch.follow_up_messages);
@@ -1686,6 +1805,24 @@ fn validateFinalOutput(
 ) !void {
     if (agent.validate_output_locally) try json_schema.validate(allocator, agent.output, output);
     if (output_validator) |validator| try validator.validate(allocator, output);
+}
+
+fn structuredOutputSnapshot(
+    allocator: std.mem.Allocator,
+    output_format: model_types.OutputFormat,
+    output: []const u8,
+) !?std.json.Value {
+    return switch (output_format) {
+        .text => null,
+        .json_object, .json_schema => try json_limits.parseLeaky(
+            std.json.Value,
+            allocator,
+            output,
+            json_limits.defaults.tool_payload,
+            .{},
+            Agent.Error.InvalidStructuredOutput,
+        ),
+    };
 }
 
 fn decodeTypedResult(comptime Output: type, untyped: Agent.Result) !TypedResult(Output) {

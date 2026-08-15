@@ -228,7 +228,10 @@ test "partial streaming emits every chunk and one final" {
             _: zigai.ModelRequest,
             sink: zigai.ModelStreamSink,
         ) !zigai.ModelResponse {
-            for (0..chunk_count) |_| try sink.emit(.{ .text_delta = "x" });
+            for (0..chunk_count) |_| try sink.emit(.{ .part_delta = .{
+                .index = 0,
+                .delta = .{ .text = .{ .content_delta = "x" } },
+            } });
             return .{ .parts = &final_parts };
         }
     };
@@ -240,11 +243,14 @@ test "partial streaming emits every chunk and one final" {
             const self: *@This() = @ptrCast(@alignCast(context));
             switch (event_value) {
                 .model => |model_event| switch (model_event) {
-                    .text_delta => self.chunks += 1,
+                    .part_delta => |part_event| switch (part_event.delta) {
+                        .text => self.chunks += 1,
+                        else => {},
+                    },
                     else => {},
                 },
-                .final_output => self.finals += 1,
-                .tool_result => {},
+                .final_result => self.finals += 1,
+                else => {},
             }
         }
     };

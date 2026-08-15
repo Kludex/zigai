@@ -380,13 +380,21 @@ test "OpenAI streaming cassette covers deltas and the complete agent tool loop" 
             const self: *@This() = @ptrCast(@alignCast(context));
             switch (value) {
                 .model => |model_event| switch (model_event) {
-                    .text_delta => self.text_deltas += 1,
-                    .tool_call_delta => self.argument_deltas += 1,
-                    .tool_call => self.completed_calls += 1,
+                    .part_delta => |part_event| switch (part_event.delta) {
+                        .text => self.text_deltas += 1,
+                        .tool_call => self.argument_deltas += 1,
+                        else => {},
+                    },
+                    .part_end => |part_event| switch (part_event.part) {
+                        .tool_call => self.completed_calls += 1,
+                        else => {},
+                    },
+                    .part_start => {},
                     .usage => self.usage_events += 1,
                 },
-                .tool_result => self.tool_results += 1,
-                .final_output => self.finals += 1,
+                .function_tool_result => self.tool_results += 1,
+                .final_result => self.finals += 1,
+                else => {},
             }
         }
     };
@@ -430,13 +438,21 @@ test "Anthropic streaming cassette covers fragmented tools and text" {
             const self: *@This() = @ptrCast(@alignCast(context));
             switch (value) {
                 .model => |item| switch (item) {
-                    .text_delta => self.text += 1,
-                    .tool_call_delta => self.arguments += 1,
-                    .tool_call => self.calls += 1,
+                    .part_delta => |part_event| switch (part_event.delta) {
+                        .text => self.text += 1,
+                        .tool_call => self.arguments += 1,
+                        else => {},
+                    },
+                    .part_end => |part_event| switch (part_event.part) {
+                        .tool_call => self.calls += 1,
+                        else => {},
+                    },
+                    .part_start => {},
                     .usage => self.usage += 1,
                 },
-                .tool_result => self.results += 1,
-                .final_output => self.finals += 1,
+                .function_tool_result => self.results += 1,
+                .final_result => self.finals += 1,
+                else => {},
             }
         }
     };
@@ -478,13 +494,21 @@ test "Google streaming cassette covers chunked text and the tool loop" {
             const self: *@This() = @ptrCast(@alignCast(context));
             switch (value) {
                 .model => |item| switch (item) {
-                    .text_delta => self.text += 1,
-                    .tool_call => self.calls += 1,
+                    .part_delta => |part_event| switch (part_event.delta) {
+                        .text => self.text += 1,
+                        .tool_call => return error.UnexpectedGeminiDelta,
+                        else => {},
+                    },
+                    .part_end => |part_event| switch (part_event.part) {
+                        .tool_call => self.calls += 1,
+                        else => {},
+                    },
+                    .part_start => {},
                     .usage => self.usage += 1,
-                    .tool_call_delta => return error.UnexpectedGeminiDelta,
                 },
-                .tool_result => self.results += 1,
-                .final_output => self.finals += 1,
+                .function_tool_result => self.results += 1,
+                .final_result => self.finals += 1,
+                else => {},
             }
         }
     };
@@ -526,13 +550,21 @@ test "OpenAI-compatible streaming cassette covers fragmented Chat Completions to
             const self: *@This() = @ptrCast(@alignCast(context));
             switch (value) {
                 .model => |item| switch (item) {
-                    .text_delta => self.text += 1,
-                    .tool_call_delta => self.deltas += 1,
-                    .tool_call => self.calls += 1,
+                    .part_delta => |part_event| switch (part_event.delta) {
+                        .text => self.text += 1,
+                        .tool_call => self.deltas += 1,
+                        else => {},
+                    },
+                    .part_end => |part_event| switch (part_event.part) {
+                        .tool_call => self.calls += 1,
+                        else => {},
+                    },
+                    .part_start => {},
                     .usage => self.usage += 1,
                 },
-                .tool_result => self.results += 1,
-                .final_output => self.finals += 1,
+                .function_tool_result => self.results += 1,
+                .final_result => self.finals += 1,
+                else => {},
             }
         }
     };
