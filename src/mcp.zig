@@ -1151,11 +1151,15 @@ fn answerInputRequests(
         const handler = maybe_handler orelse return error.InputRequired;
         var iterator = requests.iterator();
         while (iterator.next()) |entry| {
+            const input_request = try requiredObject(entry.value_ptr.*);
+            try validateInputRequest(input_request);
+            const input_method = try requiredString(input_request, "method");
             const request_json = try std.json.Stringify.valueAlloc(allocator, entry.value_ptr.*, .{});
             defer allocator.free(request_json);
             const response_json = try handler.handle(allocator, entry.key_ptr.*, request_json);
             defer allocator.free(response_json);
             const response = try parseResponse(arena.allocator(), response_json);
+            try validateInputResponse(input_method, response);
             try responses.put(memory, entry.key_ptr.*, response);
         }
     }
@@ -1818,9 +1822,228 @@ fn validateInputRequiredResult(object: std.json.ObjectMap) !void {
                 !std.mem.eql(u8, method, methods.list_roots) and
                 !std.mem.eql(u8, method, methods.create_message)) return error.InvalidMcpResponse;
             if (request.get("params")) |params| _ = try requiredObject(params);
+            try validateInputRequest(request);
         }
     }
     if (!has_state and !has_requests) return error.InvalidMcpResponse;
+}
+
+fn validateInputRequest(request: std.json.ObjectMap) !void {
+    const method = try requiredString(request, "method");
+    const params = if (request.get("params")) |value| try requiredObject(value) else std.json.ObjectMap{};
+    if (std.mem.eql(u8, method, methods.elicit)) {
+        try validateElicitationRequest(params);
+    } else if (std.mem.eql(u8, method, methods.list_roots)) {
+        // Roots has no method-specific parameters; extension metadata remains open.
+    } else if (std.mem.eql(u8, method, methods.create_message)) {
+        try validateSamplingRequest(params);
+    } else return error.InvalidMcpResponse;
+}
+
+fn validateInputResponse(method: []const u8, value: std.json.Value) !void {
+    const response = try requiredObject(value);
+    if (std.mem.eql(u8, method, methods.elicit)) {
+        const action = try requiredString(response, "action");
+        if (!std.mem.eql(u8, action, "accept") and
+            !std.mem.eql(u8, action, "decline") and
+            !std.mem.eql(u8, action, "cancel")) return error.InvalidMcpResponse;
+        if (response.get("content")) |content_value| {
+            if (!std.mem.eql(u8, action, "accept")) return error.InvalidMcpResponse;
+            const content = try requiredObject(content_value);
+            var iterator = content.iterator();
+            while (iterator.next()) |entry| switch (entry.value_ptr.*) {
+                .string, .integer, .float, .bool => {},
+                .array => |items| for (items.items) |item| if (item != .string) return error.InvalidMcpResponse,
+                else => return error.InvalidMcpResponse,
+            };
+        }
+    } else if (std.mem.eql(u8, method, methods.list_roots)) {
+        for (try responseArray(response, "roots")) |root_value| {
+            const root = try requiredObject(root_value);
+            const uri = try requiredString(root, "uri");
+            if (!std.mem.startsWith(u8, uri, "file://")) return error.InvalidMcpResponse;
+            try validateOptionalResponseString(root, "name");
+        }
+    } else if (std.mem.eql(u8, method, methods.create_message)) {
+        try validateSamplingMessage(response);
+        _ = try requiredString(response, "model");
+        try validateOptionalResponseString(response, "stopReason");
+    } else return error.InvalidMcpResponse;
+}
+
+fn validateElicitationRequest(params: std.json.ObjectMap) !void {
+    const mode = optionalString(params, "mode") orelse "form";
+    _ = try requiredString(params, "message");
+    if (std.mem.eql(u8, mode, "url")) {
+        _ = try requiredString(params, "url");
+        if (params.get("requestedSchema") != null) return error.InvalidMcpResponse;
+    } else if (std.mem.eql(u8, mode, "form")) {
+        if (params.get("url") != null) return error.InvalidMcpResponse;
+        try validateElicitationSchema(params.get("requestedSchema") orelse return error.InvalidMcpResponse);
+    } else return error.InvalidMcpResponse;
+}
+
+fn validateElicitationSchema(value: std.json.Value) !void {
+    const schema = try requiredObject(value);
+    if (!std.mem.eql(u8, optionalString(schema, "type") orelse "", "object")) {
+        return error.InvalidMcpResponse;
+    }
+    try validateOptionalResponseString(schema, "$schema");
+    const properties = try requiredObject(schema.get("properties") orelse return error.InvalidMcpResponse);
+    var iterator = properties.iterator();
+    while (iterator.next()) |entry| try validatePrimitiveSchema(entry.value_ptr.*);
+    if (schema.get("required")) |required| try validateStringArrayValue(required);
+}
+
+fn validatePrimitiveSchema(value: std.json.Value) !void {
+    const schema = try requiredObject(value);
+    const schema_type = try requiredString(schema, "type");
+    try validateOptionalResponseString(schema, "title");
+    try validateOptionalResponseString(schema, "description");
+    if (std.mem.eql(u8, schema_type, "string")) {
+        try validateOptionalResponseNumber(schema, "minLength", true);
+        try validateOptionalResponseNumber(schema, "maxLength", true);
+        if (optionalString(schema, "format")) |format| {
+            if (!std.mem.eql(u8, format, "email") and !std.mem.eql(u8, format, "uri") and
+                !std.mem.eql(u8, format, "date") and !std.mem.eql(u8, format, "date-time"))
+            {
+                return error.InvalidMcpResponse;
+            }
+        } else if (schema.get("format") != null) return error.InvalidMcpResponse;
+        try validateOptionalResponseString(schema, "default");
+        try validateOptionalStringEnum(schema);
+    } else if (std.mem.eql(u8, schema_type, "number") or std.mem.eql(u8, schema_type, "integer")) {
+        try validateOptionalResponseNumber(schema, "minimum", false);
+        try validateOptionalResponseNumber(schema, "maximum", false);
+        try validateOptionalResponseNumber(schema, "default", false);
+    } else if (std.mem.eql(u8, schema_type, "boolean")) {
+        if (schema.get("default")) |default| if (default != .bool) return error.InvalidMcpResponse;
+    } else if (std.mem.eql(u8, schema_type, "array")) {
+        try validateOptionalResponseNumber(schema, "minItems", true);
+        try validateOptionalResponseNumber(schema, "maxItems", true);
+        const items = try requiredObject(schema.get("items") orelse return error.InvalidMcpResponse);
+        if (items.get("enum")) |values| {
+            if (!std.mem.eql(u8, optionalString(items, "type") orelse "", "string")) {
+                return error.InvalidMcpResponse;
+            }
+            try validateStringArrayValue(values);
+        } else if (items.get("anyOf")) |options| {
+            try validateTitledOptions(options);
+        } else return error.InvalidMcpResponse;
+        if (schema.get("default")) |default| try validateStringArrayValue(default);
+    } else return error.InvalidMcpResponse;
+}
+
+fn validateOptionalStringEnum(schema: std.json.ObjectMap) !void {
+    if (schema.get("enum")) |values| {
+        try validateStringArrayValue(values);
+        if (schema.get("enumNames")) |names| try validateStringArrayValue(names);
+    }
+    if (schema.get("oneOf")) |options| try validateTitledOptions(options);
+}
+
+fn validateTitledOptions(value: std.json.Value) !void {
+    const options = switch (value) {
+        .array => |array| array,
+        else => return error.InvalidMcpResponse,
+    };
+    for (options.items) |option_value| {
+        const option = try requiredObject(option_value);
+        _ = try requiredString(option, "const");
+        _ = try requiredString(option, "title");
+    }
+}
+
+fn validateStringArrayValue(value: std.json.Value) !void {
+    const items = switch (value) {
+        .array => |array| array,
+        else => return error.InvalidMcpResponse,
+    };
+    for (items.items) |item| if (item != .string) return error.InvalidMcpResponse;
+}
+
+fn validateSamplingRequest(params: std.json.ObjectMap) !void {
+    const messages = switch (params.get("messages") orelse return error.InvalidMcpResponse) {
+        .array => |array| array,
+        else => return error.InvalidMcpResponse,
+    };
+    for (messages.items) |message| try validateSamplingMessage(try requiredObject(message));
+    try validateOptionalResponseString(params, "systemPrompt");
+    _ = params.get("maxTokens") orelse return error.InvalidMcpResponse;
+    try validateOptionalResponseNumber(params, "maxTokens", true);
+    try validateOptionalResponseNumber(params, "temperature", false);
+    if (optionalString(params, "includeContext")) |context| {
+        if (!std.mem.eql(u8, context, "none") and !std.mem.eql(u8, context, "thisServer") and
+            !std.mem.eql(u8, context, "allServers")) return error.InvalidMcpResponse;
+    } else if (params.get("includeContext") != null) return error.InvalidMcpResponse;
+    if (params.get("stopSequences")) |sequences| try validateStringArrayValue(sequences);
+    if (params.get("metadata")) |metadata| _ = try requiredObject(metadata);
+    if (params.get("tools")) |tools_value| {
+        const tools = switch (tools_value) {
+            .array => |array| array,
+            else => return error.InvalidMcpResponse,
+        };
+        for (tools.items) |tool| try validateTool(tool);
+    }
+    if (params.get("toolChoice")) |choice_value| {
+        const choice = try requiredObject(choice_value);
+        if (optionalString(choice, "mode")) |mode| {
+            if (!std.mem.eql(u8, mode, "auto") and !std.mem.eql(u8, mode, "required") and
+                !std.mem.eql(u8, mode, "none")) return error.InvalidMcpResponse;
+        } else if (choice.get("mode") != null) return error.InvalidMcpResponse;
+    }
+    if (params.get("modelPreferences")) |preferences_value| try validateModelPreferences(preferences_value);
+}
+
+fn validateModelPreferences(value: std.json.Value) !void {
+    const preferences = try requiredObject(value);
+    for ([_][]const u8{ "costPriority", "speedPriority", "intelligencePriority" }) |name| {
+        if (preferences.get(name)) |priority| {
+            const number = switch (priority) {
+                .integer => |integer| @as(f64, @floatFromInt(integer)),
+                .float => |float| float,
+                else => return error.InvalidMcpResponse,
+            };
+            if (!std.math.isFinite(number) or number < 0 or number > 1) return error.InvalidMcpResponse;
+        }
+    }
+    if (preferences.get("hints")) |hints_value| {
+        const hints = switch (hints_value) {
+            .array => |array| array,
+            else => return error.InvalidMcpResponse,
+        };
+        for (hints.items) |hint_value| {
+            const hint = try requiredObject(hint_value);
+            try validateOptionalResponseString(hint, "name");
+        }
+    }
+}
+
+fn validateSamplingMessage(message: std.json.ObjectMap) !void {
+    try validateRole(message.get("role") orelse return error.InvalidMcpResponse);
+    const content = message.get("content") orelse return error.InvalidMcpResponse;
+    switch (content) {
+        .array => |items| for (items.items) |item| try validateSamplingContent(item),
+        else => try validateSamplingContent(content),
+    }
+}
+
+fn validateSamplingContent(value: std.json.Value) !void {
+    const content = try requiredObject(value);
+    const content_type = try requiredString(content, "type");
+    if (std.mem.eql(u8, content_type, "text") or std.mem.eql(u8, content_type, "image") or
+        std.mem.eql(u8, content_type, "audio"))
+    {
+        try validateContentBlock(value);
+    } else if (std.mem.eql(u8, content_type, "tool_use")) {
+        _ = try requiredString(content, "id");
+        _ = try requiredString(content, "name");
+        _ = try requiredObject(content.get("input") orelse return error.InvalidMcpResponse);
+    } else if (std.mem.eql(u8, content_type, "tool_result")) {
+        _ = try requiredString(content, "toolUseId");
+        for (try responseArray(content, "content")) |item| try validateContentBlock(item);
+        if (content.get("isError")) |is_error| if (is_error != .bool) return error.InvalidMcpResponse;
+    } else return error.InvalidMcpResponse;
 }
 
 const ClientCapabilityRequirements = struct {
@@ -2361,7 +2584,7 @@ test "method result validation covers every core result family" {
         .{ methods.complete, "{\"completion\":{\"values\":[\"one\"]}}" },
         .{ methods.listen, "{\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":\"listen-1\"}}" },
         .{ methods.call_tool, "{\"resultType\":\"input_required\",\"requestState\":\"state\"}" },
-        .{ methods.call_tool, "{\"resultType\":\"input_required\",\"inputRequests\":{\"a\":{\"method\":\"elicitation/create\",\"params\":{}},\"b\":{\"method\":\"roots/list\"},\"c\":{\"method\":\"sampling/createMessage\"}}}" },
+        .{ methods.call_tool, "{\"resultType\":\"input_required\",\"inputRequests\":{\"a\":{\"method\":\"elicitation/create\",\"params\":{\"mode\":\"url\",\"message\":\"Open\",\"url\":\"https://example.test\"}},\"b\":{\"method\":\"roots/list\"},\"c\":{\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[],\"maxTokens\":1}}}}" },
     };
     for (valid) |case| try testValidateMethodResult(case[0], case[1]);
 }
@@ -2481,6 +2704,90 @@ test "nested MCP result content rejects malformed items" {
     for (invalid) |case| try std.testing.expectError(
         error.InvalidMcpResponse,
         testValidateMethodResult(case[0], case[1]),
+    );
+}
+
+test "MRTR input requests and callback responses cover all three methods" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const valid_requests = [_][]const u8{
+        "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"Details\",\"requestedSchema\":{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"type\":\"object\",\"properties\":{\"email\":{\"type\":\"string\",\"title\":\"Email\",\"description\":\"Address\",\"format\":\"email\",\"minLength\":1,\"maxLength\":100,\"default\":\"a@example.test\",\"enum\":[\"a@example.test\"],\"enumNames\":[\"Primary\"]},\"choice\":{\"type\":\"string\",\"oneOf\":[{\"const\":\"a\",\"title\":\"A\"}]},\"count\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":10,\"default\":1},\"ratio\":{\"type\":\"number\"},\"enabled\":{\"type\":\"boolean\",\"default\":true},\"tags\":{\"type\":\"array\",\"minItems\":0,\"maxItems\":2,\"items\":{\"type\":\"string\",\"enum\":[\"a\"]},\"default\":[\"a\"]},\"titledTags\":{\"type\":\"array\",\"items\":{\"anyOf\":[{\"const\":\"a\",\"title\":\"A\"}]}}},\"required\":[\"email\"]}}}",
+        "{\"method\":\"elicitation/create\",\"params\":{\"mode\":\"url\",\"message\":\"Sign in\",\"url\":\"https://example.test/login\"}}",
+        "{\"method\":\"roots/list\",\"params\":{}}",
+        "{\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"hello\"}},{\"role\":\"assistant\",\"content\":[{\"type\":\"image\",\"data\":\"AA==\",\"mimeType\":\"image/png\"},{\"type\":\"audio\",\"data\":\"AA==\",\"mimeType\":\"audio/wav\"},{\"type\":\"tool_use\",\"id\":\"one\",\"name\":\"weather\",\"input\":{}},{\"type\":\"tool_result\",\"toolUseId\":\"one\",\"content\":[{\"type\":\"text\",\"text\":\"sunny\"}],\"isError\":false}]}],\"modelPreferences\":{\"hints\":[{\"name\":\"small\"}],\"costPriority\":0,\"speedPriority\":0.5,\"intelligencePriority\":1},\"systemPrompt\":\"Help\",\"includeContext\":\"none\",\"temperature\":0.5,\"maxTokens\":100,\"stopSequences\":[\"stop\"],\"metadata\":{},\"tools\":[{\"name\":\"weather\",\"inputSchema\":{\"type\":\"object\"}}],\"toolChoice\":{\"mode\":\"auto\"}}}",
+    };
+    for (valid_requests) |source| try validateInputRequest(try requiredObject(
+        try parseResponse(arena.allocator(), source),
+    ));
+
+    const valid_responses = [_]struct { method: []const u8, source: []const u8 }{
+        .{ .method = methods.elicit, .source = "{\"action\":\"accept\",\"content\":{\"name\":\"Zig\",\"age\":1,\"ratio\":1.5,\"ok\":true,\"tags\":[\"a\"]}}" },
+        .{ .method = methods.elicit, .source = "{\"action\":\"decline\"}" },
+        .{ .method = methods.elicit, .source = "{\"action\":\"cancel\"}" },
+        .{ .method = methods.list_roots, .source = "{\"roots\":[{\"uri\":\"file:///workspace\",\"name\":\"workspace\"}]}" },
+        .{ .method = methods.create_message, .source = "{\"role\":\"assistant\",\"content\":{\"type\":\"text\",\"text\":\"hello\"},\"model\":\"model\",\"stopReason\":\"endTurn\"}" },
+    };
+    for (valid_responses) |case| try validateInputResponse(
+        case.method,
+        try parseResponse(arena.allocator(), case.source),
+    );
+}
+
+test "MRTR rejects malformed request and callback response boundaries" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const invalid_requests = [_][]const u8{
+        "{}",
+        "{\"method\":\"future/input\"}",
+        "{\"method\":\"elicitation/create\",\"params\":{}}",
+        "{\"method\":\"elicitation/create\",\"params\":{\"mode\":\"other\",\"message\":\"x\"}}",
+        "{\"method\":\"elicitation/create\",\"params\":{\"mode\":\"url\",\"message\":\"x\"}}",
+        "{\"method\":\"elicitation/create\",\"params\":{\"mode\":\"url\",\"message\":\"x\",\"url\":\"x\",\"requestedSchema\":{}}}",
+        "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"url\":\"x\",\"requestedSchema\":{}}}",
+        "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":[]}}",
+        "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"array\",\"properties\":{}}}}",
+        "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"object\"}}}",
+        "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"x\":[]}}}}",
+        "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"future\"}}}}}",
+        "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{},\"required\":{}}}}",
+        "{\"method\":\"sampling/createMessage\",\"params\":{}}",
+        "{\"method\":\"sampling/createMessage\",\"params\":{\"messages\":{},\"maxTokens\":1}}",
+        "{\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[{}],\"maxTokens\":1}}",
+        "{\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[],\"maxTokens\":true}}",
+        "{\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[],\"maxTokens\":1,\"includeContext\":\"future\"}}",
+        "{\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[],\"maxTokens\":1,\"metadata\":[]}}",
+        "{\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[],\"maxTokens\":1,\"tools\":{}}}",
+        "{\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[],\"maxTokens\":1,\"toolChoice\":[]}}",
+        "{\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[],\"maxTokens\":1,\"toolChoice\":{\"mode\":\"future\"}}}",
+        "{\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[],\"maxTokens\":1,\"modelPreferences\":{\"costPriority\":2}}}",
+    };
+    for (invalid_requests) |source| try std.testing.expectError(
+        error.InvalidMcpResponse,
+        validateInputRequest(try requiredObject(try parseResponse(arena.allocator(), source))),
+    );
+
+    const invalid_responses = [_]struct { method: []const u8, source: []const u8 }{
+        .{ .method = "future/input", .source = "{}" },
+        .{ .method = methods.elicit, .source = "[]" },
+        .{ .method = methods.elicit, .source = "{}" },
+        .{ .method = methods.elicit, .source = "{\"action\":\"future\"}" },
+        .{ .method = methods.elicit, .source = "{\"action\":\"decline\",\"content\":{}}" },
+        .{ .method = methods.elicit, .source = "{\"action\":\"accept\",\"content\":[]}" },
+        .{ .method = methods.elicit, .source = "{\"action\":\"accept\",\"content\":{\"x\":{}}}" },
+        .{ .method = methods.elicit, .source = "{\"action\":\"accept\",\"content\":{\"x\":[1]}}" },
+        .{ .method = methods.list_roots, .source = "{}" },
+        .{ .method = methods.list_roots, .source = "{\"roots\":[[]]}" },
+        .{ .method = methods.list_roots, .source = "{\"roots\":[{}]}" },
+        .{ .method = methods.list_roots, .source = "{\"roots\":[{\"uri\":\"https://example.test\"}]}" },
+        .{ .method = methods.list_roots, .source = "{\"roots\":[{\"uri\":\"file:///a\",\"name\":1}]}" },
+        .{ .method = methods.create_message, .source = "{}" },
+        .{ .method = methods.create_message, .source = "{\"role\":\"assistant\",\"content\":{\"type\":\"tool_use\"},\"model\":\"x\"}" },
+        .{ .method = methods.create_message, .source = "{\"role\":\"assistant\",\"content\":{\"type\":\"text\",\"text\":\"x\"}}" },
+        .{ .method = methods.create_message, .source = "{\"role\":\"assistant\",\"content\":{\"type\":\"text\",\"text\":\"x\"},\"model\":\"x\",\"stopReason\":1}" },
+    };
+    for (invalid_responses) |case| try std.testing.expectError(
+        error.InvalidMcpResponse,
+        validateInputResponse(case.method, try parseResponse(arena.allocator(), case.source)),
     );
 }
 
@@ -2891,11 +3198,11 @@ test "MRTR input requirements match the capabilities sent on the request" {
     const result = try parseResponse(
         arena.allocator(),
         "{\"resultType\":\"input_required\",\"inputRequests\":{" ++
-            "\"form\":{\"method\":\"elicitation/create\",\"params\":{}}," ++
-            "\"url\":{\"method\":\"elicitation/create\",\"params\":{\"mode\":\"url\"}}," ++
+            "\"form\":{\"method\":\"elicitation/create\",\"params\":{\"message\":\"Form\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{}}}}," ++
+            "\"url\":{\"method\":\"elicitation/create\",\"params\":{\"mode\":\"url\",\"message\":\"Open\",\"url\":\"https://example.test\"}}," ++
             "\"roots\":{\"method\":\"roots/list\"}," ++
             "\"sampling\":{\"method\":\"sampling/createMessage\",\"params\":{" ++
-            "\"includeContext\":\"thisServer\",\"tools\":[],\"toolChoice\":{}}}}}",
+            "\"messages\":[],\"maxTokens\":1,\"includeContext\":\"thisServer\",\"tools\":[],\"toolChoice\":{}}}}}",
     );
     const requirements = try inputCapabilityRequirements(result);
     try std.testing.expect(requirements.elicitation);
@@ -2953,7 +3260,7 @@ test "server returns protocol errors for unadvertised methods and client inputs"
             return allocator.dupe(
                 u8,
                 "{\"resultType\":\"input_required\",\"inputRequests\":{\"login\":{" ++
-                    "\"method\":\"elicitation/create\",\"params\":{\"mode\":\"url\"}}}}",
+                    "\"method\":\"elicitation/create\",\"params\":{\"mode\":\"url\",\"message\":\"Open\",\"url\":\"https://example.test\"}}}}",
             );
         }
     };
@@ -3115,7 +3422,7 @@ test "client completes multi round-trip input requests" {
             self.calls += 1;
             if (self.calls == 1) return allocator.dupe(
                 u8,
-                "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"input_required\",\"inputRequests\":{\"confirm\":{\"method\":\"elicitation/create\",\"params\":{}}},\"requestState\":\"state\"}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"input_required\",\"inputRequests\":{\"confirm\":{\"method\":\"elicitation/create\",\"params\":{\"message\":\"Confirm\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{}}}}},\"requestState\":\"state\"}}",
             );
             try std.testing.expect(std.mem.indexOf(u8, request.message, "inputResponses") != null);
             try std.testing.expect(std.mem.indexOf(u8, request.message, "requestState") != null);
@@ -3127,7 +3434,7 @@ test "client completes multi round-trip input requests" {
         fn input(_: *anyopaque, allocator: std.mem.Allocator, key: []const u8, request: []const u8) ![]u8 {
             try std.testing.expectEqualStrings("confirm", key);
             try std.testing.expect(std.mem.indexOf(u8, request, "elicitation/create") != null);
-            return allocator.dupe(u8, "{\"action\":\"accept\",\"content\":true}");
+            return allocator.dupe(u8, "{\"action\":\"accept\",\"content\":{\"confirmed\":true}}");
         }
     };
     var stub: Stub = .{};
@@ -3486,7 +3793,7 @@ test "generic client helpers cover every core request shape" {
         fn send(_: *anyopaque, allocator: std.mem.Allocator, _: WireRequest) ![]const u8 {
             return allocator.dupe(
                 u8,
-                "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"input_required\",\"inputRequests\":{\"confirm\":{\"method\":\"elicitation/create\",\"params\":{}}}}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"input_required\",\"inputRequests\":{\"confirm\":{\"method\":\"elicitation/create\",\"params\":{\"message\":\"Confirm\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{}}}}}}}",
             );
         }
     }.send }, .capabilities_json = "{\"elicitation\":{}}" };
