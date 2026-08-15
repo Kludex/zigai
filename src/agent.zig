@@ -2721,7 +2721,7 @@ test "tool control drains work at deadlines and cancellation" {
             });
             while (!state.active.load(.seq_cst)) {
                 if (std.Io.Clock.Timestamp.now(io, .awake).durationTo(start_deadline).raw.nanoseconds <= 0) {
-                    token.cancel();
+                    token.cancel(); // unreachable in a passing scheduler test
                     return error.ToolDidNotStart; // unreachable in a passing scheduler test
                 }
                 try toolTimeout(1).sleep(io);

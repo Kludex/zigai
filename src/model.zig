@@ -743,7 +743,7 @@ test "run control shares one deadline and drains interrupted work" {
     try std.testing.expectError(
         error.RunControlConcurrencyUnavailable,
         unavailable_control.invoke(void, struct {
-            fn call() !void {
+            fn call() !void { // unreachable: concurrency is unavailable before this callback
                 unreachable;
             }
         }.call, .{}),
@@ -778,10 +778,11 @@ test "run control drains cancellation and supports cooperative fallback" {
         }
 
         fn cancelAfter(io: std.Io, token: *CancellationToken) !void {
-            try (std.Io.Timeout{ .duration = .{
+            const delay: std.Io.Timeout = .{ .duration = .{
                 .raw = .fromMilliseconds(50),
                 .clock = .awake,
-            } }).sleep(io);
+            } };
+            try delay.sleep(io);
             token.cancel();
         }
 
@@ -811,17 +812,23 @@ test "run control drains cancellation and supports cooperative fallback" {
     try std.testing.expect(state.started.load(.seq_cst));
     try std.testing.expect(!state.active.load(.seq_cst));
 
+    var polling_token: CancellationToken = .{};
+    var polling_canceller = try cancel_runtime.io().concurrent(State.cancelAfter, .{ cancel_runtime.io(), &polling_token });
+    try RunControl.waitForCancellation(io, &polling_token);
+    try polling_canceller.await(cancel_runtime.io());
+
     var live_token: CancellationToken = .{};
     var success_runtime = std.Io.Threaded.init(std.testing.allocator, .{});
     defer success_runtime.deinit();
     const success_io = success_runtime.io();
-    try (RunControl{
+    const success_control = RunControl{
         .io = success_io,
         .deadline = std.Io.Clock.Timestamp.fromNow(success_io, .{
             .raw = .fromSeconds(10),
             .clock = .awake,
         }),
-    }).invoke(void, State.succeed, .{});
+    };
+    try success_control.invoke(void, State.succeed, .{});
     try (RunControl{ .cancellation = &live_token }).invoke(void, State.succeed, .{});
 
     var cooperative_token: CancellationToken = .{};
