@@ -100,6 +100,31 @@ pub fn classifyHttpCompatibility(
     return .indeterminate;
 }
 
+/// Returns owned JSON settings for one advertised extension, or `null`.
+pub fn extensionSettings(
+    allocator: std.mem.Allocator,
+    capabilities_json: []const u8,
+    identifier: []const u8,
+) !?[]u8 {
+    if (!validPrefixedMetaKey(identifier)) return error.InvalidMcpMessage;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const capabilities_value = try json_limits.parseLeaky(
+        std.json.Value,
+        arena.allocator(),
+        capabilities_json,
+        json_limits.defaults.mcp_message,
+        .{},
+        error.InvalidMcpMessage,
+    );
+    const capabilities = try capabilityObject(capabilities_value, error.InvalidMcpMessage);
+    const extensions_value = capabilities.get("extensions") orelse return null;
+    try validateExtensions(extensions_value, error.InvalidMcpMessage);
+    const extensions = try capabilityObject(extensions_value, error.InvalidMcpMessage);
+    const settings = extensions.get(identifier) orelse return null;
+    return try std.json.Stringify.valueAlloc(allocator, settings, .{});
+}
+
 /// MCP protocol and transport failures defined by ZigAI.
 pub const Error = error{
     /// A stdio transport was configured without a program command.
@@ -3058,6 +3083,87 @@ test "capability validation preserves open fields and checks known shapes" {
             validateServerCapabilities(try parseResponse(arena.allocator(), source), error.InvalidMcpResponse),
         );
     }
+}
+
+test "unknown MCP extensions and settings remain lossless" {
+    const capabilities =
+        "{\"futureCapability\":{\"enabled\":true},\"extensions\":{" ++
+        "\"com.example/future\":{\"modes\":[\"one\",2],\"nested\":{\"flag\":true}}}}";
+    const settings = (try extensionSettings(
+        std.testing.allocator,
+        capabilities,
+        "com.example/future",
+    )).?;
+    defer std.testing.allocator.free(settings);
+    try std.testing.expect(std.mem.indexOf(u8, settings, "\"modes\":[\"one\",2]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, settings, "\"flag\":true") != null);
+    try std.testing.expect((try extensionSettings(
+        std.testing.allocator,
+        capabilities,
+        "com.example/missing",
+    )) == null);
+    try std.testing.expect((try extensionSettings(
+        std.testing.allocator,
+        "{}",
+        "com.example/missing",
+    )) == null);
+    try std.testing.expectError(
+        error.InvalidMcpMessage,
+        extensionSettings(std.testing.allocator, capabilities, "unprefixed"),
+    );
+    try std.testing.expectError(
+        error.InvalidMcpMessage,
+        extensionSettings(std.testing.allocator, "[]", "com.example/future"),
+    );
+    try std.testing.expectError(
+        error.InvalidMcpMessage,
+        extensionSettings(
+            std.testing.allocator,
+            "{\"extensions\":{\"com.example/future\":true}}",
+            "com.example/future",
+        ),
+    );
+
+    const Stub = struct {
+        calls: usize = 0,
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            try std.testing.expect(std.mem.indexOf(u8, request.message, "\"com.example/future\"") != null);
+            try std.testing.expect(std.mem.indexOf(u8, request.message, "\"clientUnknown\":42") != null);
+            if (std.mem.eql(u8, request.method, methods.discover)) return allocator.dupe(
+                u8,
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\"," ++
+                    "\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{" ++
+                    "\"serverUnknown\":{\"value\":42},\"extensions\":{" ++
+                    "\"com.example/future\":{\"serverSetting\":[1,true]}}}," ++
+                    "\"ttlMs\":0,\"cacheScope\":\"public\",\"futureResult\":{\"kept\":true}}}",
+            );
+            return allocator.dupe(
+                u8,
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resultType\":\"complete\"," ++
+                    "\"futurePayload\":{\"nested\":[1,\"two\",true]}}}",
+            );
+        }
+    };
+    var stub: Stub = .{};
+    var client = Client{
+        .transport = .{ .context = &stub, .sendFn = Stub.send },
+        .capabilities_json = "{\"clientUnknown\":42,\"extensions\":{\"com.example/future\":{\"clientSetting\":true}}}",
+    };
+    const discovered = try client.discover(std.testing.allocator);
+    defer std.testing.allocator.free(discovered);
+    try std.testing.expect(std.mem.indexOf(u8, discovered, "\"serverUnknown\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, discovered, "\"serverSetting\":[1,true]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, discovered, "\"futureResult\"") != null);
+    const extension = try client.request(
+        std.testing.allocator,
+        "com.example/futureMethod",
+        "{\"futureParam\":{\"kept\":true}}",
+    );
+    defer std.testing.allocator.free(extension);
+    try std.testing.expect(std.mem.indexOf(u8, extension, "\"nested\":[1,\"two\",true]") != null);
+    try std.testing.expectEqual(@as(usize, 2), stub.calls);
 }
 
 test "extension capability identifiers follow prefixed metadata syntax" {
