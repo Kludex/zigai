@@ -131,7 +131,7 @@ test "in-flight cancellation races drain model work" {
             self.active.store(true, .seq_cst);
             defer self.active.store(false, .seq_cst);
             self.started.store(true, .release);
-            try (std.Io.Timeout{ .duration = .{ .raw = .fromMilliseconds(5), .clock = .awake } }).sleep(self.io);
+            try (std.Io.Timeout{ .duration = .{ .raw = .fromMilliseconds(250), .clock = .awake } }).sleep(self.io);
             return .{ .parts = &final_parts };
         }
 
@@ -146,11 +146,17 @@ test "in-flight cancellation races drain model work" {
         var state = State{ .io = threaded.io() };
         const canceller = try std.Thread.spawn(.{}, State.cancelWhenStarted, .{ &state, &token });
         defer canceller.join();
-        try std.testing.expectError(zigai.AgentError.Cancelled, (zigai.Agent{
+        if ((zigai.Agent{
             .model = .{ .context = &state, .profile = .{}, .requestFn = State.request },
             .io = threaded.io(),
             .cancellation = &token,
-        }).run(std.testing.allocator, "cancel"));
+        }).run(std.testing.allocator, "cancel")) |result_value| {
+            var result = result_value;
+            result.deinit();
+            return error.ExpectedCancellation;
+        } else |failure| {
+            try std.testing.expectEqual(zigai.AgentError.Cancelled, failure);
+        }
         try std.testing.expect(!state.active.load(.seq_cst));
     }
 }
