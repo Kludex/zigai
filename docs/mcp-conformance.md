@@ -13,7 +13,7 @@ The executable method inventory lives in `tests/mcp_conformance.zig`.
 | --- | --- | --- |
 | Client requests | `server/discover`, completion, prompts, resources, subscriptions, and tools | Typed `Client` helpers, plus `request` for extensions |
 | Client notifications | `notifications/cancelled` | `cancel` or `notify` |
-| Server notifications | cancellation, progress, logging, resource updates, list changes, and subscription acknowledgement | Borrowed JSON through `EventSink` |
+| Server notifications | cancellation, progress, logging, resource updates, list changes, and subscription acknowledgement | Typed `Notification` encoding; borrowed JSON through `EventSink` |
 | MRTR input | elicitation, roots, and sampling | `InputHandler`, followed by a validated retry |
 
 Roots, Sampling, and Logging are deprecated compatibility paths in this

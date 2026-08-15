@@ -10,6 +10,7 @@ const json_limits = @import("../json.zig");
 pub const Error = error{
     InvalidCapabilities,
     InvalidExtensionIdentifier,
+    InvalidNotification,
 };
 
 /// Sampling features a client is prepared to provide through MRTR.
@@ -144,18 +145,157 @@ pub const SubscriptionFilter = struct {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const memory = arena.allocator();
+        const object = try self.toObject(memory);
+        return std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = object }, .{});
+    }
+
+    fn toObject(self: SubscriptionFilter, allocator: std.mem.Allocator) !std.json.ObjectMap {
         var object: std.json.ObjectMap = .{};
-        if (self.tools_list_changed) try object.put(memory, "toolsListChanged", .{ .bool = true });
-        if (self.prompts_list_changed) try object.put(memory, "promptsListChanged", .{ .bool = true });
-        if (self.resources_list_changed) try object.put(memory, "resourcesListChanged", .{ .bool = true });
+        if (self.tools_list_changed) try object.put(allocator, "toolsListChanged", .{ .bool = true });
+        if (self.prompts_list_changed) try object.put(allocator, "promptsListChanged", .{ .bool = true });
+        if (self.resources_list_changed) try object.put(allocator, "resourcesListChanged", .{ .bool = true });
         if (self.resource_subscriptions.len > 0) {
-            var resources: std.json.Array = .init(memory);
+            var resources: std.json.Array = .init(allocator);
             for (self.resource_subscriptions) |uri| {
                 try resources.append(.{ .string = uri });
             }
-            try object.put(memory, "resourceSubscriptions", .{ .array = resources });
+            try object.put(allocator, "resourceSubscriptions", .{ .array = resources });
         }
-        return std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = object }, .{});
+        return object;
+    }
+};
+
+/// JSON-RPC request and subscription identifiers accepted by MCP.
+pub const RequestId = union(enum) {
+    integer: i64,
+    string: []const u8,
+
+    fn jsonValue(self: RequestId) std.json.Value {
+        return switch (self) {
+            .integer => |value| .{ .integer = value },
+            .string => |value| .{ .string = value },
+        };
+    }
+};
+
+pub const LoggingLevel = enum {
+    debug,
+    info,
+    notice,
+    warning,
+    @"error",
+    critical,
+    alert,
+    emergency,
+};
+
+pub const CancelledNotification = struct {
+    request_id: RequestId,
+    reason: ?[]const u8 = null,
+};
+
+pub const ProgressNotification = struct {
+    progress_token: RequestId,
+    progress: f64,
+    total: ?f64 = null,
+    message: ?[]const u8 = null,
+};
+
+pub const LoggingNotification = struct {
+    level: LoggingLevel,
+    logger: ?[]const u8 = null,
+    /// One complete bounded JSON value. It remains borrowed.
+    data_json: []const u8,
+};
+
+/// One standardized MCP notification. The serializer owns JSON-RPC framing;
+/// the caller owns only the returned byte slice.
+pub const Notification = union(enum) {
+    cancelled: CancelledNotification,
+    progress: ProgressNotification,
+    logging_message: LoggingNotification,
+    resource_updated: []const u8,
+    resource_list_changed,
+    prompt_list_changed,
+    tool_list_changed,
+    subscriptions_acknowledged: SubscriptionFilter,
+
+    pub fn stringifyAlloc(
+        self: Notification,
+        allocator: std.mem.Allocator,
+        subscription_id: ?RequestId,
+    ) ![]u8 {
+        if (self.requiresSubscription() and subscription_id == null) return error.InvalidNotification;
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const memory = arena.allocator();
+        var params: std.json.ObjectMap = .{};
+        const method: []const u8 = switch (self) {
+            .cancelled => |value| blk: {
+                try params.put(memory, "requestId", value.request_id.jsonValue());
+                if (value.reason) |reason| try params.put(memory, "reason", .{ .string = reason });
+                break :blk "notifications/cancelled";
+            },
+            .progress => |value| blk: {
+                if (!std.math.isFinite(value.progress) or
+                    (value.total != null and !std.math.isFinite(value.total.?)))
+                {
+                    return error.InvalidNotification;
+                }
+                try params.put(memory, "progressToken", value.progress_token.jsonValue());
+                try params.put(memory, "progress", .{ .float = value.progress });
+                if (value.total) |total| try params.put(memory, "total", .{ .float = total });
+                if (value.message) |message| try params.put(memory, "message", .{ .string = message });
+                break :blk "notifications/progress";
+            },
+            .logging_message => |value| blk: {
+                const data = try json_limits.parseLeaky(
+                    std.json.Value,
+                    memory,
+                    value.data_json,
+                    json_limits.defaults.mcp_message,
+                    .{},
+                    error.InvalidNotification,
+                );
+                try params.put(memory, "level", .{ .string = @tagName(value.level) });
+                if (value.logger) |logger| try params.put(memory, "logger", .{ .string = logger });
+                try params.put(memory, "data", data);
+                break :blk "notifications/message";
+            },
+            .resource_updated => |uri| blk: {
+                try params.put(memory, "uri", .{ .string = uri });
+                break :blk "notifications/resources/updated";
+            },
+            .resource_list_changed => "notifications/resources/list_changed",
+            .prompt_list_changed => "notifications/prompts/list_changed",
+            .tool_list_changed => "notifications/tools/list_changed",
+            .subscriptions_acknowledged => |filter| blk: {
+                try params.put(memory, "notifications", .{ .object = try filter.toObject(memory) });
+                break :blk "notifications/subscriptions/acknowledged";
+            },
+        };
+        if (subscription_id) |id| {
+            var meta: std.json.ObjectMap = .{};
+            try meta.put(memory, "io.modelcontextprotocol/subscriptionId", id.jsonValue());
+            try params.put(memory, "_meta", .{ .object = meta });
+        }
+        return std.json.Stringify.valueAlloc(allocator, .{
+            .jsonrpc = "2.0",
+            .method = method,
+            .params = std.json.Value{ .object = params },
+        }, .{});
+    }
+
+    fn requiresSubscription(self: Notification) bool {
+        return switch (self) {
+            .resource_updated,
+            .resource_list_changed,
+            .prompt_list_changed,
+            .tool_list_changed,
+            .subscriptions_acknowledged,
+            => true,
+            .cancelled, .progress, .logging_message => false,
+        };
     }
 };
 
@@ -290,6 +430,78 @@ test "typed MCP subscription filters serialize selected notifications" {
     try std.testing.expectEqualStrings("{}", empty);
 }
 
+test "typed MCP notifications serialize every standardized event" {
+    const cases = [_]struct {
+        value: Notification,
+        method: []const u8,
+    }{
+        .{
+            .value = .{ .cancelled = .{ .request_id = .{ .string = "job-1" }, .reason = "done" } },
+            .method = "notifications/cancelled",
+        },
+        .{
+            .value = .{ .progress = .{
+                .progress_token = .{ .integer = 4 },
+                .progress = 0.5,
+                .total = 1,
+                .message = "working",
+            } },
+            .method = "notifications/progress",
+        },
+        .{
+            .value = .{ .logging_message = .{
+                .level = .warning,
+                .logger = "worker",
+                .data_json = "{\"attempt\":2}",
+            } },
+            .method = "notifications/message",
+        },
+        .{ .value = .{ .resource_updated = "file:///a" }, .method = "notifications/resources/updated" },
+        .{ .value = .resource_list_changed, .method = "notifications/resources/list_changed" },
+        .{ .value = .prompt_list_changed, .method = "notifications/prompts/list_changed" },
+        .{ .value = .tool_list_changed, .method = "notifications/tools/list_changed" },
+        .{
+            .value = .{ .subscriptions_acknowledged = .{ .tools_list_changed = true } },
+            .method = "notifications/subscriptions/acknowledged",
+        },
+    };
+    for (cases) |case| {
+        const source = try case.value.stringifyAlloc(std.testing.allocator, .{ .integer = 7 });
+        defer std.testing.allocator.free(source);
+        try std.testing.expect(std.mem.indexOf(u8, source, case.method) != null);
+        try std.testing.expect(std.mem.indexOf(u8, source, "io.modelcontextprotocol/subscriptionId") != null);
+    }
+}
+
+test "typed MCP notifications reject invalid correlation progress and data" {
+    try std.testing.expectError(
+        error.InvalidNotification,
+        (Notification{ .resource_list_changed = {} }).stringifyAlloc(std.testing.allocator, null),
+    );
+    try std.testing.expectError(
+        error.InvalidNotification,
+        (Notification{ .progress = .{
+            .progress_token = .{ .integer = 1 },
+            .progress = std.math.nan(f64),
+        } }).stringifyAlloc(std.testing.allocator, null),
+    );
+    try std.testing.expectError(
+        error.InvalidNotification,
+        (Notification{ .progress = .{
+            .progress_token = .{ .integer = 1 },
+            .progress = 1,
+            .total = std.math.inf(f64),
+        } }).stringifyAlloc(std.testing.allocator, null),
+    );
+    try std.testing.expectError(
+        error.InvalidNotification,
+        (Notification{ .logging_message = .{
+            .level = .info,
+            .data_json = "{",
+        } }).stringifyAlloc(std.testing.allocator, null),
+    );
+}
+
 test "typed MCP capability serialization releases every partial allocation" {
     const Check = struct {
         fn run(allocator: std.mem.Allocator) !void {
@@ -318,6 +530,16 @@ test "typed MCP capability serialization releases every partial allocation" {
                 .resource_subscriptions = &.{ "file:///a", "file:///b" },
             }).stringifyAlloc(allocator);
             defer allocator.free(filter);
+            const notification = try (Notification{ .logging_message = .{
+                .level = .debug,
+                .logger = "worker",
+                .data_json = "{\"message\":\"ready\"}",
+            } }).stringifyAlloc(allocator, .{ .string = "subscription" });
+            defer allocator.free(notification);
+            const acknowledged = try (Notification{ .subscriptions_acknowledged = .{
+                .resource_subscriptions = &.{ "file:///a", "file:///b" },
+            } }).stringifyAlloc(allocator, .{ .integer = 1 });
+            defer allocator.free(acknowledged);
         }
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});

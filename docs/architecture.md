@@ -349,6 +349,10 @@ prefixed extension identifiers. `SubscriptionFilter` gives the long-lived
 listen request a typed selection of list and resource updates. These values
 return caller-owned JSON documents; explicit raw JSON entry points remain the
 forward-compatibility boundary for revisions ZigAI does not know yet.
+`Notification` owns the common JSON-RPC framing for every standardized event,
+requires subscription correlation for update streams, validates finite
+progress, and parses arbitrary logging data through the bounded MCP JSON
+policy before serialization.
 
 Multi round-trip requests replace server-initiated JSON-RPC calls. When a
 result requires sampling, roots, or elicitation, the configured `InputHandler`

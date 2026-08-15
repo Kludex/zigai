@@ -22,6 +22,9 @@ const security = @import("security.zig");
 pub const protocol_version = "2026-07-28";
 
 pub const ClientCapabilities = primitives.ClientCapabilities;
+pub const LoggingLevel = primitives.LoggingLevel;
+pub const Notification = primitives.Notification;
+pub const RequestId = primitives.RequestId;
 pub const ServerCapabilities = primitives.ServerCapabilities;
 pub const SubscriptionFilter = primitives.SubscriptionFilter;
 
@@ -140,6 +143,8 @@ pub const Error = error{
     InvalidCapabilities,
     /// An extension capability lacks a valid reverse-DNS prefix.
     InvalidExtensionIdentifier,
+    /// A typed notification has invalid data or missing stream correlation.
+    InvalidNotification,
     /// An OAuth token, response, or metadata document names another issuer.
     InvalidAuthorizationIssuer,
     /// OAuth/OIDC discovery metadata is malformed or unsafe.
@@ -3968,6 +3973,28 @@ test "core notification params and stream metadata are validated" {
         error.InvalidMcpResponse,
         testValidateMethodResult(methods.listen, "{\"_meta\":{}}"),
     );
+}
+
+test "typed notification output passes the MCP stream validator" {
+    const notifications = [_]Notification{
+        .{ .progress = .{ .progress_token = .{ .integer = 1 }, .progress = 0.5 } },
+        .{ .logging_message = .{ .level = .info, .data_json = "null" } },
+        .{ .subscriptions_acknowledged = .{ .tools_list_changed = true } },
+    };
+    for (notifications) |notification| {
+        const source = try notification.stringifyAlloc(std.testing.allocator, .{ .string = "stream-1" });
+        defer std.testing.allocator.free(source);
+        var parsed = try json_limits.parse(
+            std.json.Value,
+            std.testing.allocator,
+            source,
+            json_limits.defaults.mcp_message,
+            .{},
+            error.InvalidMcpMessage,
+        );
+        defer parsed.deinit();
+        try validateIncomingNotification(parsed.value, true, error.InvalidMcpMessage);
+    }
 }
 
 test "client and server reject malformed advertised capabilities at boundaries" {

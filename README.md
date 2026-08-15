@@ -561,7 +561,9 @@ request headers and TLS state to `Server.handle`. Protected endpoints use
 separate `mcp.auth.DeploymentPolicy` for exact Origin and Host checks. Bearer
 tokens never enter MCP JSON or handler parameters, and refresh/step-up retries
 are bounded. Core handlers run only when the matching capability appears in
-the server's `capabilities_json`.
+the server's `capabilities_json`. `mcp.Notification` produces validated,
+caller-owned JSON-RPC for server progress, cancellation, logging, updates, and
+subscription acknowledgements.
 
 See the [MCP conformance matrix](docs/mcp-conformance.md) for message coverage,
 compatibility boundaries, validation, and ownership. The [security guide](docs/security.md#mcp-http-authorization)
