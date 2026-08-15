@@ -681,7 +681,7 @@ fn writeTools(
     for (request.builtin_tools) |tool| switch (tool) {
         .web_search => try writeSimpleManagedTool(json, "web_search", .{}),
         .code_execution => try writeSimpleManagedTool(json, "code_interpreter", .{}),
-        else => return error.UnsupportedManagedTool,
+        else => return error.UnsupportedManagedTool, // kcov-ignore: validation rejects this before serialization.
     };
     for (managed_tools) |tool| try writeManagedTool(json, tool);
     try json.endArray();
@@ -1900,6 +1900,13 @@ test "native response decodes rich and unknown Conversations entries" {
     try std.testing.expectEqualStrings("future.entry", response.parts[7].native_tool_return.name);
     try std.testing.expectEqual(@as(?u64, 9), response.usage.detail("total_tokens"));
     try std.testing.expectEqual(@as(?u64, 2), response.usage.detail("connector_tokens"));
+    try std.testing.expectError(
+        error.InvalidProviderResponse,
+        decodeResponse(
+            arena.allocator(),
+            "{\"conversation_id\":\"bad\",\"outputs\":[{\"type\":\"message.output\",\"content\":[{\"type\":\"thinking\",\"thinking\":[1]}]}]}",
+        ),
+    );
 }
 
 test "native client covers stored starts and provider failures" {
@@ -1963,7 +1970,7 @@ test "native stream rejects error responses protocol errors and incomplete strea
                     try sink.start(.{ .status = 200 });
                     try sink.line("event: conversation.response.error");
                     try sink.line("data: {}");
-                    return .{ .status = 200 };
+                    return .{ .status = 200 }; // kcov-ignore: the protocol error above terminates the sink.
                 },
                 .incomplete => {
                     try sink.start(.{ .status = 200 });
@@ -2018,4 +2025,8 @@ test "native stream rejects error responses protocol errors and incomplete strea
     const response = try client.model().stream(arena.allocator(), .{ .messages = &.{} }, sink);
     try std.testing.expectEqualStrings("https://example.test/image.png", response.parts[0].image.source.url);
     try std.testing.expectEqualStrings("{}", response.parts[1].tool_call.arguments_json);
+    try std.testing.expectError(
+        error.UnexpectedRequest,
+        client.model().request(arena.allocator(), .{ .messages = &.{} }),
+    );
 }
