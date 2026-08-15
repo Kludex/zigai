@@ -1373,16 +1373,47 @@ test "tool output exposes one tool per choice and returns the selected union bra
     var scripted = zigai.testing.ScriptedModel{
         .responses = &.{.{ .parts = &calls }},
         .inspectFn = Inspector.inspect,
+        .profile = .{ .supports_streaming = true },
     };
+    const Capture = struct {
+        results: usize = 0,
+        finals: usize = 0,
+        name: ?[]const u8 = null,
+        value: ?[]const u8 = null,
+
+        fn event(context: *anyopaque, value: zigai.AgentStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (value) {
+                .function_tool_result => self.results += 1,
+                .final_result => |final| {
+                    self.finals += 1;
+                    self.name = final.output_name;
+                    self.value = switch (final.structured_output.?) {
+                        .string => |text_value| text_value,
+                        else => return error.ExpectedStringSnapshot,
+                    };
+                },
+                else => {},
+            }
+        }
+    };
+    var capture: Capture = .{};
     var result = try (zigai.Agent{
         .model = scripted.model(),
         .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
-    }).run(std.testing.allocator, "answer or refuse");
+    }).runStream(std.testing.allocator, "answer or refuse", .{
+        .context = &capture,
+        .eventFn = Capture.event,
+    });
     defer result.deinit();
     try std.testing.expectEqualStrings("\"unsafe\"", result.output);
     try std.testing.expectEqualStrings("refusal", result.output_name.?);
     try std.testing.expectEqual(@as(usize, 3), result.messages.len);
     try std.testing.expectEqualStrings("Final output accepted.", result.messages[2].request.parts[0].tool_return.content);
+    try std.testing.expectEqual(@as(usize, 1), capture.results);
+    try std.testing.expectEqual(@as(usize, 1), capture.finals);
+    try std.testing.expectEqualStrings("refusal", capture.name.?);
+    try std.testing.expectEqualStrings("unsafe", capture.value.?);
 }
 
 test "output functions receive run context and can request a model retry" {
@@ -1455,6 +1486,7 @@ test "output end strategies control tools emitted beside a final result" {
             const calls = [_]zigai.model.Part{
                 .{ .tool_call = .{ .id = "before", .name = "tool", .arguments_json = "{}" } },
                 .{ .tool_call = .{ .id = "finish", .name = "finish", .arguments_json = "{}" } },
+                .{ .tool_call = .{ .id = "finish-again", .name = "finish", .arguments_json = "{}" } },
                 .{ .tool_call = .{ .id = "after", .name = "tool", .arguments_json = "{}" } },
             };
             var scripted = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &calls }} };
@@ -1476,6 +1508,79 @@ test "output end strategies control tools emitted beside a final result" {
     try std.testing.expectEqual(@as(u8, 2), try Runner.run(.exhaustive));
 }
 
+test "output function retries obey early ordering budgets and result limits" {
+    const State = struct {
+        fn retry(
+            _: *anyopaque,
+            _: std.mem.Allocator,
+            _: zigai.output.RunContext,
+            _: []const u8,
+        ) !zigai.OutputFunctionResult {
+            return .{ .retry = "retry" };
+        }
+
+        fn longRetry(
+            _: *anyopaque,
+            _: std.mem.Allocator,
+            _: zigai.output.RunContext,
+            _: []const u8,
+        ) !zigai.OutputFunctionResult {
+            return .{ .retry = "too long" };
+        }
+    };
+    var state: u8 = 0;
+    const choices = [_]zigai.OutputChoice{
+        .{
+            .name = "retry_output",
+            .schema = "{\"type\":\"object\"}",
+            .function = .{ .context = &state, .callFn = State.retry },
+        },
+        .{ .name = "final_output", .schema = "{\"type\":\"object\"}" },
+    };
+    const calls = [_]zigai.model.Part{
+        .{ .tool_call = .{ .id = "retry", .name = "retry_output", .arguments_json = "{}" } },
+        .{ .tool_call = .{ .id = "final", .name = "final_output", .arguments_json = "{}" } },
+    };
+    var early = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &calls }} };
+    var result = try (zigai.Agent{
+        .model = early.model(),
+        .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
+        .end_strategy = .early,
+        .max_output_retries = 1,
+    }).run(std.testing.allocator, "finish");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("{}", result.output);
+    try std.testing.expect(result.messages[2].request.parts[0].tool_return.isError());
+
+    const long_choice = [_]zigai.OutputChoice{.{
+        .name = "retry_output",
+        .schema = "{\"type\":\"object\"}",
+        .function = .{ .context = &state, .callFn = State.longRetry },
+    }};
+    const long_call = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "long",
+        .name = "retry_output",
+        .arguments_json = "{}",
+    } }};
+    inline for (.{ zigai.OutputEndStrategy.early, zigai.OutputEndStrategy.graceful }) |strategy| {
+        var oversized = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &long_call }} };
+        try std.testing.expectError(zigai.Agent.Error.ToolResultTooLarge, (zigai.Agent{
+            .model = oversized.model(),
+            .output = .{ .tool = .{ .output = .{ .choices = &long_choice } } },
+            .end_strategy = strategy,
+            .max_output_retries = 1,
+            .tool_limits = .{ .max_result_bytes = 1 },
+        }).run(std.testing.allocator, "finish"));
+    }
+
+    var exhausted = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &long_call }} };
+    try std.testing.expectError(zigai.Agent.Error.OutputRetriesExceeded, (zigai.Agent{
+        .model = exhausted.model(),
+        .output = .{ .tool = .{ .output = .{ .choices = &long_choice } } },
+        .max_output_retries = 0,
+    }).run(std.testing.allocator, "finish"));
+}
+
 test "tool output rejects missing calls invalid arguments and name conflicts" {
     const choices = [_]zigai.OutputChoice{.{
         .name = "tool",
@@ -1489,6 +1594,22 @@ test "tool output rejects missing calls invalid arguments and name conflicts" {
         .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
         .max_output_retries = 0,
     }).run(std.testing.allocator, "finish"));
+
+    const recovered_call = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "recovered",
+        .name = "tool",
+        .arguments_json = "{\"value\":1}",
+    } }};
+    var recovered = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &text }, .{ .parts = &recovered_call } },
+    };
+    var recovered_result = try (zigai.Agent{
+        .model = recovered.model(),
+        .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
+        .max_output_retries = 1,
+    }).run(std.testing.allocator, "finish");
+    defer recovered_result.deinit();
+    try std.testing.expectEqualStrings("{\"value\":1}", recovered_result.output);
 
     const invalid_call = [_]zigai.model.Part{.{ .tool_call = .{
         .id = "bad",

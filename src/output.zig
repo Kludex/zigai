@@ -471,6 +471,15 @@ test "tool output exposes alternatives and wraps scalar schemas" {
         decodeToolArguments(arena.allocator(), prepared.tool_choices[1], "{\"value\":\"no\"}"),
     );
     try std.testing.expect(prepared.findToolChoice("missing") == null);
+
+    const object_or_null = [_]Choice{.{
+        .name = "nullable_object",
+        .schema = "{\"type\":[\"object\",\"null\"]}",
+    }};
+    const array_type = try prepare(arena.allocator(), .{ .tool = .{ .output = .{
+        .choices = &object_or_null,
+    } } }, .{ .supports_tools = true });
+    try std.testing.expect(!array_type.tool_choices[0].wrapped);
 }
 
 test "output preparation rejects unsupported modes and malformed specifications" {
