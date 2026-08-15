@@ -58,7 +58,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add part-oriented streaming events. Expose start/delta/end/final events,
   thinking/media/native-tool deltas, deferred/enqueued events, stable part
   indexes, and validated structured-output snapshots without duplicate finals.
-- [ ] Add pending message injection during a run with deterministic ordering,
+- [x] Add pending message injection during a run with deterministic ordering,
   cancellation semantics, history persistence, and lifecycle/stream events.
 - [ ] Add complete usage accounting: cached input, cache writes, reasoning,
   audio, provider-native details, request/tool counts, latency, and optional
