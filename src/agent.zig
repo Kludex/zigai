@@ -2210,7 +2210,7 @@ fn executeResumedToolCalls(
         .tool_call => |call| {
             const tool_index = findToolIndex(tools, call.name) orelse return Agent.Error.UnknownTool;
             const tool = tools[tool_index];
-            const saved = findSavedToolCall(saved_calls, call.id) orelse return Agent.Error.InvalidDeferredState;
+            const saved = saved_calls[result_index];
             try emitLifecycle(hooks, .{ .tool_validation_start = .{ .call = call } });
             toolRunControl(run_context).invoke(
                 void,
@@ -2380,14 +2380,6 @@ fn validateDeferredCalls(
         else => {},
     };
     if (saved_index != saved_calls.len) return Agent.Error.InvalidDeferredState;
-}
-
-fn findSavedToolCall(
-    saved_calls: []const SerializedResolvedToolCall,
-    call_id: []const u8,
-) ?SerializedResolvedToolCall {
-    for (saved_calls) |saved| if (std.mem.eql(u8, saved.call_id, call_id)) return saved;
-    return null;
 }
 
 fn requireResumeDecision(decisions: []const ResumeDecision, call_id: []const u8) Agent.Error!ResumeDecision {
