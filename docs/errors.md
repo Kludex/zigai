@@ -67,7 +67,7 @@ cases relevant to the application, then propagate the remainder.
 | `InvalidOutputSpec` | An output name, schema, alternative list, or prompt template is malformed. |
 | `ModelDoesNotSupportPromptedOutput` | Prompted output was selected for a model without instruction support. |
 | `OutputToolRequired` | Tool-output mode received no output-tool call before its retry budget ended. |
-| `OutputRetriesExceeded` | An output function requested another attempt after its retry budget ended. |
+| `OutputRetriesExceeded` | An output function or validator requested another attempt after its retry budget ended. |
 | `ProviderFileProviderMismatch` | A provider-managed file belongs to another provider. |
 | `PendingMessageQueueAlreadyUsed` | A one-run pending-message queue was attached again. |
 | `PendingMessageQueueClosed` | A message was submitted after the queue stopped accepting input. |

@@ -61,6 +61,37 @@ pub const Function = struct {
     }
 };
 
+/// A validator either accepts (and may transform) an output or asks the model
+/// for another attempt with a safe, application-provided message.
+pub const ValidatorResult = union(enum) {
+    output: []const u8,
+    retry: []const u8,
+};
+
+/// Processes agent output after schema validation. Returned slices must be
+/// static or allocated with the supplied allocator. A thrown error aborts the
+/// run; return `.retry` for a recoverable validation failure.
+pub const Validator = struct {
+    context: *anyopaque,
+    validateFn: *const fn (
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        run_context: RunContext,
+        output_name: ?[]const u8,
+        output_json: []const u8,
+    ) anyerror!ValidatorResult,
+
+    pub fn validate(
+        self: Validator,
+        allocator: std.mem.Allocator,
+        run_context: RunContext,
+        output_name: ?[]const u8,
+        output_json: []const u8,
+    ) !ValidatorResult {
+        return self.validateFn(self.context, allocator, run_context, output_name, output_json);
+    }
+};
+
 /// One named structured-output alternative.
 pub const Choice = struct {
     name: []const u8,

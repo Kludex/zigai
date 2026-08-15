@@ -1476,6 +1476,246 @@ test "output functions receive run context and can request a model retry" {
     try std.testing.expectEqual(@as(usize, 2), state.calls);
 }
 
+test "output validators receive run context retry and transform in order" {
+    const State = struct {
+        first_calls: usize = 0,
+        second_calls: usize = 0,
+
+        fn first(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            run_context: zigai.output.RunContext,
+            output_name: ?[]const u8,
+            output_json: []const u8,
+        ) !zigai.OutputValidatorResult {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.first_calls += 1;
+            try std.testing.expect(output_name == null);
+            try std.testing.expect(!run_context.partial_output);
+            try std.testing.expectEqual(@as(u32, 9), run_context.dependency(u32).?.*);
+            try std.testing.expectEqual(self.first_calls, run_context.model_requests);
+            try std.testing.expect(run_context.messages[run_context.messages.len - 1] == .response);
+            if (std.mem.indexOf(u8, output_json, ":1") != null) {
+                return .{ .retry = "Value must be greater than one." };
+            }
+            return .{ .output = output_json };
+        }
+
+        fn second(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            _: zigai.output.RunContext,
+            _: ?[]const u8,
+            output_json: []const u8,
+        ) !zigai.OutputValidatorResult {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.second_calls += 1;
+            try std.testing.expectEqualStrings("{\"value\":2}", output_json);
+            return .{ .output = try allocator.dupe(u8, "{\"value\":3}") };
+        }
+    };
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.ModelRequest) !void {
+            if (index == 0) return;
+            try std.testing.expectEqualStrings(
+                "Value must be greater than one.",
+                request.messages[2].request.parts[0].retry_prompt,
+            );
+        }
+    };
+    const schema = "{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}}," ++
+        "\"required\":[\"value\"],\"additionalProperties\":false}";
+    const first = [_]zigai.Part{.{ .text = "{\"value\":1}" }};
+    const second = [_]zigai.Part{.{ .text = "{\"value\":2}" }};
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &first }, .{ .parts = &second } },
+        .inspectFn = Inspector.inspect,
+        .profile = .{ .supports_json_schema_output = true },
+    };
+    var dependency: u32 = 9;
+    var state: State = .{};
+    const validators = [_]zigai.OutputValidator{
+        .{ .context = &state, .validateFn = State.first },
+        .{ .context = &state, .validateFn = State.second },
+    };
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .dependencies = &dependency,
+        .output = .{ .json_schema = .{ .name = "answer", .schema = schema } },
+        .output_validators = &validators,
+        .validate_output_locally = true,
+        .max_output_retries = 1,
+    }).run(std.testing.allocator, "answer");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("{\"value\":3}", result.output);
+    try std.testing.expectEqual(@as(usize, 2), state.first_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.second_calls);
+}
+
+test "tool output validators receive the selected name and transform output" {
+    const State = struct {
+        calls: usize = 0,
+        fn validate(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            run_context: zigai.output.RunContext,
+            output_name: ?[]const u8,
+            output_json: []const u8,
+        ) !zigai.OutputValidatorResult {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            try std.testing.expectEqualStrings("finish", output_name.?);
+            try std.testing.expect(!run_context.partial_output);
+            try std.testing.expectEqualStrings("{\"value\":1}", output_json);
+            if (self.calls == 1) return .{ .retry = "Try the output again." };
+            return .{ .output = try allocator.dupe(u8, "{\"value\":2}") };
+        }
+    };
+    const choices = [_]zigai.OutputChoice{.{
+        .name = "finish",
+        .schema = "{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}}," ++
+            "\"required\":[\"value\"],\"additionalProperties\":false}",
+    }};
+    const first_call = [_]zigai.Part{.{ .tool_call = .{
+        .id = "finish-1",
+        .name = "finish",
+        .arguments_json = "{\"value\":1}",
+    } }};
+    const second_call = [_]zigai.Part{.{ .tool_call = .{
+        .id = "finish-2",
+        .name = "finish",
+        .arguments_json = "{\"value\":1}",
+    } }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.ModelRequest) !void {
+            if (index == 0) return;
+            const retry = request.messages[2].request.parts[0].tool_return;
+            try std.testing.expect(retry.isError());
+            try std.testing.expectEqualStrings("Try the output again.", retry.content);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &first_call }, .{ .parts = &second_call } },
+        .inspectFn = Inspector.inspect,
+    };
+    var state: State = .{};
+    const validators = [_]zigai.OutputValidator{.{ .context = &state, .validateFn = State.validate }};
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
+        .output_validators = &validators,
+        .max_output_retries = 1,
+    }).run(std.testing.allocator, "finish");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("{\"value\":2}", result.output);
+    try std.testing.expectEqual(@as(usize, 2), state.calls);
+}
+
+test "output validator retry limits and thrown errors stay distinct" {
+    const Callbacks = struct {
+        fn retry(
+            _: *anyopaque,
+            _: std.mem.Allocator,
+            _: zigai.output.RunContext,
+            _: ?[]const u8,
+            _: []const u8,
+        ) !zigai.OutputValidatorResult {
+            return .{ .retry = "again" };
+        }
+
+        fn fail(
+            _: *anyopaque,
+            _: std.mem.Allocator,
+            _: zigai.output.RunContext,
+            _: ?[]const u8,
+            _: []const u8,
+        ) !zigai.OutputValidatorResult {
+            return error.ValidatorBackendFailed;
+        }
+    };
+    var state: u8 = 0;
+    const parts = [_]zigai.Part{.{ .text = "answer" }};
+    var exhausted = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    try std.testing.expectError(zigai.Agent.Error.OutputRetriesExceeded, (zigai.Agent{
+        .model = exhausted.model(),
+        .output_validators = &.{.{ .context = &state, .validateFn = Callbacks.retry }},
+        .max_output_retries = 0,
+    }).run(std.testing.allocator, "answer"));
+
+    var oversized = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    try std.testing.expectError(zigai.Agent.Error.ToolResultTooLarge, (zigai.Agent{
+        .model = oversized.model(),
+        .output_validators = &.{.{ .context = &state, .validateFn = Callbacks.retry }},
+        .max_output_retries = 1,
+        .tool_limits = .{ .max_result_bytes = 1 },
+    }).run(std.testing.allocator, "answer"));
+
+    var failed = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    try std.testing.expectError(error.ValidatorBackendFailed, (zigai.Agent{
+        .model = failed.model(),
+        .output_validators = &.{.{ .context = &state, .validateFn = Callbacks.fail }},
+    }).run(std.testing.allocator, "answer"));
+    try std.testing.expectEqual(@as(usize, 1), failed.request_count);
+}
+
+test "capability output validators run before typed decoding" {
+    const Answer = struct { answer: u32 };
+    const Callback = struct {
+        fn validate(
+            _: *anyopaque,
+            allocator: std.mem.Allocator,
+            _: zigai.output.RunContext,
+            _: ?[]const u8,
+            output_json: []const u8,
+        ) !zigai.OutputValidatorResult {
+            try std.testing.expectEqualStrings("{\"answer\":41}", output_json);
+            return .{ .output = try allocator.dupe(u8, "{\"answer\":42}") };
+        }
+    };
+    const parts = [_]zigai.Part{.{ .text = "{\"answer\":41}" }};
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .profile = .{ .supports_json_schema_output = true },
+    };
+    var context: u8 = 0;
+    const validator = zigai.OutputValidator{ .context = &context, .validateFn = Callback.validate };
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .capabilities = &.{.{ .output_validators = &.{validator} }},
+    }).runTyped(Answer, std.testing.allocator, "answer");
+    defer result.deinit();
+    try std.testing.expectEqual(@as(u32, 42), result.output.answer);
+}
+
+test "structured output is revalidated after validator transformation" {
+    const Callback = struct {
+        fn validate(
+            _: *anyopaque,
+            _: std.mem.Allocator,
+            _: zigai.output.RunContext,
+            _: ?[]const u8,
+            _: []const u8,
+        ) !zigai.OutputValidatorResult {
+            return .{ .output = "{\"value\":\"invalid\"}" };
+        }
+    };
+    const schema = "{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}}," ++
+        "\"required\":[\"value\"],\"additionalProperties\":false}";
+    const parts = [_]zigai.Part{.{ .text = "{\"value\":1}" }};
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .profile = .{ .supports_json_schema_output = true },
+    };
+    var context: u8 = 0;
+    try std.testing.expectError(zigai.json_schema.Error.OutputSchemaValidationFailed, (zigai.Agent{
+        .model = scripted.model(),
+        .output = .{ .json_schema = .{ .name = "answer", .schema = schema } },
+        .output_validators = &.{.{ .context = &context, .validateFn = Callback.validate }},
+        .validate_output_locally = true,
+        .max_output_retries = 0,
+    }).run(std.testing.allocator, "answer"));
+}
+
 test "output end strategies control tools emitted beside a final result" {
     const Runner = struct {
         fn run(strategy: zigai.OutputEndStrategy) !u8 {

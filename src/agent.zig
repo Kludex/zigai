@@ -826,6 +826,7 @@ pub const Capability = struct {
     instructions: []const Instruction = &.{},
     hooks: []const LifecycleHook = &.{},
     history_processors: []const history.Processor = &.{},
+    output_validators: []const output_types.Validator = &.{},
     model_settings: model_types.ModelSettings = .{},
     context: ?*anyopaque = null,
     selectModelFn: ?*const fn (context: ?*anyopaque, run: CapabilityContext) anyerror!model_types.Model = null,
@@ -873,6 +874,9 @@ pub const Agent = struct {
     system_prompt: ?[]const u8 = null,
     instructions: []const Instruction = &.{},
     output: output_types.Spec = .text,
+    /// Ordered semantic validators. Each may transform output or return a safe
+    /// retry message; thrown errors abort the run.
+    output_validators: []const output_types.Validator = &.{},
     /// Policy for ordinary tools emitted alongside a final output.
     end_strategy: output_types.EndStrategy = .graceful,
     /// Re-check structured provider output locally before returning it. This is
@@ -1263,6 +1267,9 @@ pub const Agent = struct {
         var history_processors: std.ArrayList(history.Processor) = .empty;
         defer history_processors.deinit(allocator);
         try history_processors.appendSlice(allocator, self.history_processors);
+        var output_validators: std.ArrayList(output_types.Validator) = .empty;
+        defer output_validators.deinit(allocator);
+        try output_validators.appendSlice(allocator, self.output_validators);
 
         const dependencies = options.dependencies orelse self.dependencies;
         var model = self.model;
@@ -1274,6 +1281,7 @@ pub const Agent = struct {
             try instructions.appendSlice(allocator, capability.instructions);
             try hooks.appendSlice(allocator, capability.hooks);
             try history_processors.appendSlice(allocator, capability.history_processors);
+            try output_validators.appendSlice(allocator, capability.output_validators);
             capability_settings = capability_settings.overrideWith(capability.model_settings);
             const capability_context = CapabilityContext{
                 .prompt = prompt,
@@ -1292,6 +1300,7 @@ pub const Agent = struct {
         configured.toolsets = toolsets.items;
         configured.instructions = instructions.items;
         configured.history_processors = history_processors.items;
+        configured.output_validators = output_validators.items;
         configured.model_settings = capability_settings.overrideWith(self.model_settings);
         configured.capabilities = &.{};
         if (telemetry_run) |*instrumentation| try hooks.append(allocator, telemetryHook(instrumentation));
@@ -1646,32 +1655,44 @@ pub const Agent = struct {
                     );
                     continue;
                 }
-                const output = try collectText(memory, response.parts);
+                const raw_output = try collectText(memory, response.parts);
                 try emitLifecycle(hooks, .{ .output_validation_start = .{
-                    .output = output,
+                    .output = raw_output,
                     .retry_number = output_retries,
                 } });
-                validateFinalOutput(
+                const validation = try validateFinalOutput(
                     memory,
                     prepared_output.validation_format,
                     self.validate_output_locally or prepared_output.validation_required,
-                    output,
+                    raw_output,
+                    null,
+                    self.output_validators,
+                    .{
+                        .dependencies = dependencies,
+                        .messages = messages.items,
+                        .usage = total_usage,
+                        .model_requests = model_requests,
+                        .control = control,
+                    },
                     output_validator,
-                ) catch |err| {
-                    const will_retry = err != error.OutOfMemory and output_retries < self.max_output_retries;
-                    try emitLifecycle(hooks, .{ .output_validation_error = .{
-                        .output = output,
-                        .failure = err,
-                        .retry_number = output_retries,
-                        .will_retry = will_retry,
-                    } });
-                    if (err == error.OutOfMemory) return err;
-                    if (!will_retry) return err;
-                    output_retries += 1;
-                    try appendRetryMessage(memory, &messages, "The previous response did not match the required output schema. " ++
-                        "Return only valid JSON matching the schema.");
-                    continue;
-                };
+                );
+                const output = switch (validation) {
+                    .accepted => |accepted| accepted,
+                    .retry => |retry| retry: {
+                        const failure = retry.failure orelse error.OutputValidationRetry;
+                        const will_retry = output_retries < self.max_output_retries;
+                        try emitLifecycle(hooks, .{ .output_validation_error = .{
+                            .output = raw_output,
+                            .failure = failure,
+                            .retry_number = output_retries,
+                            .will_retry = will_retry,
+                        } });
+                        try consumeOutputRetry(self.max_output_retries, &output_retries, retry.failure);
+                        if (retry.message.len > self.tool_limits.max_result_bytes) return Error.ToolResultTooLarge;
+                        try appendRetryMessage(memory, &messages, retry.message);
+                        break :retry null;
+                    },
+                } orelse continue;
                 try emitLifecycle(hooks, .{ .output_validation_end = .{
                     .output = output,
                     .retry_number = output_retries,
@@ -1804,7 +1825,16 @@ pub const Agent = struct {
                                 ordinal += 1;
                                 continue;
                             }
-                            const attempt = try processOutputCall(memory, choice, call, output_run_context);
+                            const attempt = try processOutputCall(
+                                memory,
+                                choice,
+                                call,
+                                output_run_context,
+                                self.output_validators,
+                                hooks,
+                                output_retries,
+                                self.max_output_retries,
+                            );
                             switch (attempt) {
                                 .selected => |value| {
                                     selected = value;
@@ -1839,7 +1869,16 @@ pub const Agent = struct {
                                     .interrupted,
                                 );
                             } else {
-                                const attempt = try processOutputCall(memory, choice, call, output_run_context);
+                                const attempt = try processOutputCall(
+                                    memory,
+                                    choice,
+                                    call,
+                                    output_run_context,
+                                    self.output_validators,
+                                    hooks,
+                                    output_retries,
+                                    self.max_output_retries,
+                                );
                                 switch (attempt) {
                                     .selected => |value| {
                                         if (selected == null) selected = value;
@@ -1907,15 +1946,6 @@ pub const Agent = struct {
                         stream_sink,
                         hooks,
                     )) continue;
-                    try emitLifecycle(hooks, .{ .output_validation_start = .{
-                        .output = final.output,
-                        .retry_number = output_retries,
-                    } });
-                    try validateFinalOutput(memory, .text, false, final.output, output_validator);
-                    try emitLifecycle(hooks, .{ .output_validation_end = .{
-                        .output = final.output,
-                        .retry_number = output_retries,
-                    } });
                     if (stream_sink) |sink| try emitStreamEvent(hooks, sink, .{ .final_result = .{
                         .output = final.output,
                         .output_name = final.name,
@@ -2283,15 +2313,64 @@ fn typedOutputValidator(comptime Output: type) OutputValidator {
     return .{ .context = &Wrapper.placeholder, .validateFn = Wrapper.validate };
 }
 
+const ValidationAttempt = union(enum) {
+    accepted: []const u8,
+    retry: struct {
+        message: []const u8,
+        failure: ?anyerror = null,
+    },
+};
+
+const schema_retry_message = "The previous response did not match the required output schema. " ++
+    "Return only valid JSON matching the schema.";
+
 fn validateFinalOutput(
     allocator: std.mem.Allocator,
     output_format: model_types.OutputFormat,
     validate_locally: bool,
+    initial_output: []const u8,
+    output_name: ?[]const u8,
+    validators: []const output_types.Validator,
+    run_context: output_types.RunContext,
+    typed_validator: ?OutputValidator,
+) !ValidationAttempt {
+    if (validate_locally) json_schema.validate(allocator, output_format, initial_output) catch |failure| {
+        if (failure == error.OutOfMemory) return failure;
+        return .{ .retry = .{ .message = schema_retry_message, .failure = failure } };
+    };
+    var output = initial_output;
+    for (validators) |validator| {
+        const result = try run_context.control.invoke(
+            output_types.ValidatorResult,
+            invokeConfiguredOutputValidator,
+            .{ validator, allocator, run_context, output_name, output },
+        );
+        switch (result) {
+            .output => |transformed| output = transformed,
+            .retry => |message| return .{ .retry = .{ .message = message } },
+        }
+    }
+    if (validate_locally and validators.len > 0) {
+        json_schema.validate(allocator, output_format, output) catch |failure| {
+            if (failure == error.OutOfMemory) return failure;
+            return .{ .retry = .{ .message = schema_retry_message, .failure = failure } };
+        };
+    }
+    if (typed_validator) |validator| validator.validate(allocator, output) catch |failure| {
+        if (failure == error.OutOfMemory) return failure;
+        return .{ .retry = .{ .message = schema_retry_message, .failure = failure } };
+    };
+    return .{ .accepted = output };
+}
+
+fn invokeConfiguredOutputValidator(
+    validator: output_types.Validator,
+    allocator: std.mem.Allocator,
+    run_context: output_types.RunContext,
+    output_name: ?[]const u8,
     output: []const u8,
-    output_validator: ?OutputValidator,
-) !void {
-    if (validate_locally) try json_schema.validate(allocator, output_format, output);
-    if (output_validator) |validator| try validator.validate(allocator, output);
+) !output_types.ValidatorResult {
+    return validator.validate(allocator, run_context, output_name, output);
 }
 
 const SelectedOutput = struct {
@@ -2313,6 +2392,10 @@ fn processOutputCall(
     prepared: output_types.PreparedChoice,
     call: model_types.ToolCall,
     run_context: output_types.RunContext,
+    validators: []const output_types.Validator,
+    hooks: []const LifecycleHook,
+    retry_number: usize,
+    max_retries: usize,
 ) !OutputAttempt {
     const arguments = output_types.decodeToolArguments(allocator, prepared, call.arguments_json) catch |failure| {
         if (failure == error.OutOfMemory) return failure;
@@ -2321,22 +2404,21 @@ fn processOutputCall(
             .failure = failure,
         } };
     };
-    if (prepared.choice.function) |function| {
+    const selected: SelectedOutput = if (prepared.choice.function) |function| selected: {
         const result = try run_context.control.invoke(
             output_types.FunctionResult,
             invokeOutputFunction,
             .{ function, allocator, run_context, arguments },
         );
-        return switch (result) {
-            .output => |output| .{ .selected = .{
+        break :selected switch (result) {
+            .output => |output| .{
                 .name = prepared.choice.name,
                 .output = output,
                 .structured_format = .text,
-            } },
-            .retry => |message| .{ .retry = .{ .message = message } },
+            },
+            .retry => |message| return .{ .retry = .{ .message = message } },
         };
-    }
-    return .{ .selected = .{
+    } else .{
         .name = prepared.choice.name,
         .output = arguments,
         .structured_format = .{ .json_schema = .{
@@ -2344,7 +2426,54 @@ fn processOutputCall(
             .schema = prepared.choice.schema,
             .strict = prepared.choice.strict,
         } },
-    } };
+    };
+    try emitLifecycle(hooks, .{ .output_validation_start = .{
+        .output = selected.output,
+        .retry_number = retry_number,
+    } });
+    const validation = validateFinalOutput(
+        allocator,
+        selected.structured_format,
+        selected.structured_format != .text,
+        selected.output,
+        selected.name,
+        validators,
+        run_context,
+        null,
+    ) catch |failure| {
+        try emitLifecycle(hooks, .{ .output_validation_error = .{
+            .output = selected.output,
+            .failure = failure,
+            .retry_number = retry_number,
+            .will_retry = false,
+        } });
+        return failure;
+    };
+    return switch (validation) {
+        .accepted => |validated| accepted: {
+            try emitLifecycle(hooks, .{ .output_validation_end = .{
+                .output = validated,
+                .retry_number = retry_number,
+            } });
+            break :accepted .{ .selected = .{
+                .name = selected.name,
+                .output = validated,
+                .structured_format = selected.structured_format,
+            } };
+        },
+        .retry => |retry| retry_result: {
+            try emitLifecycle(hooks, .{ .output_validation_error = .{
+                .output = selected.output,
+                .failure = retry.failure orelse error.OutputValidationRetry,
+                .retry_number = retry_number,
+                .will_retry = retry_number < max_retries,
+            } });
+            break :retry_result .{ .retry = .{
+                .message = retry.message,
+                .failure = retry.failure,
+            } };
+        },
+    };
 }
 
 fn invokeOutputFunction(

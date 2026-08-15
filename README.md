@@ -664,6 +664,10 @@ return a final value or a safe retry message. `Agent.end_strategy` controls
 ordinary calls emitted beside output: `.early` skips them, `.graceful` runs
 calls before the selected output, and `.exhaustive` runs every call.
 
+Add ordered `OutputValidator` callbacks for semantic or I/O-backed checks.
+Validators can transform output, request a bounded model retry with a safe
+message, and inspect dependencies, history, usage, and the selected choice.
+
 ## Streaming and resilience
 
 Use `Agent.runStream` with an `AgentStreamSink`. Model output arrives as an

@@ -153,6 +153,15 @@ identifies the chosen branch. An `OutputFunction` receives borrowed
 allocated with its supplied run-arena allocator. Its explicit `.retry` result
 is safe to send to the model, while thrown errors stop the run.
 
+`Agent.output_validators` runs ordered `OutputValidator` callbacks after schema
+validation and after an output function. Each callback receives the selected
+choice name, borrowed `output.RunContext`, and the previous callback's output.
+It returns `.output` to accept or transform the value, or `.retry` with a safe
+model-visible correction message. Transformed structured output is checked
+against its schema again. A thrown callback error aborts the run. Capabilities
+can contribute validators through `Capability.output_validators`; agent-level
+validators run first.
+
 `Agent.end_strategy` defaults to `.graceful`: ordinary calls before the first
 successful output run, later calls are closed as skipped. `.early` evaluates
 output calls first and skips ordinary calls after one succeeds. `.exhaustive`
