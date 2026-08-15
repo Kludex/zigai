@@ -37,7 +37,9 @@ pub const ClientDefaults = struct {
     /// Built-in capabilities for model families recognized by a named
     /// provider. Application lookups take precedence and overrides run last.
     model_profile_lookup: ?*const fn ([]const u8) ?model_types.ModelProfile = null,
-    authentication: Authentication = .{},
+    /// `null` selects an unauthenticated compatibility endpoint.
+    authentication: ?Authentication = .{},
+    request_policy: provider_types.RequestPolicy = .{},
     include_stream_usage: bool = true,
     extra_body_kind: model_types.ExtraBodyKind = .openai_compatible,
     provider_details_field: ?[]const u8 = null,
@@ -56,9 +58,9 @@ pub fn ProviderWithDefaults(comptime defaults: ClientDefaults) type {
         pub const Options = struct {
             base_url: []const u8 = defaults.base_url,
             provider_name: []const u8 = defaults.provider_name,
-            authentication: Authentication = defaults.authentication,
+            authentication: ?Authentication = defaults.authentication,
             headers: []const http.Header = &.{},
-            request_policy: provider_types.RequestPolicy = .{},
+            request_policy: provider_types.RequestPolicy = defaults.request_policy,
             file_limits: provider_types.FileLimits = .{},
             model_profiles: ?http_provider.Configured.ModelProfiles = null,
             discovery_limits: operations.DiscoveryLimits = .{},
@@ -74,11 +76,14 @@ pub fn ProviderWithDefaults(comptime defaults: ClientDefaults) type {
                     .name = options.provider_name,
                     .base_url = options.base_url,
                     .transport = transport,
-                    .credential = .{ .header = .{
-                        .name = options.authentication.header,
-                        .value = api_key,
-                        .prefix = options.authentication.prefix,
-                    } },
+                    .credential = if (options.authentication) |authentication|
+                        .{ .header = .{
+                            .name = authentication.header,
+                            .value = api_key,
+                            .prefix = authentication.prefix,
+                        } }
+                    else
+                        .none,
                     .headers = options.headers,
                     .request_policy = options.request_policy,
                     .file_limits = options.file_limits,

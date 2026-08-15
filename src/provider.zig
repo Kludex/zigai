@@ -48,8 +48,9 @@ pub const Request = struct {
     timeout_ms: ?u64 = null,
     cancellation: ?*const model.CancellationToken = null,
     response_header_sink: ?transport.ResponseHeaderSink = null,
-    /// Run-scoped policy that may further restrict the provider base URL.
-    url_policy: security.UrlPolicy = .{},
+    /// Optional run-scoped policy that may further restrict the provider base
+    /// URL. Provider-owned operations omit it and use the provider policy.
+    url_policy: ?security.UrlPolicy = null,
 };
 
 pub const ModelDescriptor = struct {
@@ -180,7 +181,7 @@ pub const Provider = struct {
 
     pub fn request(self: Provider, allocator: std.mem.Allocator, value: Request) !transport.Response {
         try self.validate();
-        try value.url_policy.validate(self.base_url);
+        if (value.url_policy) |url_policy| try url_policy.validate(self.base_url);
         var bounded = value;
         bounded.timeout_ms = self.request_policy.timeoutMilliseconds(value.timeout_ms);
         return self.requestFn(self.context, allocator, bounded);
@@ -189,7 +190,7 @@ pub const Provider = struct {
     pub fn streamLines(self: Provider, allocator: std.mem.Allocator, value: Request, sink: transport.LineSink) !transport.StreamResponse {
         const stream = self.streamLinesFn orelse return error.UnsupportedProviderOperation;
         try self.validate();
-        try value.url_policy.validate(self.base_url);
+        if (value.url_policy) |url_policy| try url_policy.validate(self.base_url);
         var bounded = value;
         bounded.timeout_ms = self.request_policy.timeoutMilliseconds(value.timeout_ms);
         return stream(self.context, allocator, bounded, sink);

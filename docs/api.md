@@ -379,6 +379,13 @@ Named clients use a fail-closed fallback for unknown families. The generic
 `openai_compatible.Client` retains its configurable compatibility presets
 because an arbitrary endpoint has no provider identity to resolve against.
 
+Ollama has a named compatibility provider with no credential. Its default
+`http://localhost:11434/v1` endpoint is accepted only through the exported
+`ollama.local_request_policy`; callers must apply that same policy to the
+standard HTTP transport. Tagged and namespaced library models resolve through
+Ollama-specific family profiles. Unknown model families retain the fail-closed
+compatible profile, so unsupported settings and tools are rejected before I/O.
+
 `Provider.listModels` is implemented by OpenAI, Anthropic, Google, and
 OpenAI-compatible provider objects. It authenticates through the provider
 boundary and returns `OwnedProviderModels`; call `deinit` after consuming its

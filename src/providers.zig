@@ -24,6 +24,7 @@ pub const google = @import("providers/google.zig");
 pub const groq = @import("providers/groq.zig");
 pub const huggingface = @import("providers/huggingface.zig");
 pub const mistral = @import("providers/mistral/root.zig");
+pub const ollama = @import("providers/ollama.zig");
 pub const openrouter = @import("providers/openrouter.zig");
 pub const ovhcloud = @import("providers/ovhcloud.zig");
 pub const pydantic_gateway = @import("providers/pydantic_gateway.zig");
@@ -57,6 +58,7 @@ test {
     _ = groq;
     _ = huggingface;
     _ = mistral;
+    _ = ollama;
     _ = openrouter;
     _ = ovhcloud;
     _ = pydantic_gateway;

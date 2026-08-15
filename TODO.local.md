@@ -127,7 +127,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   without leaking OpenRouter extensions into the generic OpenAI-compatible API.
 - [x] Add a Google Cloud Vertex AI provider boundary that reuses the Gemini
   GenerateContent codec without coupling Google AI Studio credentials or URLs.
-- [ ] Add a focused Ollama example with an explicit local-endpoint policy,
+- [x] Add a focused Ollama example with an explicit local-endpoint policy,
   provider-specific profiles, and pre-I/O validation.
 - [ ] Add a focused Crusoe example with provider-specific profiles and pre-I/O
   validation.

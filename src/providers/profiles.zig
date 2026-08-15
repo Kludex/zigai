@@ -418,6 +418,35 @@ pub fn openRouter(model_name: []const u8) ?model.ModelProfile {
     return routedProfile(model_name, '/');
 }
 
+/// Model families commonly installed from the Ollama library. Tags and
+/// namespaces select artifacts, not capability families.
+pub fn ollama(model_name: []const u8) ?model.ModelProfile {
+    var family_name = model_name;
+    if (std.mem.lastIndexOfScalar(u8, family_name, '/')) |separator| family_name = family_name[separator + 1 ..];
+    if (std.mem.indexOfScalar(u8, family_name, ':')) |tag| family_name = family_name[0..tag];
+    var profile = if (startsWith(family_name, "gpt-oss"))
+        familyProfile(.harmony, family_name)
+    else if (startsWith(family_name, "llama") or startsWith(family_name, "meta-llama"))
+        familyProfile(.meta, family_name)
+    else if (startsWith(family_name, "gemma"))
+        familyProfile(.google, family_name)
+    else if (startsWith(family_name, "qwen"))
+        familyProfile(.qwen, family_name)
+    else if (startsWith(family_name, "deepseek"))
+        familyProfile(.deepseek, family_name)
+    else if (startsWith(family_name, "mistral") or startsWith(family_name, "ministral"))
+        familyProfile(.mistral, family_name)
+    else if (startsWith(family_name, "command") or startsWith(family_name, "c4ai-command"))
+        familyProfile(.cohere, family_name)
+    else
+        return null;
+    profile.supports_json_schema_output = true;
+    profile.supports_json_object_output = true;
+    profile.supports_parallel_tool_calls = false;
+    profile.supports_parallel_tool_call_setting = false;
+    return profile;
+}
+
 pub fn ovhcloud(model_name: []const u8) ?model.ModelProfile {
     if (startsWith(model_name, "llama") or startsWith(model_name, "meta-")) return familyProfile(.meta, model_name);
     if (startsWith(model_name, "deepseek")) return familyProfile(.deepseek, model_name);
@@ -459,6 +488,17 @@ test "named compatible providers resolve known families and reject unknown ones"
     try std.testing.expectEqual(model.ExtraBodyKind.openai_compatible, xAIChat("grok-4.6").?.extra_body_kind.?);
     try std.testing.expect(!xAIChat("grok-4.6").?.supportsBuiltinTool(.remote_mcp));
     try std.testing.expect(xAIResponses("not-grok") == null);
+
+    try std.testing.expect(ollama("gpt-oss:20b").?.supportsReasoningEffort(.medium));
+    try std.testing.expect(ollama("library/llama3.2:latest").?.supports_json_schema_output);
+    try std.testing.expect(ollama("gemma3").?.supports_json_object_output);
+    try std.testing.expect(!ollama("qwen3").?.supports_parallel_tool_calls);
+    try std.testing.expect(!ollama("deepseek-r1").?.supports_temperature);
+    try std.testing.expect(ollama("mistral-small").?.supports_tools);
+    try std.testing.expect(ollama("ministral-3").?.supports_tools);
+    try std.testing.expect(ollama("command-r").?.supports_tools);
+    try std.testing.expect(ollama("c4ai-command-r7b").?.supports_tools);
+    try std.testing.expect(ollama("unknown") == null);
 
     try std.testing.expect(bedrock("openai.gpt-oss-20b").?.supportsReasoningEffort(.medium));
     try std.testing.expect(bedrock("openai.gpt-5.4").?.supportsReasoningEffort(.high));

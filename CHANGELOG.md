@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add an unauthenticated Ollama provider, explicit loopback policy, tagged
+  model-family profiles, and a compiled local example.
+
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and
   capability overrides, with explicit arena ownership for returned data.

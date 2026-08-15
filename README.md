@@ -190,6 +190,7 @@ authentication style, or model profile overrides.
 | `zigai.providers.groq` | Groq |
 | `zigai.providers.huggingface` | Hugging Face Inference Providers |
 | `zigai.providers.mistral` | Mistral Conversations; explicit Chat Completions compatibility |
+| `zigai.providers.ollama` | Local Ollama through OpenAI-compatible Chat Completions |
 | `zigai.providers.openrouter` | OpenRouter |
 | `zigai.providers.ovhcloud` | OVHcloud AI Endpoints |
 | `zigai.providers.pydantic_gateway` | Pydantic AI Gateway |
@@ -227,6 +228,24 @@ var client = zigai.providers.azure_openai.ResponsesClient{
     .model_name = "gpt-4.1-nano",
     .provider = azure_provider.provider(),
 };
+```
+
+Ollama is unauthenticated and local, so its provider makes that trust boundary
+explicit. The HTTP transport must opt into the same loopback policy:
+
+```zig
+var http = zigai.transport.HttpTransport.initWithOptions(allocator, io, .{
+    .url_policy = zigai.providers.ollama.local_request_policy.url_policy,
+});
+var provider = zigai.providers.ollama.Provider.init(http.transport());
+var client = zigai.providers.ollama.Client{
+    .model_name = "gpt-oss:20b",
+    .provider = provider.provider(),
+};
+var result = try (zigai.Agent{
+    .model = client.model(),
+    .url_policy = zigai.providers.ollama.local_request_policy.url_policy,
+}).run(allocator, "Why is the sky blue?");
 ```
 
 Use `azure_openai.ChatClient` (or its backwards-compatible `Client` alias) only
