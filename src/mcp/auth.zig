@@ -104,6 +104,23 @@ pub const AccessToken = struct {
     issuer: []u8,
     scopes: [][]u8 = &.{},
 
+    /// Copies token state atomically so callbacks can return it without
+    /// reimplementing partial-allocation cleanup.
+    pub fn initAlloc(
+        allocator: std.mem.Allocator,
+        value: []const u8,
+        issuer: []const u8,
+        scopes: []const []const u8,
+    ) !AccessToken {
+        const owned_value = try allocator.dupe(u8, value);
+        errdefer allocator.free(owned_value);
+        const owned_issuer = try allocator.dupe(u8, issuer);
+        errdefer allocator.free(owned_issuer);
+        const owned_scopes = try unionScopesAlloc(allocator, &.{}, scopes);
+        errdefer deinitScopes(allocator, owned_scopes);
+        return .{ .value = owned_value, .issuer = owned_issuer, .scopes = owned_scopes };
+    }
+
     pub fn deinit(self: AccessToken, allocator: std.mem.Allocator) void {
         allocator.free(self.value);
         allocator.free(self.issuer);
@@ -993,4 +1010,64 @@ test "Bearer authorization headers reject alternate channels and unsafe values" 
     try std.testing.expectError(error.InvalidBearerToken, parseBearerAuthorization("Basic token"));
     try std.testing.expectError(error.InvalidBearerToken, parseBearerAuthorization("Bearer "));
     try std.testing.expectError(error.InvalidBearerToken, parseBearerAuthorization("Bearer two tokens"));
+}
+
+test "authorization parsers and discovery release every partial allocation" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const scopes = try unionScopesAlloc(allocator, &.{"profile"}, &.{"tools:read"});
+            defer deinitScopes(allocator, scopes);
+            const challenge = try parseBearerChallengeAlloc(
+                allocator,
+                "Bearer error=\"insufficient_scope\", scope=\"tools:read tools:call\", " ++
+                    "resource_metadata=\"https://mcp.example.com/metadata\"",
+            );
+            defer challenge.deinit(allocator);
+            var resource = try parseProtectedResourceMetadata(
+                allocator,
+                "{\"resource\":\"https://mcp.example.com/mcp\"," ++
+                    "\"authorization_servers\":[\"https://auth.example.com\"]}",
+                .{},
+            );
+            defer resource.deinit();
+            var authorization = try parseAuthorizationServerMetadata(
+                allocator,
+                "{\"issuer\":\"https://auth.example.com\"," ++
+                    "\"authorization_endpoint\":\"https://auth.example.com/authorize\"," ++
+                    "\"token_endpoint\":\"https://auth.example.com/token\"," ++
+                    "\"code_challenge_methods_supported\":[\"S256\"]}",
+                "https://auth.example.com",
+                .{},
+            );
+            defer authorization.deinit();
+            const resource_urls = try protectedResourceDiscoveryUrls(
+                allocator,
+                "https://mcp.example.com/path",
+                .{},
+            );
+            defer resource_urls.deinit(allocator);
+            const issuer_urls = try authorizationServerDiscoveryUrls(
+                allocator,
+                "https://auth.example.com/path",
+                .{},
+            );
+            defer issuer_urls.deinit(allocator);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
+fn fuzzAuthorizationHeaders(_: void, smith: *std.testing.Smith) !void {
+    var buffer: [1024]u8 = undefined;
+    const value = buffer[0..smith.slice(&buffer)];
+    _ = parseBearerAuthorization(value) catch {};
+    const challenge = parseBearerChallengeAlloc(std.testing.allocator, value) catch return;
+    challenge.deinit(std.testing.allocator);
+}
+
+test "fuzz MCP authorization headers" {
+    try std.testing.fuzz({}, fuzzAuthorizationHeaders, .{ .corpus = &.{
+        "Bearer error=\"invalid_token\", scope=\"tools:read\"",
+        "Bearer token",
+    } });
 }

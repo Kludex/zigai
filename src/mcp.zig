@@ -3624,6 +3624,85 @@ test "server enforces TLS Origin Host and bearer audience before dispatch" {
     try std.testing.expectEqual(@as(u16, 403), cleartext.status);
 }
 
+test "MCP HTTP authorization releases every partial allocation" {
+    const CheckServer = struct {
+        fn handle(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8, _: []const u8) ![]u8 {
+            return allocator.dupe(u8, "{}");
+        }
+        fn authorize(_: *anyopaque, _: auth.ValidationRequest) !auth.Decision {
+            return .authorized;
+        }
+        fn run(allocator: std.mem.Allocator) !void {
+            var unused: u8 = 0;
+            var server = Server{
+                .handler = .{ .context = &unused, .handleFn = handle },
+                .authorization = .{
+                    .resource = "https://mcp.example.com/mcp",
+                    .resource_metadata_url = "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
+                    .authorizer = .{ .context = &unused, .authorizeFn = authorize },
+                    .scopes = &.{"tools:read"},
+                },
+            };
+            const request = try buildRequest(
+                allocator,
+                1,
+                "extension/check",
+                "{}",
+                "client",
+                "1",
+                "{}",
+            );
+            defer allocator.free(request);
+            const response = try server.handle(allocator, request, .{ .headers = &.{} });
+            defer response.deinit(allocator);
+            try std.testing.expectEqual(@as(u16, 401), response.status);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, CheckServer.run, .{});
+
+    const CheckClient = struct {
+        fn token(_: *anyopaque, allocator: std.mem.Allocator, request: auth.TokenRequest) !auth.AccessToken {
+            return auth.AccessToken.initAlloc(allocator, "token", request.authorization_server, &.{});
+        }
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, request: http.Request) !http.Response {
+            try std.testing.expectEqualStrings("Bearer token", findHeader(request.headers, "authorization").?);
+            return .{
+                .status = 200,
+                .body = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"),
+            };
+        }
+        fn run(allocator: std.mem.Allocator) !void {
+            var unused: u8 = 0;
+            var streamable = StreamableHttpTransport.initWithOptions(
+                std.testing.io,
+                .{ .context = &unused, .sendFn = send },
+                "https://mcp.example.com/mcp",
+                .{ .authorization = .{
+                    .resource = "https://mcp.example.com/mcp",
+                    .authorization_server = "https://auth.example.com",
+                    .tokens = .{ .context = &unused, .getFn = token },
+                } },
+            );
+            const request = try buildRequest(
+                allocator,
+                1,
+                "extension/check",
+                "{}",
+                "client",
+                "1",
+                "{}",
+            );
+            defer allocator.free(request);
+            const response = try streamable.transport().send(allocator, .{
+                .message = request,
+                .method = "extension/check",
+            });
+            allocator.free(response);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, CheckClient.run, .{});
+}
+
 test "core request params cover every standardized method shape" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
