@@ -102,7 +102,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   policy, graceful child shutdown with escalation, backpressure, and exhaustive
   malformed/partial-frame tests. Deliberately omit the removed
   `Mcp-Session-Id`, session expiration, and `Last-Event-ID` resumption paths.
-- [ ] Add an official MCP interoperability suite against the reference servers
+- [x] Add an official MCP interoperability suite against the reference servers
   and SDKs, with recorded fixtures plus opt-in live CI for stdio and HTTP.
 
 ## P1 — Providers and model operations
