@@ -250,10 +250,10 @@ fn recordAnthropic(
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
+    var provider = zigai.anthropic.Provider.init(api_key, recording.transport());
     var client = zigai.anthropic.Client{
         .model_name = entry.model,
-        .api_key = api_key,
-        .transport = recording.transport(),
+        .provider = provider.provider(),
         .max_tokens = 128,
     };
     try runScenario(init, client.model());
@@ -302,10 +302,10 @@ fn recordNativeAnthropic(
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
+    var provider = zigai.anthropic.Provider.init(api_key, recording.transport());
     var client = zigai.anthropic.Client{
         .model_name = entry.model,
-        .api_key = api_key,
-        .transport = recording.transport(),
+        .provider = provider.provider(),
         .max_tokens = 256,
     };
     try runNativeScenario(init, client.model(), &.{
@@ -360,10 +360,10 @@ fn recordRichAnthropic(
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
+    var provider = zigai.anthropic.Provider.init(api_key, recording.transport());
     var client = zigai.anthropic.Client{
         .model_name = entry.model,
-        .api_key = api_key,
-        .transport = recording.transport(),
+        .provider = provider.provider(),
         .max_tokens = 64,
     };
     try runRichScenario(init, client.model());

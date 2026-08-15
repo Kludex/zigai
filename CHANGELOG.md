@@ -14,6 +14,10 @@
   `openai.Provider` now owns credentials, the API root, configured headers,
   request policy, transport, and profile overrides; `openai.Client` borrows its
   provider and owns only model settings and wire encoding.
+- Split Anthropic provider configuration from the Messages API model adapter.
+  `anthropic.Provider` owns the API key header and shared HTTP policy, while
+  `anthropic.Client` owns the Messages version, conditional Files API beta,
+  model limits, and request/response encoding.
 - Pin the official MCP `2026-07-28` conformance framework and TypeScript and
   Python reference servers in a validated test-only interoperability matrix.
 - Add a test-only Cassetter-style YAML format that replays ordered MCP

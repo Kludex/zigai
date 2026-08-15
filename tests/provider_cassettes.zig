@@ -74,10 +74,10 @@ test "real Anthropic model cassettes replay complete tool loops" {
     inline for (model_matrix.anthropic) |entry| {
         var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
         defer cassette.deinit();
+        var provider_state = zigai.anthropic.Provider.init("not-recorded", cassette.transport());
         var client = zigai.anthropic.Client{
             .model_name = entry.model,
-            .api_key = "not-recorded",
-            .transport = cassette.transport(),
+            .provider = provider_state.provider(),
             .max_tokens = 128,
         };
         try replayMatrixScenario(client.model(), &cassette);
@@ -148,10 +148,10 @@ test "real OpenAI cassette replays native web search" {
 test "real Anthropic cassette replays native web search and fetch" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/native/anthropic_web_search_fetch.yaml"));
     defer cassette.deinit();
+    var provider_state = zigai.anthropic.Provider.init("not-recorded", cassette.transport());
     var client = zigai.anthropic.Client{
         .model_name = "claude-sonnet-4-6",
-        .api_key = "not-recorded",
-        .transport = cassette.transport(),
+        .provider = provider_state.provider(),
         .max_tokens = 256,
     };
     try replayNativeScenario(
@@ -192,10 +192,10 @@ test "real OpenAI cassette replays image input" {
 test "real Anthropic cassette replays image input" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/rich/anthropic_image.yaml"));
     defer cassette.deinit();
+    var provider_state = zigai.anthropic.Provider.init("not-recorded", cassette.transport());
     var client = zigai.anthropic.Client{
         .model_name = "claude-sonnet-4-6",
-        .api_key = "not-recorded",
-        .transport = cassette.transport(),
+        .provider = provider_state.provider(),
         .max_tokens = 64,
     };
     try replayRichScenario(client.model(), &cassette);
@@ -292,12 +292,13 @@ test "OpenAI cassette covers the complete agent tool loop" {
 test "Anthropic cassette covers the complete agent tool loop" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/anthropic_tool_loop.yaml"));
     defer cassette.deinit();
+    var provider_state = zigai.anthropic.Provider.initWithOptions("not-recorded", cassette.transport(), .{
+        .base_url = "https://anthropic.test/v1",
+    });
     var client = zigai.anthropic.Client{
         .model_name = "claude-test",
-        .api_key = "not-recorded",
-        .transport = cassette.transport(),
+        .provider = provider_state.provider(),
         .max_tokens = 256,
-        .base_url = "https://anthropic.test/v1",
     };
     var calls: u8 = 0;
     const tool = weatherTool(&calls);
@@ -420,12 +421,13 @@ test "OpenAI streaming cassette covers deltas and the complete agent tool loop" 
 test "Anthropic streaming cassette covers fragmented tools and text" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/anthropic_stream_tool_loop.yaml"));
     defer cassette.deinit();
+    var provider_state = zigai.anthropic.Provider.initWithOptions("not-recorded", cassette.transport(), .{
+        .base_url = "https://anthropic.test/v1",
+    });
     var client = zigai.anthropic.Client{
         .model_name = "claude-test",
-        .api_key = "not-recorded",
-        .transport = cassette.transport(),
+        .provider = provider_state.provider(),
         .max_tokens = 256,
-        .base_url = "https://anthropic.test/v1",
     };
     var calls: u8 = 0;
     const tool = weatherTool(&calls);
@@ -719,7 +721,8 @@ test "Anthropic, Google, and OpenAI-compatible clients classify server failures"
     };
     var unused: u8 = 0;
     const transport = zigai.transport.Transport{ .context = &unused, .sendFn = Stub.send };
-    var anthropic = zigai.anthropic.Client{ .model_name = "claude-test", .api_key = "test", .transport = transport };
+    var anthropic_provider = zigai.anthropic.Provider.init("test", transport);
+    var anthropic = zigai.anthropic.Client{ .model_name = "claude-test", .provider = anthropic_provider.provider() };
     var google = zigai.google.Client{ .model_name = "gemini-test", .api_key = "test", .transport = transport };
     var compatible = zigai.openai_compatible.Client{ .model_name = "compat-test", .api_key = "test", .transport = transport, .base_url = "https://compatible.test/v1" };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -748,7 +751,8 @@ test "all streaming clients classify multiline server failures" {
     const sink = zigai.model.ModelStreamSink{ .context = &unused, .eventFn = Stub.event };
     var openai_provider = zigai.openai.Provider.init("test", transport);
     var openai = zigai.openai.Client{ .model_name = "test", .provider = openai_provider.provider() };
-    var anthropic = zigai.anthropic.Client{ .model_name = "test", .api_key = "test", .transport = transport };
+    var anthropic_provider = zigai.anthropic.Provider.init("test", transport);
+    var anthropic = zigai.anthropic.Client{ .model_name = "test", .provider = anthropic_provider.provider() };
     var google = zigai.google.Client{ .model_name = "test", .api_key = "test", .transport = transport };
     var compatible = zigai.openai_compatible.Client{ .model_name = "test", .api_key = "test", .transport = transport, .base_url = "https://compatible.test/v1" };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -787,7 +791,8 @@ test "streaming clients reject malformed events and Anthropic accepts empty tool
     const sink = zigai.model.ModelStreamSink{ .context = &state, .eventFn = State.event };
     var openai_provider = zigai.openai.Provider.init("test", transport);
     var openai = zigai.openai.Client{ .model_name = "test", .provider = openai_provider.provider() };
-    var anthropic = zigai.anthropic.Client{ .model_name = "test", .api_key = "test", .transport = transport };
+    var anthropic_provider = zigai.anthropic.Provider.init("test", transport);
+    var anthropic = zigai.anthropic.Client{ .model_name = "test", .provider = anthropic_provider.provider() };
     var compatible = zigai.openai_compatible.Client{ .model_name = "test", .api_key = "test", .transport = transport, .base_url = "https://compatible.test/v1" };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

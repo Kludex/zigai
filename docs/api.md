@@ -158,6 +158,10 @@ Use `Provider.initWithOptions` for a custom API root, configured headers,
 provider-wide request policy, or model profile callbacks. The provider and
 transport must outlive the client and every in-flight model request.
 
+Anthropic follows the same construction pattern with
+`zigai.providers.anthropic.Provider`. Its provider owns the `x-api-key` header;
+the client retains `max_tokens` and the Messages API wire behavior.
+
 `agent_spec.Owned` owns parsed configuration in an arena. It is data-only and
 does not read secrets or construct clients. `validateResolution` uses
 application-supplied provider and capability catalogs without building a

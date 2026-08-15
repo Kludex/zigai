@@ -2,6 +2,8 @@
 
 const std = @import("std");
 const model_types = @import("../model.zig");
+const provider_types = @import("../provider.zig");
+const http_provider = @import("http.zig");
 const http = @import("../transport.zig");
 const common = @import("common.zig");
 const json_limits = @import("../json.zig");
@@ -20,12 +22,43 @@ pub const Error = model_types.ProviderRequestError || error{
     UnsupportedOutputMode,
 };
 
+/// Anthropic provider state. Authentication and HTTP policy stay separate
+/// from the Messages API wire adapter.
+pub const Provider = struct {
+    http: http_provider.Configured,
+
+    pub const Options = struct {
+        base_url: []const u8 = api_base,
+        headers: []const http.Header = &.{},
+        request_policy: provider_types.RequestPolicy = .{},
+        model_profiles: ?http_provider.Configured.ModelProfiles = null,
+    };
+
+    pub fn init(api_key: []const u8, transport: http.Transport) Provider {
+        return initWithOptions(api_key, transport, .{});
+    }
+
+    pub fn initWithOptions(api_key: []const u8, transport: http.Transport, options: Options) Provider {
+        return .{ .http = .{
+            .name = "anthropic",
+            .base_url = options.base_url,
+            .transport = transport,
+            .credential = .{ .header = .{ .name = "x-api-key", .value = api_key } },
+            .headers = options.headers,
+            .request_policy = options.request_policy,
+            .model_profiles = options.model_profiles,
+        } };
+    }
+
+    pub fn provider(self: *Provider) provider_types.Provider {
+        return self.http.provider();
+    }
+};
+
 pub const Client = struct {
     model_name: []const u8,
-    api_key: []const u8,
-    transport: http.Transport,
+    provider: provider_types.Provider,
     max_tokens: u32 = 4096,
-    base_url: []const u8 = api_base,
     settings: model_types.ModelSettings = .{},
     profile: model_types.ModelProfile = .{
         .supports_tools = true,
@@ -58,11 +91,10 @@ pub const Client = struct {
     },
 
     pub fn model(self: *Client) model_types.Model {
-        const profile = self.profile;
         return .{
             .context = self,
-            .profile = profile,
-            .provider_name = "anthropic",
+            .profile = self.provider.modelProfile(self.model_name, self.profile),
+            .provider_name = self.provider.name,
             .model_name = self.model_name,
             .settings = self.settings,
             .requestFn = request,
@@ -72,19 +104,14 @@ pub const Client = struct {
 
     fn request(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest) !model_types.ModelResponse {
         const self: *Client = @ptrCast(@alignCast(context));
-        const body = try encodeRequest(allocator, self.model_name, self.max_tokens, value);
+        const body = try encodeRequestForProvider(allocator, self.provider.name, self.model_name, self.max_tokens, value);
         defer allocator.free(body);
-        const url = try std.fmt.allocPrint(allocator, "{s}/messages", .{self.base_url});
-        defer allocator.free(url);
-        try value.url_policy.validate(url);
         const stable_headers = [_]http.Header{
             .{ .name = "content-type", .value = "application/json" },
-            .{ .name = "x-api-key", .value = self.api_key, .sensitive = true },
             .{ .name = "anthropic-version", .value = api_version },
         };
         const file_headers = [_]http.Header{
             .{ .name = "content-type", .value = "application/json" },
-            .{ .name = "x-api-key", .value = self.api_key, .sensitive = true },
             .{ .name = "anthropic-version", .value = api_version },
             .{ .name = "anthropic-beta", .value = "files-api-2025-04-14" },
         };
@@ -92,25 +119,24 @@ pub const Client = struct {
         defer headers.deinit(allocator);
         try headers.appendSlice(allocator, if (hasProviderFiles(value.messages)) &file_headers else &stable_headers);
         try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
-        const response = self.transport.send(allocator, .{
+        const response = self.provider.request(allocator, .{
             .method = .POST,
-            .url = url,
+            .endpoint = "/messages",
             .headers = headers.items,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
+            .url_policy = value.url_policy,
         }) catch |failure| return common.transportError(failure);
         defer allocator.free(response.body);
         if (response.status < 200 or response.status >= 300) {
-            common.notifyProviderError(
+            self.provider.observeError(
                 allocator,
-                value.error_observer,
-                "anthropic",
                 response.status,
                 response.body,
                 response.metadata,
+                value.error_observer,
                 value.error_policy,
-                &.{self.api_key},
             );
             return common.statusError(response.status);
         }
@@ -119,19 +145,14 @@ pub const Client = struct {
 
     fn stream(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest, sink: model_types.ModelStreamSink) !model_types.ModelResponse {
         const self: *Client = @ptrCast(@alignCast(context));
-        const body = try encodeStreamingRequest(allocator, self.model_name, self.max_tokens, value);
+        const body = try encodeStreamingRequestForProvider(allocator, self.provider.name, self.model_name, self.max_tokens, value);
         defer allocator.free(body);
-        const url = try std.fmt.allocPrint(allocator, "{s}/messages", .{self.base_url});
-        defer allocator.free(url);
-        try value.url_policy.validate(url);
         const stable_headers = [_]http.Header{
             .{ .name = "content-type", .value = "application/json" },
-            .{ .name = "x-api-key", .value = self.api_key, .sensitive = true },
             .{ .name = "anthropic-version", .value = api_version },
         };
         const file_headers = [_]http.Header{
             .{ .name = "content-type", .value = "application/json" },
-            .{ .name = "x-api-key", .value = self.api_key, .sensitive = true },
             .{ .name = "anthropic-version", .value = api_version },
             .{ .name = "anthropic-beta", .value = "files-api-2025-04-14" },
         };
@@ -141,24 +162,23 @@ pub const Client = struct {
         try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
         var state = StreamState{ .allocator = allocator, .sink = sink };
         defer state.deinit();
-        const response = self.transport.streamLines(allocator, .{
+        const response = self.provider.streamLines(allocator, .{
             .method = .POST,
-            .url = url,
+            .endpoint = "/messages",
             .headers = headers.items,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
+            .url_policy = value.url_policy,
         }, state.lineSink()) catch |failure| return common.transportError(failure);
         if (response.status < 200 or response.status >= 300) {
-            common.notifyProviderError(
+            self.provider.observeError(
                 allocator,
-                value.error_observer,
-                "anthropic",
                 response.status,
                 state.error_body.items,
                 response.metadata,
+                value.error_observer,
                 value.error_policy,
-                &.{self.api_key},
             );
             return common.statusError(response.status);
         }
@@ -174,6 +194,25 @@ pub const Client = struct {
         };
     }
 };
+
+test "Anthropic provider owns identity and model profile overrides" {
+    const Profiles = struct {
+        fn override(_: *anyopaque, _: []const u8, profile: model_types.ModelProfile) model_types.ModelProfile {
+            var overridden = profile;
+            overridden.supports_tools = false;
+            return overridden;
+        }
+    };
+    var marker: u8 = 0;
+    var provider_state = Provider.initWithOptions("secret", .{ .context = &marker, .sendFn = undefined }, .{
+        .model_profiles = .{ .context = &marker, .overrideFn = Profiles.override },
+    });
+    var client = Client{ .model_name = "claude-test", .provider = provider_state.provider() };
+    const model = client.model();
+    try std.testing.expectEqualStrings("anthropic", model.provider_name.?);
+    try std.testing.expect(!model.profile.supports_tools);
+    try std.testing.expect(model.profile.supports_streaming);
+}
 
 fn hasProviderFiles(messages: []const model_types.Message) bool {
     for (messages) |message| switch (message) {
@@ -213,7 +252,11 @@ fn leadingThinkingCount(parts: []const model_types.Part) usize {
 }
 
 pub fn encodeStreamingRequest(allocator: std.mem.Allocator, model_name: []const u8, max_tokens: u32, request: model_types.ModelRequest) ![]u8 {
-    const buffered = try encodeRequest(allocator, model_name, max_tokens, request);
+    return encodeStreamingRequestForProvider(allocator, "anthropic", model_name, max_tokens, request);
+}
+
+fn encodeStreamingRequestForProvider(allocator: std.mem.Allocator, provider_name: []const u8, model_name: []const u8, max_tokens: u32, request: model_types.ModelRequest) ![]u8 {
+    const buffered = try encodeRequestForProvider(allocator, provider_name, model_name, max_tokens, request);
     defer allocator.free(buffered);
     if (buffered.len == 0 or buffered[buffered.len - 1] != '}') return error.InvalidRequestEncoding;
     return std.fmt.allocPrint(allocator, "{s},\"stream\":true}}", .{buffered[0 .. buffered.len - 1]});
@@ -412,6 +455,10 @@ const StreamState = struct {
 };
 
 pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_tokens: u32, request: model_types.ModelRequest) ![]u8 {
+    return encodeRequestForProvider(allocator, "anthropic", model_name, max_tokens, request);
+}
+
+fn encodeRequestForProvider(allocator: std.mem.Allocator, provider_name: []const u8, model_name: []const u8, max_tokens: u32, request: model_types.ModelRequest) ![]u8 {
     request.settings.validate() catch return error.InvalidRequestEncoding;
     try common.validateToolChoice(request.tools, request.builtin_tools.len, request.settings.tool_choice);
     var output: std.Io.Writer.Allocating = .init(allocator);
@@ -535,12 +582,13 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
                         try json.write(text.content);
                         try json.endObject();
                     },
-                    .image => |value| try writeRichContent(allocator, &json, "image", value),
-                    .document => |value| try writeRichContent(allocator, &json, "document", value),
+                    .image => |value| try writeRichContent(allocator, &json, provider_name, "image", value),
+                    .document => |value| try writeRichContent(allocator, &json, provider_name, "document", value),
                     .cache_point => {},
                     .uploaded_file => |file| try writeRichContent(
                         allocator,
                         &json,
+                        provider_name,
                         if (std.mem.startsWith(u8, file.media_type orelse "", "image/")) "image" else "document",
                         file.asContent(),
                     ),
@@ -549,12 +597,13 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
                 .user_prompt_part => |prompt| switch (prompt.content) {
                     .text => |text| try writeTextBlock(&json, text),
                     .text_content => |text| try writeTextBlock(&json, text.content),
-                    .image => |value| try writeRichContent(allocator, &json, "image", value),
-                    .document => |value| try writeRichContent(allocator, &json, "document", value),
+                    .image => |value| try writeRichContent(allocator, &json, provider_name, "image", value),
+                    .document => |value| try writeRichContent(allocator, &json, provider_name, "document", value),
                     .cache_point => {},
                     .uploaded_file => |file| try writeRichContent(
                         allocator,
                         &json,
+                        provider_name,
                         if (std.mem.startsWith(u8, file.media_type orelse "", "image/")) "image" else "document",
                         file.asContent(),
                     ),
@@ -593,8 +642,8 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
                     try ensureProviderPartReplayable(text.provider);
                     try writeTextBlock(&json, text.content);
                 },
-                .image => |content| try writeRichContent(allocator, &json, "image", content),
-                .document => |content| try writeRichContent(allocator, &json, "document", content),
+                .image => |content| try writeRichContent(allocator, &json, provider_name, "image", content),
+                .document => |content| try writeRichContent(allocator, &json, provider_name, "document", content),
                 .thinking => |thinking| {
                     try ensureProviderPartReplayable(thinking.provider);
                     try json.beginObject();
@@ -799,6 +848,7 @@ fn writeToolReturn(json: *std.json.Stringify, result: model_types.ToolResult) !v
 fn writeRichContent(
     allocator: std.mem.Allocator,
     json: *std.json.Stringify,
+    provider_name: []const u8,
     kind: []const u8,
     content: model_types.Content,
 ) !void {
@@ -806,9 +856,9 @@ fn writeRichContent(
     if (content.thought_signature != null) return error.UnsupportedContentType;
     switch (content.source) {
         .provider_file => |file| if (file.provider) |owner| {
-            if (!std.mem.eql(u8, owner, "anthropic")) return error.UnsupportedContentType;
+            if (!std.mem.eql(u8, owner, provider_name)) return error.UnsupportedContentType;
         },
-        .uploaded_file => |file| if (!std.mem.eql(u8, file.provider_name, "anthropic"))
+        .uploaded_file => |file| if (!std.mem.eql(u8, file.provider_name, provider_name))
             return error.UnsupportedContentType,
         else => {},
     }
@@ -1090,11 +1140,11 @@ test "Anthropic clients forward validated request settings headers" {
         }
     };
     var state: State = .{};
+    var provider_state = Provider.init("secret", .{ .context = &state, .sendFn = State.send, .streamLinesFn = State.stream });
     try std.testing.expect(!State.hasFeature(.{ .method = .POST, .url = "https://example.test" }));
     var client = Client{
         .model_name = "claude-test",
-        .api_key = "secret",
-        .transport = .{ .context = &state, .sendFn = State.send, .streamLinesFn = State.stream },
+        .provider = provider_state.provider(),
     };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1392,6 +1442,13 @@ test "Anthropic encodes detailed message forms and rejects lossy forms" {
     try std.testing.expect(std.mem.indexOf(u8, body, "said") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "load_capability") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "weather") != null);
+    const gateway_messages = [_]model_types.Message{.{ .request = .{ .parts = &.{.{ .user_prompt = .{ .uploaded_file = .{
+        .id = "gateway-file",
+        .provider_name = "gateway",
+    } } }} } }};
+    const gateway_body = try encodeRequestForProvider(std.testing.allocator, "gateway", "claude-test", 20, .{ .messages = &gateway_messages });
+    defer std.testing.allocator.free(gateway_body);
+    try std.testing.expect(std.mem.indexOf(u8, gateway_body, "gateway-file") != null);
 
     const unsupported = [_]model_types.Message{
         .{ .request = .{ .parts = &.{.{ .user_prompt_part = .{ .content = .{ .video = image } } }} } },

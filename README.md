@@ -169,8 +169,8 @@ state for every request. `zigai.providers.http.Configured` supplies the shared
 HTTP implementation, including credential-safe error reporting. Discovery and
 file results are explicitly arena-owned.
 
-OpenAI makes the split explicit: keep `openai.Provider` at a stable address,
-then give `provider.provider()` to `openai.Client`. Use
+OpenAI and Anthropic make the split explicit: keep their `Provider` at a stable
+address, then give `provider.provider()` to the corresponding `Client`. Use
 `Provider.initWithOptions` for custom API roots, headers, request policy, or
 model profile overrides.
 
@@ -195,14 +195,18 @@ model profile overrides.
 | `zigai.providers.openai_compatible` | Chat Completions-compatible servers |
 
 ```zig
+var anthropic_provider = zigai.providers.anthropic.Provider.init(
+    anthropic_api_key,
+    http.transport(),
+);
 var client = zigai.providers.anthropic.Client{
     .model_name = "claude-sonnet-4-5",
-    .api_key = anthropic_api_key,
-    .transport = http.transport(),
+    .provider = anthropic_provider.provider(),
 };
 ```
 
-Compatible providers use the same three fields. Azure and Bedrock also expose
+OpenAI-compatible clients retain their direct configuration while their
+provider migration is in progress. Azure and Bedrock also expose
 `apiBase` helpers because their endpoints depend on the resource or region:
 
 ```zig
