@@ -203,12 +203,18 @@ pub const Transport = struct {
 };
 
 /// MCP Streamable HTTP transport for the stateless 2026-07-28 protocol.
+pub const StreamableHttpOptions = struct {
+    url_policy: security.UrlPolicy = .{},
+    authorization: ?auth.ClientPolicy = null,
+};
+
 pub const StreamableHttpTransport = struct {
     io: std.Io,
     inner: http.Transport,
     endpoint: []const u8,
     headers: []const http.Header = &.{},
     url_policy: security.UrlPolicy = .{},
+    authorization: ?auth.ClientPolicy = null,
     mutex: std.Io.Mutex = .init,
 
     pub fn init(io: std.Io, inner: http.Transport, endpoint: []const u8) StreamableHttpTransport {
@@ -222,7 +228,23 @@ pub const StreamableHttpTransport = struct {
         endpoint: []const u8,
         url_policy: security.UrlPolicy,
     ) StreamableHttpTransport {
-        return .{ .io = io, .inner = inner, .endpoint = endpoint, .url_policy = url_policy };
+        return initWithOptions(io, inner, endpoint, .{ .url_policy = url_policy });
+    }
+
+    /// Initializes Streamable HTTP with endpoint and authorization policies.
+    pub fn initWithOptions(
+        io: std.Io,
+        inner: http.Transport,
+        endpoint: []const u8,
+        options: StreamableHttpOptions,
+    ) StreamableHttpTransport {
+        return .{
+            .io = io,
+            .inner = inner,
+            .endpoint = endpoint,
+            .url_policy = options.url_policy,
+            .authorization = options.authorization,
+        };
     }
 
     pub fn transport(self: *StreamableHttpTransport) Transport {
@@ -232,10 +254,81 @@ pub const StreamableHttpTransport = struct {
     fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
         const self: *StreamableHttpTransport = @ptrCast(@alignCast(context));
         try self.url_policy.validate(self.endpoint);
+        if (self.authorization) |authorization| {
+            try authorization.validate();
+            if (!std.mem.eql(u8, authorization.resource, self.endpoint)) return error.InvalidResourceUri;
+        }
         try validateMcpMessage(allocator, request.message);
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
+        var scopes: [][]u8 = &.{};
+        defer auth.deinitScopes(allocator, scopes);
+        var reason: auth.TokenReason = .initial;
+        var refresh_attempts: usize = 0;
+        while (true) {
+            var token: ?auth.AccessToken = null;
+            defer if (token) |value| value.deinit(allocator);
+            if (self.authorization) |authorization| {
+                token = try authorization.tokens.get(allocator, .{
+                    .resource = authorization.resource,
+                    .authorization_server = authorization.authorization_server,
+                    .method = request.method,
+                    .scopes = scopes,
+                    .reason = reason,
+                });
+            }
+
+            const response = try self.sendHttp(allocator, request, token);
+            var response_body_owned = true;
+            defer if (response_body_owned) allocator.free(response.body);
+            if (self.authorization) |authorization| {
+                if ((response.status == 401 or response.status == 403) and
+                    refresh_attempts < authorization.max_refresh_attempts)
+                {
+                    const challenge_source = response.metadata.wwwAuthenticate() orelse {
+                        response_body_owned = false;
+                        return finishHttpResponse(allocator, request, response);
+                    };
+                    const challenge = auth.parseBearerChallengeAlloc(allocator, challenge_source) catch {
+                        response_body_owned = false;
+                        return finishHttpResponse(allocator, request, response);
+                    };
+                    defer challenge.deinit(allocator);
+                    const retry_reason: ?auth.TokenReason = if (response.status == 401 and
+                        (challenge.error_code == null or challenge.error_code.? == .invalid_token))
+                        .invalid_token
+                    else if (response.status == 403 and challenge.error_code == .insufficient_scope)
+                        .insufficient_scope
+                    else
+                        null;
+                    if (retry_reason) |next_reason| {
+                        const next_scopes = try auth.unionScopesAlloc(
+                            allocator,
+                            if (token) |value| value.scopes else &.{},
+                            challenge.scopes,
+                        );
+                        auth.deinitScopes(allocator, scopes);
+                        scopes = next_scopes;
+                        reason = next_reason;
+                        refresh_attempts += 1;
+                        allocator.free(response.body);
+                        response_body_owned = false;
+                        continue;
+                    }
+                }
+            }
+            response_body_owned = false;
+            return finishHttpResponse(allocator, request, response);
+        }
+    }
+
+    fn sendHttp(
+        self: *StreamableHttpTransport,
+        allocator: std.mem.Allocator,
+        request: WireRequest,
+        token: ?auth.AccessToken,
+    ) !http.Response {
         var headers: std.ArrayList(http.Header) = .empty;
         defer headers.deinit(allocator);
         try headers.appendSlice(allocator, &.{
@@ -249,37 +342,55 @@ pub const StreamableHttpTransport = struct {
         }
         try headers.appendSlice(allocator, request.headers);
         try headers.appendSlice(allocator, self.headers);
+        var authorization_value: ?[]u8 = null;
+        defer if (authorization_value) |value| allocator.free(value);
+        if (token) |access_token| {
+            if (findHeader(headers.items, "authorization") != null) return error.InvalidBearerToken;
+            authorization_value = try std.fmt.allocPrint(allocator, "Bearer {s}", .{access_token.value});
+            try headers.append(allocator, .{
+                .name = "authorization",
+                .value = authorization_value.?,
+                .sensitive = true,
+            });
+        }
 
-        const response = try self.inner.send(allocator, .{
+        return self.inner.send(allocator, .{
             .method = .POST,
             .url = self.endpoint,
             .headers = headers.items,
             .body = request.message,
         });
-        errdefer allocator.free(response.body);
-        if (request.expects_response) {
-            if (response.status != 200 and response.status != 400) return error.McpHttpRequestFailed;
-        } else if (response.status != 200 and response.status != 202 and response.status != 204) {
-            return error.McpHttpRequestFailed;
-        }
-        if (!request.expects_response or response.body.len == 0) return response.body;
-        if (response.body[0] == '{' or response.body[0] == '[') {
-            try validateMcpResponse(allocator, response.body);
-            try validateHttpResponseStatus(allocator, response.status, response.body);
-            return response.body;
-        }
-
-        const extracted = try extractSseResponse(
-            allocator,
-            response.body,
-            request.message,
-            request.method,
-            request.events,
-        );
-        allocator.free(response.body);
-        return extracted;
     }
 };
+
+fn finishHttpResponse(
+    allocator: std.mem.Allocator,
+    request: WireRequest,
+    response: http.Response,
+) ![]const u8 {
+    errdefer allocator.free(response.body);
+    if (request.expects_response) {
+        if (response.status != 200 and response.status != 400) return error.McpHttpRequestFailed;
+    } else if (response.status != 200 and response.status != 202 and response.status != 204) {
+        return error.McpHttpRequestFailed;
+    }
+    if (!request.expects_response or response.body.len == 0) return response.body;
+    if (response.body[0] == '{' or response.body[0] == '[') {
+        try validateMcpResponse(allocator, response.body);
+        try validateHttpResponseStatus(allocator, response.status, response.body);
+        return response.body;
+    }
+
+    const extracted = try extractSseResponse(
+        allocator,
+        response.body,
+        request.message,
+        request.method,
+        request.events,
+    );
+    allocator.free(response.body);
+    return extracted;
+}
 
 /// MCP stdio transport using newline-delimited JSON-RPC messages.
 pub const StdioTransport = struct {
@@ -2534,6 +2645,23 @@ fn findHeader(headers: []const http.Header, name: []const u8) ?[]const u8 {
     return null;
 }
 
+fn findHttpHeader(headers: []const http.Header, name: []const u8) ?http.Header {
+    for (headers) |header| if (std.ascii.eqlIgnoreCase(header.name, name)) return header;
+    return null;
+}
+
+fn copyTestScopes(allocator: std.mem.Allocator, source: []const []const u8) ![][]u8 {
+    var result = try allocator.alloc([]u8, source.len);
+    errdefer allocator.free(result);
+    var initialized: usize = 0;
+    errdefer for (result[0..initialized]) |scope| allocator.free(scope);
+    for (source, 0..) |scope, index| {
+        result[index] = try allocator.dupe(u8, scope);
+        initialized += 1;
+    }
+    return result;
+}
+
 fn validToolHeaderSchema(schema_value: std.json.Value) bool {
     const schema = requiredObject(schema_value) catch return false;
     const properties_value = schema.get("properties") orelse return true;
@@ -3664,6 +3792,142 @@ test "client emits self-describing requests and HTTP routing headers" {
     const result = try client.callTool(std.testing.allocator, "weather", "{}");
     defer std.testing.allocator.free(result);
     try std.testing.expect(std.mem.indexOf(u8, result, "sunny") != null);
+}
+
+test "Streamable HTTP refreshes issuer-bound tokens after a Bearer challenge" {
+    const State = struct {
+        token_calls: usize = 0,
+        http_calls: usize = 0,
+
+        fn token(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            request: auth.TokenRequest,
+        ) !auth.AccessToken {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.token_calls += 1;
+            if (self.token_calls == 1) {
+                try std.testing.expectEqual(auth.TokenReason.initial, request.reason);
+                try std.testing.expectEqual(@as(usize, 0), request.scopes.len);
+            } else {
+                try std.testing.expectEqual(auth.TokenReason.invalid_token, request.reason);
+                try std.testing.expectEqual(@as(usize, 2), request.scopes.len);
+                try std.testing.expectEqualStrings("profile", request.scopes[0]);
+                try std.testing.expectEqualStrings("tools:read", request.scopes[1]);
+            }
+            return .{
+                .value = try allocator.dupe(u8, if (self.token_calls == 1) "old" else "fresh"),
+                .issuer = try allocator.dupe(u8, request.authorization_server),
+                .scopes = if (self.token_calls == 1)
+                    try copyTestScopes(allocator, &.{"profile"})
+                else
+                    try copyTestScopes(allocator, request.scopes),
+            };
+        }
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: http.Request) !http.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.http_calls += 1;
+            const authorization = findHeader(request.headers, "authorization").?;
+            try std.testing.expect(findHttpHeader(request.headers, "authorization").?.isSensitive());
+            if (self.http_calls == 1) {
+                try std.testing.expectEqualStrings("Bearer old", authorization);
+                return .{
+                    .status = 401,
+                    .body = try allocator.dupe(u8, "unauthorized"),
+                    .metadata = .{ .www_authenticate = http.MetadataText.init(
+                        "Bearer error=\"invalid_token\", scope=\"tools:read\"",
+                    ) },
+                };
+            }
+            try std.testing.expectEqualStrings("Bearer fresh", authorization);
+            return .{
+                .status = 200,
+                .body = try allocator.dupe(
+                    u8,
+                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{" ++
+                        "\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{}," ++
+                        "\"serverInfo\":{\"name\":\"server\",\"version\":\"1\"}," ++
+                        "\"ttlMs\":0,\"cacheScope\":\"public\"}}",
+                ),
+            };
+        }
+    };
+    var state: State = .{};
+    var streamable = StreamableHttpTransport.initWithOptions(
+        std.testing.io,
+        .{ .context = &state, .sendFn = State.send },
+        "https://mcp.example.com/mcp",
+        .{ .authorization = .{
+            .resource = "https://mcp.example.com/mcp",
+            .authorization_server = "https://auth.example.com",
+            .tokens = .{ .context = &state, .getFn = State.token },
+        } },
+    );
+    var client = Client{ .transport = streamable.transport() };
+    const result = try client.discover(std.testing.allocator);
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqual(@as(usize, 2), state.token_calls);
+    try std.testing.expectEqual(@as(usize, 2), state.http_calls);
+}
+
+test "Streamable HTTP performs one bounded insufficient-scope step-up" {
+    const State = struct {
+        token_calls: usize = 0,
+        http_calls: usize = 0,
+
+        fn token(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            request: auth.TokenRequest,
+        ) !auth.AccessToken {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.token_calls += 1;
+            if (self.token_calls == 2) {
+                try std.testing.expectEqual(auth.TokenReason.insufficient_scope, request.reason);
+                try std.testing.expectEqual(@as(usize, 2), request.scopes.len);
+                try std.testing.expectEqualStrings("tools:call", request.scopes[1]);
+            }
+            return .{
+                .value = try allocator.dupe(u8, "token"),
+                .issuer = try allocator.dupe(u8, request.authorization_server),
+                .scopes = try copyTestScopes(allocator, &.{"profile"}),
+            };
+        }
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, _: http.Request) !http.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.http_calls += 1;
+            if (self.http_calls <= 2) return .{
+                .status = 403,
+                .body = try allocator.dupe(u8, "forbidden"),
+                .metadata = .{ .www_authenticate = http.MetadataText.init(
+                    "Bearer error=\"insufficient_scope\", scope=\"tools:call\"",
+                ) },
+            };
+            unreachable;
+        }
+    };
+    var state: State = .{};
+    var streamable = StreamableHttpTransport.initWithOptions(
+        std.testing.io,
+        .{ .context = &state, .sendFn = State.send },
+        "https://mcp.example.com/mcp",
+        .{ .authorization = .{
+            .resource = "https://mcp.example.com/mcp",
+            .authorization_server = "https://auth.example.com",
+            .tokens = .{ .context = &state, .getFn = State.token },
+        } },
+    );
+    try std.testing.expectError(
+        error.McpHttpRequestFailed,
+        streamable.transport().send(std.testing.allocator, .{
+            .message = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\"}",
+            .method = methods.discover,
+        }),
+    );
+    try std.testing.expectEqual(@as(usize, 2), state.token_calls);
+    try std.testing.expectEqual(@as(usize, 2), state.http_calls);
 }
 
 test "Streamable HTTP validates endpoints before transport callbacks" {

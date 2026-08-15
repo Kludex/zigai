@@ -319,7 +319,9 @@ pub fn parseBearerChallengeAlloc(
 fn appendScope(allocator: std.mem.Allocator, scopes: *std.ArrayList([]u8), scope: []const u8) !void {
     try validateScope(scope);
     for (scopes.items) |existing| if (std.mem.eql(u8, existing, scope)) return;
-    try scopes.append(allocator, try allocator.dupe(u8, scope));
+    const owned = try allocator.dupe(u8, scope);
+    errdefer allocator.free(owned);
+    try scopes.append(allocator, owned);
 }
 
 fn parseChallengeValueAlloc(
