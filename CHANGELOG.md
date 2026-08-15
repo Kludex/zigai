@@ -30,7 +30,8 @@
 - Add bounded, arena-owned model discovery for OpenAI, Anthropic, Google, and
   every OpenAI-compatible provider through the provider operations interface.
   Paginated APIs have explicit page and model limits, identifiers are
-  normalized for client construction, and raw provider metadata is preserved.
+  normalized for client construction, raw provider metadata is preserved, and
+  returned strings never borrow the released HTTP response body.
 - Establish the concrete file-lifecycle foundation with authenticated `DELETE`
   transport support, provider-qualified file descriptors, reusable
   `UploadedFile` handles, distinct inspect and download operations, arena-owned

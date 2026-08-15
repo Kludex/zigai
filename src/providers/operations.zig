@@ -136,7 +136,7 @@ fn appendPage(
         memory,
         response.body,
         json_limits.defaults.provider_response,
-        .{},
+        .{ .allocate = .alloc_always },
         error.InvalidProviderResponse,
     ) catch |failure| return common.responseDecodeError(failure);
     const object = switch (root) {
