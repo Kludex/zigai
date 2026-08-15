@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Pin the official MCP `2026-07-28` conformance framework and TypeScript and
+  Python reference servers in a validated test-only interoperability matrix.
 - Allow bounded concurrent MCP Streamable HTTP requests with configurable
   in-flight backpressure and request-local authorization retries.
 - Add a standalone bounded SSE parser with standard multi-line data framing

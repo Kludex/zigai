@@ -107,6 +107,11 @@ envelopes, allocation failures, stdio/SSE ordering, capability guards,
 pagination cycles, and lossless extension JSON. The human-readable companion is
 [MCP conformance](mcp-conformance.md).
 
+Official interoperability inputs are test assets, never production modules.
+`tests/mcp/upstreams.yaml` pins the official conformance framework and reference
+servers by commit. The matrix deliberately includes both stdio and Streamable
+HTTP and is validated by the ordinary test suite before live jobs consume it.
+
 ## Fuzzing
 
 ZigAI fuzzes every untrusted parser family: history and deferred state, JSON

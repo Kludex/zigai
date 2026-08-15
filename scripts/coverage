@@ -46,7 +46,7 @@ compile_test coverage/bin/pydantic-ai-codec-tests --dep zigai -Mroot=tests/pydan
 compile_test coverage/bin/provider-tests --dep zigai --dep yaml -Mroot=tests/provider_cassettes.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 compile_test coverage/bin/cli-common-tests --dep zigai -Mroot=src/cli/common.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 compile_test coverage/bin/spec-cli-tests --dep zigai -Mroot=src/cli/spec_common.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
-compile_test coverage/bin/mcp-conformance-tests --dep zigai -Mroot=tests/mcp_conformance.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+compile_test coverage/bin/mcp-conformance-tests --dep zigai --dep yaml -Mroot=tests/mcp_conformance.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 if [ -n "$coverage_target" ]; then
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/openai-cli --dep zigai -Mroot=src/cli/openai.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/anthropic-cli --dep zigai -Mroot=src/cli/anthropic.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"

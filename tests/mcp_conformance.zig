@@ -5,6 +5,11 @@
 
 const std = @import("std");
 const zigai = @import("zigai");
+const upstreams = @import("mcp/upstreams.zig");
+
+comptime {
+    _ = upstreams;
+}
 
 const Flow = enum {
     client_request,

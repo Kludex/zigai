@@ -1,0 +1,22 @@
+version: 1
+protocol_version: "2026-07-28"
+conformance:
+  repository: https://github.com/modelcontextprotocol/conformance.git
+  revision: c321dd32035556e6769d3724a8ee97d87c3faaac
+  requirements: "2026-07-28"
+servers:
+- id: typescript-todos
+  sdk: typescript
+  repository: https://github.com/modelcontextprotocol/typescript-sdk.git
+  revision: 27a94b5d1c952480747568c0e04fe647efbe99f4
+  directory: examples/todos-server
+  transports:
+  - stdio
+  - http
+- id: python-everything
+  sdk: python
+  repository: https://github.com/modelcontextprotocol/python-sdk.git
+  revision: 52ad0a8876f97f631b6e7cb973a786b253088a4d
+  directory: examples/servers/everything-server
+  transports:
+  - http

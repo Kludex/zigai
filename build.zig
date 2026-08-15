@@ -102,7 +102,10 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .error_tracing = error_tracing,
-            .imports = &.{.{ .name = "zigai", .module = zigai }},
+            .imports = &.{
+                .{ .name = "zigai", .module = zigai },
+                .{ .name = "yaml", .module = yaml },
+            },
         }),
     });
     const run_mcp_conformance_tests = b.addRunArtifact(mcp_conformance_tests);
