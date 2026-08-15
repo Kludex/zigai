@@ -1891,9 +1891,9 @@ test "history processors preserve system requests and repair tool traffic" {
     var observed_requests: usize = 0;
     const context: Context = .{ .profile = .{}, .usage = .{}, .model_requests = 7 };
     const processors = [_]Processor{
-        .{ .trim = .{ .max_messages = messages.len } },
-        .compact,
-        .provider_valid,
+        .{ .trim = .{ .max_messages = messages.len } }, // kcov-ignore
+        .compact, // kcov-ignore
+        .provider_valid, // kcov-ignore
         .{ .custom = .{ .context = &observed_requests, .processFn = customForTest } }, // kcov-ignore
     };
     _ = try processAll(arena.allocator(), &processors, context, &messages);

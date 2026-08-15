@@ -1026,6 +1026,9 @@ test "Anthropic encodes detailed message forms and rejects lossy forms" {
     try std.testing.expect(hasProviderFiles(&.{.{ .request = .{ .parts = &.{
         .{ .user_prompt_part = .{ .content = .{ .image = image } } },
     } } }}));
+    try std.testing.expect(hasProviderFiles(&.{.{ .request = .{ .parts = &.{
+        .{ .user_prompt_part = .{ .content = .{ .uploaded_file = uploaded } } },
+    } } }}));
     const messages = [_]model_types.Message{
         .{ .request = .{ .parts = &.{
             .{ .system_prompt_part = .{ .content = "system" } },

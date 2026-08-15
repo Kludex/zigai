@@ -3218,6 +3218,13 @@ test "agent private helpers cover ownership settings retries and rich content" {
         .content = "",
         .follow_up_messages = &.{.{ .parts = &.{}, .run_id = "too long" }},
     }, .{ .max_follow_up_bytes = 2 }));
+    try std.testing.expectError(Agent.Error.ToolFollowUpOverflow, validateToolOutput(.{
+        .content = "",
+        .follow_up_messages = &.{.{
+            .parts = &.{},
+            .instruction_parts = &.{.{ .content = "too long" }},
+        }},
+    }, .{ .max_follow_up_bytes = 2 }));
 
     try std.testing.expectError(
         Agent.Error.ModelDoesNotSupportMaxTokens,
