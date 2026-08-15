@@ -158,6 +158,7 @@ suppressed; `sensitive_data_redacted` reports when this changed visible detail.
 | `json` | `InvalidJson` | Input is not one complete JSON document. |
 | `json_schema` | `InvalidJsonOutput` | Structured output is not valid JSON. |
 | `json_schema` | `InvalidJsonSchema` | The configured schema is invalid. |
+| `json_schema` | `UnsupportedJsonSchema` | The schema uses vocabulary outside ZigAI's documented fail-closed subset. |
 | `json_schema` | `OutputSchemaValidationFailed` | Output does not satisfy the schema. |
 | `history` | `InvalidHistory` | History JSON or message sequence is invalid. |
 | `history` | `UnsupportedVersion` | The history version is unsupported. |

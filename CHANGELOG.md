@@ -8,6 +8,10 @@
 - Add tool-mediated output unions, scalar-schema wrapping, output functions
   with explicit retry values, selected-choice names, collision checks, and
   early, graceful, or exhaustive end strategies.
+- Validate a documented fail-closed JSON Schema Draft 2020-12 subset, including
+  local definitions, composition, conditionals, object dependencies, tuple and
+  containment arrays, Unicode lengths, numeric assertions, and schema
+  preflight before provider requests.
 - Complete provider-neutral model settings with sampling, penalties,
   log-probabilities, tool and parallel-call policy, thinking budgets, service
   tiers, truncation, safe request headers, profile preflight, and tagged bounded

@@ -159,6 +159,35 @@ output calls first and skips ordinary calls after one succeeds. `.exhaustive`
 runs every emitted call and keeps the first successful output by emission
 order. Deferred approval or external calls still pause before finalization.
 
+### Local JSON Schema dialect
+
+Every hand-written output schema is checked before the first model request.
+ZigAI implements a fail-closed subset of JSON Schema Draft 2020-12: unknown
+validation keywords and non-local references are rejected instead of ignored.
+`zigai.json_schema.supported_dialect` contains the accepted `$schema` URI, and
+`validateSchema` can preflight a schema independently of an agent run.
+
+The supported assertions are:
+
+- `type`, `enum`, `const`, `allOf`, `anyOf`, `oneOf`, `not`, and
+  `if`/`then`/`else`;
+- `$defs` with `#` or single-segment `#/$defs/...` references, including JSON
+  Pointer `~0` and `~1` escapes;
+- `properties`, `required`, `additionalProperties`, `propertyNames`,
+  `dependentRequired`, and minimum/maximum property counts;
+- `items`, `prefixItems`, `contains`, minimum/maximum contains and item counts,
+  and `uniqueItems`;
+- Unicode-codepoint string lengths; and
+- inclusive/exclusive numeric bounds and `multipleOf`.
+
+Standard descriptive annotations such as `title`, `description`, `default`,
+`examples`, `format`, and read/write/deprecation flags are accepted but do not
+change validation. Regex, remote or general JSON Pointer references, dynamic
+references, and unevaluated-value keywords are currently unsupported.
+Malformed supported vocabulary returns `InvalidJsonSchema`; unsupported valid
+vocabulary returns `UnsupportedJsonSchema`; a valid output that misses an
+assertion returns `OutputSchemaValidationFailed`.
+
 ## Streaming events
 
 `ModelStreamEvent` represents provider response parts with `part_start`,

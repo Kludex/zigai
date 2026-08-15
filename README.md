@@ -652,6 +652,10 @@ Prompted results are always checked locally and retried when invalid. Schemas,
 choices, and custom prompt templates are borrowed for the run; prepared data
 lives in the result arena.
 
+Local validation uses a documented, fail-closed Draft 2020-12 subset. Invalid
+or unsupported schemas fail before network I/O; see the
+[API reference](docs/api.md#local-json-schema-dialect) for the exact vocabulary.
+
 `.tool` exposes one output tool per choice, so unions stay as small independent
 schemas and `result.output_name` identifies the selected branch. Scalar schemas
 are wrapped for provider tool contracts and unwrapped before returning. A

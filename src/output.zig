@@ -324,22 +324,10 @@ fn validateChoice(choice: Choice) Error!void {
 }
 
 fn validateSchema(arena: std.mem.Allocator, source: []const u8) (Error || error{OutOfMemory})!void {
-    const parsed = json_limits.parse(
-        std.json.Value,
-        arena,
-        source,
-        json_limits.defaults.schema,
-        .{},
-        error.InvalidOutputSpec,
-    ) catch |failure| return switch (failure) {
+    json_schema.validateSchema(arena, source) catch |failure| return switch (failure) {
         error.OutOfMemory => error.OutOfMemory,
         else => error.InvalidOutputSpec,
     };
-    defer parsed.deinit();
-    switch (parsed.value) {
-        .bool, .object => {},
-        else => return error.InvalidOutputSpec,
-    }
 }
 
 fn combineSchemas(
@@ -508,6 +496,7 @@ test "output preparation rejects unsupported modes and malformed specifications"
         .{ .native = .{ .choices = &.{} } },
         .{ .native = .{ .choices = &.{.{ .name = "", .schema = "{}" }} } },
         .{ .native = .{ .choices = &.{.{ .name = "answer", .schema = "[]" }} } },
+        .{ .native = .{ .choices = &.{.{ .name = "answer", .schema = "{\"pattern\":\"x\"}" }} } },
         .{ .native = .{ .choices = &.{
             .{ .name = "answer", .schema = "{}" },
             .{ .name = "answer", .schema = "{}" },
