@@ -105,6 +105,7 @@ pub const Provider = struct {
     streamLinesFn: ?*const fn (*anyopaque, std.mem.Allocator, Request, transport.LineSink) anyerror!transport.StreamResponse = null,
     modelProfileFn: ?*const fn (*anyopaque, []const u8) ?model.ModelProfile = null,
     overrideProfileFn: ?*const fn (*anyopaque, []const u8, model.ModelProfile) model.ModelProfile = null,
+    observeErrorFn: ?*const fn (*anyopaque, std.mem.Allocator, u16, []const u8, transport.ResponseMetadata, ?model.ProviderErrorObserver, model.ProviderErrorPolicy) void = null,
     listModelsFn: ?*const fn (*anyopaque, std.mem.Allocator) anyerror!OwnedModels = null,
     uploadFileFn: ?*const fn (*anyopaque, std.mem.Allocator, FileInput) anyerror!OwnedFile = null,
     getFileFn: ?*const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!OwnedFile = null,
@@ -141,6 +142,21 @@ pub const Provider = struct {
             fallback;
         if (self.overrideProfileFn) |apply| return apply(self.context, model_name, discovered);
         return discovered;
+    }
+
+    /// Reports a provider error without exposing credentials to the model
+    /// adapter. Concrete providers own parsing and secret redaction.
+    pub fn observeError(
+        self: Provider,
+        allocator: std.mem.Allocator,
+        status: u16,
+        body: []const u8,
+        metadata: transport.ResponseMetadata,
+        observer: ?model.ProviderErrorObserver,
+        policy: model.ProviderErrorPolicy,
+    ) void {
+        const observe = self.observeErrorFn orelse return;
+        observe(self.context, allocator, status, body, metadata, observer, policy);
     }
 
     pub fn listModels(self: Provider, allocator: std.mem.Allocator) !OwnedModels {
@@ -193,6 +209,11 @@ test "provider owns policy profiles and optional operations" {
             var result = value;
             result.supports_tools = false;
             return result;
+        }
+
+        fn observe(_: *anyopaque, _: std.mem.Allocator, status: u16, body: []const u8, _: transport.ResponseMetadata, observer: ?model.ProviderErrorObserver, _: model.ProviderErrorPolicy) void {
+            const target = observer orelse return;
+            target.observe(.{ .provider = "openai", .status = status, .message = body, .body = "" });
         }
 
         fn models(_: *anyopaque, allocator: std.mem.Allocator) !OwnedModels {
@@ -257,6 +278,7 @@ test "provider owns policy profiles and optional operations" {
         .streamLinesFn = State.stream,
         .modelProfileFn = State.profile,
         .overrideProfileFn = State.override,
+        .observeErrorFn = State.observe,
         .listModelsFn = State.models,
         .uploadFileFn = State.upload,
         .getFileFn = State.file,
@@ -279,6 +301,16 @@ test "provider owns policy profiles and optional operations" {
     try std.testing.expect(!provider.modelProfile("known", .{}).supports_tools);
     try std.testing.expect(provider.modelProfile("known", .{}).supports_streaming);
     try std.testing.expect(!provider.modelProfile("unknown", .{}).supports_tools);
+    const ErrorState = struct {
+        observed: bool = false,
+        fn observe(context: *anyopaque, value: model.ProviderError) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.observed = value.status == 401 and std.mem.eql(u8, value.message, "denied");
+        }
+    };
+    var error_state: ErrorState = .{};
+    provider.observeError(std.testing.allocator, 401, "denied", .{}, .{ .context = &error_state, .observeFn = ErrorState.observe }, .{});
+    try std.testing.expect(error_state.observed);
 
     var models = try provider.listModels(std.testing.allocator);
     defer models.deinit();
@@ -316,6 +348,7 @@ test "provider rejects invalid policy and absent optional operations" {
     try std.testing.expectEqual(@as(?u64, 10), (RequestPolicy{}).timeoutMilliseconds(10));
     try std.testing.expectEqual(@as(?u64, 50), (RequestPolicy{ .default_timeout_ms = 50 }).timeoutMilliseconds(null));
     try std.testing.expect(provider.modelProfile("model", .{}).supports_tools);
+    provider.observeError(std.testing.allocator, 500, "ignored", .{}, null, .{});
     try std.testing.expectError(error.UrlHostNotAllowed, provider.request(std.testing.allocator, .{
         .method = .GET,
         .endpoint = "/",

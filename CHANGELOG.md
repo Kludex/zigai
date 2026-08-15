@@ -5,6 +5,11 @@
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and
   capability overrides, with explicit arena ownership for returned data.
+- Add a reusable authenticated HTTP provider that owns credential rendering,
+  configured headers, relative endpoint construction, streaming delegation,
+  and credential-safe provider error reporting. Reject malformed credentials,
+  header injection, ambiguous API roots, and duplicate header ownership before
+  transport I/O.
 - Pin the official MCP `2026-07-28` conformance framework and TypeScript and
   Python reference servers in a validated test-only interoperability matrix.
 - Add a test-only Cassetter-style YAML format that replays ordered MCP

@@ -165,7 +165,9 @@ The agent and tools stay the same when the provider changes.
 The clean provider boundary is `zigai.Provider`: it owns authenticated HTTP,
 the API root, request policy, model discovery, file operations, and profile
 overrides. Model adapters own only their wire format and borrow the provider
-state for every request. Discovery and file results are explicitly arena-owned.
+state for every request. `zigai.providers.http.Configured` supplies the shared
+HTTP implementation, including credential-safe error reporting. Discovery and
+file results are explicitly arena-owned.
 
 | Provider | API |
 | --- | --- |

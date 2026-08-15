@@ -119,6 +119,7 @@ Use these namespaces for the rest of the API:
 | `zigai.security` | Outbound URL validation and diagnostic redaction |
 | `zigai.provider` | Provider identity, authenticated operations, policy, discovery, files, and profiles |
 | `zigai.providers` | Native and named OpenAI-compatible provider clients |
+| `zigai.providers.http` | Reusable authenticated HTTP provider for model adapters |
 | `zigai.models` | Fallback and application-selected model routing |
 | `zigai.history` | Version-2 ZigAI history serialization, version-1 migration, and processors |
 | `zigai.evals` | Datasets, evaluators, reports, and model grading |
@@ -134,6 +135,13 @@ transport alive for every agent run that uses the model. The same rule applies
 to model routers, MCP clients, callback contexts, dependencies, and toolsets.
 `Provider` values likewise borrow their concrete provider state. Model and file
 discovery results own arenas and must be released with `deinit`.
+
+`zigai.providers.http.Configured` is the standard concrete boundary for an
+HTTP-backed provider. Its API root, credential, configured headers, transport,
+request policy, and optional profile callbacks are borrowed. `provider()`
+returns another borrowed view; keep the `Configured` value at a stable address
+until every model and in-flight request using it has finished. Model adapters
+receive only relative endpoints and never receive the provider credential.
 
 `agent_spec.Owned` owns parsed configuration in an arena. It is data-only and
 does not read secrets or construct clients. `validateResolution` uses

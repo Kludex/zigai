@@ -346,6 +346,14 @@ encode provider wire formats, then delegate authenticated I/O to their
 provider. A provider can therefore serve multiple compatible model interfaces
 without copying credential or lifecycle logic into each adapter.
 
+`providers.http.Configured` is the reusable concrete implementation of that
+boundary. It joins a validated API root to relative adapter endpoints, renders
+bearer or custom-header credentials, merges configured and adapter headers,
+and delegates buffered or streaming requests to a `Transport`. Header names,
+values, credentials, and ownership conflicts are rejected before transport
+I/O. Provider error bodies return through the same object so credential
+redaction never requires exposing a secret to a model adapter.
+
 Discovered model lists and file records are arena-owned values with explicit
 `deinit`; requests, provider configuration, and the `Provider` itself are
 borrowed. Concrete provider state must outlive every model and in-flight
@@ -523,9 +531,10 @@ No evaluation-specific provider path exists.
 ## Provider adapters
 
 First-party adapters live under `src/providers/` and are exported through
-`zigai.providers`. A provider owns authentication, endpoint selection, and
-wire encoding. Its client exposes the provider-neutral `Model`; the agent does
-not depend on any concrete provider.
+`zigai.providers`. Provider objects own authentication, API roots, configured
+headers, and outbound policy. Model clients own endpoint selection and wire
+encoding, and expose the provider-neutral `Model`; the agent does not depend
+on either concrete layer.
 
 `zopenai` maps the neutral contract to the OpenAI Responses API.
 `zanthropic` maps it to the Anthropic Messages API. `zgoogle` maps it to the
