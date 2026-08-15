@@ -1952,7 +1952,9 @@ test "tool isolation cancels in-flight work and requires IO for timeouts" {
     var token: zigai.CancellationToken = .{};
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    var cancel = try threaded.io().concurrent(Cancel.after, .{ threaded.io(), &token, &state });
+    var cancel_runtime = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer cancel_runtime.deinit();
+    var cancel = try cancel_runtime.io().concurrent(Cancel.after, .{ cancel_runtime.io(), &token, &state });
     try std.testing.expectError(
         zigai.Agent.Error.Cancelled,
         (zigai.Agent{
@@ -1962,7 +1964,7 @@ test "tool isolation cancels in-flight work and requires IO for timeouts" {
             .io = threaded.io(),
         }).run(std.testing.allocator, "Run."),
     );
-    try cancel.await(threaded.io());
+    try cancel.await(cancel_runtime.io());
     try std.testing.expect(!state.active.load(.seq_cst));
 }
 
