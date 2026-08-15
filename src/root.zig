@@ -95,6 +95,7 @@ pub const ModelStreamSink = model.ModelStreamSink;
 pub const ProviderRequestError = model.ProviderRequestError;
 pub const ProviderError = model.ProviderError;
 pub const ProviderErrorObserver = model.ProviderErrorObserver;
+pub const ProviderErrorPolicy = model.ProviderErrorPolicy;
 pub const ContextBudget = context_budget.Budget;
 pub const ContextSnapshot = context_budget.Snapshot;
 pub const ContextOverflow = context_budget.Overflow;

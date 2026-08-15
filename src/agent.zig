@@ -608,6 +608,8 @@ pub const Agent = struct {
     /// Provider-request preflight limits and optional compaction policy.
     context_budget: ContextBudget = .{},
     provider_error_observer: ?model_types.ProviderErrorObserver = null,
+    /// Bounded provider details made visible to `provider_error_observer`.
+    provider_error_policy: model_types.ProviderErrorPolicy = .{},
     dependencies: ?*anyopaque = null,
     /// Cooperative token raced against in-flight work when `io` is available.
     cancellation: ?*const CancellationToken = null,
@@ -1125,6 +1127,7 @@ pub const Agent = struct {
                     .builtin_tools = self.builtin_tools,
                     .output = self.output,
                     .error_observer = provider_errors.observer(),
+                    .error_policy = self.provider_error_policy,
                     .request_id = options.request_id,
                     .idempotency_key = idempotency_key,
                     .timeout_ms = try control.timeoutMilliseconds(self.request_timeout_ms),

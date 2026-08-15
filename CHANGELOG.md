@@ -15,6 +15,8 @@
   categories, request correlation, and opt-in compatible-provider idempotency.
 - Preflight context budgets for prompt, tool, schema, media, and estimated
   tokens, with output reservation and controlled history compaction hooks.
+- Provider error bodies hidden by default with explicit bounded capture,
+  independently capped messages and codes, and end-to-end policy propagation.
 
 ## 0.1.0 — 2026-08-14
 

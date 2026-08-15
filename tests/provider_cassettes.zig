@@ -584,6 +584,58 @@ test "OpenAI client exposes stable rate-limit classification" {
     try std.testing.expect(called);
 }
 
+test "agent provider error bodies are hidden by default and bounded when enabled" {
+    const Stub = struct {
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, _: zigai.transport.Request) !zigai.transport.Response {
+            return .{
+                .status = 400,
+                .body = try allocator.dupe(u8, "{\"error\":{\"code\":\"bad_request\",\"message\":\"secret-message\"}}"),
+            };
+        }
+    };
+    const Capture = struct {
+        body: [5]u8 = undefined,
+        body_len: usize = 0,
+        truncated: bool = false,
+
+        fn observe(context: *anyopaque, value: zigai.ProviderError) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.body_len = value.body.len;
+            @memcpy(self.body[0..value.body.len], value.body);
+            self.truncated = value.body_truncated;
+        }
+    };
+    var unused: u8 = 0;
+    const provider_transport = zigai.transport.Transport{ .context = &unused, .sendFn = Stub.send };
+
+    var hidden: Capture = .{};
+    var hidden_client = zigai.openai.Client{
+        .model_name = "gpt-test",
+        .api_key = "test",
+        .transport = provider_transport,
+    };
+    try std.testing.expectError(error.ProviderRequestFailed, (zigai.Agent{
+        .model = hidden_client.model(),
+        .provider_error_observer = .{ .context = &hidden, .observeFn = Capture.observe },
+    }).run(std.testing.allocator, "fail"));
+    try std.testing.expectEqual(@as(usize, 0), hidden.body_len);
+    try std.testing.expect(!hidden.truncated);
+
+    var captured: Capture = .{};
+    var captured_client = zigai.openai.Client{
+        .model_name = "gpt-test",
+        .api_key = "test",
+        .transport = provider_transport,
+    };
+    try std.testing.expectError(error.ProviderRequestFailed, (zigai.Agent{
+        .model = captured_client.model(),
+        .provider_error_observer = .{ .context = &captured, .observeFn = Capture.observe },
+        .provider_error_policy = .{ .capture_body = true, .max_body_bytes = 5 },
+    }).run(std.testing.allocator, "fail"));
+    try std.testing.expectEqualStrings("{\"err", captured.body[0..captured.body_len]);
+    try std.testing.expect(captured.truncated);
+}
+
 test "Anthropic, Google, and OpenAI-compatible clients classify server failures" {
     const Stub = struct {
         fn send(_: *anyopaque, allocator: std.mem.Allocator, request: zigai.transport.Request) !zigai.transport.Response {

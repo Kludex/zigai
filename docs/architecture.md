@@ -183,6 +183,10 @@ integers. Provider request IDs are copied into 256-byte inline storage before
 the HTTP request closes, then exposed as borrowed views to observers and hooks.
 Provider adapters normalize connection and response-decoding failures without
 turning cancellation, allocation, or response-size failures into retries.
+Error observers do not receive raw bodies by default. An explicit policy may
+expose only a bounded prefix, while parsed messages and codes use smaller
+independent caps. This policy is propagated through the provider-neutral model
+request rather than implemented differently in each adapter.
 
 Idempotency is capability-driven because generation APIs do not share a safe
 header. OpenAI-compatible gateways may name an idempotency header. The agent

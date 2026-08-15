@@ -48,9 +48,9 @@ pub const Snapshot = struct {
 /// Provider-specific token estimator. Inputs are borrowed for the call.
 pub const TokenEstimator = struct {
     context: *anyopaque,
-    estimateFn: *const fn (context: *anyopaque, input: Input, bytes: ByteUsage) anyerror!u64,
+    estimateFn: *const fn (context: *anyopaque, input: Input, bytes: ByteUsage) u64,
 
-    pub fn estimate(self: TokenEstimator, input: Input, bytes: ByteUsage) !u64 {
+    pub fn estimate(self: TokenEstimator, input: Input, bytes: ByteUsage) u64 {
         return self.estimateFn(self.context, input, bytes);
     }
 };
@@ -379,7 +379,7 @@ test "default estimate includes request framing overhead" {
 
 test "estimator and overflow hook delegate through public contracts" {
     const Callbacks = struct {
-        fn estimate(_: *anyopaque, _: Input, _: ByteUsage) !u64 {
+        fn estimate(_: *anyopaque, _: Input, _: ByteUsage) u64 {
             return 7;
         }
 
@@ -391,7 +391,7 @@ test "estimator and overflow hook delegate through public contracts" {
     var state: u8 = 0;
     const input = Input{ .messages = &.{.{ .request = .{ .parts = &.{} } }} };
     const estimator = TokenEstimator{ .context = &state, .estimateFn = Callbacks.estimate };
-    try std.testing.expectEqual(@as(u64, 7), try estimator.estimate(input, .{}));
+    try std.testing.expectEqual(@as(u64, 7), estimator.estimate(input, .{}));
     const hook = OverflowHook{ .context = &state, .compactFn = Callbacks.compact };
     try std.testing.expectEqual(@as(usize, 0), (try hook.compact(std.testing.allocator, .{
         .input = input,

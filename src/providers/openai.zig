@@ -73,7 +73,7 @@ pub const Client = struct {
         }) catch |failure| return common.transportError(failure);
         defer allocator.free(response.body);
         if (response.status < 200 or response.status >= 300) {
-            common.notifyProviderError(allocator, value.error_observer, "openai", response.status, response.body, response.metadata);
+            common.notifyProviderError(allocator, value.error_observer, "openai", response.status, response.body, response.metadata, value.error_policy);
             return common.statusError(response.status);
         }
         return decodeResponse(allocator, response.body) catch |failure| return common.responseDecodeError(failure);
@@ -107,7 +107,7 @@ pub const Client = struct {
             .cancellation = value.cancellation,
         }, state.lineSink()) catch |failure| return common.transportError(failure);
         if (response.status < 200 or response.status >= 300) {
-            common.notifyProviderError(allocator, value.error_observer, "openai", response.status, state.error_body.items, response.metadata);
+            common.notifyProviderError(allocator, value.error_observer, "openai", response.status, state.error_body.items, response.metadata, value.error_policy);
             return common.statusError(response.status);
         }
         if (state.text.items.len > 0) try state.parts.insert(allocator, 0, .{ .text = try state.text.toOwnedSlice(allocator) });

@@ -171,6 +171,13 @@ Provider error observers and retry hooks receive borrowed views; copy a value
 to retain it. `ProviderConnectionError` and `ProviderResponseDecodeError` are
 stable retry categories.
 
+`ProviderError.body` is empty by default. Set
+`Agent.provider_error_policy.capture_body` or `ModelRequest.error_policy` to
+opt in, and choose `max_body_bytes`; exact-limit bodies are complete and larger
+bodies set `body_truncated`. Provider messages and codes have independent caps.
+The observer is synchronous and infallible, so none of its borrowed fields may
+be retained without copying.
+
 `RunOptions.request_id` supplies provider-facing correlation. OpenAI and
 OpenAI-compatible adapters send it as `x-client-request-id`. Generation APIs
 do not share a portable idempotency header, so official adapters do not claim

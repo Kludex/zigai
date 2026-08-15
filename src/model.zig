@@ -603,12 +603,26 @@ pub const ProviderError = struct {
     status: u16,
     code: ?[]const u8 = null,
     message: []const u8,
+    /// Empty unless `ProviderErrorPolicy.capture_body` is enabled.
     body: []const u8,
+    body_truncated: bool = false,
     /// Borrowed provider correlation ID, when supplied in response headers.
     request_id: ?[]const u8 = null,
     retry_after_seconds: ?u64 = null,
     rate_limit_remaining_requests: ?u64 = null,
     rate_limit_remaining_tokens: ?u64 = null,
+};
+
+/// Controls the bounded provider details exposed to error observers.
+pub const ProviderErrorPolicy = struct {
+    /// Makes the raw response body visible to observers. Disabled by default.
+    capture_body: bool = false,
+    /// Maximum captured body bytes. Exact-limit bodies are not truncated.
+    max_body_bytes: usize = 16 * 1024,
+    /// Maximum provider message bytes exposed regardless of body capture.
+    max_message_bytes: usize = 4 * 1024,
+    /// Maximum provider error-code bytes exposed to observers.
+    max_code_bytes: usize = 256,
 };
 
 /// Receives a borrowed error view synchronously. Copy fields in the callback if
@@ -632,6 +646,7 @@ pub const ModelRequest = struct {
     builtin_tools: []const BuiltinTool = &.{},
     output: OutputFormat = .text,
     error_observer: ?ProviderErrorObserver = null,
+    error_policy: ProviderErrorPolicy = .{},
     /// Caller correlation ID. Supporting providers forward it unchanged.
     request_id: ?[]const u8 = null,
     /// Stable across retries of this logical request. Ignored unless supported.

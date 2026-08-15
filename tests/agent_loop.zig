@@ -735,11 +735,12 @@ test "context budgets compact history before requests and preserve callback cont
         estimates: usize = 0,
         compactions: usize = 0,
         request_messages: usize = 0,
+        saw_settings: bool = false,
 
-        fn estimate(context: *anyopaque, input: zigai.context_budget.Input, _: zigai.context_budget.ByteUsage) !u64 {
+        fn estimate(context: *anyopaque, input: zigai.context_budget.Input, _: zigai.context_budget.ByteUsage) u64 {
             const self: *@This() = @ptrCast(@alignCast(context));
             self.estimates += 1;
-            try std.testing.expectEqual(@as(?u64, 20), input.settings.max_tokens);
+            self.saw_settings = input.settings.max_tokens == 20;
             return @intCast(input.messages.len * 10);
         }
 
@@ -780,6 +781,7 @@ test "context budgets compact history before requests and preserve callback cont
     try std.testing.expectEqual(@as(usize, 2), state.estimates);
     try std.testing.expectEqual(@as(usize, 1), state.compactions);
     try std.testing.expectEqual(@as(usize, 1), state.request_messages);
+    try std.testing.expect(state.saw_settings);
     try std.testing.expectEqual(@as(usize, 4), result.messages.len);
 }
 

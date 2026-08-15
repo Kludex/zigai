@@ -588,6 +588,11 @@ by OpenAI-style providers for tracing. OpenAI-compatible gateways can name an
 `idempotency_header`; ZigAI then generates one key per logical request and
 reuses it for that request's retries.
 
+Provider error observers receive parsed, bounded messages and correlation
+metadata. Raw response bodies are hidden by default. Enable
+`provider_error_policy.capture_body` with an explicit `max_body_bytes` only
+when an application needs bounded provider diagnostics.
+
 HTTP response allocations are bounded after decompression. The defaults accept
 up to 16 MiB for a buffered body and 1 MiB for one streaming line. Use tighter
 limits for a specific deployment:

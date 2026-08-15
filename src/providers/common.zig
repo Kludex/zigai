@@ -52,6 +52,7 @@ pub fn notifyProviderError(
     status: u16,
     body: []const u8,
     metadata: http.ResponseMetadata,
+    policy: model_types.ProviderErrorPolicy,
 ) void {
     const target = observer orelse return;
     const Envelope = struct {
@@ -70,7 +71,7 @@ pub fn notifyProviderError(
         .{ .ignore_unknown_fields = true },
         error.InvalidProviderResponse,
     ) catch {
-        observeRawProviderError(target, provider, status, body, metadata);
+        observeRawProviderError(target, provider, status, body, metadata, policy);
         return;
     };
     defer parsed.deinit();
@@ -84,12 +85,16 @@ pub fn notifyProviderError(
         },
         else => null,
     } else null;
+    const captured_body = capturedBody(body, policy);
+    const provider_message = parsed.value.@"error".message orelse "Provider request failed";
+    const provider_code = code orelse parsed.value.@"error".type orelse parsed.value.@"error".status;
     target.observe(.{
         .provider = provider,
         .status = status,
-        .code = code orelse parsed.value.@"error".type orelse parsed.value.@"error".status,
-        .message = parsed.value.@"error".message orelse body,
-        .body = body,
+        .code = if (provider_code) |value| bounded(value, policy.max_code_bytes) else null,
+        .message = bounded(provider_message, policy.max_message_bytes),
+        .body = captured_body,
+        .body_truncated = policy.capture_body and captured_body.len < body.len,
         .request_id = metadata.requestId(),
         .retry_after_seconds = metadata.retry_after_seconds,
         .rate_limit_remaining_requests = metadata.rate_limit_remaining_requests,
@@ -103,17 +108,32 @@ fn observeRawProviderError(
     status: u16,
     body: []const u8,
     metadata: http.ResponseMetadata,
+    policy: model_types.ProviderErrorPolicy,
 ) void {
+    const captured_body = capturedBody(body, policy);
     observer.observe(.{
         .provider = provider,
         .status = status,
-        .message = body,
-        .body = body,
+        .message = if (policy.capture_body)
+            captured_body
+        else
+            "Provider request failed",
+        .body = captured_body,
+        .body_truncated = policy.capture_body and captured_body.len < body.len,
         .request_id = metadata.requestId(),
         .retry_after_seconds = metadata.retry_after_seconds,
         .rate_limit_remaining_requests = metadata.rate_limit_remaining_requests,
         .rate_limit_remaining_tokens = metadata.rate_limit_remaining_tokens,
     });
+}
+
+fn capturedBody(body: []const u8, policy: model_types.ProviderErrorPolicy) []const u8 {
+    if (!policy.capture_body) return "";
+    return bounded(body, policy.max_body_bytes);
+}
+
+fn bounded(value: []const u8, maximum: usize) []const u8 {
+    return value[0..@min(value.len, maximum)];
 }
 
 pub fn rawJson(
@@ -219,6 +239,7 @@ test "provider error observer receives parsed and fallback details" {
         saw_message: bool = false,
         saw_metadata: bool = false,
         saw_request_id: bool = false,
+        body_hidden: bool = false,
 
         fn observe(context: *anyopaque, value: model_types.ProviderError) void {
             const self: *@This() = @ptrCast(@alignCast(context));
@@ -229,6 +250,7 @@ test "provider error observer receives parsed and fallback details" {
             self.saw_metadata = value.retry_after_seconds == 3 and value.rate_limit_remaining_requests == 0 and
                 value.rate_limit_remaining_tokens == 12;
             self.saw_request_id = std.mem.eql(u8, value.request_id orelse "", "req_test");
+            self.body_hidden = value.body.len == 0 and !value.body_truncated;
         }
     };
     var capture: Capture = .{};
@@ -245,6 +267,7 @@ test "provider error observer receives parsed and fallback details" {
             .rate_limit_remaining_tokens = 12,
             .provider_request_id = http.MetadataText.init("req_test"),
         },
+        .{},
     );
     try std.testing.expectEqual(@as(usize, 1), capture.calls);
     try std.testing.expectEqual(@as(u16, 429), capture.status);
@@ -252,9 +275,52 @@ test "provider error observer receives parsed and fallback details" {
     try std.testing.expect(capture.saw_message);
     try std.testing.expect(capture.saw_metadata);
     try std.testing.expect(capture.saw_request_id);
+    try std.testing.expect(capture.body_hidden);
 
-    notifyProviderError(std.testing.allocator, observer, "test", 500, "not-json", .{});
+    notifyProviderError(std.testing.allocator, observer, "test", 500, "not-json", .{}, .{});
     try std.testing.expectEqual(@as(usize, 2), capture.calls);
+}
+
+test "provider error bodies require opt in and obey exact limits" {
+    const Capture = struct {
+        calls: usize = 0,
+        bounded: bool = false,
+        exact: bool = false,
+
+        fn observe(context: *anyopaque, value: model_types.ProviderError) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            if (self.calls == 1) {
+                self.bounded = std.mem.eql(u8, value.body, "{\"e") and value.body_truncated and
+                    std.mem.eql(u8, value.message, "mes") and std.mem.eql(u8, value.code.?, "ab");
+            } else {
+                self.exact = std.mem.eql(u8, value.body, "raw") and !value.body_truncated and
+                    std.mem.eql(u8, value.message, "raw");
+            }
+        }
+    };
+    var capture: Capture = .{};
+    const observer = model_types.ProviderErrorObserver{ .context = &capture, .observeFn = Capture.observe };
+    notifyProviderError(
+        std.testing.allocator,
+        observer,
+        "test",
+        400,
+        "{\"error\":{\"code\":\"abcdef\",\"message\":\"message\"}}",
+        .{},
+        .{ .capture_body = true, .max_body_bytes = 3, .max_message_bytes = 3, .max_code_bytes = 2 },
+    );
+    notifyProviderError(
+        std.testing.allocator,
+        observer,
+        "test",
+        500,
+        "raw",
+        .{},
+        .{ .capture_body = true, .max_body_bytes = 3 },
+    );
+    try std.testing.expect(capture.bounded);
+    try std.testing.expect(capture.exact);
 }
 
 test "provider error observer accepts numeric codes and status names" {
@@ -272,8 +338,8 @@ test "provider error observer accepts numeric codes and status names" {
     };
     var capture: Capture = .{};
     const observer = model_types.ProviderErrorObserver{ .context = &capture, .observeFn = Capture.observe };
-    notifyProviderError(std.testing.allocator, observer, "google", 503, "{\"error\":{\"code\":503,\"message\":\"down\"}}", .{});
-    notifyProviderError(std.testing.allocator, observer, "google", 503, "{\"error\":{\"status\":\"UNAVAILABLE\",\"message\":\"down\"}}", .{});
+    notifyProviderError(std.testing.allocator, observer, "google", 503, "{\"error\":{\"code\":503,\"message\":\"down\"}}", .{}, .{});
+    notifyProviderError(std.testing.allocator, observer, "google", 503, "{\"error\":{\"status\":\"UNAVAILABLE\",\"message\":\"down\"}}", .{}, .{});
     try std.testing.expect(capture.numeric);
     try std.testing.expect(capture.status_name);
 }
