@@ -248,6 +248,8 @@ pub const StdioTransport = struct {
 
         const request_id = try JsonRpcId.parse(allocator, request.message);
         defer request_id.deinit(allocator);
+        const is_subscription = std.mem.eql(u8, request.method, methods.listen);
+        var subscription_acknowledged = !is_subscription;
         while (true) {
             const line = try readLine(allocator, self.io, self.child.stdout orelse return error.McpProcessClosed);
             errdefer allocator.free(line);
@@ -270,12 +272,25 @@ pub const StdioTransport = struct {
                 } else if (request.events) |events| {
                     validateIncomingNotification(
                         parsed.value,
-                        std.mem.eql(u8, request.method, methods.listen),
+                        is_subscription,
                         error.InvalidMcpMessage,
                     ) catch {
                         allocator.free(line);
                         continue;
                     };
+                    if (is_subscription) {
+                        validateSubscriptionNotification(allocator, parsed.value, request.message) catch {
+                            allocator.free(line);
+                            continue;
+                        };
+                        const event_method = optionalString(object, "method") orelse unreachable;
+                        if (std.mem.eql(u8, event_method, methods.subscriptions_acknowledged)) {
+                            subscription_acknowledged = true;
+                        } else if (!subscription_acknowledged) {
+                            allocator.free(line);
+                            continue;
+                        }
+                    }
                     try events.emit(line);
                 }
                 allocator.free(line);
@@ -484,6 +499,15 @@ pub const Client = struct {
         defer arena.deinit();
         const result = try responseResult(try parseResponse(arena.allocator(), body), id);
         try validateMethodResult(method, result);
+        const client_capabilities = try json_limits.parseLeaky(
+            std.json.Value,
+            arena.allocator(),
+            self.capabilities_json,
+            json_limits.defaults.mcp_message,
+            .{},
+            error.InvalidMcpMessage,
+        );
+        try validateInputRequiredCapabilities(result, client_capabilities);
         return std.json.Stringify.valueAlloc(allocator, result, .{});
     }
 
@@ -702,6 +726,7 @@ pub const Server = struct {
             return self.errorResponse(allocator, id, error_codes.invalid_params, "Params must be an object", 400);
 
         const is_notification = object.get("id") == null;
+        var request_client_capabilities: ?std.json.Value = null;
         if (!is_notification) {
             const meta = params.get("_meta") orelse
                 return self.errorResponse(allocator, id, error_codes.invalid_params, "Missing request metadata", 400);
@@ -728,6 +753,7 @@ pub const Server = struct {
                     "Invalid client capabilities",
                     400,
                 );
+            request_client_capabilities = client_capabilities;
             validateRequestMethodParams(method, params, error.InvalidMcpMessage) catch
                 return self.errorResponse(allocator, id, error_codes.invalid_params, "Invalid method params", 400);
         } else {
@@ -762,6 +788,21 @@ pub const Server = struct {
             }
         }
 
+        if (!is_notification) {
+            const server_capabilities = try json_limits.parseLeaky(
+                std.json.Value,
+                arena.allocator(),
+                self.capabilities_json,
+                json_limits.defaults.mcp_message,
+                .{},
+                error.InvalidMcpResponse,
+            );
+            try validateServerCapabilities(server_capabilities, error.InvalidMcpResponse);
+            if (!serverSupportsMethod(server_capabilities, method)) {
+                return self.errorResponse(allocator, id, error_codes.method_not_found, "Method not advertised", 200);
+            }
+        }
+
         const params_json = try std.json.Stringify.valueAlloc(allocator, params_value, .{});
         defer allocator.free(params_json);
         if (is_notification) {
@@ -775,6 +816,13 @@ pub const Server = struct {
             self.handler.handle(allocator, method, params_json) catch
                 return self.errorResponse(allocator, id, error_codes.internal_error, "MCP handler failed", 500);
         defer allocator.free(result_json);
+        if (request_client_capabilities) |client_capabilities| {
+            const result = try parseResponse(arena.allocator(), result_json);
+            const requirements = try inputCapabilityRequirements(result);
+            if (!clientCapabilitiesSatisfy(client_capabilities, requirements)) {
+                return self.missingCapabilityResponse(allocator, id, client_capabilities, requirements);
+            }
+        }
         const body = try self.resultResponse(allocator, id, method, result_json);
         return .{ .status = 200, .body = body };
     }
@@ -873,6 +921,29 @@ pub const Server = struct {
                 .code = error_codes.unsupported_protocol_version,
                 .message = "Unsupported MCP protocol version",
                 .data = .{ .supported = &.{protocol_version}, .requested = requested },
+            },
+        }, .{});
+        return .{ .status = 400, .body = body };
+    }
+
+    fn missingCapabilityResponse(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        id: std.json.Value,
+        client_capabilities: std.json.Value,
+        requirements: ClientCapabilityRequirements,
+    ) !ServerResponse {
+        _ = self;
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const missing = try missingClientCapabilities(arena.allocator(), client_capabilities, requirements);
+        const body = try std.json.Stringify.valueAlloc(allocator, .{
+            .jsonrpc = "2.0",
+            .id = id,
+            .@"error" = .{
+                .code = error_codes.missing_required_client_capability,
+                .message = "Required client capability was not advertised",
+                .data = .{ .requiredCapabilities = missing },
             },
         }, .{});
         return .{ .status = 400, .body = body };
@@ -1051,6 +1122,8 @@ fn extractSseResponse(
 ) ![]u8 {
     const request_id = try JsonRpcId.parse(allocator, request);
     defer request_id.deinit(allocator);
+    const is_subscription = std.mem.eql(u8, request_method, methods.listen);
+    var subscription_acknowledged = !is_subscription;
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, "\r ");
@@ -1067,9 +1140,16 @@ fn extractSseResponse(
         if (object.get("method") != null) {
             validateIncomingNotification(
                 parsed.value,
-                std.mem.eql(u8, request_method, methods.listen),
+                is_subscription,
                 error.InvalidMcpMessage,
             ) catch continue;
+            if (is_subscription) {
+                validateSubscriptionNotification(allocator, parsed.value, request) catch continue;
+                const event_method = optionalString(object, "method") orelse unreachable;
+                if (std.mem.eql(u8, event_method, methods.subscriptions_acknowledged)) {
+                    subscription_acknowledged = true;
+                } else if (!subscription_acknowledged) continue;
+            }
             if (events) |sink| try sink.emit(data);
             continue;
         }
@@ -1362,6 +1442,46 @@ fn validateIncomingNotification(
     }
 }
 
+fn validateSubscriptionNotification(
+    allocator: std.mem.Allocator,
+    notification_value: std.json.Value,
+    request_json: []const u8,
+) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const request_value = parseResponse(arena.allocator(), request_json) catch |failure| switch (failure) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return error.InvalidMcpMessage,
+    };
+    const request = requiredObject(request_value) catch return error.InvalidMcpMessage;
+    const request_params = requiredObject(request.get("params") orelse return error.InvalidMcpMessage) catch
+        return error.InvalidMcpMessage;
+    const filter = requiredObject(request_params.get("notifications") orelse return error.InvalidMcpMessage) catch
+        return error.InvalidMcpMessage;
+    const notification = requiredObject(notification_value) catch return error.InvalidMcpMessage;
+    const method = requiredString(notification, "method") catch return error.InvalidMcpMessage;
+    const allowed = if (std.mem.eql(u8, method, methods.subscriptions_acknowledged) or
+        std.mem.eql(u8, method, methods.cancelled))
+        true
+    else if (std.mem.eql(u8, method, methods.tool_list_changed))
+        optionalBool(filter, "toolsListChanged") orelse false
+    else if (std.mem.eql(u8, method, methods.prompt_list_changed))
+        optionalBool(filter, "promptsListChanged") orelse false
+    else if (std.mem.eql(u8, method, methods.resource_list_changed))
+        optionalBool(filter, "resourcesListChanged") orelse false
+    else if (std.mem.eql(u8, method, methods.resource_updated))
+        switch (filter.get("resourceSubscriptions") orelse return error.InvalidMcpMessage) {
+            .array => |items| items.items.len > 0,
+            else => false,
+        }
+    else if (std.mem.eql(u8, method, methods.progress) or
+        std.mem.eql(u8, method, methods.logging_message))
+        false
+    else
+        true;
+    if (!allowed) return error.InvalidMcpMessage;
+}
+
 fn validateInputResponseParams(params: std.json.ObjectMap, comptime invalid_error: anytype) !void {
     try validateOptionalObject(params, "inputResponses", invalid_error);
     try validateOptionalString(params, "requestState", invalid_error);
@@ -1610,6 +1730,126 @@ fn validateInputRequiredResult(object: std.json.ObjectMap) !void {
     if (!has_state and !has_requests) return error.InvalidMcpResponse;
 }
 
+const ClientCapabilityRequirements = struct {
+    elicitation: bool = false,
+    elicitation_url: bool = false,
+    roots: bool = false,
+    sampling: bool = false,
+    sampling_context: bool = false,
+    sampling_tools: bool = false,
+};
+
+fn inputCapabilityRequirements(result: std.json.Value) !ClientCapabilityRequirements {
+    const object = try requiredObject(result);
+    if (!std.mem.eql(u8, optionalString(object, "resultType") orelse "complete", "input_required")) return .{};
+    const requests = if (object.get("inputRequests")) |value| try requiredObject(value) else return .{};
+    var requirements: ClientCapabilityRequirements = .{};
+    var iterator = requests.iterator();
+    while (iterator.next()) |entry| {
+        const request = try requiredObject(entry.value_ptr.*);
+        const method = try requiredString(request, "method");
+        const params = if (request.get("params")) |value| try requiredObject(value) else std.json.ObjectMap{};
+        if (std.mem.eql(u8, method, methods.elicit)) {
+            requirements.elicitation = true;
+            if (std.mem.eql(u8, optionalString(params, "mode") orelse "form", "url")) {
+                requirements.elicitation_url = true;
+            }
+        } else if (std.mem.eql(u8, method, methods.list_roots)) {
+            requirements.roots = true;
+        } else if (std.mem.eql(u8, method, methods.create_message)) {
+            requirements.sampling = true;
+            if (params.get("tools") != null or params.get("toolChoice") != null) {
+                requirements.sampling_tools = true;
+            }
+            if (optionalString(params, "includeContext")) |context| {
+                if (!std.mem.eql(u8, context, "none")) requirements.sampling_context = true;
+            }
+        }
+    }
+    return requirements;
+}
+
+fn validateInputRequiredCapabilities(result: std.json.Value, client_capabilities: std.json.Value) !void {
+    try validateClientCapabilities(client_capabilities, error.InvalidMcpMessage);
+    const requirements = try inputCapabilityRequirements(result);
+    if (!clientCapabilitiesSatisfy(client_capabilities, requirements)) return error.InvalidMcpResponse;
+}
+
+fn clientCapabilitiesSatisfy(
+    value: std.json.Value,
+    requirements: ClientCapabilityRequirements,
+) bool {
+    const capabilities = switch (value) {
+        .object => |object| object,
+        else => return false,
+    };
+    const elicitation = if (capabilities.get("elicitation")) |item| switch (item) {
+        .object => |object| object,
+        else => return false,
+    } else std.json.ObjectMap{};
+    const sampling = if (capabilities.get("sampling")) |item| switch (item) {
+        .object => |object| object,
+        else => return false,
+    } else std.json.ObjectMap{};
+    if (requirements.elicitation and capabilities.get("elicitation") == null) return false;
+    if (requirements.elicitation_url and elicitation.get("url") == null) return false;
+    if (requirements.roots and capabilities.get("roots") == null) return false;
+    if (requirements.sampling and capabilities.get("sampling") == null) return false;
+    if (requirements.sampling_context and sampling.get("context") == null) return false;
+    if (requirements.sampling_tools and sampling.get("tools") == null) return false;
+    return true;
+}
+
+fn missingClientCapabilities(
+    allocator: std.mem.Allocator,
+    current: std.json.Value,
+    requirements: ClientCapabilityRequirements,
+) !std.json.Value {
+    const capabilities = switch (current) {
+        .object => |object| object,
+        else => std.json.ObjectMap{},
+    };
+    var missing: std.json.ObjectMap = .{};
+    if (requirements.elicitation and capabilities.get("elicitation") == null or requirements.elicitation_url) {
+        var elicitation: std.json.ObjectMap = .{};
+        if (requirements.elicitation_url) try elicitation.put(allocator, "url", .{ .object = .{} });
+        try missing.put(allocator, "elicitation", .{ .object = elicitation });
+    }
+    if (requirements.roots and capabilities.get("roots") == null) {
+        try missing.put(allocator, "roots", .{ .object = .{} });
+    }
+    if (requirements.sampling and capabilities.get("sampling") == null or
+        requirements.sampling_context or requirements.sampling_tools)
+    {
+        var sampling: std.json.ObjectMap = .{};
+        if (requirements.sampling_context) try sampling.put(allocator, "context", .{ .object = .{} });
+        if (requirements.sampling_tools) try sampling.put(allocator, "tools", .{ .object = .{} });
+        try missing.put(allocator, "sampling", .{ .object = sampling });
+    }
+    return .{ .object = missing };
+}
+
+fn serverSupportsMethod(capabilities_value: std.json.Value, method: []const u8) bool {
+    const capabilities = switch (capabilities_value) {
+        .object => |object| object,
+        else => return false,
+    };
+    if (std.mem.eql(u8, method, methods.complete)) return capabilities.get("completions") != null;
+    if (std.mem.eql(u8, method, methods.get_prompt) or std.mem.eql(u8, method, methods.list_prompts)) {
+        return capabilities.get("prompts") != null;
+    }
+    if (std.mem.eql(u8, method, methods.list_resources) or
+        std.mem.eql(u8, method, methods.list_resource_templates) or
+        std.mem.eql(u8, method, methods.read_resource))
+    {
+        return capabilities.get("resources") != null;
+    }
+    if (std.mem.eql(u8, method, methods.call_tool) or std.mem.eql(u8, method, methods.list_tools)) {
+        return capabilities.get("tools") != null;
+    }
+    return true;
+}
+
 fn validatePaginatedCacheableResult(object: std.json.ObjectMap) !void {
     try validateCacheableResult(object);
     if (object.get("nextCursor")) |cursor| if (cursor != .string) return error.InvalidMcpResponse;
@@ -1664,6 +1904,14 @@ fn optionalString(object: std.json.ObjectMap, name: []const u8) ?[]const u8 {
     const value = object.get(name) orelse return null;
     return switch (value) {
         .string => |string| string,
+        else => null,
+    };
+}
+
+fn optionalBool(object: std.json.ObjectMap, name: []const u8) ?bool {
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .bool => |boolean| boolean,
         else => null,
     };
 }
@@ -2284,6 +2532,135 @@ test "client and server reject malformed advertised capabilities at boundaries" 
     try std.testing.expect(std.mem.indexOf(u8, response.body.?, "Invalid client capabilities") != null);
 }
 
+test "server method guards follow its per-request advertised capabilities" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const all = try parseResponse(
+        arena.allocator(),
+        "{\"completions\":{},\"prompts\":{},\"resources\":{},\"tools\":{}}",
+    );
+    const guarded = [_][]const u8{
+        methods.complete,
+        methods.get_prompt,
+        methods.list_prompts,
+        methods.list_resources,
+        methods.list_resource_templates,
+        methods.read_resource,
+        methods.call_tool,
+        methods.list_tools,
+    };
+    for (guarded) |method| try std.testing.expect(serverSupportsMethod(all, method));
+    const none = try parseResponse(arena.allocator(), "{}");
+    for (guarded) |method| try std.testing.expect(!serverSupportsMethod(none, method));
+    try std.testing.expect(serverSupportsMethod(none, methods.discover));
+    try std.testing.expect(serverSupportsMethod(none, methods.listen));
+    try std.testing.expect(serverSupportsMethod(none, "com.example/future"));
+    try std.testing.expect(!serverSupportsMethod(.null, methods.discover));
+}
+
+test "MRTR input requirements match the capabilities sent on the request" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try parseResponse(
+        arena.allocator(),
+        "{\"resultType\":\"input_required\",\"inputRequests\":{" ++
+            "\"form\":{\"method\":\"elicitation/create\",\"params\":{}}," ++
+            "\"url\":{\"method\":\"elicitation/create\",\"params\":{\"mode\":\"url\"}}," ++
+            "\"roots\":{\"method\":\"roots/list\"}," ++
+            "\"sampling\":{\"method\":\"sampling/createMessage\",\"params\":{" ++
+            "\"includeContext\":\"thisServer\",\"tools\":[],\"toolChoice\":{}}}}}",
+    );
+    const requirements = try inputCapabilityRequirements(result);
+    try std.testing.expect(requirements.elicitation);
+    try std.testing.expect(requirements.elicitation_url);
+    try std.testing.expect(requirements.roots);
+    try std.testing.expect(requirements.sampling);
+    try std.testing.expect(requirements.sampling_context);
+    try std.testing.expect(requirements.sampling_tools);
+    const full = try parseResponse(
+        arena.allocator(),
+        "{\"elicitation\":{\"url\":{}},\"roots\":{},\"sampling\":{\"context\":{},\"tools\":{}}}",
+    );
+    try std.testing.expect(clientCapabilitiesSatisfy(full, requirements));
+    try validateInputRequiredCapabilities(result, full);
+    const insufficient = try parseResponse(
+        arena.allocator(),
+        "{\"elicitation\":{},\"sampling\":{}}",
+    );
+    try std.testing.expect(!clientCapabilitiesSatisfy(insufficient, requirements));
+    try std.testing.expectError(
+        error.InvalidMcpResponse,
+        validateInputRequiredCapabilities(result, insufficient),
+    );
+    try std.testing.expect(!clientCapabilitiesSatisfy(.null, requirements));
+
+    const missing = try missingClientCapabilities(arena.allocator(), insufficient, requirements);
+    const missing_json = try std.json.Stringify.valueAlloc(std.testing.allocator, missing, .{});
+    defer std.testing.allocator.free(missing_json);
+    try std.testing.expect(std.mem.indexOf(u8, missing_json, "\"url\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing_json, "\"roots\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing_json, "\"context\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing_json, "\"tools\"") != null);
+
+    const complete = try inputCapabilityRequirements(try parseResponse(arena.allocator(), "{}"));
+    try std.testing.expect(clientCapabilitiesSatisfy(try parseResponse(arena.allocator(), "{}"), complete));
+    const state_only = try inputCapabilityRequirements(try parseResponse(
+        arena.allocator(),
+        "{\"resultType\":\"input_required\",\"requestState\":\"later\"}",
+    ));
+    try std.testing.expect(clientCapabilitiesSatisfy(try parseResponse(arena.allocator(), "{}"), state_only));
+    const no_context = try inputCapabilityRequirements(try parseResponse(
+        arena.allocator(),
+        "{\"resultType\":\"input_required\",\"inputRequests\":{\"sample\":{" ++
+            "\"method\":\"sampling/createMessage\",\"params\":{\"includeContext\":\"none\"}}}}",
+    ));
+    try std.testing.expect(!no_context.sampling_context);
+}
+
+test "server returns protocol errors for unadvertised methods and client inputs" {
+    const Handler = struct {
+        calls: usize = 0,
+        fn handle(context: *anyopaque, allocator: std.mem.Allocator, _: []const u8, _: []const u8) ![]u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            return allocator.dupe(
+                u8,
+                "{\"resultType\":\"input_required\",\"inputRequests\":{\"login\":{" ++
+                    "\"method\":\"elicitation/create\",\"params\":{\"mode\":\"url\"}}}}",
+            );
+        }
+    };
+    var handler: Handler = .{};
+    var server = Server{
+        .handler = .{ .context = &handler, .handleFn = Handler.handle },
+        .capabilities_json = "{}",
+    };
+    const request = try buildRequest(
+        std.testing.allocator,
+        1,
+        methods.call_tool,
+        "{\"name\":\"login\"}",
+        "client",
+        "1",
+        "{}",
+    );
+    defer std.testing.allocator.free(request);
+    const absent = try server.handle(std.testing.allocator, request, null);
+    defer absent.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 200), absent.status);
+    try std.testing.expect(std.mem.indexOf(u8, absent.body.?, "-32601") != null);
+    try std.testing.expectEqual(@as(usize, 0), handler.calls);
+
+    server.capabilities_json = "{\"tools\":{}}";
+    const missing = try server.handle(std.testing.allocator, request, null);
+    defer missing.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 400), missing.status);
+    try std.testing.expect(std.mem.indexOf(u8, missing.body.?, "-32021") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing.body.?, "requiredCapabilities") != null);
+    try std.testing.expect(std.mem.indexOf(u8, missing.body.?, "\"url\"") != null);
+    try std.testing.expectEqual(@as(usize, 1), handler.calls);
+}
+
 test "state-only MRTR retries without an input handler" {
     const Stub = struct {
         calls: usize = 0,
@@ -2429,6 +2806,7 @@ test "client completes multi round-trip input requests" {
     var stub: Stub = .{};
     var client = Client{
         .transport = .{ .context = &stub, .sendFn = Stub.send },
+        .capabilities_json = "{\"elicitation\":{}}",
         .input_handler = .{ .context = &stub, .handleFn = Stub.input },
     };
     const result = try client.callTool(std.testing.allocator, "delete", "{}");
@@ -2534,12 +2912,71 @@ test "streamable HTTP emits subscription notifications before the result" {
     const result = try extractSseResponse(
         std.testing.allocator,
         body,
-        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"subscriptions/listen\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"subscriptions/listen\"," ++
+            "\"params\":{\"notifications\":{}}}",
         methods.listen,
         .{ .context = &events, .eventFn = Events.emit },
     );
     defer std.testing.allocator.free(result);
     try std.testing.expect(events.seen);
+}
+
+test "subscription streams enforce acknowledgement order and requested filters" {
+    const Events = struct {
+        count: usize = 0,
+        fn emit(context: *anyopaque, _: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.count += 1;
+        }
+    };
+    const meta = "\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":1}";
+    const body =
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\",\"params\":{" ++ meta ++ "}}\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\",\"params\":{\"notifications\":{}," ++ meta ++ "}}\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/prompts/list_changed\",\"params\":{" ++ meta ++ "}}\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/list_changed\",\"params\":{" ++ meta ++ "}}\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\",\"params\":{\"uri\":\"file:///a\"," ++ meta ++ "}}\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progressToken\":1,\"progress\":0," ++ meta ++ "}}\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"com.example/changed\",\"params\":{" ++ meta ++ "}}\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":1," ++ meta ++ "}}\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":1}}}\n";
+    const request =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"subscriptions/listen\",\"params\":{" ++
+        "\"notifications\":{\"toolsListChanged\":true,\"promptsListChanged\":false," ++
+        "\"resourcesListChanged\":true,\"resourceSubscriptions\":[\"file:///a\"]}}}";
+    var events: Events = .{};
+    const result = try extractSseResponse(
+        std.testing.allocator,
+        body,
+        request,
+        methods.listen,
+        .{ .context = &events, .eventFn = Events.emit },
+    );
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqual(@as(usize, 5), events.count);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const notification = try parseResponse(
+        arena.allocator(),
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\",\"params\":{\"uri\":\"file:///a\"}}",
+    );
+    const invalid_requests = [_][]const u8{
+        "{}",
+        "{\"params\":[]}",
+        "{\"params\":{}}",
+        "{\"params\":{\"notifications\":[]}}",
+        "{\"params\":{\"notifications\":{}}}",
+        "{\"params\":{\"notifications\":{\"resourceSubscriptions\":{}}}}",
+    };
+    for (invalid_requests) |source| try std.testing.expectError(
+        error.InvalidMcpMessage,
+        validateSubscriptionNotification(
+            arena.allocator(),
+            notification,
+            source,
+        ),
+    );
 }
 
 test "stdio transport runs a modern MCP tool server child process" {
@@ -2725,7 +3162,7 @@ test "generic client helpers cover every core request shape" {
                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"input_required\",\"inputRequests\":{\"confirm\":{\"method\":\"elicitation/create\",\"params\":{}}}}}",
             );
         }
-    }.send } };
+    }.send }, .capabilities_json = "{\"elicitation\":{}}" };
     try std.testing.expectError(
         error.InputRequired,
         no_handler.request(std.testing.allocator, methods.call_tool, "{\"name\":\"confirm\"}"),
@@ -2850,6 +3287,7 @@ test "server returns specified errors and validates tool parameter headers" {
     var handler: Handler = .{};
     var server = Server{
         .handler = .{ .context = &handler, .handleFn = Handler.handle },
+        .capabilities_json = "{\"tools\":{}}",
         .tool_schemas = .{ .context = &handler, .schemaFn = Handler.schema },
     };
     const invalid_json = try server.handle(std.testing.allocator, "{", null);
