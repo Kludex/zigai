@@ -40,6 +40,7 @@ pub const ClientDefaults = struct {
     authentication: Authentication = .{},
     include_stream_usage: bool = true,
     extra_body_kind: model_types.ExtraBodyKind = .openai_compatible,
+    provider_details_field: ?[]const u8 = null,
 };
 
 /// Defines provider state for an OpenAI-compatible API while retaining
@@ -199,7 +200,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
                 );
                 return common.statusError(response.status);
             }
-            return decodeResponse(allocator, response.body) catch |failure| return common.responseDecodeError(failure);
+            return decodeResponseFor(allocator, response.body, defaults.provider_details_field) catch |failure| return common.responseDecodeError(failure);
         }
 
         fn stream(
@@ -218,7 +219,11 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
             if (self.idempotency_header) |name| if (value.idempotency_key) |key|
                 try headers.append(allocator, .{ .name = name, .value = key });
             try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
-            var state = StreamState{ .allocator = allocator, .sink = sink };
+            var state = StreamState{
+                .allocator = allocator,
+                .sink = sink,
+                .provider_details_field = defaults.provider_details_field,
+            };
             defer state.deinit();
             const response = self.provider.streamLines(allocator, .{
                 .method = .POST,
@@ -249,6 +254,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
                 .parts = try state.parts.toOwnedSlice(allocator), // kcov-ignore
                 .usage = state.usage,
                 .finish_reason = state.finish_reason,
+                .provider_details = state.provider_details,
             };
         }
     };
@@ -589,6 +595,14 @@ fn ensureProviderPartReplayable(provider: model_types.ProviderPart) !void {
 }
 
 pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_types.ModelResponse {
+    return decodeResponseFor(allocator, body, null);
+}
+
+fn decodeResponseFor(
+    allocator: std.mem.Allocator,
+    body: []const u8,
+    provider_details_field: ?[]const u8,
+) !model_types.ModelResponse {
     const root = try json_limits.parseLeaky(
         std.json.Value,
         allocator,
@@ -597,6 +611,10 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
         .{},
         error.InvalidProviderResponse,
     );
+    const object = switch (root) {
+        .object => |value| value,
+        else => return error.InvalidProviderResponse,
+    };
     const choices = try common.requiredArray(root, "choices");
     if (choices.items.len == 0) return error.InvalidProviderResponse;
     const choice = switch (choices.items[0]) {
@@ -645,6 +663,22 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
         .parts = try parts.toOwnedSlice(allocator),
         .usage = try decodeUsage(allocator, root),
         .finish_reason = finish_reason,
+        .provider_details = try responseProviderDetails(object, provider_details_field),
+        .provider_response_id = try common.optionalObjectString(object, "id"),
+        .model_name = try common.optionalObjectString(object, "model"),
+    };
+}
+
+fn responseProviderDetails(
+    object: std.json.ObjectMap,
+    field: ?[]const u8,
+) !?model_types.ProviderDetails {
+    const name = field orelse return null;
+    const value = object.get(name) orelse return null;
+    return switch (value) {
+        .object => try model_types.ProviderDetails.fromValue(value),
+        .null => null,
+        else => error.InvalidProviderResponse,
     };
 }
 
@@ -745,6 +779,8 @@ const StreamState = struct {
     error_body: std.ArrayList(u8) = .empty,
     usage: model_types.Usage = .{},
     finish_reason: ?model_types.FinishReason = null,
+    provider_details_field: ?[]const u8 = null,
+    provider_details: ?model_types.ProviderDetails = null,
     text_index: ?usize = null,
     next_part_index: usize = 0,
 
@@ -783,6 +819,14 @@ const StreamState = struct {
             .{},
             error.InvalidProviderResponse,
         );
+        if (self.provider_details_field) |field| {
+            const object = switch (root) {
+                .object => |item| item,
+                else => return error.InvalidProviderResponse,
+            };
+            if (object.get(field) != null)
+                self.provider_details = try responseProviderDetails(object, field);
+        }
         const usage = try decodeUsage(self.allocator, root);
         if (usage.input_tokens != 0 or usage.output_tokens != 0) {
             self.usage = usage;
@@ -1136,6 +1180,22 @@ test "decodes Chat Completions text, tools, usage, and finish reason" {
     try std.testing.expectEqual(@as(u64, 2_400), response.usage.cost.?.nano_usd);
     try std.testing.expectEqual(model_types.UsageCostSource.provider, response.usage.cost_source.?);
     try std.testing.expectEqual(model_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
+}
+
+test "named compatible decoders preserve selected response metadata" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const base = "{\"id\":\"gen_1\",\"model\":\"routed/model\",\"choices\":[{\"message\":{\"content\":\"ok\"}}]";
+    const missing = try decodeResponseFor(arena.allocator(), base ++ "}", "router");
+    try std.testing.expect(missing.provider_details == null);
+    try std.testing.expectEqualStrings("gen_1", missing.provider_response_id.?);
+    try std.testing.expectEqualStrings("routed/model", missing.model_name.?);
+    const null_details = try decodeResponseFor(arena.allocator(), base ++ ",\"router\":null}", "router");
+    try std.testing.expect(null_details.provider_details == null);
+    try std.testing.expectError(
+        error.InvalidProviderResponse,
+        decodeResponseFor(arena.allocator(), base ++ ",\"router\":true}", "router"),
+    );
 }
 
 test "maps compatible truncation and content filtering" {

@@ -16,6 +16,7 @@ const defaults: compatible.ClientDefaults = .{
     .profile = profiles.openai_compatible.unknown,
     .model_profile_lookup = profiles.openRouter,
     .extra_body_kind = .openrouter,
+    .provider_details_field = "openrouter_metadata",
 };
 
 pub const Provider = compatible.ProviderWithDefaults(defaults);
@@ -95,6 +96,7 @@ pub const Client = struct {
     profile: model_types.ModelProfile = defaults.profile,
     idempotency_header: ?[]const u8 = null,
     include_stream_usage: bool = defaults.include_stream_usage,
+    include_router_metadata: bool = false,
     settings: model_types.ModelSettings = .{},
     routing: ?Routing = null,
 
@@ -116,6 +118,10 @@ pub const Client = struct {
     fn request(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest) !model_types.ModelResponse {
         const self: *Client = @ptrCast(@alignCast(context));
         var prepared = value;
+        var headers: std.ArrayList(model_types.RequestHeader) = .empty;
+        defer headers.deinit(allocator);
+        try prepareHeaders(allocator, &headers, value.settings.extra_headers, self.include_router_metadata);
+        if (headers.items.len > 0) prepared.settings.extra_headers = headers.items;
         const extra = try prepareExtraBody(allocator, value.settings.extra_body, self.routing);
         defer if (extra) |body| allocator.free(body);
         if (extra) |body| prepared.settings.extra_body = .{ .openrouter = body };
@@ -131,6 +137,10 @@ pub const Client = struct {
     ) !model_types.ModelResponse {
         const self: *Client = @ptrCast(@alignCast(context));
         var prepared = value;
+        var headers: std.ArrayList(model_types.RequestHeader) = .empty;
+        defer headers.deinit(allocator);
+        try prepareHeaders(allocator, &headers, value.settings.extra_headers, self.include_router_metadata);
+        if (headers.items.len > 0) prepared.settings.extra_headers = headers.items;
         const extra = try prepareExtraBody(allocator, value.settings.extra_body, self.routing);
         defer if (extra) |body| allocator.free(body);
         if (extra) |body| prepared.settings.extra_body = .{ .openrouter = body };
@@ -149,6 +159,19 @@ pub const Client = struct {
         };
     }
 };
+
+fn prepareHeaders(
+    allocator: std.mem.Allocator,
+    headers: *std.ArrayList(model_types.RequestHeader),
+    existing: ?[]const model_types.RequestHeader,
+    include_router_metadata: bool,
+) !void {
+    if (existing) |values| try headers.appendSlice(allocator, values);
+    if (include_router_metadata) try headers.append(allocator, .{
+        .name = "x-openrouter-metadata",
+        .value = "enabled",
+    });
+}
 
 fn prepareExtraBody(
     allocator: std.mem.Allocator,
@@ -279,9 +302,20 @@ test "OpenRouter client isolates typed routing from Chat Completions" {
             try std.testing.expect(std.mem.indexOf(u8, request.body, "\"preferred_max_latency\":{\"p50\":1,\"p75\":2,\"p90\":3,\"p99\":4}") != null);
             try std.testing.expect(std.mem.indexOf(u8, request.body, "\"max_price\":{\"prompt\":0.1,\"completion\":0.2,\"image\":0.3,\"request\":0.4}") != null);
             try std.testing.expect(std.mem.indexOf(u8, request.body, "\"transforms\":[\"middle-out\"]") != null);
+            var metadata_header = false;
+            var application_header = false;
+            for (request.headers) |header| {
+                if (std.ascii.eqlIgnoreCase(header.name, "x-openrouter-metadata")) {
+                    metadata_header = true;
+                    try std.testing.expectEqualStrings("enabled", header.value);
+                }
+                if (std.ascii.eqlIgnoreCase(header.name, "x-application")) application_header = true;
+            }
+            try std.testing.expect(metadata_header);
+            try std.testing.expect(application_header);
             return .{
                 .status = 200,
-                .body = try allocator.dupe(u8, "{\"choices\":[{\"message\":{\"content\":\"pong\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}"),
+                .body = try allocator.dupe(u8, "{\"id\":\"gen_1\",\"model\":\"openai/gpt-4o-mini\",\"openrouter_metadata\":{\"provider_name\":\"OpenAI\",\"is_byok\":false},\"choices\":[{\"message\":{\"content\":\"pong\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}"),
             };
         }
     };
@@ -290,6 +324,7 @@ test "OpenRouter client isolates typed routing from Chat Completions" {
     var client = Client{
         .model_name = "openai/gpt-4o-mini",
         .provider = provider.provider(),
+        .include_router_metadata = true,
         .routing = .{
             .order = &.{ "anthropic", "openai" },
             .only = &.{"anthropic"},
@@ -310,11 +345,20 @@ test "OpenRouter client isolates typed routing from Chat Completions" {
     defer arena.deinit();
     const response = try client.model().request(arena.allocator(), .{
         .messages = &.{.{ .request = .{ .parts = &.{.{ .user_prompt = .{ .text = "ping" } }} } }},
-        .settings = .{ .extra_body = .{ .openrouter = "{\"transforms\":[\"middle-out\"]}" } },
+        .settings = .{
+            .extra_headers = &.{.{ .name = "x-application", .value = "zigai" }},
+            .extra_body = .{ .openrouter = "{\"transforms\":[\"middle-out\"]}" },
+        },
     });
     try std.testing.expectEqualStrings("pong", response.parts[0].text);
     try std.testing.expectEqual(@as(usize, 1), state.calls);
     try std.testing.expectEqual(model_types.ExtraBodyKind.openrouter, client.model().profile.extra_body_kind.?);
+    try std.testing.expectEqualStrings("gen_1", response.provider_response_id.?);
+    try std.testing.expectEqualStrings("openai/gpt-4o-mini", response.model_name.?);
+    try std.testing.expectEqualStrings(
+        "OpenAI",
+        response.provider_details.?.value.object.get("provider_name").?.string,
+    );
 }
 
 test "OpenRouter routing supports simple sorting and streaming" {
@@ -331,8 +375,13 @@ test "OpenRouter routing supports simple sorting and streaming" {
         fn stream(_: *anyopaque, _: std.mem.Allocator, request: transport.Request, sink: transport.LineSink) !transport.StreamResponse {
             try std.testing.expect(std.mem.indexOf(u8, request.body, "\"stream\":true") != null);
             try std.testing.expect(std.mem.indexOf(u8, request.body, "\"provider\":{\"sort\":\"price\"}") != null);
+            var metadata_header = false;
+            for (request.headers) |header| {
+                if (std.ascii.eqlIgnoreCase(header.name, "x-openrouter-metadata")) metadata_header = true;
+            }
+            try std.testing.expect(metadata_header);
             try sink.start(.{ .status = 200 });
-            try sink.line("data: {\"choices\":[{\"delta\":{\"content\":\"streamed\"},\"finish_reason\":null}]}");
+            try sink.line("data: {\"openrouter_metadata\":{\"provider_name\":\"OpenAI\"},\"choices\":[{\"delta\":{\"content\":\"streamed\"},\"finish_reason\":null}]}");
             try sink.line("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1}}");
             try sink.line("data: [DONE]");
             return .{ .status = 200 };
@@ -350,6 +399,7 @@ test "OpenRouter routing supports simple sorting and streaming" {
     var client = Client{
         .model_name = "openai/gpt-4o-mini",
         .provider = provider.provider(),
+        .include_router_metadata = true,
         .routing = .{ .sort = .{ .by = .price } },
     };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
@@ -363,6 +413,10 @@ test "OpenRouter routing supports simple sorting and streaming" {
     });
     try std.testing.expectEqualStrings("streamed", response.parts[0].text);
     try std.testing.expectEqual(@as(usize, 4), sink.events);
+    try std.testing.expectEqualStrings(
+        "OpenAI",
+        response.provider_details.?.value.object.get("provider_name").?.string,
+    );
 }
 
 test "OpenRouter routing rejects invalid policies before transport" {
@@ -396,4 +450,9 @@ test "OpenRouter routing rejects invalid policies before transport" {
         error.InvalidRequestEncoding,
         prepareExtraBody(std.testing.allocator, .{ .openrouter = "{\"provider\":{}}" }, .{}),
     );
+
+    var headers: std.ArrayList(model_types.RequestHeader) = .empty;
+    defer headers.deinit(std.testing.allocator);
+    try prepareHeaders(std.testing.allocator, &headers, null, false);
+    try std.testing.expectEqual(@as(usize, 0), headers.items.len);
 }
