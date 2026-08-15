@@ -111,6 +111,11 @@ Official interoperability inputs are test assets, never production modules.
 `tests/mcp/upstreams.yaml` pins the official conformance framework and reference
 servers by commit. The matrix deliberately includes both stdio and Streamable
 HTTP and is validated by the ordinary test suite before live jobs consume it.
+Recorded wire evidence uses the Cassetter-style YAML codec in
+`tests/mcp/transcripts.zig`. One interaction preserves a JSON-RPC request, the
+ordered notifications observed while it was active, and its response. Replay
+is transport-neutral; the transcript metadata records whether the evidence was
+captured from stdio or HTTP.
 
 ## Fuzzing
 

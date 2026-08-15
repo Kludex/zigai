@@ -4,6 +4,9 @@
 
 - Pin the official MCP `2026-07-28` conformance framework and TypeScript and
   Python reference servers in a validated test-only interoperability matrix.
+- Add a test-only Cassetter-style YAML format that replays ordered MCP
+  requests, notifications, and responses without adding fixture code to the
+  production library.
 - Allow bounded concurrent MCP Streamable HTTP requests with configurable
   in-flight backpressure and request-local authorization retries.
 - Add a standalone bounded SSE parser with standard multi-line data framing

@@ -108,7 +108,7 @@ fn parseResponse(allocator: std.mem.Allocator, node: *const yaml.Node) !Recorded
     };
 }
 
-fn parseBody(allocator: std.mem.Allocator, node: *const yaml.Node) ![]const u8 {
+pub fn parseBody(allocator: std.mem.Allocator, node: *const yaml.Node) ![]const u8 {
     const body = try requireMapping(node);
     const body_type = try requireScalar(try requireField(body, "type"));
     if (std.mem.eql(u8, body_type, "none")) return allocator.dupe(u8, "");
@@ -175,7 +175,7 @@ fn writeHeader(writer: *std.Io.Writer, name: []const u8, value: ?u64) !void {
     if (value) |number| try writer.print("      {s}:\n      - \"{d}\"\n", .{ name, number });
 }
 
-fn writeBody(allocator: std.mem.Allocator, writer: *std.Io.Writer, body: []const u8, indentation: usize) !void {
+pub fn writeBody(allocator: std.mem.Allocator, writer: *std.Io.Writer, body: []const u8, indentation: usize) !void {
     try writeIndent(writer, indentation);
     if (body.len == 0) return writer.writeAll("type: none\n");
 

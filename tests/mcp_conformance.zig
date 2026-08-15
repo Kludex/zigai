@@ -6,9 +6,11 @@
 const std = @import("std");
 const zigai = @import("zigai");
 const upstreams = @import("mcp/upstreams.zig");
+const transcripts = @import("mcp/transcripts.zig");
 
 comptime {
     _ = upstreams;
+    _ = transcripts;
 }
 
 const Flow = enum {
