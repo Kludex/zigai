@@ -108,6 +108,14 @@ agent always validates the returned JSON locally. Capability mismatches and
 malformed output specifications fail before network I/O. Borrowed schemas and
 templates are prepared into the run arena.
 
+Tool output prepares one synthetic definition per choice but does not turn
+those choices into ordinary application tools. The agent intercepts their
+calls, validates and unwraps arguments, invokes an optional output function,
+and records protocol-closing results. This separate path lets end strategy
+control ordinary side effects without teaching providers about agent
+finalization. Output functions return either an accepted value or an explicit
+model-safe retry; thrown errors remain application failures.
+
 `Agent.runTyped` derives that schema from a Zig output type and decodes the
 final JSON into the same type. Its typed value, original JSON, and message
 history share one result arena and one `deinit` ownership boundary. Buffered

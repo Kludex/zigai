@@ -4,7 +4,62 @@
 
 const std = @import("std");
 const json_limits = @import("json.zig");
+const json_schema = @import("json_schema.zig");
 const model_types = @import("model.zig");
+
+/// How ordinary function tools are handled when a response also contains a
+/// valid final output.
+pub const EndStrategy = enum {
+    /// The first valid output wins and ordinary tools are skipped.
+    early,
+    /// Calls run in emission order until the first valid output succeeds.
+    graceful,
+    /// Every emitted call runs; the first valid output remains the result.
+    exhaustive,
+};
+
+/// State borrowed by an output function for one invocation.
+pub const RunContext = struct {
+    dependencies: ?*anyopaque = null,
+    messages: []const model_types.Message,
+    usage: model_types.RunUsage = .{},
+    model_requests: usize = 0,
+    partial_output: bool = false,
+    control: model_types.RunControl = .{},
+
+    pub fn dependency(self: RunContext, comptime T: type) ?*T {
+        const pointer = self.dependencies orelse return null;
+        return @ptrCast(@alignCast(pointer));
+    }
+};
+
+/// A completed output function either returns the agent result or asks the
+/// model to retry with a safe, application-provided message.
+pub const FunctionResult = union(enum) {
+    output: []const u8,
+    retry: []const u8,
+};
+
+/// Processes validated arguments from one output tool. Returned slices must be
+/// static or allocated with the supplied run-arena allocator.
+pub const Function = struct {
+    context: *anyopaque,
+    callFn: *const fn (
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        run_context: RunContext,
+        arguments_json: []const u8,
+    ) anyerror!FunctionResult,
+
+    pub fn call(
+        self: Function,
+        allocator: std.mem.Allocator,
+        run_context: RunContext,
+        arguments_json: []const u8,
+    ) !FunctionResult {
+        return self.callFn(self.context, allocator, run_context, arguments_json);
+    }
+};
 
 /// One named structured-output alternative.
 pub const Choice = struct {
@@ -12,6 +67,7 @@ pub const Choice = struct {
     description: []const u8 = "",
     schema: []const u8,
     strict: bool = true,
+    function: ?Function = null,
 };
 
 /// One or more structured-output alternatives.
@@ -31,6 +87,11 @@ pub const Prompted = struct {
     template: ?[]const u8 = null,
 };
 
+/// Structured output requested as one provider function tool per choice.
+pub const Tool = struct {
+    output: Structured,
+};
+
 /// Agent-level output contract. `json_schema` remains the concise single-schema
 /// native form; `native` supports named unions and `prompted` works everywhere
 /// the model accepts instructions.
@@ -40,6 +101,15 @@ pub const Spec = union(enum) {
     json_schema: model_types.OutputFormat.JsonSchema,
     native: Structured,
     prompted: Prompted,
+    tool: Tool,
+};
+
+/// One prepared tool-output choice. `arguments_schema` may wrap a scalar
+/// schema in `{ "value": ... }` to satisfy provider function-tool contracts.
+pub const PreparedChoice = struct {
+    choice: Choice,
+    arguments_schema: []const u8,
+    wrapped: bool = false,
 };
 
 /// Output settings resolved for one model request.
@@ -48,6 +118,16 @@ pub const Prepared = struct {
     validation_format: model_types.OutputFormat,
     prompted_instruction: ?[]const u8 = null,
     validation_required: bool = false,
+    tool_definitions: []const model_types.ToolDefinition = &.{},
+    tool_choices: []const PreparedChoice = &.{},
+    requires_tool_output: bool = false,
+
+    pub fn findToolChoice(self: Prepared, name: []const u8) ?PreparedChoice {
+        for (self.tool_choices) |choice| {
+            if (std.mem.eql(u8, choice.choice.name, name)) return choice;
+        }
+        return null;
+    }
 };
 
 pub const Error = error{
@@ -59,6 +139,8 @@ pub const Error = error{
     NativeOutputNotSupported,
     /// Prompted output requires a model capable of receiving instructions.
     PromptedOutputNotSupported,
+    /// Tool output requires provider function-tool support.
+    ToolOutputNotSupported,
 };
 
 /// Translates an agent output strategy into provider wire and local-validation
@@ -109,6 +191,26 @@ pub fn prepare(
                 .validation_required = true,
             };
         },
+        .tool => |tool| {
+            if (!profile.supports_tools) return error.ToolOutputNotSupported;
+            const choices = try prepareToolChoices(arena, tool.output);
+            const definitions = try arena.alloc(model_types.ToolDefinition, choices.len);
+            for (choices, definitions) |choice, *definition| definition.* = .{
+                .name = choice.choice.name,
+                .description = if (choice.choice.description.len > 0)
+                    choice.choice.description
+                else
+                    tool.output.description,
+                .parameters_json_schema = choice.arguments_schema,
+            };
+            return .{
+                .model_format = .text,
+                .validation_format = .text,
+                .tool_definitions = definitions,
+                .tool_choices = choices,
+                .requires_tool_output = true,
+            };
+        },
     };
 }
 
@@ -120,6 +222,7 @@ fn combinedFormat(
     var strict = true;
     for (structured.choices, 0..) |choice, index| {
         try validateChoice(choice);
+        if (choice.function != null) return error.InvalidOutputSpec;
         try validateSchema(arena, choice.schema);
         strict = strict and choice.strict;
         for (structured.choices[0..index]) |earlier| {
@@ -131,6 +234,89 @@ fn combinedFormat(
     else
         try combineSchemas(arena, structured.choices);
     return .{ .name = structured.name, .schema = schema, .strict = strict };
+}
+
+fn prepareToolChoices(
+    arena: std.mem.Allocator,
+    structured: Structured,
+) (Error || error{OutOfMemory})![]const PreparedChoice {
+    if (structured.choices.len == 0) return error.InvalidOutputSpec;
+    const prepared = try arena.alloc(PreparedChoice, structured.choices.len);
+    for (structured.choices, prepared, 0..) |choice, *target, index| {
+        try validateChoice(choice);
+        try validateSchema(arena, choice.schema);
+        for (structured.choices[0..index]) |earlier| {
+            if (std.mem.eql(u8, earlier.name, choice.name)) return error.InvalidOutputSpec;
+        }
+        const is_object = try schemaAcceptsObject(arena, choice.schema);
+        target.* = .{
+            .choice = choice,
+            .arguments_schema = if (is_object) choice.schema else try wrapSchema(arena, choice.schema),
+            .wrapped = !is_object,
+        };
+    }
+    return prepared;
+}
+
+fn schemaAcceptsObject(arena: std.mem.Allocator, source: []const u8) error{OutOfMemory}!bool {
+    const parsed = json_limits.parse(
+        std.json.Value,
+        arena,
+        source,
+        json_limits.defaults.schema,
+        .{},
+        error.InvalidOutputSpec,
+    ) catch |failure| return switch (failure) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => false,
+    };
+    defer parsed.deinit();
+    const object = switch (parsed.value) {
+        .object => |value| value,
+        else => return false,
+    };
+    const schema_type = object.get("type") orelse return false;
+    return switch (schema_type) {
+        .string => |name| std.mem.eql(u8, name, "object"),
+        .array => |names| for (names.items) |name| {
+            if (name == .string and std.mem.eql(u8, name.string, "object")) break true;
+        } else false,
+        else => false,
+    };
+}
+
+fn wrapSchema(arena: std.mem.Allocator, source: []const u8) error{OutOfMemory}![]const u8 {
+    return std.mem.concat(arena, u8, &.{
+        "{\"type\":\"object\",\"properties\":{\"value\":",
+        source,
+        "},\"required\":[\"value\"],\"additionalProperties\":false}",
+    });
+}
+
+/// Validates provider tool arguments and removes the scalar wrapper when one
+/// was needed. Returned allocated JSON lives in `arena`.
+pub fn decodeToolArguments(
+    arena: std.mem.Allocator,
+    prepared: PreparedChoice,
+    arguments_json: []const u8,
+) ![]const u8 {
+    try json_schema.validate(arena, .{ .json_schema = .{
+        .name = prepared.choice.name,
+        .schema = prepared.arguments_schema,
+        .strict = prepared.choice.strict,
+    } }, arguments_json);
+    if (!prepared.wrapped) return arguments_json;
+    const parsed = try json_limits.parse(
+        std.json.Value,
+        arena,
+        arguments_json,
+        json_limits.defaults.tool_payload,
+        .{},
+        json_schema.Error.InvalidJsonOutput,
+    );
+    defer parsed.deinit();
+    const value = parsed.value.object.get("value") orelse return json_schema.Error.OutputSchemaValidationFailed;
+    return std.json.Stringify.valueAlloc(arena, value, .{});
 }
 
 fn validateChoice(choice: Choice) Error!void {
@@ -254,6 +440,39 @@ test "prompted output uses JSON mode when available and text otherwise" {
     try std.testing.expectEqualStrings("Schema follows:\n{\"type\":\"object\"}", text_mode.prompted_instruction.?);
 }
 
+test "tool output exposes alternatives and wraps scalar schemas" {
+    const choices = [_]Choice{
+        .{ .name = "object", .description = "Return an object.", .schema = "{\"type\":\"object\"}" },
+        .{ .name = "number", .schema = "{\"type\":\"integer\"}" },
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const prepared = try prepare(arena.allocator(), .{ .tool = .{ .output = .{
+        .choices = &choices,
+        .description = "Return a result.",
+    } } }, .{ .supports_tools = true });
+    try std.testing.expect(prepared.requires_tool_output);
+    try std.testing.expectEqual(@as(usize, 2), prepared.tool_definitions.len);
+    try std.testing.expectEqualStrings("Return an object.", prepared.tool_definitions[0].description);
+    try std.testing.expectEqualStrings("Return a result.", prepared.tool_definitions[1].description);
+    try std.testing.expect(!prepared.tool_choices[0].wrapped);
+    try std.testing.expect(prepared.tool_choices[1].wrapped);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        prepared.tool_definitions[1].parameters_json_schema,
+        "\"value\":{\"type\":\"integer\"}",
+    ) != null);
+    try std.testing.expectEqualStrings(
+        "42",
+        try decodeToolArguments(arena.allocator(), prepared.tool_choices[1], "{\"value\":42}"),
+    );
+    try std.testing.expectError(
+        json_schema.Error.OutputSchemaValidationFailed,
+        decodeToolArguments(arena.allocator(), prepared.tool_choices[1], "{\"value\":\"no\"}"),
+    );
+    try std.testing.expect(prepared.findToolChoice("missing") == null);
+}
+
 test "output preparation rejects unsupported modes and malformed specifications" {
     const choice = [_]Choice{.{ .name = "answer", .schema = "{}" }};
     try std.testing.expectError(error.JsonObjectOutputNotSupported, prepare(
@@ -271,6 +490,11 @@ test "output preparation rejects unsupported modes and malformed specifications"
         .{ .prompted = .{ .output = .{ .choices = &choice } } },
         .{ .supports_system_messages = false },
     ));
+    try std.testing.expectError(error.ToolOutputNotSupported, prepare(
+        std.testing.allocator,
+        .{ .tool = .{ .output = .{ .choices = &choice } } },
+        .{ .supports_tools = false },
+    ));
     const invalid = [_]Spec{
         .{ .native = .{ .choices = &.{} } },
         .{ .native = .{ .choices = &.{.{ .name = "", .schema = "{}" }} } },
@@ -287,6 +511,11 @@ test "output preparation rejects unsupported modes and malformed specifications"
             .output = .{ .choices = &choice },
             .template = "{schema} twice {schema}",
         } },
+        .{ .native = .{ .choices = &.{.{
+            .name = "answer",
+            .schema = "{}",
+            .function = .{ .context = undefined, .callFn = undefined },
+        }} } },
     };
     for (invalid) |spec| {
         try std.testing.expectError(error.InvalidOutputSpec, prepare(std.testing.allocator, spec, .{

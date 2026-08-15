@@ -85,6 +85,10 @@ const AgentError = error{
     ModelDoesNotSupportJsonSchemaOutput,
     /// Prompted structured output requires model instructions.
     ModelDoesNotSupportPromptedOutput,
+    /// Tool output was required, but the model returned no output-tool call.
+    OutputToolRequired,
+    /// An output function requested another attempt after the retry budget.
+    OutputRetriesExceeded,
     /// `max_tokens` was set for a model profile that rejects it.
     ModelDoesNotSupportMaxTokens,
     /// The requested reasoning effort is absent from the model profile.
@@ -286,6 +290,8 @@ pub const ToolAvailabilityDeltaEvent = struct {
 /// validated JSON snapshot for JSON object/schema outputs and null for text.
 pub const FinalResultEvent = struct {
     output: []const u8,
+    /// Selected choice name for tool output; null for text/native/prompted output.
+    output_name: ?[]const u8 = null,
     structured_output: ?std.json.Value = null,
 };
 
@@ -843,6 +849,7 @@ pub fn TypedResult(comptime Output: type) type {
         arena: std.heap.ArenaAllocator,
         output: Output,
         output_json: []const u8,
+        output_name: ?[]const u8 = null,
         messages: []const Message,
         usage: usage_types.RunUsage,
         model_requests: usize,
@@ -866,6 +873,8 @@ pub const Agent = struct {
     system_prompt: ?[]const u8 = null,
     instructions: []const Instruction = &.{},
     output: output_types.Spec = .text,
+    /// Policy for ordinary tools emitted alongside a final output.
+    end_strategy: output_types.EndStrategy = .graceful,
     /// Re-check structured provider output locally before returning it. This is
     /// intentionally opt-in because JSON Schema support is a documented subset.
     validate_output_locally: bool = false,
@@ -914,6 +923,8 @@ pub const Agent = struct {
     pub const Result = struct {
         arena: std.heap.ArenaAllocator,
         output: []const u8,
+        /// Selected choice name for tool output; null for other output modes.
+        output_name: ?[]const u8 = null,
         messages: []const Message,
         usage: usage_types.RunUsage,
         model_requests: usize,
@@ -1332,6 +1343,7 @@ pub const Agent = struct {
                 error.JsonObjectOutputNotSupported => Error.ModelDoesNotSupportJsonObjectOutput,
                 error.NativeOutputNotSupported => Error.ModelDoesNotSupportJsonSchemaOutput,
                 error.PromptedOutputNotSupported => Error.ModelDoesNotSupportPromptedOutput,
+                error.ToolOutputNotSupported => Error.ModelDoesNotSupportTools,
             };
         };
 
@@ -1400,6 +1412,7 @@ pub const Agent = struct {
                 .control = control,
             });
             try ensureUniqueToolNames(available_tools);
+            try ensureNoOutputToolConflicts(available_tools, prepared_output.tool_choices);
             if (available_tools.len > 0 and !self.model.profile.supports_tools) {
                 return Error.ModelDoesNotSupportTools;
             }
@@ -1443,6 +1456,7 @@ pub const Agent = struct {
             }
             definitions.clearRetainingCapacity();
             for (available_tools) |tool| try definitions.append(memory, tool.definition);
+            try definitions.appendSlice(memory, prepared_output.tool_definitions);
             const history_context = history.Context{
                 .profile = self.model.profile,
                 .usage = total_usage,
@@ -1622,6 +1636,16 @@ pub const Agent = struct {
                     stream_sink,
                     hooks,
                 )) continue;
+                if (prepared_output.requires_tool_output) {
+                    if (output_retries >= self.max_output_retries) return Error.OutputToolRequired;
+                    output_retries += 1;
+                    try appendRetryMessage(
+                        memory,
+                        &messages,
+                        "Return the final result by calling one of the provided output tools.",
+                    );
+                    continue;
+                }
                 const output = try collectText(memory, response.parts);
                 try emitLifecycle(hooks, .{ .output_validation_start = .{
                     .output = output,
@@ -1733,6 +1757,192 @@ pub const Agent = struct {
                 }),
                 else => {},
             };
+
+            var has_output_call = false;
+            for (response.parts) |part| switch (part) {
+                .tool_call => |call| if (prepared_output.findToolChoice(call.name) != null) {
+                    has_output_call = true;
+                },
+                else => {},
+            };
+            if (has_output_call) {
+                const tool_run_context = model_types.ToolRunContext{
+                    .dependencies = dependencies,
+                    .usage = total_usage,
+                    .model_requests = model_requests,
+                    .cancellation = self.cancellation,
+                    .io = self.io,
+                    .deadline = control.deadline,
+                };
+                const output_run_context = output_types.RunContext{
+                    .dependencies = dependencies,
+                    .messages = messages.items,
+                    .usage = total_usage,
+                    .model_requests = model_requests,
+                    .control = control,
+                };
+                const records = try memory.alloc(?RequestPart, tool_call_count);
+                @memset(records, null);
+                var follow_up_messages: std.ArrayList(model_types.RequestMessage) = .empty;
+                var selected: ?SelectedOutput = null;
+                var ordinary_failure = false;
+
+                if (self.end_strategy == .early) {
+                    var ordinal: usize = 0;
+                    for (response.parts) |part| switch (part) {
+                        .tool_call => |call| {
+                            const choice = prepared_output.findToolChoice(call.name) orelse {
+                                ordinal += 1;
+                                continue;
+                            };
+                            if (selected != null) {
+                                records[ordinal] = outputToolResult(
+                                    call,
+                                    "Tool not executed because a final output was already selected.",
+                                    .interrupted,
+                                );
+                                ordinal += 1;
+                                continue;
+                            }
+                            const attempt = try processOutputCall(memory, choice, call, output_run_context);
+                            switch (attempt) {
+                                .selected => |value| {
+                                    selected = value;
+                                    records[ordinal] = outputToolResult(call, "Final output accepted.", .success);
+                                },
+                                .retry => |retry| {
+                                    try consumeOutputRetry(self.max_output_retries, &output_retries, retry.failure);
+                                    if (retry.message.len > self.tool_limits.max_result_bytes) {
+                                        return Error.ToolResultTooLarge;
+                                    }
+                                    records[ordinal] = outputToolResult(call, retry.message, .failed);
+                                },
+                            }
+                            ordinal += 1;
+                        },
+                        else => {},
+                    };
+                }
+
+                var ordinal: usize = 0;
+                for (response.parts) |part| switch (part) {
+                    .tool_call => |call| {
+                        if (records[ordinal] != null) {
+                            ordinal += 1;
+                            continue;
+                        }
+                        if (prepared_output.findToolChoice(call.name)) |choice| {
+                            if (selected != null and self.end_strategy != .exhaustive) {
+                                records[ordinal] = outputToolResult(
+                                    call,
+                                    "Tool not executed because a final output was already selected.",
+                                    .interrupted,
+                                );
+                            } else {
+                                const attempt = try processOutputCall(memory, choice, call, output_run_context);
+                                switch (attempt) {
+                                    .selected => |value| {
+                                        if (selected == null) selected = value;
+                                        records[ordinal] = outputToolResult(call, "Final output accepted.", .success);
+                                    },
+                                    .retry => |retry| {
+                                        try consumeOutputRetry(self.max_output_retries, &output_retries, retry.failure);
+                                        if (retry.message.len > self.tool_limits.max_result_bytes) {
+                                            return Error.ToolResultTooLarge;
+                                        }
+                                        records[ordinal] = outputToolResult(call, retry.message, .failed);
+                                    },
+                                }
+                            }
+                        } else if (selected != null and self.end_strategy != .exhaustive) {
+                            records[ordinal] = outputToolResult(
+                                call,
+                                "Tool not executed because a final output was already selected.",
+                                .interrupted,
+                            );
+                        } else {
+                            const one = [_]Part{part};
+                            const batch = try executeToolCalls(
+                                self,
+                                available_tools,
+                                memory,
+                                &one,
+                                1,
+                                &tool_retries,
+                                tool_run_context,
+                                hooks,
+                            );
+                            records[ordinal] = batch.parts[0];
+                            ordinary_failure = ordinary_failure or batch.parts[0].tool_return.isError();
+                            try follow_up_messages.appendSlice(memory, batch.follow_up_messages);
+                        }
+                        ordinal += 1;
+                    },
+                    else => {},
+                };
+
+                const result_parts = try memory.alloc(RequestPart, records.len);
+                for (records, result_parts) |record, *result_part| result_part.* = record.?;
+                if (stream_sink) |sink| for (result_parts) |part| try emitStreamEvent(hooks, sink, .{
+                    .function_tool_result = .{ .result = part.tool_return },
+                });
+                try messages.append(memory, .{ .request = .{ .parts = result_parts } });
+                try appendToolFollowUps(
+                    self.model,
+                    self.url_policy,
+                    memory,
+                    &messages,
+                    follow_up_messages.items,
+                );
+
+                if (selected) |final| if (!ordinary_failure and follow_up_messages.items.len == 0) {
+                    if (final.output.len > self.tool_limits.max_result_bytes) return Error.ToolResultTooLarge;
+                    if (try appendQueuedMessages(
+                        options.pending_messages,
+                        true,
+                        self.model,
+                        self.url_policy,
+                        memory,
+                        &messages,
+                        stream_sink,
+                        hooks,
+                    )) continue;
+                    try emitLifecycle(hooks, .{ .output_validation_start = .{
+                        .output = final.output,
+                        .retry_number = output_retries,
+                    } });
+                    try validateFinalOutput(memory, .text, false, final.output, output_validator);
+                    try emitLifecycle(hooks, .{ .output_validation_end = .{
+                        .output = final.output,
+                        .retry_number = output_retries,
+                    } });
+                    if (stream_sink) |sink| try emitStreamEvent(hooks, sink, .{ .final_result = .{
+                        .output = final.output,
+                        .output_name = final.name,
+                        .structured_output = try structuredOutputSnapshot(
+                            memory,
+                            final.structured_format,
+                            final.output,
+                        ),
+                    } });
+                    addRunDuration(&total_usage, self.io, invocation_started) catch return Error.UsageOverflow;
+                    try emitLifecycle(hooks, .{ .run_end = .{
+                        .output = final.output,
+                        .usage = total_usage,
+                        .model_requests = model_requests,
+                    } });
+                    return .{ .complete = .{
+                        .arena = arena,
+                        .output = final.output,
+                        .output_name = final.name,
+                        .messages = try messages.toOwnedSlice(memory),
+                        .usage = total_usage,
+                        .model_requests = model_requests,
+                        .finish_reason = response.finish_reason,
+                    } };
+                };
+                continue;
+            }
 
             const tool_batch = try executeToolCalls(
                 self,
@@ -2084,6 +2294,98 @@ fn validateFinalOutput(
     if (output_validator) |validator| try validator.validate(allocator, output);
 }
 
+const SelectedOutput = struct {
+    name: []const u8,
+    output: []const u8,
+    structured_format: model_types.OutputFormat,
+};
+
+const OutputAttempt = union(enum) {
+    selected: SelectedOutput,
+    retry: struct {
+        message: []const u8,
+        failure: ?anyerror = null,
+    },
+};
+
+fn processOutputCall(
+    allocator: std.mem.Allocator,
+    prepared: output_types.PreparedChoice,
+    call: model_types.ToolCall,
+    run_context: output_types.RunContext,
+) !OutputAttempt {
+    const arguments = output_types.decodeToolArguments(allocator, prepared, call.arguments_json) catch |failure| {
+        if (failure == error.OutOfMemory) return failure;
+        return .{ .retry = .{
+            .message = "The output arguments did not match this tool's schema. Correct them and try again.",
+            .failure = failure,
+        } };
+    };
+    if (prepared.choice.function) |function| {
+        const result = try run_context.control.invoke(
+            output_types.FunctionResult,
+            invokeOutputFunction,
+            .{ function, allocator, run_context, arguments },
+        );
+        return switch (result) {
+            .output => |output| .{ .selected = .{
+                .name = prepared.choice.name,
+                .output = output,
+                .structured_format = .text,
+            } },
+            .retry => |message| .{ .retry = .{ .message = message } },
+        };
+    }
+    return .{ .selected = .{
+        .name = prepared.choice.name,
+        .output = arguments,
+        .structured_format = .{ .json_schema = .{
+            .name = prepared.choice.name,
+            .schema = prepared.choice.schema,
+            .strict = prepared.choice.strict,
+        } },
+    } };
+}
+
+fn invokeOutputFunction(
+    function: output_types.Function,
+    allocator: std.mem.Allocator,
+    run_context: output_types.RunContext,
+    arguments: []const u8,
+) !output_types.FunctionResult {
+    return function.call(allocator, run_context, arguments);
+}
+
+fn outputToolResult(
+    call: model_types.ToolCall,
+    content: []const u8,
+    outcome: model_types.ToolOutcome,
+) RequestPart {
+    return .{ .tool_return = .{
+        .call_id = call.id,
+        .name = call.name,
+        .content = content,
+        .outcome = outcome,
+    } };
+}
+
+fn consumeOutputRetry(maximum: usize, used: *usize, failure: ?anyerror) !void {
+    if (used.* >= maximum) {
+        if (failure) |cause| return cause;
+        return Agent.Error.OutputRetriesExceeded;
+    }
+    used.* += 1;
+}
+
+fn ensureNoOutputToolConflicts(
+    tools: []const model_types.Tool,
+    choices: []const output_types.PreparedChoice,
+) Agent.Error!void {
+    for (tools) |tool| for (choices) |choice| {
+        if (std.mem.eql(u8, tool.definition.name, choice.choice.name)) return Agent.Error.DuplicateToolName;
+    };
+}
+
 fn structuredOutputSnapshot(
     allocator: std.mem.Allocator,
     output_format: model_types.OutputFormat,
@@ -2117,6 +2419,7 @@ fn decodeTypedResult(comptime Output: type, untyped: Agent.Result) !TypedResult(
         .arena = owned.arena,
         .output = output,
         .output_json = owned.output,
+        .output_name = owned.output_name,
         .messages = owned.messages,
         .usage = owned.usage,
         .model_requests = owned.model_requests,

@@ -652,6 +652,14 @@ Prompted results are always checked locally and retried when invalid. Schemas,
 choices, and custom prompt templates are borrowed for the run; prepared data
 lives in the result arena.
 
+`.tool` exposes one output tool per choice, so unions stay as small independent
+schemas and `result.output_name` identifies the selected branch. Scalar schemas
+are wrapped for provider tool contracts and unwrapped before returning. A
+choice can attach an `OutputFunction`; it receives validated arguments and may
+return a final value or a safe retry message. `Agent.end_strategy` controls
+ordinary calls emitted beside output: `.early` skips them, `.graceful` runs
+calls before the selected output, and `.exhaustive` runs every call.
+
 ## Streaming and resilience
 
 Use `Agent.runStream` with an `AgentStreamSink`. Model output arrives as an

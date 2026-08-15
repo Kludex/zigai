@@ -1346,6 +1346,189 @@ test "prompted output uses JSON-object mode and rejects unsupported models" {
     try std.testing.expectEqual(@as(usize, 0), unsupported.request_count);
 }
 
+test "tool output exposes one tool per choice and returns the selected union branch" {
+    const choices = [_]zigai.OutputChoice{
+        .{ .name = "answer", .description = "Return an answer.", .schema = "{\"type\":\"object\"}" },
+        .{ .name = "refusal", .schema = "{\"type\":\"string\"}" },
+    };
+    const calls = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "output-1",
+        .name = "refusal",
+        .arguments_json = "{\"value\":\"unsafe\"}",
+    } }};
+    const Inspector = struct {
+        fn inspect(_: usize, request: zigai.ModelRequest) !void {
+            try std.testing.expectEqual(zigai.model.OutputFormat.text, request.output);
+            try std.testing.expectEqual(@as(usize, 2), request.tools.len);
+            try std.testing.expectEqualStrings("answer", request.tools[0].name);
+            try std.testing.expectEqualStrings("Return an answer.", request.tools[0].description);
+            try std.testing.expectEqualStrings("refusal", request.tools[1].name);
+            try std.testing.expect(std.mem.indexOf(
+                u8,
+                request.tools[1].parameters_json_schema,
+                "\"value\"",
+            ) != null);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &calls }},
+        .inspectFn = Inspector.inspect,
+    };
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
+    }).run(std.testing.allocator, "answer or refuse");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("\"unsafe\"", result.output);
+    try std.testing.expectEqualStrings("refusal", result.output_name.?);
+    try std.testing.expectEqual(@as(usize, 3), result.messages.len);
+    try std.testing.expectEqualStrings("Final output accepted.", result.messages[2].request.parts[0].tool_return.content);
+}
+
+test "output functions receive run context and can request a model retry" {
+    const State = struct {
+        calls: usize = 0,
+
+        fn call(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            run_context: zigai.output.RunContext,
+            arguments: []const u8,
+        ) !zigai.OutputFunctionResult {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            try std.testing.expectEqual(@as(usize, self.calls), run_context.model_requests);
+            try std.testing.expectEqual(@as(u32, 7), run_context.dependency(u32).?.*);
+            if (std.mem.indexOf(u8, arguments, "-1") != null) return .{ .retry = "Use a positive value." };
+            return .{ .output = try allocator.dupe(u8, "accepted") };
+        }
+    };
+    var state: State = .{};
+    var dependency: u32 = 7;
+    const choices = [_]zigai.OutputChoice{.{
+        .name = "finish",
+        .schema = "{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}}," ++
+            "\"required\":[\"value\"],\"additionalProperties\":false}",
+        .function = .{ .context = &state, .callFn = State.call },
+    }};
+    const first = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "finish-1",
+        .name = "finish",
+        .arguments_json = "{\"value\":-1}",
+    } }};
+    const second = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "finish-2",
+        .name = "finish",
+        .arguments_json = "{\"value\":2}",
+    } }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.ModelRequest) !void {
+            if (index == 0) return;
+            try std.testing.expectEqual(@as(usize, 3), request.messages.len);
+            const retry = request.messages[2].request.parts[0].tool_return;
+            try std.testing.expect(retry.isError());
+            try std.testing.expectEqualStrings("Use a positive value.", retry.content);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &first }, .{ .parts = &second } },
+        .inspectFn = Inspector.inspect,
+    };
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .dependencies = &dependency,
+        .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
+        .max_output_retries = 1,
+    }).run(std.testing.allocator, "finish");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("accepted", result.output);
+    try std.testing.expectEqual(@as(usize, 2), state.calls);
+}
+
+test "output end strategies control tools emitted beside a final result" {
+    const Runner = struct {
+        fn run(strategy: zigai.OutputEndStrategy) !u8 {
+            const choices = [_]zigai.OutputChoice{.{
+                .name = "finish",
+                .schema = "{\"type\":\"object\"}",
+            }};
+            const calls = [_]zigai.model.Part{
+                .{ .tool_call = .{ .id = "before", .name = "tool", .arguments_json = "{}" } },
+                .{ .tool_call = .{ .id = "finish", .name = "finish", .arguments_json = "{}" } },
+                .{ .tool_call = .{ .id = "after", .name = "tool", .arguments_json = "{}" } },
+            };
+            var scripted = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &calls }} };
+            var executions: u8 = 0;
+            const tool = successfulTool(&executions);
+            var result = try (zigai.Agent{
+                .model = scripted.model(),
+                .tools = &.{tool},
+                .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
+                .end_strategy = strategy,
+            }).run(std.testing.allocator, "finish");
+            defer result.deinit();
+            try std.testing.expectEqualStrings("{}", result.output);
+            return executions;
+        }
+    };
+    try std.testing.expectEqual(@as(u8, 0), try Runner.run(.early));
+    try std.testing.expectEqual(@as(u8, 1), try Runner.run(.graceful));
+    try std.testing.expectEqual(@as(u8, 2), try Runner.run(.exhaustive));
+}
+
+test "tool output rejects missing calls invalid arguments and name conflicts" {
+    const choices = [_]zigai.OutputChoice{.{
+        .name = "tool",
+        .schema = "{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}}," ++
+            "\"required\":[\"value\"],\"additionalProperties\":false}",
+    }};
+    const text = [_]zigai.model.Part{.{ .text = "done" }};
+    var missing = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &text }} };
+    try std.testing.expectError(zigai.Agent.Error.OutputToolRequired, (zigai.Agent{
+        .model = missing.model(),
+        .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
+        .max_output_retries = 0,
+    }).run(std.testing.allocator, "finish"));
+
+    const invalid_call = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "bad",
+        .name = "tool",
+        .arguments_json = "{\"value\":\"no\"}",
+    } }};
+    var invalid = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &invalid_call }} };
+    try std.testing.expectError(zigai.json_schema.Error.OutputSchemaValidationFailed, (zigai.Agent{
+        .model = invalid.model(),
+        .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
+        .max_output_retries = 0,
+    }).run(std.testing.allocator, "finish"));
+
+    var collision = zigai.testing.ScriptedModel{ .responses = &.{} };
+    var calls: u8 = 0;
+    const tool = successfulTool(&calls);
+    try std.testing.expectError(zigai.Agent.Error.DuplicateToolName, (zigai.Agent{
+        .model = collision.model(),
+        .tools = &.{tool},
+        .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
+    }).run(std.testing.allocator, "finish"));
+    try std.testing.expectEqual(@as(usize, 0), collision.request_count);
+
+    var unsupported = zigai.testing.ScriptedModel{
+        .responses = &.{},
+        .profile = .{ .supports_tools = false },
+    };
+    try std.testing.expectError(zigai.Agent.Error.ModelDoesNotSupportTools, (zigai.Agent{
+        .model = unsupported.model(),
+        .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
+    }).run(std.testing.allocator, "finish"));
+
+    var malformed = zigai.testing.ScriptedModel{ .responses = &.{} };
+    try std.testing.expectError(zigai.Agent.Error.InvalidOutputSpec, (zigai.Agent{
+        .model = malformed.model(),
+        .output = .{ .tool = .{ .output = .{ .choices = &.{} } } },
+    }).run(std.testing.allocator, "finish"));
+    try std.testing.expectEqual(@as(usize, 0), malformed.request_count);
+}
+
 test "typed agent output derives its schema and owns decoded data" {
     const Weather = struct {
         city: []const u8,

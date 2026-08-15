@@ -145,6 +145,20 @@ Its result is always validated locally.
 Specification slices are borrowed for the run. Combined schemas and rendered
 instructions live in the run arena and follow the result ownership boundary.
 
+`.tool` exposes each choice as a separate function-tool definition and requires
+tool support. Non-object schemas receive a provider-facing `{ "value": ... }`
+wrapper that the agent removes after local validation. `Result.output_name`
+identifies the chosen branch. An `OutputFunction` receives borrowed
+`output.RunContext` state and validated JSON; returned slices must be static or
+allocated with its supplied run-arena allocator. Its explicit `.retry` result
+is safe to send to the model, while thrown errors stop the run.
+
+`Agent.end_strategy` defaults to `.graceful`: ordinary calls before the first
+successful output run, later calls are closed as skipped. `.early` evaluates
+output calls first and skips ordinary calls after one succeeds. `.exhaustive`
+runs every emitted call and keeps the first successful output by emission
+order. Deferred approval or external calls still pause before finalization.
+
 ## Streaming events
 
 `ModelStreamEvent` represents provider response parts with `part_start`,
