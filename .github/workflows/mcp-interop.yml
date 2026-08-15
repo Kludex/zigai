@@ -47,6 +47,8 @@ jobs:
           ref: ${{ steps.upstream.outputs.revision }}
           path: .interop/python-sdk
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          python-version: 3.14.3
       - name: Install reference SDK
         working-directory: .interop/python-sdk
         run: uv sync --frozen --package mcp-everything-server
