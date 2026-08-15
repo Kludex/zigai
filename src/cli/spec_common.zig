@@ -203,7 +203,9 @@ test "agent spec CLI rejects ambiguous arguments" {
         &.{ "cli", "validate", "a.json", "--capability" },
         &.{ "cli", "validate", "a.json", "--capability", "x", "--capability", "x" },
     };
-    for (invalid) |args| try std.testing.expectError(error.InvalidArguments, parseArguments(std.testing.allocator, args));
+    for (invalid) |args| { // kcov-ignore
+        try std.testing.expectError(error.InvalidArguments, parseArguments(std.testing.allocator, args));
+    }
 }
 
 test "agent spec CLI validates JSON and YAML without building a model" {
