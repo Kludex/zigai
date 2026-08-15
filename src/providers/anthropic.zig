@@ -1365,6 +1365,10 @@ test "encodes Anthropic web search and web fetch server tools" {
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"web_search_20250305\",\"name\":\"web_search\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"web_fetch_20250910\",\"name\":\"web_fetch\"") != null);
+    try std.testing.expectError(error.UnsupportedBuiltinTool, encodeRequest(std.testing.allocator, "claude-test", 20, .{
+        .messages = &.{},
+        .builtin_tools = &.{.{ .x_search = .{} }},
+    }));
 }
 
 test "encodes Anthropic rich inputs and preserves thinking" {

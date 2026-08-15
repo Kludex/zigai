@@ -153,14 +153,86 @@ test "native client owns the xAI Responses dialect" {
     try std.testing.expectEqual(model_types.ExtraBodyKind.xai, client.model().profile.extra_body_kind.?);
 }
 
-test "native xAI tools reject malformed provider configuration before transport" {
+test "native client streams through the xAI Responses dialect" {
     const State = struct {
-        fn send(_: *anyopaque, _: std.mem.Allocator, _: transport.Request) !transport.Response {
-            return error.UnexpectedRequest;
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, _: transport.Request) !transport.Response {
+            return .{
+                .status = 200,
+                .body = try allocator.dupe(u8, "{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"buffered\"}]}]}"),
+            };
+        }
+
+        fn stream(_: *anyopaque, _: std.mem.Allocator, request: transport.Request, sink: transport.LineSink) !transport.StreamResponse {
+            try std.testing.expectEqualStrings("https://api.x.ai/v1/responses", request.url);
+            try std.testing.expect(std.mem.indexOf(u8, request.body, "\"stream\":true") != null);
+            try std.testing.expect(std.mem.indexOf(u8, request.body, "\"type\":\"x_search\"") != null);
+            try sink.start(.{ .status = 200 });
+            try sink.line("data: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}");
+            try sink.line("data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}");
+            return .{ .status = 200 };
+        }
+    };
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+    };
+    var marker: u8 = 0;
+    var provider = Provider.init("secret", .{
+        .context = &marker,
+        .sendFn = State.send,
+        .streamLinesFn = State.stream,
+    });
+    var client = Client{ .model_name = "grok-4.6", .provider = provider.provider() };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const response = try client.model().stream(arena.allocator(), .{
+        .messages = &.{},
+        .builtin_tools = &.{.{ .x_search = .{} }},
+    }, .{ .context = &marker, .eventFn = Sink.emit });
+    try std.testing.expectEqualStrings("pong", response.parts[0].text);
+    const buffered = try client.model().request(arena.allocator(), .{ .messages = &.{} });
+    try std.testing.expectEqualStrings("buffered", buffered.parts[0].text);
+}
+
+test "native xAI search tools encode exclusion filters" {
+    const State = struct {
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, request: transport.Request) !transport.Response {
+            try std.testing.expect(std.mem.indexOf(u8, request.body, "\"excluded_domains\":[\"example.com\"]") != null);
+            try std.testing.expect(std.mem.indexOf(u8, request.body, "\"excluded_x_handles\":[\"spam\"]") != null);
+            return .{
+                .status = 200,
+                .body = try allocator.dupe(u8, "{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"pong\"}]}]}"),
+            };
         }
     };
     var marker: u8 = 0;
     var provider = Provider.init("secret", .{ .context = &marker, .sendFn = State.send });
+    var client = Client{ .model_name = "grok-4.6", .provider = provider.provider() };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    _ = try client.model().request(arena.allocator(), .{
+        .messages = &.{},
+        .builtin_tools = &.{
+            .{ .web_search = .{ .excluded_domains = &.{"example.com"} } },
+            .{ .x_search = .{ .excluded_x_handles = &.{"spam"} } },
+        },
+    });
+}
+
+test "native xAI tools reject malformed provider configuration before transport" {
+    const State = struct {
+        calls: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, _: transport.Request) !transport.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            return .{
+                .status = 200,
+                .body = try allocator.dupe(u8, "{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"pong\"}]}]}"),
+            };
+        }
+    };
+    var state: State = .{};
+    var provider = Provider.init("secret", .{ .context = &state, .sendFn = State.send });
     var client = Client{ .model_name = "grok-4.6", .provider = provider.provider() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -192,6 +264,9 @@ test "native xAI tools reject malformed provider configuration before transport"
         error.InvalidRequestEncoding,
         client.model().request(arena.allocator(), .{ .messages = &.{}, .builtin_tools = &.{tool} }),
     );
+    try std.testing.expectEqual(@as(usize, 0), state.calls);
+    _ = try client.model().request(arena.allocator(), .{ .messages = &.{} });
+    try std.testing.expectEqual(@as(usize, 1), state.calls);
 }
 
 test "Chat compatibility is explicit and has a separate profile" {

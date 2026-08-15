@@ -1123,6 +1123,10 @@ test "encodes Gemini Google Search and URL Context tools" {
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"googleSearch\":{}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"urlContext\":{}") != null);
+    try std.testing.expectError(error.UnsupportedBuiltinTool, encodeRequest(std.testing.allocator, .{
+        .messages = &.{},
+        .builtin_tools = &.{.{ .x_search = .{} }},
+    }));
 }
 
 test "encodes complete Gemini settings and tool policy" {

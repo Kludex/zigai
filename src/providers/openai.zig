@@ -1371,6 +1371,10 @@ test "encodes OpenAI web search and rejects standalone web fetch" {
         .messages = &.{},
         .builtin_tools = &.{.{ .web_fetch = .{} }},
     }));
+    try std.testing.expectError(error.UnsupportedBuiltinTool, encodeRequest(std.testing.allocator, "gpt-test", .{
+        .messages = &.{},
+        .builtin_tools = &.{.{ .web_search = .{ .allowed_domains = &.{"openai.com"} } }},
+    }));
 }
 
 test "encodes complete OpenAI settings and tagged extensions" {
