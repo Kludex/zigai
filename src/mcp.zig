@@ -16,6 +16,9 @@ const security = @import("security.zig");
 /// Latest stable MCP protocol revision supported by ZigAI.
 pub const protocol_version = "2026-07-28";
 
+/// Era detected by the compatibility probes defined in MCP 2026-07-28.
+pub const CompatibilityEra = enum { modern, legacy, indeterminate };
+
 /// JSON-RPC and MCP error codes defined by the current specification.
 pub const error_codes = struct {
     pub const parse_error = -32700;
@@ -52,6 +55,50 @@ pub const methods = struct {
     pub const subscriptions_acknowledged = "notifications/subscriptions/acknowledged";
     pub const tool_list_changed = "notifications/tools/list_changed";
 };
+
+/// Classifies a `server/discover` stdio probe without initiating a legacy session.
+pub fn classifyStdioCompatibility(
+    allocator: std.mem.Allocator,
+    response_json: []const u8,
+) !CompatibilityEra {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const root = parseResponse(arena.allocator(), response_json) catch |failure| switch (failure) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return .legacy,
+    };
+    const object = requiredObject(root) catch return .legacy;
+    if (!validJsonRpcResponseObject(object)) return .legacy;
+    if (object.get("result")) |result| {
+        validateMethodResult(methods.discover, result) catch return .legacy;
+        return .modern;
+    }
+    return if (recognizedModernError(object.get("error") orelse return .legacy)) .modern else .legacy;
+}
+
+/// Classifies the first Streamable HTTP response using the 2026-07-28 rules.
+pub fn classifyHttpCompatibility(
+    allocator: std.mem.Allocator,
+    status: u16,
+    response_json: []const u8,
+) !CompatibilityEra {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const root = parseResponse(arena.allocator(), response_json) catch |failure| switch (failure) {
+        error.OutOfMemory => return error.OutOfMemory,
+        else => return if (status >= 400 and status < 500) .legacy else .indeterminate,
+    };
+    const object = requiredObject(root) catch
+        return if (status >= 400 and status < 500) .legacy else .indeterminate;
+    if (!validJsonRpcResponseObject(object)) {
+        return if (status >= 400 and status < 500) .legacy else .indeterminate;
+    }
+    if (status >= 200 and status < 300 and object.get("result") != null) return .modern;
+    if (status >= 400 and status < 500) {
+        return if (recognizedModernError(object.get("error") orelse return .legacy)) .modern else .legacy;
+    }
+    return .indeterminate;
+}
 
 /// MCP protocol and transport failures defined by ZigAI.
 pub const Error = error{
@@ -721,6 +768,15 @@ pub const Server = struct {
         }
         const method = optionalString(object, "method") orelse
             return self.errorResponse(allocator, id, error_codes.invalid_request, "Missing method", 400);
+        if (std.mem.eql(u8, method, "initialize")) {
+            return self.errorResponse(
+                allocator,
+                id,
+                error_codes.method_not_found,
+                "This server supports MCP 2026-07-28 via per-request metadata",
+                200,
+            );
+        }
         const params_value = object.get("params") orelse std.json.Value{ .object = .{} };
         const params = requiredObject(params_value) catch
             return self.errorResponse(allocator, id, error_codes.invalid_params, "Params must be an object", 400);
@@ -1257,9 +1313,37 @@ fn responseResult(root: std.json.Value, expected_id: u64) !std.json.Value {
     if ((result == null) == (rpc_error == null)) return error.InvalidMcpResponse;
     if (rpc_error) |value| {
         try validateRpcError(value);
+        const rpc_error_object = try requiredObject(value);
+        if (rpc_error_object.get("code").?.integer == error_codes.unsupported_protocol_version) {
+            return error.UnsupportedMcpProtocolVersion;
+        }
         return error.McpRpcError;
     }
     return result.?;
+}
+
+fn validJsonRpcResponseObject(object: std.json.ObjectMap) bool {
+    if (!std.mem.eql(u8, optionalString(object, "jsonrpc") orelse "", "2.0")) return false;
+    const result = object.get("result");
+    const rpc_error = object.get("error");
+    if ((result == null) == (rpc_error == null)) return false;
+    if (result != null) {
+        const id = object.get("id") orelse return false;
+        if (id != .integer and id != .string) return false;
+    }
+    return true;
+}
+
+fn recognizedModernError(value: std.json.Value) bool {
+    validateRpcError(value) catch return false;
+    const object = requiredObject(value) catch return false;
+    const code = switch (object.get("code") orelse return false) {
+        .integer => |integer| integer,
+        else => return false,
+    };
+    return code == error_codes.header_mismatch or
+        code == error_codes.missing_required_client_capability or
+        code == error_codes.unsupported_protocol_version;
 }
 
 fn validateRpcError(value: std.json.Value) !void {
@@ -2179,12 +2263,23 @@ test "JSON-RPC response and MCP error envelopes are exact" {
     const valid_errors = [_][]const u8{
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"missing\",\"data\":null}}",
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32020,\"message\":\"headers\"}}",
-        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32022,\"message\":\"version\",\"data\":{\"supported\":[\"2026-07-28\"],\"requested\":\"old\"}}}",
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32021,\"message\":\"capability\",\"data\":{\"requiredCapabilities\":{\"elicitation\":{}}}}}",
     };
     for (valid_errors) |source| try std.testing.expectError(
         error.McpRpcError,
         responseResult(try parseResponse(arena.allocator(), source), 1),
+    );
+    try std.testing.expectError(
+        error.UnsupportedMcpProtocolVersion,
+        responseResult(
+            try parseResponse(
+                arena.allocator(),
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32022," ++
+                    "\"message\":\"version\",\"data\":{\"supported\":[\"2026-07-28\"]," ++
+                    "\"requested\":\"old\"}}}",
+            ),
+            1,
+        ),
     );
 
     const invalid = [_][]const u8{
@@ -3299,6 +3394,15 @@ test "server returns specified errors and validates tool parameter headers" {
     const missing_meta = try server.handle(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"x\",\"params\":{}}", null);
     defer missing_meta.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 400), missing_meta.status);
+    const legacy_initialize = try server.handle(
+        std.testing.allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}",
+        null,
+    );
+    defer legacy_initialize.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 200), legacy_initialize.status);
+    try std.testing.expect(std.mem.indexOf(u8, legacy_initialize.body.?, protocol_version) != null);
+    try std.testing.expect(std.mem.indexOf(u8, legacy_initialize.body.?, "-32601") != null);
     const wrong_version = try server.handle(
         std.testing.allocator,
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"x\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"old\",\"io.modelcontextprotocol/clientCapabilities\":{}}}}",

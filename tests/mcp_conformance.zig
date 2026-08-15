@@ -103,3 +103,55 @@ test "MCP matrix separates typed APIs generic events and MRTR inputs" {
     try std.testing.expectEqual(@as(usize, 8), events);
     try std.testing.expectEqual(@as(usize, 3), mrtr);
 }
+
+test "MCP modern legacy and dual-era probes follow transport rules" {
+    const discover =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\"," ++
+        "\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{}," ++
+        "\"ttlMs\":0,\"cacheScope\":\"public\"}}";
+    try std.testing.expectEqual(
+        zigai.mcp.CompatibilityEra.modern,
+        try zigai.mcp.classifyStdioCompatibility(std.testing.allocator, discover),
+    );
+    const recognized_modern_error =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32020,\"message\":\"headers\"}}";
+    try std.testing.expectEqual(
+        zigai.mcp.CompatibilityEra.modern,
+        try zigai.mcp.classifyStdioCompatibility(std.testing.allocator, recognized_modern_error),
+    );
+    const legacy_error =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"unknown\"}}";
+    try std.testing.expectEqual(
+        zigai.mcp.CompatibilityEra.legacy,
+        try zigai.mcp.classifyStdioCompatibility(std.testing.allocator, legacy_error),
+    );
+    try std.testing.expectEqual(
+        zigai.mcp.CompatibilityEra.legacy,
+        try zigai.mcp.classifyStdioCompatibility(std.testing.allocator, "not json"),
+    );
+
+    try std.testing.expectEqual(
+        zigai.mcp.CompatibilityEra.modern,
+        try zigai.mcp.classifyHttpCompatibility(std.testing.allocator, 200, discover),
+    );
+    try std.testing.expectEqual(
+        zigai.mcp.CompatibilityEra.modern,
+        try zigai.mcp.classifyHttpCompatibility(std.testing.allocator, 400, recognized_modern_error),
+    );
+    try std.testing.expectEqual(
+        zigai.mcp.CompatibilityEra.legacy,
+        try zigai.mcp.classifyHttpCompatibility(std.testing.allocator, 400, legacy_error),
+    );
+    try std.testing.expectEqual(
+        zigai.mcp.CompatibilityEra.legacy,
+        try zigai.mcp.classifyHttpCompatibility(std.testing.allocator, 404, "not json"),
+    );
+    try std.testing.expectEqual(
+        zigai.mcp.CompatibilityEra.indeterminate,
+        try zigai.mcp.classifyHttpCompatibility(std.testing.allocator, 500, "not json"),
+    );
+    try std.testing.expectEqual(
+        zigai.mcp.CompatibilityEra.indeterminate,
+        try zigai.mcp.classifyHttpCompatibility(std.testing.allocator, 200, legacy_error),
+    );
+}
