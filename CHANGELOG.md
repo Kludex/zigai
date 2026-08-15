@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Complete the MCP `2026-07-28` conformance matrix with strict nested message
+  and metadata validation, stateless capability guards, MRTR validation,
+  filtered acknowledgement-first subscriptions, bounded cycle-safe tool
+  pagination, exact error envelopes, compatibility-era classification, and
+  lossless prefixed extensions.
 - Add strict, bounded JSON/YAML agent specifications with data-only parsing,
   deny-by-default interpolation and secret references, secret-free provider
   validation, application-owned model and capability resolution, transitive

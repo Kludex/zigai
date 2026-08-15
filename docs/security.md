@@ -72,7 +72,8 @@ reports that suppression.
 | Prompts and history | Untrusted data | JSON and context limits apply. They never execute directly. Prompt injection remains an application concern. |
 | Tool arguments and results | Untrusted data | JSON, size, timeout, queue, and concurrency limits apply. Tool implementations are trusted code and must authorize side effects. |
 | Provider and MCP endpoints | Operator configuration | URL policy runs before callbacks and socket work. Prefer exact host allowlists. |
-| MCP servers and discovered tools | Untrusted peers | Protocol and JSON limits apply. Review tool descriptions, schemas, and requested actions before granting authority. |
+| MCP servers and discovered tools | Untrusted peers | Protocol, capability, schema, pagination, round-trip, and JSON limits apply. Review tool descriptions and requested actions before granting authority. |
+| MCP input handlers and extensions | Trusted application policy over untrusted JSON | MRTR requests and responses are schema-checked, but the callback decides whether elicitation, roots, or sampling is authorized. Extension settings remain application-defined. |
 | Provider-managed files | Provider-scoped handles | A provider guard is checked before network I/O; do not reuse opaque handles across providers. |
 | Persisted history and paused state | Untrusted input | Versioned parsers and allocation limits apply. Store it with application-appropriate access control and retention. |
 | Custom transports, hooks, tools, and exporters | Trusted application code | They receive the data required for their job and are responsible for further disclosure and side-effect policy. |

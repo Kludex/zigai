@@ -1,51 +1,58 @@
 # MCP 2026-07-28 conformance
 
-This matrix follows the authoritative
-[MCP 2026-07-28 schema](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/schema/2026-07-28/schema.ts)
-and [release notes](https://modelcontextprotocol.io/specification/2026-07-28/changelog).
-The executable inventory lives in `tests/mcp_conformance.zig`.
+ZigAI implements the modern, stateless MCP `2026-07-28` core protocol. The
+matrix follows the authoritative
+[schema](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/schema/2026-07-28/schema.ts),
+[release notes](https://modelcontextprotocol.io/specification/2026-07-28/changelog),
+and [versioning rules](https://modelcontextprotocol.io/specification/2026-07-28/basic/versioning).
+The executable method inventory lives in `tests/mcp_conformance.zig`.
 
-## Message surface
+## Messages
 
-| Flow | Methods | ZigAI path |
+| Flow | Methods | ZigAI API |
 | --- | --- | --- |
-| Client requests | `server/discover`, `completion/complete`, `prompts/get`, `prompts/list`, `resources/list`, `resources/templates/list`, `resources/read`, `subscriptions/listen`, `tools/call`, `tools/list` | Typed client helpers; generic `Client.request` remains available for extensions. |
-| Client notifications | `notifications/cancelled` | Typed `Client.cancel` plus generic `Client.notify`. |
-| Server notifications | `notifications/cancelled`, `notifications/progress`, `notifications/message`, `notifications/resources/updated`, list-changed notifications for resources, tools, and prompts, and `notifications/subscriptions/acknowledged` | Borrowed JSON through request or subscription `EventSink`. |
-| MRTR input requests | `elicitation/create`, deprecated `roots/list`, deprecated `sampling/createMessage` | Generic `InputHandler`; responses are inserted into a retry of the original request. |
+| Client requests | `server/discover`, completion, prompts, resources, subscriptions, and tools | Typed `Client` helpers, plus `request` for extensions |
+| Client notifications | `notifications/cancelled` | `cancel` or `notify` |
+| Server notifications | cancellation, progress, logging, resource updates, list changes, and subscription acknowledgement | Borrowed JSON through `EventSink` |
+| MRTR input | elicitation, roots, and sampling | `InputHandler`, followed by a validated retry |
 
-Roots, Sampling, and Logging remain compatibility paths but are deprecated in
-this protocol revision. New ZigAI APIs should not make them more prominent.
+Roots, Sampling, and Logging are deprecated compatibility paths in this
+revision. They remain supported without being promoted into the main agent
+API.
 
-## Capability surface
+## Validation matrix
 
-| Side | Active capabilities | Deprecated capabilities | Open namespaces |
-| --- | --- | --- | --- |
-| Client | elicitation form/URL modes | roots, sampling context/tools | `experimental`, `extensions` |
-| Server | completions, prompts/list-changed, resources/subscription/list-changed, tools/list-changed | logging | `experimental`, `extensions` |
+| Area | Enforced behavior |
+| --- | --- |
+| JSON-RPC | Version, request IDs, matching response IDs, result/error exclusivity, error shape, notification no-response behavior |
+| Request metadata | Per-request protocol version, client identity, capabilities, progress token, log level, and `_meta` key grammar |
+| Capabilities | Every known client and server shape; unknown fields remain intact |
+| Results | `complete` and `input_required`, every core nested result, cache metadata, content blocks, icons, and annotations |
+| MRTR | Elicitation schemas/results, roots, sampling messages/tools, declared client capabilities, and bounded retries |
+| Pagination | Cursor encoding for all list methods; tool discovery rejects cursor cycles and honors `max_pages` |
+| Subscriptions | Correlation IDs, acknowledgement-first ordering, requested filters, SSE, stdio, and cancellation |
+| HTTP | Routing headers, tool-argument headers, reserved MCP error status mappings, response limits, and URL policy |
+| Extensions | Mandatory prefixed identifiers, object settings, lossless unknown JSON, generic methods, and `extensionSettings` |
+| Compatibility | Modern/legacy classification for stdio and HTTP; actionable rejection of legacy `initialize` |
 
-Client and server capability objects are open by specification. ZigAI must
-preserve unknown prefixed extensions while validating every capability it
-advertises and every method-specific result it consumes or emits.
+Capability sets are open by specification. ZigAI validates standardized fields
+and preserves everything else. Applications decide an extension's semantics
+and fallback policy.
 
-## Remaining executable matrix
+## Compatibility boundary
 
-Implemented rows:
+ZigAI is a modern-only implementation. It never silently opens an initialization
+session or falls back to deprecated HTTP+SSE.
 
-- common `complete` and `input_required` result validation, with legacy
-  omission interpreted as `complete`;
-- required `ttlMs` and `cacheScope` validation on every cacheable core result;
-- top-level method-specific result shapes for every typed client helper; and
-- state-only and input-request MRTR retries.
+`classifyStdioCompatibility` and `classifyHttpCompatibility` implement the
+official era probes for applications that want to build a dual-era adapter.
+They return `modern`, `legacy`, or `indeterminate`; they do not mutate client
+state or initiate fallback.
 
-The following rows are intentionally not marked complete yet:
+## Limits and ownership
 
-- complete nested request, result, and notification shapes;
-- pagination cursors for tools, prompts, resources, and resource templates;
-- all JSON-RPC and MCP error envelopes and HTTP status mappings;
-- unknown extension preservation and prefixed extension negotiation;
-- modern, legacy, and dual-era compatibility outcomes for stdio and HTTP; and
-- advertised-capability guards for requests, MRTR input, and notifications.
-
-Each row will become an executable conformance case before this checklist item
-is complete.
+- Returned request, discovery, result, and extension-setting JSON is owned by
+  the caller.
+- Event JSON is borrowed for the duration of the callback.
+- `max_round_trips` bounds MRTR retries; `max_pages` bounds tool discovery.
+- MCP documents use the shared bounded JSON parser and message byte limit.

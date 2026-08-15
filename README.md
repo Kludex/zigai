@@ -510,6 +510,11 @@ discovery, every core request, pagination, SSE subscriptions, cancellation,
 and multi-round-trip sampling, roots, and elicitation through an `InputHandler`.
 Tool arguments marked with `x-mcp-header` are mirrored for Streamable HTTP.
 
+Optional client behavior must be advertised on every request. Configure
+`capabilities_json` before installing an `InputHandler`; MRTR input that was
+not advertised is rejected. `max_round_trips` and `max_pages` bound retries
+and tool discovery.
+
 The typed helpers cover tools, prompts, resources, completion, discovery, and
 subscriptions. Use `Client.request` for extensions such as Tasks:
 
@@ -522,11 +527,26 @@ const result_json = try mcp_client.request(
 defer allocator.free(result_json);
 ```
 
+Extension settings stay as owned JSON:
+
+```zig
+const settings = try zigai.mcp.extensionSettings(
+    allocator,
+    capabilities_json,
+    "io.modelcontextprotocol/tasks",
+);
+defer if (settings) |json| allocator.free(json);
+```
+
 `zigai.mcp.Server` provides the matching transport-neutral server dispatcher,
 automatic `server/discover`, protocol and HTTP header validation, extension
 dispatch, result metadata, and a stdio serving loop. HTTP hosts pass their
 request headers to `Server.handle`; authorization remains an HTTP concern and
-can be configured with `mcp_http.headers`.
+can be configured with `mcp_http.headers`. Core handlers run only when the
+matching capability appears in the server's `capabilities_json`.
+
+See the [MCP conformance matrix](docs/mcp-conformance.md) for message coverage,
+compatibility boundaries, validation, and ownership.
 
 ### Approval and deferred tools
 

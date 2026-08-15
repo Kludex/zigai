@@ -212,11 +212,13 @@ validation never invokes it.
 | `InvalidMcpToolArguments` | Tool arguments are not a bounded JSON object. |
 | `McpHttpRequestFailed` | Streamable HTTP returned a non-success response. |
 | `McpMessageTooLarge` | An MCP message exceeded its byte limit. |
+| `McpPaginationCursorCycle` | A paginated collection repeated a cursor. |
 | `McpProcessClosed` | A stdio child closed before the matching response. |
 | `McpResponseIdMismatch` | A response ID does not match the request. |
 | `McpRpcError` | The peer returned a JSON-RPC error envelope. |
 | `MissingMcpClient` | An MCP toolset has no client. |
 | `MissingMcpSseResponse` | Streamable HTTP did not produce the required SSE stream. |
+| `TooManyMcpPages` | Tool discovery exceeded the configured page limit. |
 | `TooManyMcpRoundTrips` | Elicitation exceeded its round-trip limit. |
 | `UnsupportedMcpProtocolVersion` | Discovery negotiated an unsupported revision. |
 

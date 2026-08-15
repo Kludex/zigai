@@ -101,6 +101,12 @@ merges their reports, checks that every source file is represented, and fails
 unless the final line rate is exactly 100%. CI runs the same command. macOS
 `kcov` requires extra debugger signing, so coverage remains a Linux-only gate.
 
+`tests/mcp_conformance.zig` keeps the MCP `2026-07-28` method and compatibility
+inventories executable. The `src/mcp.zig` tests cover nested schemas, malformed
+envelopes, allocation failures, stdio/SSE ordering, capability guards,
+pagination cycles, and lossless extension JSON. The human-readable companion is
+[MCP conformance](mcp-conformance.md).
+
 ## Fuzzing
 
 ZigAI fuzzes every untrusted parser family: history and deferred state, JSON
