@@ -12,6 +12,7 @@ pub const Error = error{
     InvalidExtensionIdentifier,
     InvalidInputRequest,
     InvalidNotification,
+    InvalidRequest,
 };
 
 /// Sampling features a client is prepared to provide through MRTR.
@@ -209,6 +210,72 @@ pub const InputRequest = struct {
     request_json: []const u8,
 };
 
+/// Parameters for `prompts/get`.
+pub const PromptRequest = struct {
+    name: []const u8,
+    /// Optional argument map encoded as one bounded JSON object.
+    arguments_json: ?[]const u8 = null,
+
+    pub fn stringifyAlloc(self: PromptRequest, allocator: std.mem.Allocator) ![]u8 {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const memory = arena.allocator();
+        var object: std.json.ObjectMap = .{};
+        try object.put(memory, "name", .{ .string = self.name });
+        if (self.arguments_json) |source| {
+            try object.put(memory, "arguments", .{ .object = try parseRequestObject(memory, source) });
+        }
+        return std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = object }, .{});
+    }
+};
+
+pub const CompletionReference = union(enum) {
+    prompt: []const u8,
+    resource: []const u8,
+
+    fn toObject(self: CompletionReference, allocator: std.mem.Allocator) !std.json.ObjectMap {
+        var object: std.json.ObjectMap = .{};
+        switch (self) {
+            .prompt => |name| {
+                try object.put(allocator, "type", .{ .string = "ref/prompt" });
+                try object.put(allocator, "name", .{ .string = name });
+            },
+            .resource => |uri| {
+                try object.put(allocator, "type", .{ .string = "ref/resource" });
+                try object.put(allocator, "uri", .{ .string = uri });
+            },
+        }
+        return object;
+    }
+};
+
+/// Parameters for `completion/complete`.
+pub const CompletionRequest = struct {
+    reference: CompletionReference,
+    argument_name: []const u8,
+    argument_value: []const u8,
+    /// Optional preceding argument map encoded as one bounded JSON object.
+    context_arguments_json: ?[]const u8 = null,
+
+    pub fn stringifyAlloc(self: CompletionRequest, allocator: std.mem.Allocator) ![]u8 {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const memory = arena.allocator();
+        var argument: std.json.ObjectMap = .{};
+        try argument.put(memory, "name", .{ .string = self.argument_name });
+        try argument.put(memory, "value", .{ .string = self.argument_value });
+        var object: std.json.ObjectMap = .{};
+        try object.put(memory, "ref", .{ .object = try self.reference.toObject(memory) });
+        try object.put(memory, "argument", .{ .object = argument });
+        if (self.context_arguments_json) |source| {
+            var context: std.json.ObjectMap = .{};
+            try context.put(memory, "arguments", .{ .object = try parseRequestObject(memory, source) });
+            try object.put(memory, "context", .{ .object = context });
+        }
+        return std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = object }, .{});
+    }
+};
+
 pub const LoggingLevel = enum {
     debug,
     info,
@@ -375,6 +442,21 @@ fn parseObject(allocator: std.mem.Allocator, source: []const u8) !std.json.Objec
     };
 }
 
+fn parseRequestObject(allocator: std.mem.Allocator, source: []const u8) !std.json.ObjectMap {
+    const value = try json_limits.parseLeaky(
+        std.json.Value,
+        allocator,
+        source,
+        json_limits.defaults.mcp_message,
+        .{},
+        error.InvalidRequest,
+    );
+    return switch (value) {
+        .object => |object| object,
+        else => error.InvalidRequest,
+    };
+}
+
 fn validateObjectValues(object: std.json.ObjectMap, comptime invalid_error: anytype) !void {
     var iterator = object.iterator();
     while (iterator.next()) |entry| if (entry.value_ptr.* != .object) return invalid_error;
@@ -465,6 +547,57 @@ test "typed MCP input kinds map every MRTR method" {
     const kinds = [_]InputKind{ .elicitation, .roots, .sampling };
     for (kinds) |kind| try std.testing.expectEqual(kind, try InputKind.fromMethod(kind.method()));
     try std.testing.expectError(error.InvalidInputRequest, InputKind.fromMethod("com.example/input"));
+}
+
+test "typed MCP prompt and completion requests preserve arguments" {
+    const prompt = try (PromptRequest{
+        .name = "review",
+        .arguments_json = "{\"language\":\"zig\"}",
+    }).stringifyAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(prompt);
+    try std.testing.expectEqualStrings(
+        "{\"name\":\"review\",\"arguments\":{\"language\":\"zig\"}}",
+        prompt,
+    );
+
+    const prompt_completion = try (CompletionRequest{
+        .reference = .{ .prompt = "review" },
+        .argument_name = "language",
+        .argument_value = "z",
+        .context_arguments_json = "{\"style\":\"brief\"}",
+    }).stringifyAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(prompt_completion);
+    try std.testing.expectEqualStrings(
+        "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"review\"}," ++
+            "\"argument\":{\"name\":\"language\",\"value\":\"z\"}," ++
+            "\"context\":{\"arguments\":{\"style\":\"brief\"}}}",
+        prompt_completion,
+    );
+
+    const resource_completion = try (CompletionRequest{
+        .reference = .{ .resource = "file:///{path}" },
+        .argument_name = "path",
+        .argument_value = "src",
+    }).stringifyAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(resource_completion);
+    try std.testing.expect(std.mem.indexOf(u8, resource_completion, "ref/resource") != null);
+    try std.testing.expect(std.mem.indexOf(u8, resource_completion, "file:///{path}") != null);
+}
+
+test "typed MCP prompt and completion requests reject malformed argument maps" {
+    try std.testing.expectError(
+        error.InvalidRequest,
+        (PromptRequest{ .name = "review", .arguments_json = "[]" }).stringifyAlloc(std.testing.allocator),
+    );
+    try std.testing.expectError(
+        error.InvalidRequest,
+        (CompletionRequest{
+            .reference = .{ .prompt = "review" },
+            .argument_name = "language",
+            .argument_value = "z",
+            .context_arguments_json = "{",
+        }).stringifyAlloc(std.testing.allocator),
+    );
 }
 
 test "typed MCP notifications serialize every standardized event" {
@@ -577,6 +710,18 @@ test "typed MCP capability serialization releases every partial allocation" {
                 .resource_subscriptions = &.{ "file:///a", "file:///b" },
             } }).stringifyAlloc(allocator, .{ .integer = 1 });
             defer allocator.free(acknowledged);
+            const prompt = try (PromptRequest{
+                .name = "review",
+                .arguments_json = "{\"language\":\"zig\"}",
+            }).stringifyAlloc(allocator);
+            defer allocator.free(prompt);
+            const completion = try (CompletionRequest{
+                .reference = .{ .resource = "file:///{path}" },
+                .argument_name = "path",
+                .argument_value = "src",
+                .context_arguments_json = "{\"root\":\"project\"}",
+            }).stringifyAlloc(allocator);
+            defer allocator.free(completion);
         }
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});

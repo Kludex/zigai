@@ -353,6 +353,10 @@ forward-compatibility boundary for revisions ZigAI does not know yet.
 requires subscription correlation for update streams, validates finite
 progress, and parses arbitrary logging data through the bounded MCP JSON
 policy before serialization.
+Prompt retrieval and completion use `PromptRequest` and `CompletionRequest`;
+their embedded argument maps are bounded objects and their reference union
+makes prompt names distinct from resource URI templates. Explicitly named
+`getPromptJson` and `completeJson` methods retain the open wire escape hatch.
 
 Multi round-trip requests replace server-initiated JSON-RPC calls. When a
 result requires sampling, roots, or elicitation, the configured `InputHandler`

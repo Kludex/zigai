@@ -11,7 +11,7 @@ The executable method inventory lives in `tests/mcp_conformance.zig`.
 
 | Flow | Methods | ZigAI API |
 | --- | --- | --- |
-| Client requests | `server/discover`, completion, prompts, resources, subscriptions, and tools | Typed `Client` helpers, plus `request` for extensions |
+| Client requests | `server/discover`, completion, prompts, resources, subscriptions, and tools | Typed request values and `Client` helpers, plus JSON escape hatches for extensions |
 | Client notifications | `notifications/cancelled` | `cancel` or `notify` |
 | Server notifications | cancellation, progress, logging, resource updates, list changes, and subscription acknowledgement | Typed `Notification` encoding; borrowed JSON through `EventSink` |
 | MRTR input | elicitation, roots, and sampling | Typed `InputRequest` through `InputHandler`, followed by a validated retry |

@@ -22,10 +22,13 @@ const security = @import("security.zig");
 pub const protocol_version = "2026-07-28";
 
 pub const ClientCapabilities = primitives.ClientCapabilities;
+pub const CompletionReference = primitives.CompletionReference;
+pub const CompletionRequest = primitives.CompletionRequest;
 pub const InputKind = primitives.InputKind;
 pub const InputRequest = primitives.InputRequest;
 pub const LoggingLevel = primitives.LoggingLevel;
 pub const Notification = primitives.Notification;
+pub const PromptRequest = primitives.PromptRequest;
 pub const RequestId = primitives.RequestId;
 pub const ServerCapabilities = primitives.ServerCapabilities;
 pub const SubscriptionFilter = primitives.SubscriptionFilter;
@@ -149,6 +152,8 @@ pub const Error = error{
     InvalidInputRequest,
     /// A typed notification has invalid data or missing stream correlation.
     InvalidNotification,
+    /// A typed MCP request contains malformed embedded JSON.
+    InvalidRequest,
     /// An OAuth token, response, or metadata document names another issuer.
     InvalidAuthorizationIssuer,
     /// OAuth/OIDC discovery metadata is malformed or unsafe.
@@ -664,13 +669,33 @@ pub const Client = struct {
         return self.paginatedRequest(allocator, methods.list_prompts, cursor);
     }
 
-    pub fn getPrompt(self: *Client, allocator: std.mem.Allocator, params_json: []const u8) ![]u8 {
+    pub fn getPrompt(self: *Client, allocator: std.mem.Allocator, prompt: PromptRequest) ![]u8 {
+        const params_json = try prompt.stringifyAlloc(allocator);
+        defer allocator.free(params_json);
+        return self.requestWithOptions(
+            allocator,
+            methods.get_prompt,
+            params_json,
+            .{ .routing_name = prompt.name },
+        );
+    }
+
+    /// Raw JSON escape hatch for prompt fields added by future MCP revisions.
+    pub fn getPromptJson(self: *Client, allocator: std.mem.Allocator, params_json: []const u8) ![]u8 {
         const name = try parameterString(allocator, params_json, "name");
         defer allocator.free(name);
         return self.requestWithOptions(allocator, methods.get_prompt, params_json, .{ .routing_name = name });
     }
 
-    pub fn complete(self: *Client, allocator: std.mem.Allocator, params_json: []const u8) ![]u8 {
+    pub fn complete(self: *Client, allocator: std.mem.Allocator, completion: CompletionRequest) ![]u8 {
+        const params_json = try completion.stringifyAlloc(allocator);
+        defer allocator.free(params_json);
+        return self.completeJson(allocator, params_json);
+    }
+
+    /// Raw JSON escape hatch for completion fields added by future MCP
+    /// revisions.
+    pub fn completeJson(self: *Client, allocator: std.mem.Allocator, params_json: []const u8) ![]u8 {
         return self.request(allocator, methods.complete, params_json);
     }
 
@@ -4851,11 +4876,14 @@ test "generic client helpers cover every core request shape" {
         try client.listResourceTemplates(std.testing.allocator, "next"),
         try client.readResource(std.testing.allocator, "file:///tmp/a"),
         try client.listPrompts(std.testing.allocator, null),
-        try client.getPrompt(std.testing.allocator, "{\"name\":\"review\"}"),
+        try client.getPrompt(std.testing.allocator, .{ .name = "review" }),
         try client.complete(
             std.testing.allocator,
-            "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"review\"}," ++
-                "\"argument\":{\"name\":\"language\",\"value\":\"z\"}}",
+            .{
+                .reference = .{ .prompt = "review" },
+                .argument_name = "language",
+                .argument_value = "z",
+            },
         ),
         try client.listen(
             std.testing.allocator,
