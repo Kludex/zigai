@@ -107,7 +107,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 
 ## P1 — Providers and model operations
 
-- [ ] Introduce a provider abstraction for credentials, base URL, headers,
+- [x] Introduce a provider abstraction for credentials, base URL, headers,
   model discovery, file APIs, profile lookup, request policy, and capability
   overrides while keeping model wire adapters separate.
 - [ ] Replace generic OpenAI-compatible defaults with tested provider-specific
