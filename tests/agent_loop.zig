@@ -796,6 +796,10 @@ test "context budgets reject every byte and token boundary before requesting" {
         fn reject(_: *anyopaque, _: std.mem.Allocator, _: zigai.ContextOverflowEvent) ![]const zigai.Message {
             return error.ContextRejected;
         }
+
+        fn unchanged(_: *anyopaque, _: std.mem.Allocator, event: zigai.ContextOverflowEvent) ![]const zigai.Message {
+            return event.input.messages;
+        }
     };
     var state: State = .{};
     const selected_model = zigai.Model{ .context = &state, .profile = .{
@@ -843,6 +847,13 @@ test "context budgets reject every byte and token boundary before requesting" {
         .context_budget = .{
             .max_prompt_bytes = 0,
             .on_overflow = .{ .context = &state, .compactFn = State.reject },
+        },
+    }).run(std.testing.allocator, "x"));
+    try std.testing.expectError(zigai.Agent.Error.ContextPromptTooLarge, (zigai.Agent{
+        .model = selected_model,
+        .context_budget = .{
+            .max_prompt_bytes = 0,
+            .on_overflow = .{ .context = &state, .compactFn = State.unchanged },
         },
     }).run(std.testing.allocator, "x"));
     var overridden = try (zigai.Agent{
