@@ -108,8 +108,9 @@ pub fn parseYaml(gpa: std.mem.Allocator, source: []const u8) !Owned {
     defer output.deinit();
     var json: std.json.Stringify = .{ .writer = &output.writer };
     writeJsonNode(&json, document.root) catch |failure| return switch (failure) {
-        error.OutOfMemory => error.OutOfMemory,
-        else => Error.InvalidAgentSpec,
+        error.WriteFailed => error.OutOfMemory,
+        error.InvalidAgentSpec => Error.InvalidAgentSpec,
+        error.UnsupportedAgentSpecVersion => Error.InvalidAgentSpec,
     };
     return parseJson(gpa, output.written());
 }

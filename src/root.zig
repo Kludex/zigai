@@ -221,6 +221,7 @@ test {
     _ = @import("output.zig");
     _ = @import("tool.zig");
     _ = @import("capability.zig");
+    _ = @import("agent_spec.zig");
     _ = @import("json.zig");
     _ = @import("reflect.zig");
     _ = @import("history.zig");
