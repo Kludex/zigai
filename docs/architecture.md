@@ -189,6 +189,20 @@ header. OpenAI-compatible gateways may name an idempotency header. The agent
 then generates one random key per logical model request and reuses it only for
 that request's retry attempts.
 
+Context measurement runs after history processors and step-specific toolsets,
+but before lifecycle request-start hooks and provider encoding. The leaf
+`context_budget` module classifies only provider-facing bytes: prompt text,
+tool definitions and traffic, schemas, and media sources. It allocates nothing.
+The agent executes an optional tokenizer and one overflow-compaction callback
+through `RunControl`, then remeasures the returned provider view. Canonical
+history is never replaced by budget compaction.
+
+Input capacity is the smaller of an explicit input limit and total capacity
+after output reservation. The resolved model `max_tokens` supplies the default
+reservation. The built-in estimate is portable rather than tokenizer-exact;
+applications can replace it without changing the enforcement or ownership
+path.
+
 The same transport bounds untrusted response allocation after content
 decompression. Buffered bodies use `Limits.max_response_body_bytes`; streamed
 responses allocate and release one line at a time under

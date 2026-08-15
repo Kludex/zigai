@@ -13,6 +13,8 @@
 - Full-jitter retry backoff, cumulative delay budgets, HTTP-date
   `Retry-After`, bounded provider request IDs, stable connection/decode
   categories, request correlation, and opt-in compatible-provider idempotency.
+- Preflight context budgets for prompt, tool, schema, media, and estimated
+  tokens, with output reservation and controlled history compaction hooks.
 
 ## 0.1.0 — 2026-08-14
 

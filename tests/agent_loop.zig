@@ -730,6 +730,131 @@ test "history processors run before each request without discarding result histo
     try std.testing.expectEqualStrings("earlier", result.messages[0].request.parts[0].user_prompt.text);
 }
 
+test "context budgets compact history before requests and preserve callback control" {
+    const State = struct {
+        estimates: usize = 0,
+        compactions: usize = 0,
+        request_messages: usize = 0,
+
+        fn estimate(context: *anyopaque, input: zigai.context_budget.Input, _: zigai.context_budget.ByteUsage) !u64 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.estimates += 1;
+            try std.testing.expectEqual(@as(?u64, 20), input.settings.max_tokens);
+            return @intCast(input.messages.len * 10);
+        }
+
+        fn compact(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            event: zigai.ContextOverflowEvent,
+        ) ![]const zigai.Message {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.compactions += 1;
+            try std.testing.expectEqual(zigai.ContextOverflow.Kind.input_tokens, event.overflow.kind);
+            try std.testing.expectEqual(@as(u64, 30), event.snapshot.estimated_input_tokens);
+            return event.input.messages[event.input.messages.len - 1 ..];
+        }
+
+        fn request(context: *anyopaque, _: std.mem.Allocator, request_value: zigai.ModelRequest) !zigai.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.request_messages = request_value.messages.len;
+            return .{ .parts = &.{.{ .text = "done" }} };
+        }
+    };
+    var state: State = .{};
+    const budget = zigai.ContextBudget{
+        .max_total_tokens = 35,
+        .estimator = .{ .context = &state, .estimateFn = State.estimate },
+        .on_overflow = .{ .context = &state, .compactFn = State.compact },
+    };
+    const previous = [_]zigai.Message{
+        .{ .request = .{ .parts = &.{.{ .user_prompt = .{ .text = "old" } }} } },
+        .{ .response = .{ .parts = &.{.{ .text = "old answer" }} } },
+    };
+    var result = try (zigai.Agent{
+        .model = .{ .context = &state, .profile = .{}, .requestFn = State.request },
+        .model_settings = .{ .max_tokens = 20 },
+        .context_budget = budget,
+    }).runWithOptions(std.testing.allocator, "new", .{ .message_history = &previous });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), state.estimates);
+    try std.testing.expectEqual(@as(usize, 1), state.compactions);
+    try std.testing.expectEqual(@as(usize, 1), state.request_messages);
+    try std.testing.expectEqual(@as(usize, 4), result.messages.len);
+}
+
+test "context budgets reject every byte and token boundary before requesting" {
+    const State = struct {
+        requests: usize = 0,
+
+        fn request(context: *anyopaque, _: std.mem.Allocator, _: zigai.ModelRequest) !zigai.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.requests += 1;
+            return .{ .parts = &.{.{ .text = "done" }} };
+        }
+
+        fn reject(_: *anyopaque, _: std.mem.Allocator, _: zigai.ContextOverflowEvent) ![]const zigai.Message {
+            return error.ContextRejected;
+        }
+    };
+    var state: State = .{};
+    const selected_model = zigai.Model{ .context = &state, .profile = .{
+        .supports_tools = true,
+        .supports_json_schema_output = true,
+        .content_types = zigai.ModelProfile.ContentTypeSet.initMany(&.{.image}),
+    }, .requestFn = State.request };
+    try std.testing.expectError(zigai.Agent.Error.ContextPromptTooLarge, (zigai.Agent{
+        .model = selected_model,
+        .context_budget = .{ .max_prompt_bytes = 0 },
+    }).run(std.testing.allocator, "x"));
+    const tool = zigai.Tool{
+        .definition = .{ .name = "tool", .description = "d", .parameters_json_schema = "{}" },
+        .context = &state,
+        .executeFn = struct {
+            fn execute(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]const u8 {
+                return allocator.dupe(u8, "ok");
+            }
+        }.execute,
+    };
+    try std.testing.expectError(zigai.Agent.Error.ContextToolsTooLarge, (zigai.Agent{
+        .model = selected_model,
+        .tools = &.{tool},
+        .context_budget = .{ .max_tool_bytes = 0 },
+    }).run(std.testing.allocator, ""));
+    try std.testing.expectError(zigai.Agent.Error.ContextSchemaTooLarge, (zigai.Agent{
+        .model = selected_model,
+        .output = .{ .json_schema = .{ .name = "x", .schema = "{}" } },
+        .context_budget = .{ .max_schema_bytes = 0 },
+    }).run(std.testing.allocator, ""));
+    try std.testing.expectError(zigai.Agent.Error.ContextMediaTooLarge, (zigai.Agent{
+        .model = selected_model,
+        .context_budget = .{ .max_media_bytes = 0 },
+    }).runWithOptions(std.testing.allocator, "", .{ .prompt_parts = &.{.{ .image = .{
+        .source = .{ .bytes = "png" },
+        .media_type = "image/png",
+    } }} }));
+    try std.testing.expectError(zigai.Agent.Error.ContextTokenLimitExceeded, (zigai.Agent{
+        .model = selected_model,
+        .model_settings = .{ .max_tokens = 11 },
+        .context_budget = .{ .max_total_tokens = 10 },
+    }).run(std.testing.allocator, ""));
+    try std.testing.expectError(error.ContextRejected, (zigai.Agent{
+        .model = selected_model,
+        .context_budget = .{
+            .max_prompt_bytes = 0,
+            .on_overflow = .{ .context = &state, .compactFn = State.reject },
+        },
+    }).run(std.testing.allocator, "x"));
+    var overridden = try (zigai.Agent{
+        .model = selected_model,
+        .context_budget = .{ .max_prompt_bytes = 0 },
+    }).runWithOptions(std.testing.allocator, "x", .{
+        .context_budget = .{ .max_prompt_bytes = 1 },
+    });
+    defer overridden.deinit();
+    try std.testing.expectEqual(@as(usize, 1), state.requests);
+}
+
 test "instruction failures and unsupported system capability stop before requesting" {
     const Failure = struct {
         fn resolve(_: *anyopaque, _: std.mem.Allocator, _: zigai.InstructionContext) ![]const u8 {

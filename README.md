@@ -322,6 +322,32 @@ trimming, text compaction, provider-valid tool history, and callback-based
 summaries. Custom processors can inspect current usage, request count, and the
 model profile. `result.messages` still contains the full canonical history.
 
+## Context budgets
+
+Context budgets reject oversized requests before a provider does:
+
+```zig
+const agent = zigai.Agent{
+    .model = client.model(),
+    .context_budget = .{
+        .max_total_tokens = 128_000,
+        .reserve_output_tokens = 8_000,
+        .max_prompt_bytes = 2 * 1024 * 1024,
+        .max_tool_bytes = 256 * 1024,
+        .max_schema_bytes = 256 * 1024,
+        .max_media_bytes = 16 * 1024 * 1024,
+    },
+};
+```
+
+The provider-neutral estimate uses four bytes per token plus message and tool
+framing. Supply `TokenEstimator` when a deployment needs its provider's exact
+tokenizer. If a limit is exceeded, `ContextOverflowHook` gets one bounded chance
+to return a compacted provider-facing history or reject with an application
+error. The compacted view is measured again, while `result.messages` keeps the
+complete canonical history. `RunOptions.context_budget` can replace the policy
+for one invocation.
+
 ## Capabilities
 
 Capabilities package one reusable agent feature:

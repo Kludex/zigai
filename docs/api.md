@@ -178,6 +178,30 @@ one. A compatible gateway may configure `Client.idempotency_header`; its model
 profile then requests a generated key that remains stable across one logical
 request's retries. This requires `Agent.io`.
 
+## Context budgets
+
+`Agent.context_budget` measures the provider-facing request after history
+processors and dynamic toolsets have run. Separate limits cover prompt text,
+tool traffic and definitions, JSON schemas, raw media sources, estimated input
+tokens, and combined input/output capacity. `reserve_output_tokens` is removed
+from `max_total_tokens`; when it is null, the resolved `ModelSettings.max_tokens`
+is reserved instead. Exact boundaries are accepted.
+
+The default estimate is deliberately provider-neutral: four measured bytes per
+token plus fixed message and tool framing. `TokenEstimator` receives borrowed
+`ContextBudget.Input` and `ByteUsage` values for provider-specific counting.
+Estimator and overflow callbacks run under the invocation's deadline and
+cancellation control.
+
+On overflow, `ContextOverflowHook` receives the measured snapshot, first failed
+boundary, and borrowed request view. It may return a borrowed history subslice
+or allocate replacement messages from the supplied arena. ZigAI measures the
+result once more; a remaining overflow becomes `ContextPromptTooLarge`,
+`ContextToolsTooLarge`, `ContextSchemaTooLarge`, `ContextMediaTooLarge`, or
+`ContextTokenLimitExceeded`. Callback rejection errors pass through unchanged.
+Only the provider-facing view is compacted; owned result history remains
+complete. `RunOptions.context_budget` replaces the agent policy for one run.
+
 ## Tool execution limits
 
 `Agent.tool_limits` applies `zigai.ToolLimits` to local calls. The defaults are

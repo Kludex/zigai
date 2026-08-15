@@ -5,6 +5,7 @@ const model_types = @import("model.zig");
 const json_schema = @import("json_schema.zig");
 const reflect = @import("reflect.zig");
 const history = @import("history.zig");
+const context_budget = @import("context_budget.zig");
 const telemetry_types = @import("telemetry.zig");
 const json_limits = @import("json.zig");
 const transport = @import("transport.zig");
@@ -18,6 +19,12 @@ const Part = ResponsePart;
 const AgentError = error{
     Cancelled,
     ContentFiltered,
+    ContextMediaTooLarge,
+    ContextPromptTooLarge,
+    ContextSchemaTooLarge,
+    ContextSizeOverflow,
+    ContextTokenLimitExceeded,
+    ContextToolsTooLarge,
     DuplicateToolName,
     DuplicateBuiltinTool,
     EmptyModelResponse,
@@ -213,6 +220,8 @@ pub const RunOptions = struct {
     model_settings: model_types.ModelSettings = .{},
     /// Extra provider-facing history processors applied after agent processors.
     history_processors: []const history.Processor = &.{},
+    /// Replaces the agent's context budget for this invocation.
+    context_budget: ?context_budget.Budget = null,
     /// Provider-facing correlation ID for every model request in this run.
     request_id: ?[]const u8 = null,
     /// Tightens `Agent.run_timeout_ms` for this invocation.
@@ -596,6 +605,8 @@ pub const Agent = struct {
     model_settings: model_types.ModelSettings = .{},
     limits: UsageLimits = .{},
     retry_policy: RetryPolicy = .{},
+    /// Provider-request preflight limits and optional compaction policy.
+    context_budget: ContextBudget = .{},
     provider_error_observer: ?model_types.ProviderErrorObserver = null,
     dependencies: ?*anyopaque = null,
     /// Cooperative token raced against in-flight work when `io` is available.
@@ -612,6 +623,7 @@ pub const Agent = struct {
     pub const UsageLimits = AgentUsageLimits;
     pub const RetryPolicy = AgentRetryPolicy;
     pub const Backoff = AgentBackoff;
+    pub const ContextBudget = context_budget.Budget;
     pub const ToolLimits = model_types.ToolLimits;
 
     pub const Error = AgentError;
@@ -1071,6 +1083,21 @@ pub const Agent = struct {
                 options.history_processors,
                 history_context,
                 request_messages,
+            );
+            request_messages = try prepareContext(
+                memory,
+                options.context_budget orelse self.context_budget,
+                .{
+                    .provider_name = self.model.provider_name,
+                    .model_name = self.model.model_name,
+                    .messages = request_messages,
+                    .instructions = resolved_instructions,
+                    .tools = definitions.items,
+                    .builtin_tools = self.builtin_tools,
+                    .output = self.output,
+                    .settings = resolved_settings,
+                },
+                control,
             );
             var idempotency_key_storage: [32]u8 = undefined;
             const idempotency_key = if (self.model.profile.supports_idempotency_key and self.retry_policy.max_retries > 0)
@@ -2197,6 +2224,72 @@ const ProviderErrorCapture = struct {
         return null;
     }
 };
+
+fn prepareContext(
+    arena: std.mem.Allocator,
+    budget: context_budget.Budget,
+    input: context_budget.Input,
+    control: model_types.RunControl,
+) ![]const Message {
+    if (!budget.isConfigured()) return input.messages;
+    try control.check();
+    const snapshot = try contextSnapshot(budget, input, control);
+    const overflow = budget.firstOverflow(input.settings, snapshot) orelse return input.messages;
+    const hook = budget.on_overflow orelse return contextOverflowError(overflow.kind);
+    const compacted = try control.invoke(
+        []const Message,
+        invokeContextOverflowHook,
+        .{ hook, arena, context_budget.OverflowEvent{
+            .input = input,
+            .snapshot = snapshot,
+            .overflow = overflow,
+        } },
+    );
+    var compacted_input = input;
+    compacted_input.messages = compacted;
+    const compacted_snapshot = try contextSnapshot(budget, compacted_input, control);
+    const remaining = budget.firstOverflow(input.settings, compacted_snapshot) orelse return compacted;
+    return contextOverflowError(remaining.kind);
+}
+
+fn contextSnapshot(
+    budget: context_budget.Budget,
+    input: context_budget.Input,
+    control: model_types.RunControl,
+) !context_budget.Snapshot {
+    const bytes = context_budget.measure(input) catch return Agent.Error.ContextSizeOverflow;
+    const estimated_input_tokens = if (budget.estimator) |estimator|
+        try control.invoke(u64, invokeTokenEstimator, .{ estimator, input, bytes })
+    else
+        context_budget.defaultEstimate(input, bytes) catch return Agent.Error.ContextSizeOverflow;
+    return .{ .bytes = bytes, .estimated_input_tokens = estimated_input_tokens };
+}
+
+fn invokeTokenEstimator(
+    estimator: context_budget.TokenEstimator,
+    input: context_budget.Input,
+    bytes: context_budget.ByteUsage,
+) !u64 {
+    return estimator.estimate(input, bytes);
+}
+
+fn invokeContextOverflowHook(
+    hook: context_budget.OverflowHook,
+    arena: std.mem.Allocator,
+    event: context_budget.OverflowEvent,
+) ![]const Message {
+    return hook.compact(arena, event);
+}
+
+fn contextOverflowError(kind: context_budget.Overflow.Kind) Agent.Error {
+    return switch (kind) {
+        .prompt_bytes => Agent.Error.ContextPromptTooLarge,
+        .tool_bytes => Agent.Error.ContextToolsTooLarge,
+        .schema_bytes => Agent.Error.ContextSchemaTooLarge,
+        .media_bytes => Agent.Error.ContextMediaTooLarge,
+        .input_tokens => Agent.Error.ContextTokenLimitExceeded,
+    };
+}
 
 fn checkCancellation(token: ?*const CancellationToken) Agent.Error!void {
     if (token) |value| if (value.isCancelled()) return Agent.Error.Cancelled;

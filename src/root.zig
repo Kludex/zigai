@@ -8,6 +8,7 @@ pub const json_schema = @import("json_schema.zig");
 pub const json = @import("json.zig");
 pub const reflect = @import("reflect.zig");
 pub const history = @import("history.zig");
+pub const context_budget = @import("context_budget.zig");
 pub const evals = @import("evals.zig");
 pub const providers = @import("providers.zig");
 pub const models = @import("models.zig");
@@ -94,6 +95,12 @@ pub const ModelStreamSink = model.ModelStreamSink;
 pub const ProviderRequestError = model.ProviderRequestError;
 pub const ProviderError = model.ProviderError;
 pub const ProviderErrorObserver = model.ProviderErrorObserver;
+pub const ContextBudget = context_budget.Budget;
+pub const ContextSnapshot = context_budget.Snapshot;
+pub const ContextOverflow = context_budget.Overflow;
+pub const ContextOverflowEvent = context_budget.OverflowEvent;
+pub const ContextOverflowHook = context_budget.OverflowHook;
+pub const TokenEstimator = context_budget.TokenEstimator;
 
 test {
     _ = @import("agent.zig");
@@ -104,6 +111,7 @@ test {
     _ = @import("json.zig");
     _ = @import("reflect.zig");
     _ = @import("history.zig");
+    _ = @import("context_budget.zig");
     _ = @import("evals.zig");
     _ = @import("providers.zig");
     _ = @import("models.zig");
