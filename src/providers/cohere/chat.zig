@@ -956,10 +956,13 @@ fn decodeUsage(object: std.json.ObjectMap) !model_types.Usage {
         .object => |value| value,
         else => return error.InvalidProviderResponse,
     };
-    return .{
+    var result = model_types.Usage{
         .input_tokens = (try common.optionalObjectInteger(tokens, "input_tokens")) orelse 0,
         .output_tokens = (try common.optionalObjectInteger(tokens, "output_tokens")) orelse 0,
     };
+    result.reasoning_tokens = (try common.optionalObjectInteger(tokens, "reasoning_tokens")) orelse 0;
+    result.cache_read_tokens = (try common.optionalObjectInteger(usage, "cached_tokens")) orelse 0;
+    return result;
 }
 
 fn responseDetails(
@@ -1217,4 +1220,199 @@ test "native Cohere stream maps status and protocol failures" {
     try std.testing.expectError(error.ProviderResponseDecodeError, client.model().stream(arena.allocator(), .{ .messages = &.{} }, sink));
     state.mode = .unknown;
     try std.testing.expectError(error.ProviderResponseDecodeError, client.model().stream(arena.allocator(), .{ .messages = &.{} }, sink));
+}
+
+test "native Cohere request codec covers durable message and output variants" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const thinking_details = try markerDetails(arena.allocator(), "thinking");
+    const request_messages = [_]model_types.Message{
+        .{ .request = .{ .parts = &.{
+            .{ .system_prompt_part = .{ .content = "System." } },
+            .{ .user_prompt_part = .{ .content = .{ .text_content = .{ .content = "User." } } } },
+            .{ .retry_prompt = "Retry." },
+            .{ .retry_prompt_part = .{ .content = "Retry again." } },
+            .{ .capability_load_return = .{ .call_id = "load_1", .instructions = "Loaded." } },
+            .{ .speech = .{ .speaker = .user, .transcript = "Spoken." } },
+            .{ .user_prompt = .{ .cache_point = .{} } },
+        } } },
+        .{ .response = .{ .parts = &.{
+            .{ .text = "Plain." },
+            .{ .text_part = .{ .content = "Detailed.", .provider = .{ .provider_name = "cohere" } } },
+            .{ .thinking = .{ .content = "Reasoning.", .provider = .{
+                .provider_name = "cohere",
+                .provider_details = thinking_details,
+            } } },
+            .{ .speech = .{ .speaker = .assistant, .transcript = "Spoken answer.", .provider = .{ .provider_name = "cohere" } } },
+            .{ .capability_load_call = .{ .call_id = "load_2", .capability_id = "research" } },
+        } } },
+    };
+    const tool = model_types.ToolDefinition{
+        .name = common.capability_load_tool_name,
+        .description = "Load one capability.",
+        .parameters_json_schema = "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}},\"required\":[\"id\"]}",
+        .return_json_schema = "{\"type\":\"string\"}",
+        .return_schema_visibility = .model_description,
+    };
+    const selected = try encodeRequest(arena.allocator(), "command-a-03-2025", .{
+        .messages = &request_messages,
+        .tools = &.{tool},
+        .settings = .{
+            .tool_choice = .{ .tool = common.capability_load_tool_name },
+            .reasoning_effort = .none,
+        },
+    });
+    try std.testing.expect(std.mem.indexOf(u8, selected, "Return JSON Schema") != null);
+    try std.testing.expect(std.mem.indexOf(u8, selected, "\"type\":\"disabled\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, selected, "\"content\":\"Spoken.\"") != null);
+
+    const allowed = try encodeRequest(arena.allocator(), "command-a-03-2025", .{
+        .messages = &.{},
+        .tools = &.{ tool, .{ .name = "other", .description = "Other.", .parameters_json_schema = "{\"type\":\"object\"}" } },
+        .settings = .{ .tool_choice = .{ .allowed = &.{"other"} } },
+    });
+    try std.testing.expect(std.mem.indexOf(u8, allowed, "\"name\":\"other\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, allowed, common.capability_load_tool_name) == null);
+    const automatic = try encodeRequest(arena.allocator(), "command-a-03-2025", .{
+        .messages = &.{},
+        .tools = &.{tool},
+        .settings = .{ .tool_choice = .auto },
+    });
+    try std.testing.expect(std.mem.indexOf(u8, automatic, "tool_choice") == null);
+
+    const json_object = try encodeRequest(arena.allocator(), "command-a-03-2025", .{
+        .messages = &.{},
+        .output = .json_object,
+        .settings = .{ .thinking_budget_tokens = 32 },
+    });
+    try std.testing.expect(std.mem.indexOf(u8, json_object, "\"response_format\":{\"type\":\"json_object\"}") != null);
+    try std.testing.expect(std.mem.indexOf(u8, json_object, "\"token_budget\":32") != null);
+    const json_schema = try encodeRequest(arena.allocator(), "command-a-03-2025", .{
+        .messages = &.{},
+        .output = .{ .json_schema = .{ .name = "answer", .schema = "{\"type\":\"object\"}" } },
+    });
+    try std.testing.expect(std.mem.indexOf(u8, json_schema, "\"schema\":{\"type\":\"object\"}") != null);
+}
+
+test "native Cohere request codec rejects unsupported portable states" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const tool = model_types.ToolDefinition{ .name = "tool", .description = "Tool.", .parameters_json_schema = "{\"type\":\"object\"}" };
+    try std.testing.expectError(error.UnsupportedBuiltinTool, encodeRequest(arena.allocator(), "model", .{
+        .messages = &.{},
+        .builtin_tools = &.{.{ .web_search = .{} }},
+    }));
+    try std.testing.expectError(error.UnsupportedOutputMode, encodeRequest(arena.allocator(), "model", .{
+        .messages = &.{},
+        .tools = &.{tool},
+        .output = .json_object,
+    }));
+    try std.testing.expectError(error.InvalidRequestEncoding, encodeRequest(arena.allocator(), "model", .{
+        .messages = &.{},
+        .settings = .{ .parallel_tool_calls = false },
+    }));
+    try std.testing.expectError(error.InvalidRequestEncoding, encodeRequest(arena.allocator(), "model", .{
+        .messages = &.{},
+        .settings = .{ .seed = -1 },
+    }));
+    try std.testing.expectError(error.InvalidRequestEncoding, encodeRequest(arena.allocator(), "model", .{
+        .messages = &.{},
+        .settings = .{ .logprobs = .{ .top = 1 } },
+    }));
+    try std.testing.expectError(error.UnsupportedContentType, encodeRequest(arena.allocator(), "model", .{
+        .messages = &.{.{ .request = .{ .parts = &.{.{ .user_prompt = .{ .image = .{
+            .source = .{ .bytes = "image" },
+            .media_type = "image/png",
+        } } }} } }},
+    }));
+    try std.testing.expectError(error.UnsupportedContentType, encodeRequest(arena.allocator(), "model", .{
+        .messages = &.{.{ .request = .{ .parts = &.{.{ .speech = .{ .speaker = .user } }} } }},
+    }));
+    try std.testing.expectError(error.UnsupportedContentType, encodeRequest(arena.allocator(), "model", .{
+        .messages = &.{.{ .request = .{ .parts = &.{.{ .tool_return = .{
+            .call_id = "call",
+            .name = "tool",
+            .content = "result",
+            .files = &.{.{ .source = .{ .bytes = "file" }, .media_type = "text/plain" }},
+        } }} } }},
+    }));
+    try std.testing.expectError(error.UnsupportedContentType, encodeRequest(arena.allocator(), "model", .{
+        .messages = &.{.{ .request = .{ .parts = &.{.{ .tool_search_return = .{
+            .call_id = "search",
+            .discovered_tools = &.{},
+        } }} } }},
+    }));
+    try std.testing.expectError(error.UnsupportedContentType, encodeRequest(arena.allocator(), "model", .{
+        .messages = &.{.{ .response = .{ .parts = &.{.{ .image = .{
+            .source = .{ .bytes = "image" },
+            .media_type = "image/png",
+        } }} } }},
+    }));
+    try std.testing.expectError(error.UnsupportedContentType, encodeRequest(arena.allocator(), "model", .{
+        .messages = &.{.{ .response = .{ .parts = &.{.{ .text_part = .{
+            .content = "wrong owner",
+            .provider = .{ .provider_name = "other" },
+        } }} } }},
+    }));
+    try std.testing.expectError(error.UnsupportedContentType, encodeRequest(arena.allocator(), "model", .{
+        .messages = &.{.{ .response = .{ .parts = &.{.{ .tool_call = .{
+            .id = "call",
+            .name = "tool",
+            .arguments_json = "{}",
+            .provider = .{ .id = "provider-item", .provider_name = "cohere" },
+        } }} } }},
+    }));
+}
+
+test "native Cohere response decoder rejects malformed native shapes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const invalid = [_][]const u8{
+        "[]",
+        "{\"id\":\"id\",\"finish_reason\":\"COMPLETE\",\"message\":{\"content\":[false]}}",
+        "{\"id\":\"id\",\"finish_reason\":\"TOOL_CALL\",\"message\":{\"tool_calls\":[false]}}",
+        "{\"id\":\"id\",\"finish_reason\":\"TOOL_CALL\",\"message\":{\"tool_calls\":[{\"id\":\"call\",\"type\":\"other\",\"function\":{\"name\":\"tool\",\"arguments\":\"{}\"}}]}}",
+        "{\"id\":\"id\",\"finish_reason\":\"COMPLETE\",\"message\":{},\"usage\":false}",
+        "{\"id\":\"id\",\"finish_reason\":\"COMPLETE\",\"message\":{},\"usage\":{\"tokens\":false}}",
+    };
+    for (invalid) |body| try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(arena.allocator(), body));
+    const usage = try decodeResponse(arena.allocator(),
+        \\{"id":"id","finish_reason":"MAX_TOKENS","message":{"content":null,"tool_calls":null},"usage":{"tokens":{"input_tokens":2,"output_tokens":3,"reasoning_tokens":1},"cached_tokens":4}}
+    );
+    try std.testing.expectEqual(@as(u64, 1), usage.usage.reasoning_tokens);
+    try std.testing.expectEqual(@as(u64, 4), usage.usage.cache_read_tokens);
+    try std.testing.expectEqual(model_types.FinishReason.Kind.length, usage.finish_reason.?.kind);
+    try std.testing.expectEqual(model_types.FinishReason.Kind.stop, decodeFinishReason("STOP_SEQUENCE").kind);
+    try std.testing.expectEqual(model_types.FinishReason.Kind.other, decodeFinishReason("TIMEOUT").kind);
+}
+
+test "native Cohere stream rejects malformed nested event shapes" {
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+    };
+    var marker: u8 = 0;
+    const sink = model_types.ModelStreamSink{ .context = &marker, .eventFn = Sink.emit };
+    const lines = [_][]const []const u8{
+        &.{"data: []"},
+        &.{"data: {\"type\":\"content-start\",\"index\":0,\"delta\":{\"message\":{\"content\":false}}}"},
+        &.{
+            "data: {\"type\":\"content-start\",\"index\":0,\"delta\":{\"message\":{\"content\":{\"type\":\"text\"}}}}",
+            "data: {\"type\":\"content-delta\",\"index\":0,\"delta\":{\"message\":{\"content\":false}}}",
+        },
+        &.{"data: {\"type\":\"tool-call-start\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":false}}}"},
+        &.{"data: {\"type\":\"tool-call-start\",\"index\":0,\"delta\":{\"message\":{\"tool_calls\":{\"id\":\"call\",\"type\":\"other\",\"function\":{\"name\":\"tool\"}}}}}"},
+    };
+    for (lines) |sequence| {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var state = StreamState{ .allocator = arena.allocator(), .sink = sink, .status = 200 };
+        defer state.deinit();
+        for (sequence, 0..) |line, index| {
+            if (index + 1 == sequence.len)
+                try std.testing.expectError(error.InvalidProviderResponse, StreamState.line(&state, line))
+            else
+                try StreamState.line(&state, line);
+        }
+    }
+    try std.testing.expectError(error.InvalidProviderResponse, streamIndex(.{ .bool = false }));
 }
