@@ -555,15 +555,30 @@ var terminal = try mcp_client.waitTask(allocator, "task-1", .{ .io = io });
 defer terminal.deinit();
 ```
 
-Task results own a single arena. Their tagged state exposes only the payload
-valid for the current status. Set the Tasks extension in the client's typed
-capabilities before calling these methods. To receive push updates, pass
-`.task_ids = &.{"task-1"}` to `SubscriptionFilter`; each event can be decoded
-with `mcp.tasks.parseNotification`. ZigAI rejects updates for task IDs outside
-the acknowledged subscription. `waitTask` honors changing server poll
-intervals, bounds the number of requests, forwards each new task input through
-the client's `InputHandler` once, and signals cooperative cancellation when a
-local cancellation, deadline, or poll bound stops the wait.
+Task results own a single arena. `waitTask` follows server polling hints,
+handles input, and cooperatively cancels when its deadline or poll budget ends.
+Task subscriptions use `SubscriptionFilter.task_ids` and
+`mcp.tasks.parseNotification`.
+
+Add a store when tasks must survive a process restart:
+
+```zig
+var task_file = zigai.mcp.task_store.FileStore.init(
+    io,
+    std.Io.Dir.cwd(),
+    ".zigai/mcp-tasks.json",
+);
+mcp_client.task_store = task_file.store();
+
+var resumed = try mcp_client.resumeTasks(allocator, .{ .io = io });
+defer resumed.deinit();
+```
+
+Tool-created tasks are tracked automatically. Pending input is saved before it
+is sent, so recovery replays the response instead of asking twice. The file is
+atomically replaced and owner-only on POSIX; use a custom `task_store.Store`
+when responses need encrypted storage. If initial persistence fails, ZigAI
+attempts to cancel the newly created remote task.
 
 Extension settings stay as owned JSON:
 

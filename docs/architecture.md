@@ -385,6 +385,23 @@ cancellation, deadlines, and exhausted poll budgets trigger a best-effort
 `tasks/cancel`; terminal task states remain arena-owned and are returned to the
 caller.
 
+Durability is a separate adapter in `mcp/task_store.zig`; transports and task
+contracts do not know about files. `Client.task_store` accepts the small
+load/save/remove interface. The built-in `FileStore` writes a bounded,
+versioned snapshot with atomic replacement and owner-only POSIX permissions.
+Tool-created tasks and explicitly waited IDs are tracked automatically, while
+terminal or acknowledged-cancelled tasks are removed. If the first durable
+write fails after task creation, the client best-effort cancels the remote task
+before returning the storage error.
+
+Input recovery uses a two-phase local record. The validated response object is
+persisted before `tasks/update`; only a successful server acknowledgement moves
+its keys into the answered set. A restarted client therefore resends pending
+wire data without invoking the application's input handler twice. Replays are
+safe under SEP-2663's rule that servers ignore already-satisfied responses.
+`Client.resumeTasks` processes the stored snapshot in order and returns owned
+terminal results; on failure, unfinished records remain available for retry.
+
 Multi round-trip requests replace server-initiated JSON-RPC calls. When a
 result requires sampling, roots, or elicitation, the configured `InputHandler`
 answers each item and the client retries with `inputResponses` and opaque

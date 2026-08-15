@@ -125,6 +125,18 @@ pub const Owned = struct {
     }
 };
 
+/// Caller-owned terminal tasks returned by a durable resume pass.
+pub const OwnedList = struct {
+    allocator: std.mem.Allocator,
+    items: []Owned,
+
+    pub fn deinit(self: *OwnedList) void {
+        for (self.items) |*item| item.deinit();
+        self.allocator.free(self.items);
+        self.* = undefined;
+    }
+};
+
 /// Parameters shared by `tasks/get` and `tasks/cancel`.
 pub const Request = struct {
     task_id: []const u8,

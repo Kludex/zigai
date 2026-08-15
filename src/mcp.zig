@@ -18,10 +18,13 @@ pub const auth = @import("mcp/auth.zig");
 pub const primitives = @import("mcp/primitives.zig");
 /// Typed contracts for the `io.modelcontextprotocol/tasks` extension.
 pub const tasks = @import("mcp/tasks.zig");
+/// Durable client state for resumable MCP tasks.
+pub const task_store = @import("mcp/task_store.zig");
 const security = @import("security.zig");
 
 test {
     _ = tasks;
+    _ = task_store;
 }
 
 /// Latest stable MCP protocol revision supported by ZigAI.
@@ -218,6 +221,12 @@ pub const Error = error{
     MissingMcpClientCapability,
     /// Polling a non-terminal task needs an I/O runtime for the next delay.
     TaskPollingRequiresIo,
+    /// A durable task snapshot is malformed or has an unsupported version.
+    InvalidTaskStore,
+    /// A durable task snapshot exceeds its configured byte bound.
+    TaskStoreTooLarge,
+    /// Durable task resumption was requested without a configured store.
+    MissingMcpTaskStore,
     /// Streamable HTTP did not provide the required SSE response stream.
     MissingMcpSseResponse,
     /// Elicitation exceeded the configured request/response round-trip limit.
@@ -599,6 +608,8 @@ pub const Client = struct {
     version: []const u8 = "0.1.0",
     capabilities_json: []const u8 = "{}",
     input_handler: ?InputHandler = null,
+    /// Optional durable state for tool-created and explicitly waited tasks.
+    task_store: ?task_store.Store = null,
     max_round_trips: usize = 16,
     max_pages: usize = 256,
     next_id: std.atomic.Value(u64) = .init(1),
@@ -777,7 +788,12 @@ pub const Client = struct {
             .{ .routing_name = task_id },
         );
         defer allocator.free(result);
-        return tasks.parseResult(allocator, result);
+        var owned = try tasks.parseResult(allocator, result);
+        errdefer owned.deinit();
+        if (owned.value.detailed.status().terminal()) {
+            if (self.task_store) |store| try store.remove(allocator, task_id);
+        }
+        return owned;
     }
 
     /// Supplies one or more responses to an input-required task.
@@ -804,6 +820,7 @@ pub const Client = struct {
             .{ .routing_name = task_id },
         );
         allocator.free(result);
+        if (self.task_store) |store| try store.remove(allocator, task_id);
     }
 
     /// Polls a task to a terminal state, answering validated outstanding input
@@ -817,8 +834,8 @@ pub const Client = struct {
     ) !tasks.Owned {
         if (task_id.len == 0) return error.InvalidTaskRequest;
         if (options.poll.max_polls == 0) return error.TooManyMcpTaskPolls;
-        var answered: std.StringHashMapUnmanaged(void) = .{};
-        defer deinitAnsweredTaskInputs(allocator, &answered);
+        var resume_state = try TaskResumeState.init(self, allocator, task_id);
+        defer resume_state.deinit(allocator);
 
         var poll_index: usize = 0;
         while (poll_index < options.poll.max_polls) : (poll_index += 1) {
@@ -837,24 +854,26 @@ pub const Client = struct {
                 return owned;
             }
 
+            if (resume_state.pending_input_responses_json != null) {
+                try resume_state.replayPending(self, allocator, task_id);
+            }
+
             switch (detailed.state) {
                 .input_required => |requests| {
                     if (try answerTaskInputRequests(
                         allocator,
                         requests,
-                        &answered,
+                        &resume_state.answered,
                         self.input_handler,
                     )) |batch| {
                         var responses = batch;
                         defer responses.deinit(allocator);
+                        try resume_state.recordPending(self, allocator, responses.json);
                         try self.updateTask(allocator, .{
                             .task_id = task_id,
                             .input_responses_json = responses.json,
                         });
-                        for (responses.keys, 0..) |key, index| {
-                            try answered.put(allocator, key, {});
-                            responses.keys[index] = &.{};
-                        }
+                        try resume_state.confirmPending(self, allocator);
                     }
                 },
                 else => {},
@@ -874,6 +893,31 @@ pub const Client = struct {
             options.cancel_on_stop,
             error.TooManyMcpTaskPolls,
         );
+    }
+
+    /// Resumes every task in the configured durable snapshot, returning all
+    /// terminal results in snapshot order. Tasks that remain after an error
+    /// stay in the store for a later retry.
+    pub fn resumeTasks(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        options: TaskWaitOptions,
+    ) !tasks.OwnedList {
+        const store = self.task_store orelse return error.MissingMcpTaskStore;
+        var snapshot = try store.load(allocator);
+        defer snapshot.deinit();
+        var resumed: std.ArrayList(tasks.Owned) = .empty;
+        errdefer {
+            for (resumed.items) |*item| item.deinit();
+            resumed.deinit(allocator);
+        }
+        for (snapshot.records) |record| {
+            try resumed.append(allocator, try self.waitTask(allocator, record.task_id, options));
+        }
+        return .{
+            .allocator = allocator,
+            .items = try resumed.toOwnedSlice(allocator),
+        };
     }
 
     fn requestOnce(
@@ -943,7 +987,29 @@ pub const Client = struct {
             error.InvalidMcpMessage,
         );
         try validateInputRequiredCapabilities(result, client_capabilities);
-        return std.json.Stringify.valueAlloc(allocator, result, .{});
+        const result_json = try std.json.Stringify.valueAlloc(allocator, result, .{});
+        errdefer allocator.free(result_json);
+        if (std.mem.eql(u8, method, methods.call_tool)) {
+            if (self.task_store) |store| {
+                if (optionalString(try requiredObject(result), "resultType")) |result_type| {
+                    if (std.mem.eql(u8, result_type, "task")) {
+                        var created = try tasks.parseCreated(allocator, result_json);
+                        defer created.deinit();
+                        store.save(allocator, .{
+                            .task_id = created.value.created.metadata.task_id,
+                        }) catch |failure| {
+                            cancelTaskBestEffort(
+                                self,
+                                allocator,
+                                created.value.created.metadata.task_id,
+                            );
+                            return failure;
+                        };
+                    }
+                }
+            }
+        }
+        return result_json;
     }
 
     fn callToolWithSchema(
@@ -1055,6 +1121,10 @@ pub const Client = struct {
         return self.request(allocator, method, params);
     }
 };
+
+fn cancelTaskBestEffort(client: *Client, allocator: std.mem.Allocator, task_id: []const u8) void {
+    client.cancelTask(allocator, task_id) catch {};
+}
 
 const ToolContext = struct {
     client: *Client,
@@ -1701,13 +1771,121 @@ fn answerInputRequests(
 
 const TaskInputBatch = struct {
     json: []u8,
-    keys: [][]u8,
 
     fn deinit(self: *TaskInputBatch, allocator: std.mem.Allocator) void {
         allocator.free(self.json);
-        for (self.keys) |key| if (key.len > 0) allocator.free(key);
-        allocator.free(self.keys);
         self.* = undefined;
+    }
+};
+
+const TaskResumeState = struct {
+    task_id: []const u8,
+    answered: std.StringHashMapUnmanaged(void) = .{},
+    pending_input_responses_json: ?[]u8 = null,
+
+    fn init(client: *Client, allocator: std.mem.Allocator, task_id: []const u8) !TaskResumeState {
+        var self = TaskResumeState{ .task_id = task_id };
+        errdefer self.deinit(allocator);
+        const store = client.task_store orelse return self;
+        var snapshot = try store.load(allocator);
+        defer snapshot.deinit();
+        for (snapshot.records) |record| {
+            if (!std.mem.eql(u8, record.task_id, task_id)) continue;
+            for (record.answered_input_keys) |key| {
+                const owned_key = try allocator.dupe(u8, key);
+                self.answered.put(allocator, owned_key, {}) catch |failure| {
+                    allocator.free(owned_key);
+                    return failure;
+                };
+            }
+            if (record.pending_input_responses_json) |pending| {
+                self.pending_input_responses_json = try allocator.dupe(u8, pending);
+            }
+            return self;
+        }
+        try store.save(allocator, .{ .task_id = task_id });
+        return self;
+    }
+
+    fn deinit(self: *TaskResumeState, allocator: std.mem.Allocator) void {
+        deinitAnsweredTaskInputs(allocator, &self.answered);
+        if (self.pending_input_responses_json) |pending| allocator.free(pending);
+        self.* = undefined;
+    }
+
+    fn recordPending(
+        self: *TaskResumeState,
+        client: *Client,
+        allocator: std.mem.Allocator,
+        responses_json: []const u8,
+    ) !void {
+        std.debug.assert(self.pending_input_responses_json == null);
+        const pending = try allocator.dupe(u8, responses_json);
+        errdefer allocator.free(pending);
+        try self.persist(client, allocator, pending);
+        self.pending_input_responses_json = pending;
+    }
+
+    fn replayPending(
+        self: *TaskResumeState,
+        client: *Client,
+        allocator: std.mem.Allocator,
+        task_id: []const u8,
+    ) !void {
+        const pending = self.pending_input_responses_json orelse return;
+        try client.updateTask(allocator, .{
+            .task_id = task_id,
+            .input_responses_json = pending,
+        });
+        try self.confirmPending(client, allocator);
+    }
+
+    fn confirmPending(
+        self: *TaskResumeState,
+        client: *Client,
+        allocator: std.mem.Allocator,
+    ) !void {
+        const pending = self.pending_input_responses_json orelse return;
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const value = try json_limits.parseLeaky(
+            std.json.Value,
+            arena.allocator(),
+            pending,
+            json_limits.defaults.mcp_message,
+            .{},
+            error.InvalidTaskStore,
+        );
+        var iterator = (try requiredObject(value)).iterator();
+        while (iterator.next()) |entry| {
+            if (self.answered.contains(entry.key_ptr.*)) continue;
+            const key = try allocator.dupe(u8, entry.key_ptr.*);
+            self.answered.put(allocator, key, {}) catch |failure| {
+                allocator.free(key);
+                return failure;
+            };
+        }
+        try self.persist(client, allocator, null);
+        allocator.free(pending);
+        self.pending_input_responses_json = null;
+    }
+
+    fn persist(
+        self: *TaskResumeState,
+        client: *Client,
+        allocator: std.mem.Allocator,
+        pending: ?[]const u8,
+    ) !void {
+        const store = client.task_store orelse return;
+        var keys: std.ArrayList([]const u8) = .empty;
+        defer keys.deinit(allocator);
+        var iterator = self.answered.keyIterator();
+        while (iterator.next()) |key| try keys.append(allocator, key.*);
+        try store.save(allocator, .{
+            .task_id = self.task_id,
+            .answered_input_keys = keys.items,
+            .pending_input_responses_json = pending,
+        });
     }
 };
 
@@ -1721,10 +1899,6 @@ fn answerTaskInputRequests(
     defer arena.deinit();
     const memory = arena.allocator();
     var responses: std.json.ObjectMap = .{};
-    var keys: std.ArrayList([]u8) = .empty;
-    defer keys.deinit(allocator);
-    errdefer for (keys.items) |key| allocator.free(key);
-
     var iterator = requests.iterator();
     while (iterator.next()) |entry| {
         if (answered.contains(entry.key_ptr.*)) continue;
@@ -1749,11 +1923,6 @@ fn answerTaskInputRequests(
         allocator.free(response_json);
         try validateInputResponse(input_method, response);
         try responses.put(memory, entry.key_ptr.*, response);
-        const key = try allocator.dupe(u8, entry.key_ptr.*);
-        keys.append(allocator, key) catch |failure| {
-            allocator.free(key);
-            return failure;
-        };
     }
     if (responses.count() == 0) return null;
     const json = try std.json.Stringify.valueAlloc(
@@ -1762,10 +1931,7 @@ fn answerTaskInputRequests(
         .{},
     );
     errdefer allocator.free(json);
-    return .{
-        .json = json,
-        .keys = try keys.toOwnedSlice(allocator),
-    };
+    return .{ .json = json };
 }
 
 fn deinitAnsweredTaskInputs(
@@ -5144,6 +5310,296 @@ test "task waiting releases every partial input and polling allocation" {
                 .transport = .{ .context = &state, .sendFn = send },
                 .capabilities_json = "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
                 .input_handler = .{ .context = &state, .handleFn = input },
+            };
+            var task = try client.waitTask(allocator, "task-1", .{
+                .poll = .{ .default_interval_ms = 0, .minimum_interval_ms = 0, .max_polls = 2 },
+            });
+            defer task.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
+test "tool tasks are tracked and explicit cancellation removes durable state" {
+    const Stub = struct {
+        calls: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            const result = if (std.mem.eql(u8, request.method, methods.call_tool))
+                "{\"resultType\":\"task\",\"taskId\":\"task-1\",\"status\":\"working\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":1000}"
+            else
+                "{\"resultType\":\"complete\"}";
+            return std.fmt.allocPrint(
+                allocator,
+                "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{s}}}",
+                .{ self.calls, result },
+            );
+        }
+    };
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var durable = task_store.FileStore.init(std.testing.io, temporary.dir, "tasks.json");
+    var stub: Stub = .{};
+    var client = Client{
+        .transport = .{ .context = &stub, .sendFn = Stub.send },
+        .capabilities_json = "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
+        .task_store = durable.store(),
+    };
+    const created = try client.callTool(std.testing.allocator, "slow", "{}");
+    defer std.testing.allocator.free(created);
+    var tracked = try durable.store().load(std.testing.allocator);
+    defer tracked.deinit();
+    try std.testing.expectEqual(@as(usize, 1), tracked.records.len);
+    try std.testing.expectEqualStrings("task-1", tracked.records[0].task_id);
+
+    try client.cancelTask(std.testing.allocator, "task-1");
+    var empty = try durable.store().load(std.testing.allocator);
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(usize, 0), empty.records.len);
+}
+
+test "durable task resume replays pending input without invoking its handler" {
+    const State = struct {
+        phase: enum { interrupt_update, resuming } = .interrupt_update,
+        calls: usize = 0,
+        updates: usize = 0,
+        inputs: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            if (std.mem.eql(u8, request.method, tasks.methods.update)) {
+                self.updates += 1;
+                try std.testing.expect(std.mem.indexOf(u8, request.message, "\"approval\":{\"action\":\"accept\"") != null);
+                if (self.phase == .interrupt_update) return error.UpdateInterrupted;
+                return rpcResultForRequest(allocator, request.message, "{\"resultType\":\"complete\"}");
+            }
+            try std.testing.expectEqualStrings(tasks.methods.get, request.method);
+            const result = if (self.phase == .resuming and self.updates == 2)
+                "{\"resultType\":\"complete\",\"taskId\":\"task-1\",\"status\":\"completed\",\"createdAt\":\"then\",\"lastUpdatedAt\":\"done\",\"ttlMs\":1000,\"result\":{\"content\":[]}}"
+            else
+                "{\"resultType\":\"complete\",\"taskId\":\"task-1\",\"status\":\"input_required\",\"createdAt\":\"then\",\"lastUpdatedAt\":\"now\",\"ttlMs\":1000,\"pollIntervalMs\":0,\"inputRequests\":{\"approval\":{\"method\":\"elicitation/create\",\"params\":{\"message\":\"Continue?\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{}}}}}}";
+            return rpcResultForRequest(allocator, request.message, result);
+        }
+
+        fn input(context: *anyopaque, allocator: std.mem.Allocator, _: InputRequest) ![]u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.inputs += 1;
+            return allocator.dupe(u8, "{\"action\":\"accept\"}");
+        }
+
+        fn rpcResultForRequest(allocator: std.mem.Allocator, request_json: []const u8, result: []const u8) ![]u8 {
+            const parsed = try std.json.parseFromSlice(std.json.Value, allocator, request_json, .{});
+            defer parsed.deinit();
+            const parsed_result = try std.json.parseFromSlice(std.json.Value, allocator, result, .{});
+            defer parsed_result.deinit();
+            return std.json.Stringify.valueAlloc(allocator, .{
+                .jsonrpc = "2.0",
+                .id = (try requiredObject(parsed.value)).get("id").?,
+                .result = parsed_result.value,
+            }, .{});
+        }
+    };
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var durable = task_store.FileStore.init(std.testing.io, temporary.dir, "tasks.json");
+    var state: State = .{};
+    var interrupted_client = Client{
+        .transport = .{ .context = &state, .sendFn = State.send },
+        .capabilities_json = "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
+        .input_handler = .{ .context = &state, .handleFn = State.input },
+        .task_store = durable.store(),
+    };
+    try std.testing.expectError(
+        error.UpdateInterrupted,
+        interrupted_client.waitTask(std.testing.allocator, "task-1", .{
+            .poll = .{ .default_interval_ms = 0, .minimum_interval_ms = 0, .max_polls = 2 },
+        }),
+    );
+    try std.testing.expectEqual(@as(usize, 1), state.inputs);
+    var pending = try durable.store().load(std.testing.allocator);
+    defer pending.deinit();
+    try std.testing.expect(pending.records[0].pending_input_responses_json != null);
+
+    state.phase = .resuming;
+    var resumed_client = Client{
+        .transport = .{ .context = &state, .sendFn = State.send },
+        .capabilities_json = "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
+        .task_store = durable.store(),
+    };
+    var resumed = try resumed_client.resumeTasks(std.testing.allocator, .{
+        .poll = .{ .default_interval_ms = 0, .minimum_interval_ms = 0, .max_polls = 2 },
+    });
+    defer resumed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), resumed.items.len);
+    try std.testing.expectEqual(tasks.Status.completed, resumed.items[0].value.detailed.status());
+    try std.testing.expectEqual(@as(usize, 1), state.inputs);
+    try std.testing.expectEqual(@as(usize, 2), state.updates);
+    var empty = try durable.store().load(std.testing.allocator);
+    defer empty.deinit();
+    try std.testing.expectEqual(@as(usize, 0), empty.records.len);
+}
+
+test "durable task resume requires a store" {
+    var client = Client{ .transport = undefined };
+    try std.testing.expectError(
+        error.MissingMcpTaskStore,
+        client.resumeTasks(std.testing.allocator, .{}),
+    );
+}
+
+test "durable task failures preserve response and task ownership" {
+    const FailureStore = struct {
+        fail_save: bool = false,
+        fail_remove: bool = false,
+
+        fn store(self: *@This()) task_store.Store {
+            return .{
+                .context = self,
+                .loadFn = load,
+                .saveFn = save,
+                .removeFn = remove,
+            };
+        }
+
+        fn load(_: *anyopaque, allocator: std.mem.Allocator) !task_store.OwnedRecords {
+            return .{ .arena = .init(allocator), .records = &.{} };
+        }
+
+        fn save(context: *anyopaque, _: std.mem.Allocator, _: task_store.Record) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.fail_save) return error.StoreUnavailable;
+        }
+
+        fn remove(context: *anyopaque, _: std.mem.Allocator, _: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.fail_remove) return error.StoreUnavailable;
+        }
+    };
+    const Stub = struct {
+        calls: usize = 0,
+        cancels: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            const result = if (std.mem.eql(u8, request.method, methods.call_tool))
+                "{\"resultType\":\"task\",\"taskId\":\"task-1\",\"status\":\"working\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":1000}"
+            else if (std.mem.eql(u8, request.method, tasks.methods.get))
+                "{\"resultType\":\"complete\",\"taskId\":\"task-1\",\"status\":\"completed\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":1000,\"result\":{\"content\":[]}}"
+            else cancel: {
+                self.cancels += 1;
+                break :cancel "{\"resultType\":\"complete\"}";
+            };
+            return std.fmt.allocPrint(
+                allocator,
+                "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{s}}}",
+                .{ self.calls, result },
+            );
+        }
+    };
+    var failures = FailureStore{ .fail_save = true };
+    var empty_snapshot = try failures.store().load(std.testing.allocator);
+    defer empty_snapshot.deinit();
+    var stub: Stub = .{};
+    var client = Client{
+        .transport = .{ .context = &stub, .sendFn = Stub.send },
+        .capabilities_json = "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
+        .task_store = failures.store(),
+    };
+    try std.testing.expectError(
+        error.StoreUnavailable,
+        client.callTool(std.testing.allocator, "slow", "{}"),
+    );
+    try std.testing.expectEqual(@as(usize, 1), stub.cancels);
+
+    failures.fail_save = false;
+    failures.fail_remove = true;
+    stub.calls = 0;
+    client.next_id = .init(1);
+    try std.testing.expectError(
+        error.StoreUnavailable,
+        client.getTask(std.testing.allocator, "task-1"),
+    );
+}
+
+test "durable resume releases earlier terminal tasks when a later task fails" {
+    const Stub = struct {
+        calls: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            if (std.mem.eql(u8, request.routing_name orelse "", "task-2"))
+                return error.ResumeInterrupted;
+            return std.fmt.allocPrint(
+                allocator,
+                "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"resultType\":\"complete\",\"taskId\":\"task-1\",\"status\":\"completed\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":1000,\"result\":{{\"content\":[]}}}}}}",
+                .{self.calls},
+            );
+        }
+    };
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var durable = task_store.FileStore.init(std.testing.io, temporary.dir, "tasks.json");
+    try durable.store().save(std.testing.allocator, .{ .task_id = "task-1" });
+    try durable.store().save(std.testing.allocator, .{ .task_id = "task-2" });
+    var stub: Stub = .{};
+    var client = Client{
+        .transport = .{ .context = &stub, .sendFn = Stub.send },
+        .capabilities_json = "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
+        .task_store = durable.store(),
+    };
+    try std.testing.expectError(
+        error.ResumeInterrupted,
+        client.resumeTasks(std.testing.allocator, .{}),
+    );
+    var remaining = try durable.store().load(std.testing.allocator);
+    defer remaining.deinit();
+    try std.testing.expectEqual(@as(usize, 1), remaining.records.len);
+    try std.testing.expectEqualStrings("task-2", remaining.records[0].task_id);
+}
+
+test "durable task waiting releases every partial allocation" {
+    const Check = struct {
+        const State = struct { calls: usize = 0 };
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const state: *State = @ptrCast(@alignCast(context));
+            state.calls += 1;
+            const result = if (std.mem.eql(u8, request.method, tasks.methods.update))
+                "{\"resultType\":\"complete\"}"
+            else if (state.calls == 1)
+                "{\"resultType\":\"complete\",\"taskId\":\"task-1\",\"status\":\"input_required\",\"createdAt\":\"then\",\"lastUpdatedAt\":\"now\",\"ttlMs\":1000,\"pollIntervalMs\":0,\"inputRequests\":{\"next\":{\"method\":\"elicitation/create\",\"params\":{\"message\":\"Continue?\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{}}}}}}"
+            else
+                "{\"resultType\":\"complete\",\"taskId\":\"task-1\",\"status\":\"completed\",\"createdAt\":\"then\",\"lastUpdatedAt\":\"done\",\"ttlMs\":1000,\"result\":{\"content\":[]}}";
+            return std.fmt.allocPrint(
+                allocator,
+                "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{s}}}",
+                .{ state.calls, result },
+            );
+        }
+
+        fn input(_: *anyopaque, allocator: std.mem.Allocator, _: InputRequest) ![]u8 {
+            return allocator.dupe(u8, "{\"action\":\"accept\"}");
+        }
+
+        fn run(allocator: std.mem.Allocator) !void {
+            var temporary = std.testing.tmpDir(.{});
+            defer temporary.cleanup();
+            var durable = task_store.FileStore.init(std.testing.io, temporary.dir, "tasks.json");
+            try durable.store().save(allocator, .{
+                .task_id = "task-1",
+                .answered_input_keys = &.{"prior"},
+            });
+            var state: State = .{};
+            var client = Client{
+                .transport = .{ .context = &state, .sendFn = send },
+                .capabilities_json = "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
+                .input_handler = .{ .context = &state, .handleFn = input },
+                .task_store = durable.store(),
             };
             var task = try client.waitTask(allocator, "task-1", .{
                 .poll = .{ .default_interval_ms = 0, .minimum_interval_ms = 0, .max_polls = 2 },

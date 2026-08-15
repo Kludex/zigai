@@ -5,8 +5,10 @@
 - Add bounded, arena-owned task result parsing, typed client helpers, extension
   negotiation, task-ID routing, validated task status subscriptions, and
   bounded polling with deduplicated input handling and cooperative
-  cancellation for the current `io.modelcontextprotocol/tasks` extension
-  (SEP-2663).
+  cancellation for the current `io.modelcontextprotocol/tasks` extension.
+  Add pluggable durable task state, an atomic owner-only file store,
+  crash-safe pending-input replay, automatic task tracking, and ordered restart
+  resumption (SEP-2663).
 - Start the clean MCP primitives layer with typed, borrowed client and server
   capability documents, validated experimental/extension objects, prefixed
   extension identifiers, typed subscription filters and notifications,

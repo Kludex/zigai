@@ -226,6 +226,7 @@ validation never invokes it.
 | `InvalidMcpMessage` | A JSON-RPC message is malformed. |
 | `InvalidMcpResponse` | A result does not match its method shape. |
 | `InvalidMcpToolArguments` | Tool arguments are not a bounded JSON object. |
+| `InvalidTaskStore` | A durable task snapshot is malformed or has an unsupported version. |
 | `McpHttpRequestFailed` | Streamable HTTP returned a non-success response. |
 | `McpMessageTooLarge` | An MCP message exceeded its byte limit. |
 | `McpPaginationCursorCycle` | A paginated collection repeated a cursor. |
@@ -234,8 +235,10 @@ validation never invokes it.
 | `McpRpcError` | The peer returned a JSON-RPC error envelope. |
 | `MissingMcpClient` | An MCP toolset has no client. |
 | `MissingMcpClientCapability` | A Tasks operation was attempted without the extension capability. |
+| `MissingMcpTaskStore` | Durable task resumption was requested without a store. |
 | `MissingMcpSseResponse` | Streamable HTTP did not produce the required SSE stream. |
 | `TaskPollingRequiresIo` | A nonzero task polling delay has no I/O runtime. |
+| `TaskStoreTooLarge` | A durable task snapshot exceeded its configured byte bound. |
 | `TooManyMcpPages` | Tool discovery exceeded the configured page limit. |
 | `TooManyMcpRoundTrips` | Elicitation exceeded its round-trip limit. |
 | `TooManyMcpTaskPolls` | A task remained non-terminal after its bounded polling budget. |
