@@ -145,6 +145,24 @@ test "real Bedrock Converse cassette replays a complete tool loop" {
     try replayMatrixScenario(client.model(), &cassette);
 }
 
+test "real Azure Responses cassette replays a complete tool loop" {
+    var cassette = try cassettes.ReplayTransport.init(
+        std.testing.allocator,
+        @embedFile("cassettes/native/azure_responses_gpt_4o.yaml"),
+    );
+    defer cassette.deinit();
+    var provider_state = zigai.providers.azure_openai.Provider.initWithOptions(
+        "not-recorded",
+        cassette.transport(),
+        .{ .base_url = "https://example.openai.azure.com/openai/v1" },
+    );
+    var client = zigai.providers.azure_openai.ResponsesClient{
+        .model_name = "gpt-4o",
+        .provider = provider_state.provider(),
+    };
+    try replayMatrixScenario(client.model(), &cassette);
+}
+
 fn replayCompatibleProvider(
     comptime ProviderType: type,
     comptime ClientType: type,

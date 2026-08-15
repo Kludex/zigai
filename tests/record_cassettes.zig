@@ -39,6 +39,11 @@ const native_bedrock = NativeEntry{
     .model = "us.anthropic.claude-sonnet-4-6",
     .cassette = "cassettes/native/bedrock_converse_claude_sonnet_4_6.yaml",
 };
+const native_azure = NativeEntry{
+    .provider = "azure-openai",
+    .model = "gpt-4o",
+    .cassette = "cassettes/native/azure_responses_gpt_4o.yaml",
+};
 const rich_openai = NativeEntry{
     .provider = "openai",
     .model = "gpt-5-nano",
@@ -93,6 +98,15 @@ pub fn main(init: std.process.Init) !void {
             requiredKey(init, zigai.providers.bedrock.api_key_env),
             requiredKey(init, zigai.providers.bedrock.region_env),
             native_bedrock,
+        );
+    }
+    if (selectedNative(args, native_azure)) {
+        try recordNativeAzure(
+            init,
+            http.transport(),
+            requiredKey(init, zigai.providers.azure_openai.api_key_env),
+            requiredKey(init, zigai.providers.azure_openai.endpoint_env),
+            native_azure,
         );
     }
     if (selectedRich(args, rich_openai)) {
@@ -220,7 +234,8 @@ fn selectedNative(args: []const []const u8, entry: NativeEntry) bool {
             (std.mem.eql(u8, entry.provider, "openai") and std.mem.eql(u8, argument, "native-openai")) or
             (std.mem.eql(u8, entry.provider, "anthropic") and std.mem.eql(u8, argument, "native-anthropic")) or
             (std.mem.eql(u8, entry.provider, "google") and std.mem.eql(u8, argument, "native-google")) or
-            (std.mem.eql(u8, entry.provider, "bedrock") and std.mem.eql(u8, argument, "native-bedrock"));
+            (std.mem.eql(u8, entry.provider, "bedrock") and std.mem.eql(u8, argument, "native-bedrock")) or
+            (std.mem.eql(u8, entry.provider, "azure-openai") and std.mem.eql(u8, argument, "native-azure"));
         if (std.mem.eql(u8, argument, "native-tools") or
             provider_filter or
             std.mem.eql(u8, argument, entry.provider) or
@@ -478,6 +493,47 @@ fn recordNativeBedrock(
     try runScenario(init, client.model());
     try normalizeBedrockRuntimeUrl(init.gpa, &recording, provider.http.base_url);
     try writeNative(init, recording, entry);
+}
+
+fn recordNativeAzure(
+    init: std.process.Init,
+    transport: zigai.transport.Transport,
+    api_key: []const u8,
+    endpoint: []const u8,
+    entry: NativeEntry,
+) !void {
+    const base_url = try zigai.providers.azure_openai.apiBase(init.gpa, endpoint);
+    defer init.gpa.free(base_url);
+    var recording = cassettes.RecordingTransport.init(init.gpa, transport);
+    defer recording.deinit();
+    var provider = zigai.providers.azure_openai.Provider.initWithOptions(api_key, recording.transport(), .{
+        .base_url = base_url,
+    });
+    var client = zigai.providers.azure_openai.ResponsesClient{
+        .model_name = entry.model,
+        .provider = provider.provider(),
+    };
+    try runScenario(init, client.model());
+    try normalizeAzureUrl(init.gpa, &recording, base_url);
+    try writeNative(init, recording, entry);
+}
+
+fn normalizeAzureUrl(
+    allocator: std.mem.Allocator,
+    recording: *cassettes.RecordingTransport,
+    actual_base_url: []const u8,
+) !void {
+    for (recording.interactions.items) |*interaction| {
+        if (!std.mem.startsWith(u8, interaction.request.url, actual_base_url)) return error.UnexpectedProviderUrl;
+        const path = interaction.request.url[actual_base_url.len..];
+        const normalized = try std.fmt.allocPrint(
+            allocator,
+            "https://example.openai.azure.com/openai/v1{s}",
+            .{path},
+        );
+        allocator.free(interaction.request.url);
+        interaction.request.url = normalized;
+    }
 }
 
 fn normalizeBedrockRuntimeUrl(

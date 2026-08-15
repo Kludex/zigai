@@ -44,6 +44,8 @@
   retains ownership of its resource API root, `api-key` authentication, and
   deployment profiles; `ChatClient` and the legacy `Client` alias remain for
   Chat Completions deployments.
+- Record and replay a redacted real Azure OpenAI `gpt-4o` Responses function
+  tool loop, normalizing the resource endpoint and omitting authentication.
 - Record and replay a redacted real Claude Sonnet 4.6 Converse tool loop. The
   recorder strips authentication, normalizes the AWS region, and verifies both
   the tool request and final response through a real `Agent`.
