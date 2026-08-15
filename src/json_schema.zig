@@ -397,14 +397,15 @@ fn matchesEnum(allowed: std.json.Value, value: std.json.Value) bool {
 }
 
 fn equal(a: std.json.Value, b: std.json.Value) bool {
-    if (numericValue(a)) |left| if (numericValue(b)) |right| return left == right;
-    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
-    return switch (a) {
+    if (std.meta.activeTag(a) == std.meta.activeTag(b)) return switch (a) {
         .null => true,
         .bool => |item| item == b.bool,
         .integer => |item| item == b.integer,
         .float => |item| item == b.float,
-        .number_string => |item| std.mem.eql(u8, item, b.number_string),
+        .number_string => |item| if (numericValue(a)) |left|
+            left == numericValue(b).?
+        else
+            std.mem.eql(u8, item, b.number_string),
         .string => |item| std.mem.eql(u8, item, b.string),
         .array => |items| blk: {
             if (items.items.len != b.array.items.len) break :blk false;
@@ -418,6 +419,8 @@ fn equal(a: std.json.Value, b: std.json.Value) bool {
             break :blk true;
         },
     };
+    if (numericValue(a)) |left| if (numericValue(b)) |right| return left == right;
+    return false;
 }
 
 fn matchesObject(context: MatchContext, schema: std.json.ObjectMap, actual: std.json.ObjectMap) bool {
@@ -705,6 +708,7 @@ test "schema preflight distinguishes malformed and unsupported vocabulary" {
         "{\"$defs\":[]}",
         "{\"$ref\":false}",
         "{\"$ref\":\"#/$defs/missing\"}",
+        "{\"$defs\":{\"present\":{}},\"$ref\":\"#/$defs/missing\"}",
         "{\"type\":\"unknown\"}",
         "{\"type\":[]}",
         "{\"type\":[\"string\",\"string\"]}",
@@ -737,4 +741,6 @@ test "schema preflight distinguishes malformed and unsupported vocabulary" {
     for (unsupported) |schema| {
         try std.testing.expectError(Error.UnsupportedJsonSchema, validateSchema(std.testing.allocator, schema));
     }
+
+    try std.testing.expect(equal(.{ .number_string = "not-a-number" }, .{ .number_string = "not-a-number" }));
 }
