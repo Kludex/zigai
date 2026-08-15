@@ -158,3 +158,19 @@ processors, selectors, evaluators, transports, telemetry exporters, and MCP
 handlers may return application-defined errors. ZigAI propagates them unchanged.
 They are intentionally not converted to `ProviderConnectionError` or another
 framework category.
+
+The public callback contracts are split deliberately:
+
+| Callback | Contract | Reason |
+| --- | --- | --- |
+| Provider error observer | Infallible | Observation cannot change request control flow. |
+| Token estimator | Infallible | It performs borrowed, allocation-free counting. |
+| Tool recovery classifier | Infallible | It classifies an error already produced. |
+| Tool, model, and transport operations | Fallible | They perform application or external I/O work. |
+| Stream, lifecycle, retry, and telemetry sinks | Fallible | Applications may stop a run when delivery fails. |
+| Instructions, history, toolsets, selectors, and evaluators | Fallible | They may allocate or call application services. |
+| MCP handlers and event sinks | Fallible | They cross application and protocol boundaries. |
+
+This keeps `anyerror` only at extension points where preserving the
+application's concrete error is part of the API. Framework-owned decisions use
+the named sets above.

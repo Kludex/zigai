@@ -28,7 +28,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add context-budget controls. Estimate provider tokens before requests,
   cap prompt/tool/schema/media bytes, reserve output tokens, and expose a hook
   that compacts or rejects history before the provider rejects it.
-- [ ] Stabilize the public error taxonomy. Replace public `anyerror` callbacks
+- [x] Stabilize the public error taxonomy. Replace public `anyerror` callbacks
   where practical, document every discriminable error, preserve provider error
   bodies only behind an opt-in bounded policy, and test error mapping end to end.
 - [ ] Add security policy controls. Redact credentials and sensitive headers
