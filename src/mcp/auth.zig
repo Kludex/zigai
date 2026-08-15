@@ -10,11 +10,30 @@ const security = @import("../security.zig");
 /// Stable authorization failures raised before an MCP request is dispatched.
 pub const Error = error{
     InvalidAuthorizationIssuer,
+    InvalidBearerChallenge,
     MissingAuthorizationIssuer,
     InvalidBearerToken,
     InvalidOrigin,
     InvalidProtectedResourceMetadata,
     InvalidResourceUri,
+};
+
+pub const ChallengeError = enum {
+    invalid_token,
+    insufficient_scope,
+    other,
+};
+
+/// Owned fields parsed from one RFC 6750 Bearer challenge.
+pub const BearerChallenge = struct {
+    error_code: ?ChallengeError = null,
+    resource_metadata: ?[]u8 = null,
+    scopes: [][]u8 = &.{},
+
+    pub fn deinit(self: BearerChallenge, allocator: std.mem.Allocator) void {
+        if (self.resource_metadata) |value| allocator.free(value);
+        deinitScopes(allocator, self.scopes);
+    }
 };
 
 /// Why a client is requesting a bearer token from its credential owner.
@@ -224,10 +243,127 @@ pub fn deinitScopes(allocator: std.mem.Allocator, scopes: [][]u8) void {
     allocator.free(scopes);
 }
 
+/// Parses the challenge fields needed for token refresh and scope step-up.
+/// Unknown auth parameters are ignored and sensitive values are never retained.
+pub fn parseBearerChallengeAlloc(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+) !BearerChallenge {
+    var index: usize = 0;
+    skipWhitespace(source, &index);
+    const scheme_start = index;
+    while (index < source.len and source[index] != ' ' and source[index] != '\t') : (index += 1) {}
+    if (!std.ascii.eqlIgnoreCase(source[scheme_start..index], "Bearer")) {
+        return error.InvalidBearerChallenge;
+    }
+
+    var result: BearerChallenge = .{};
+    errdefer result.deinit(allocator);
+    var scopes: std.ArrayList([]u8) = .empty;
+    errdefer {
+        for (scopes.items) |scope| allocator.free(scope);
+        scopes.deinit(allocator);
+    }
+    var seen_error = false;
+    var seen_resource_metadata = false;
+    var seen_scope = false;
+    while (true) {
+        skipWhitespace(source, &index);
+        if (index == source.len) break;
+        if (source[index] == ',') {
+            index += 1;
+            skipWhitespace(source, &index);
+        }
+        if (index == source.len) return error.InvalidBearerChallenge;
+
+        const name_start = index;
+        while (index < source.len and isTokenByte(source[index])) : (index += 1) {}
+        if (name_start == index) return error.InvalidBearerChallenge;
+        const name = source[name_start..index];
+        skipWhitespace(source, &index);
+        if (index == source.len or source[index] != '=') return error.InvalidBearerChallenge;
+        index += 1;
+        skipWhitespace(source, &index);
+        const value = try parseChallengeValueAlloc(allocator, source, &index);
+        defer allocator.free(value);
+
+        if (std.ascii.eqlIgnoreCase(name, "error")) {
+            if (seen_error) return error.InvalidBearerChallenge;
+            seen_error = true;
+            result.error_code = if (std.mem.eql(u8, value, "invalid_token"))
+                .invalid_token
+            else if (std.mem.eql(u8, value, "insufficient_scope"))
+                .insufficient_scope
+            else
+                .other;
+        } else if (std.ascii.eqlIgnoreCase(name, "resource_metadata")) {
+            if (seen_resource_metadata) return error.InvalidBearerChallenge;
+            seen_resource_metadata = true;
+            result.resource_metadata = try allocator.dupe(u8, value);
+        } else if (std.ascii.eqlIgnoreCase(name, "scope")) {
+            if (seen_scope) return error.InvalidBearerChallenge;
+            seen_scope = true;
+            var iterator = std.mem.tokenizeScalar(u8, value, ' ');
+            while (iterator.next()) |scope| {
+                validateScope(scope) catch return error.InvalidBearerChallenge;
+                try appendScope(allocator, &scopes, scope);
+            }
+        }
+        skipWhitespace(source, &index);
+        if (index < source.len and source[index] != ',') return error.InvalidBearerChallenge;
+    }
+    result.scopes = try scopes.toOwnedSlice(allocator);
+    return result;
+}
+
 fn appendScope(allocator: std.mem.Allocator, scopes: *std.ArrayList([]u8), scope: []const u8) !void {
     try validateScope(scope);
     for (scopes.items) |existing| if (std.mem.eql(u8, existing, scope)) return;
     try scopes.append(allocator, try allocator.dupe(u8, scope));
+}
+
+fn parseChallengeValueAlloc(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    index: *usize,
+) ![]u8 {
+    if (index.* == source.len) return error.InvalidBearerChallenge;
+    if (source[index.*] != '"') {
+        const start = index.*;
+        while (index.* < source.len and source[index.*] != ',' and
+            source[index.*] != ' ' and source[index.*] != '\t') : (index.* += 1)
+        {}
+        if (start == index.*) return error.InvalidBearerChallenge;
+        return allocator.dupe(u8, source[start..index.*]);
+    }
+
+    index.* += 1;
+    var value: std.ArrayList(u8) = .empty;
+    errdefer value.deinit(allocator);
+    while (index.* < source.len) {
+        const byte = source[index.*];
+        index.* += 1;
+        if (byte == '"') return value.toOwnedSlice(allocator);
+        if (byte == '\\') {
+            if (index.* == source.len) return error.InvalidBearerChallenge;
+            const escaped = source[index.*];
+            index.* += 1;
+            if (escaped != '"' and escaped != '\\') return error.InvalidBearerChallenge;
+            try value.append(allocator, escaped);
+        } else {
+            if (byte < 0x20 or byte == 0x7f) return error.InvalidBearerChallenge;
+            try value.append(allocator, byte);
+        }
+    }
+    return error.InvalidBearerChallenge;
+}
+
+fn skipWhitespace(source: []const u8, index: *usize) void {
+    while (index.* < source.len and (source[index.*] == ' ' or source[index.*] == '\t')) : (index.* += 1) {}
+}
+
+fn isTokenByte(byte: u8) bool {
+    return std.ascii.isAlphanumeric(byte) or std.mem.findScalar(u8, "!#$%&'*+-.^_`|~", byte) != null;
 }
 
 fn validateCanonicalResource(value: []const u8, policy: security.UrlPolicy) !void {
@@ -374,4 +510,35 @@ test "authorization response issuer and scope union follow exact rules" {
     defer deinitScopes(std.testing.allocator, scopes);
     try std.testing.expectEqual(@as(usize, 3), scopes.len);
     try std.testing.expectEqualStrings("tools:call", scopes[2]);
+}
+
+test "Bearer challenges parse bounded refresh and scope fields" {
+    const challenge = try parseBearerChallengeAlloc(
+        std.testing.allocator,
+        "Bearer error=\"insufficient_scope\", scope=\"tools:read tools:call tools:read\", " ++
+            "resource_metadata=\"https://mcp.example.com/.well-known/oauth-protected-resource/mcp\", ignored=\"x\"",
+    );
+    defer challenge.deinit(std.testing.allocator);
+    try std.testing.expectEqual(ChallengeError.insufficient_scope, challenge.error_code.?);
+    try std.testing.expectEqual(@as(usize, 2), challenge.scopes.len);
+    try std.testing.expectEqualStrings("tools:call", challenge.scopes[1]);
+    try std.testing.expectEqualStrings(
+        "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
+        challenge.resource_metadata.?,
+    );
+
+    const escaped = try parseBearerChallengeAlloc(
+        std.testing.allocator,
+        "bearer error=invalid_token, error_description=\"expired \\\"token\\\"\"",
+    );
+    defer escaped.deinit(std.testing.allocator);
+    try std.testing.expectEqual(ChallengeError.invalid_token, escaped.error_code.?);
+    try std.testing.expectError(
+        error.InvalidBearerChallenge,
+        parseBearerChallengeAlloc(std.testing.allocator, "Basic realm=\"mcp\""),
+    );
+    try std.testing.expectError(
+        error.InvalidBearerChallenge,
+        parseBearerChallengeAlloc(std.testing.allocator, "Bearer error=\"invalid_token\", error=other"),
+    );
 }
