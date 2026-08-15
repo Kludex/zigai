@@ -28,6 +28,7 @@ pub const openrouter = @import("providers/openrouter.zig");
 pub const ovhcloud = @import("providers/ovhcloud.zig");
 pub const pydantic_gateway = @import("providers/pydantic_gateway.zig");
 pub const together = @import("providers/together.zig");
+pub const vertex_ai = @import("providers/vertex_ai.zig");
 pub const xai = @import("providers/xai.zig");
 
 const TestTransport = struct {
@@ -60,6 +61,7 @@ test {
     _ = ovhcloud;
     _ = pydantic_gateway;
     _ = together;
+    _ = vertex_ai;
     _ = xai;
 }
 
