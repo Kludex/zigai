@@ -354,6 +354,11 @@ values, credentials, and ownership conflicts are rejected before transport
 I/O. Provider error bodies return through the same object so credential
 redaction never requires exposing a secret to a model adapter.
 
+Non-inference callbacks attach to the same concrete provider. OpenAI and its
+compatible providers use this path for authenticated `/models` discovery;
+the shared parser bounds JSON before allocation and returns an arena owning
+both stable identifiers and uninterpreted provider metadata.
+
 Discovered model lists and file records are arena-owned values with explicit
 `deinit`; requests, provider configuration, and the `Provider` itself are
 borrowed. Concrete provider state must outlive every model and in-flight

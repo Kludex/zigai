@@ -4,6 +4,7 @@ const std = @import("std");
 const model_types = @import("../model.zig");
 const provider_types = @import("../provider.zig");
 const http_provider = @import("http.zig");
+const operations = @import("operations.zig");
 const http = @import("../transport.zig");
 const common = @import("common.zig");
 const json_limits = @import("../json.zig");
@@ -50,6 +51,10 @@ pub const Provider = struct {
     }
 
     pub fn provider(self: *Provider) provider_types.Provider {
+        self.http.operations = .{
+            .context = &self.http,
+            .listModelsFn = operations.listOpenAIModels,
+        };
         return self.http.provider();
     }
 };

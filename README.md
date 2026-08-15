@@ -227,6 +227,21 @@ var client = zigai.providers.azure_openai.Client{
 };
 ```
 
+OpenAI and OpenAI-compatible providers can discover the models visible to the
+configured credential:
+
+```zig
+var models = try openai_provider.provider().listModels(allocator);
+defer models.deinit();
+
+for (models.items) |model| {
+    std.debug.print("{s}\n", .{model.id});
+}
+```
+
+Discovery owns an arena so identifiers and raw provider metadata stay valid
+until `deinit`.
+
 Each model exposes a `ModelProfile`. The profile tells the agent which
 capabilities are supported before it sends a paid request.
 
