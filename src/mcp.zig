@@ -339,11 +339,10 @@ pub const Client = struct {
         while (round_trip < self.max_round_trips) : (round_trip += 1) {
             const result = try self.requestOnce(allocator, method, current_params, options);
             if (!isInputRequired(allocator, result)) return result;
-            const handler = self.input_handler orelse {
+            const retry = answerInputRequests(allocator, current_params, result, self.input_handler) catch |failure| {
                 allocator.free(result);
-                return error.InputRequired;
+                return failure;
             };
-            const retry = try answerInputRequests(allocator, current_params, result, handler);
             allocator.free(result);
             if (owned_params) |value| allocator.free(value);
             owned_params = retry;
@@ -464,6 +463,7 @@ pub const Client = struct {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const result = try responseResult(try parseResponse(arena.allocator(), body), id);
+        try validateMethodResult(method, result);
         return std.json.Stringify.valueAlloc(allocator, result, .{});
     }
 
@@ -723,7 +723,7 @@ pub const Server = struct {
             self.handler.handle(allocator, method, params_json) catch
                 return self.errorResponse(allocator, id, error_codes.internal_error, "MCP handler failed", 500);
         defer allocator.free(result_json);
-        const body = try self.resultResponse(allocator, id, result_json);
+        const body = try self.resultResponse(allocator, id, method, result_json);
         return .{ .status = 200, .body = body };
     }
 
@@ -771,7 +771,13 @@ pub const Server = struct {
         }, .{ .emit_null_optional_fields = false });
     }
 
-    fn resultResponse(self: *Server, allocator: std.mem.Allocator, id: std.json.Value, result_json: []const u8) ![]u8 {
+    fn resultResponse(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        id: std.json.Value,
+        method: []const u8,
+        result_json: []const u8,
+    ) ![]u8 {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         var result = try json_limits.parseLeaky(
@@ -785,6 +791,7 @@ pub const Server = struct {
         var object = try requiredObject(result);
         const memory = arena.allocator();
         if (object.get("resultType") == null) try object.put(memory, "resultType", .{ .string = "complete" });
+        try validateMethodResult(method, .{ .object = object });
         var server_info: std.json.ObjectMap = .{};
         try server_info.put(memory, "name", .{ .string = self.name });
         try server_info.put(memory, "version", .{ .string = self.version });
@@ -947,29 +954,29 @@ fn answerInputRequests(
     allocator: std.mem.Allocator,
     params_json: []const u8,
     result_json: []const u8,
-    handler: InputHandler,
+    maybe_handler: ?InputHandler,
 ) ![]u8 {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const result = try requiredObject(try parseResponse(arena.allocator(), result_json));
-    const requests = switch (result.get("inputRequests") orelse return error.InvalidMcpResponse) {
-        .object => |value| value,
-        else => return error.InvalidMcpResponse,
-    };
     const memory = arena.allocator();
     var responses: std.json.ObjectMap = .{};
-    var iterator = requests.iterator();
-    while (iterator.next()) |entry| {
-        const request_json = try std.json.Stringify.valueAlloc(allocator, entry.value_ptr.*, .{});
-        defer allocator.free(request_json);
-        const response_json = try handler.handle(allocator, entry.key_ptr.*, request_json);
-        defer allocator.free(response_json);
-        const response = try parseResponse(arena.allocator(), response_json);
-        try responses.put(memory, entry.key_ptr.*, response);
+    if (result.get("inputRequests")) |requests_value| {
+        const requests = try requiredObject(requests_value);
+        const handler = maybe_handler orelse return error.InputRequired;
+        var iterator = requests.iterator();
+        while (iterator.next()) |entry| {
+            const request_json = try std.json.Stringify.valueAlloc(allocator, entry.value_ptr.*, .{});
+            defer allocator.free(request_json);
+            const response_json = try handler.handle(allocator, entry.key_ptr.*, request_json);
+            defer allocator.free(response_json);
+            const response = try parseResponse(arena.allocator(), response_json);
+            try responses.put(memory, entry.key_ptr.*, response);
+        }
     }
     var params_value = try parseResponse(arena.allocator(), params_json);
     var params = try requiredObject(params_value);
-    try params.put(memory, "inputResponses", .{ .object = responses });
+    if (responses.count() > 0) try params.put(memory, "inputResponses", .{ .object = responses });
     if (optionalString(result, "requestState")) |state| {
         try params.put(memory, "requestState", .{ .string = state });
     }
@@ -1100,6 +1107,114 @@ fn responseResult(root: std.json.Value, expected_id: u64) !std.json.Value {
     if (actual != .integer or actual.integer != expected_id) return error.McpResponseIdMismatch;
     if (object.get("error") != null) return error.McpRpcError;
     return object.get("result") orelse error.InvalidMcpResponse;
+}
+
+fn validateMethodResult(method: []const u8, result: std.json.Value) !void {
+    const object = try requiredObject(result);
+    const result_type = if (object.get("resultType")) |value|
+        switch (value) {
+            .string => |string| string,
+            else => return error.InvalidMcpResponse,
+        }
+    else
+        "complete";
+    if (std.mem.eql(u8, result_type, "input_required")) return validateInputRequiredResult(object);
+    if (!std.mem.eql(u8, result_type, "complete")) return error.InvalidMcpResponse;
+
+    if (std.mem.eql(u8, method, methods.discover)) {
+        try requireStringArray(object, "supportedVersions", 1, null);
+        _ = try requiredObject(object.get("capabilities") orelse return error.InvalidMcpResponse);
+        try validateCacheableResult(object);
+    } else if (std.mem.eql(u8, method, methods.list_tools)) {
+        try requireArray(object, "tools");
+        try validatePaginatedCacheableResult(object);
+    } else if (std.mem.eql(u8, method, methods.list_prompts)) {
+        try requireArray(object, "prompts");
+        try validatePaginatedCacheableResult(object);
+    } else if (std.mem.eql(u8, method, methods.list_resources)) {
+        try requireArray(object, "resources");
+        try validatePaginatedCacheableResult(object);
+    } else if (std.mem.eql(u8, method, methods.list_resource_templates)) {
+        try requireArray(object, "resourceTemplates");
+        try validatePaginatedCacheableResult(object);
+    } else if (std.mem.eql(u8, method, methods.read_resource)) {
+        try requireArray(object, "contents");
+        try validateCacheableResult(object);
+    } else if (std.mem.eql(u8, method, methods.get_prompt)) {
+        try requireArray(object, "messages");
+    } else if (std.mem.eql(u8, method, methods.call_tool)) {
+        try requireArray(object, "content");
+    } else if (std.mem.eql(u8, method, methods.complete)) {
+        const completion = try requiredObject(object.get("completion") orelse return error.InvalidMcpResponse);
+        try requireStringArray(completion, "values", 0, 100);
+    } else if (std.mem.eql(u8, method, methods.listen)) {
+        const meta = try requiredObject(object.get("_meta") orelse return error.InvalidMcpResponse);
+        const subscription_id = meta.get("io.modelcontextprotocol/subscriptionId") orelse
+            return error.InvalidMcpResponse;
+        if (subscription_id != .integer and subscription_id != .string) return error.InvalidMcpResponse;
+    }
+}
+
+fn validateInputRequiredResult(object: std.json.ObjectMap) !void {
+    var has_state = false;
+    if (object.get("requestState")) |state| {
+        if (state != .string) return error.InvalidMcpResponse;
+        has_state = true;
+    }
+    var has_requests = false;
+    if (object.get("inputRequests")) |requests_value| {
+        const requests = try requiredObject(requests_value);
+        var iterator = requests.iterator();
+        while (iterator.next()) |entry| {
+            has_requests = true;
+            const request = try requiredObject(entry.value_ptr.*);
+            const method = try requiredString(request, "method");
+            if (!std.mem.eql(u8, method, methods.elicit) and
+                !std.mem.eql(u8, method, methods.list_roots) and
+                !std.mem.eql(u8, method, methods.create_message)) return error.InvalidMcpResponse;
+            if (request.get("params")) |params| _ = try requiredObject(params);
+        }
+    }
+    if (!has_state and !has_requests) return error.InvalidMcpResponse;
+}
+
+fn validatePaginatedCacheableResult(object: std.json.ObjectMap) !void {
+    try validateCacheableResult(object);
+    if (object.get("nextCursor")) |cursor| if (cursor != .string) return error.InvalidMcpResponse;
+}
+
+fn validateCacheableResult(object: std.json.ObjectMap) !void {
+    const ttl = object.get("ttlMs") orelse return error.InvalidMcpResponse;
+    const nonnegative = switch (ttl) {
+        .integer => |value| value >= 0,
+        .float => |value| value >= 0 and std.math.isFinite(value),
+        else => false,
+    };
+    if (!nonnegative) return error.InvalidMcpResponse;
+    const scope = try requiredString(object, "cacheScope");
+    if (!std.mem.eql(u8, scope, "public") and !std.mem.eql(u8, scope, "private")) {
+        return error.InvalidMcpResponse;
+    }
+}
+
+fn requireArray(object: std.json.ObjectMap, name: []const u8) !void {
+    if ((object.get(name) orelse return error.InvalidMcpResponse) != .array) return error.InvalidMcpResponse;
+}
+
+fn requireStringArray(
+    object: std.json.ObjectMap,
+    name: []const u8,
+    minimum: usize,
+    maximum: ?usize,
+) !void {
+    const values = switch (object.get(name) orelse return error.InvalidMcpResponse) {
+        .array => |array| array,
+        else => return error.InvalidMcpResponse,
+    };
+    if (values.items.len < minimum or if (maximum) |limit| values.items.len > limit else false) {
+        return error.InvalidMcpResponse;
+    }
+    for (values.items) |value| if (value != .string) return error.InvalidMcpResponse;
 }
 
 fn requiredObject(value: std.json.Value) !std.json.ObjectMap {
@@ -1297,6 +1412,106 @@ fn renderToolResult(allocator: std.mem.Allocator, result: std.json.ObjectMap) ![
 fn writeJsonValue(writer: *std.Io.Writer, value: std.json.Value) !void {
     var json: std.json.Stringify = .{ .writer = writer };
     try json.write(value);
+}
+
+fn testValidateMethodResult(method: []const u8, source: []const u8) !void {
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, source, .{});
+    defer parsed.deinit();
+    return validateMethodResult(method, parsed.value);
+}
+
+test "method result validation covers every core result family" {
+    const valid = [_]struct { []const u8, []const u8 }{
+        .{ "extension/custom", "{}" },
+        .{ methods.discover, "{\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{},\"ttlMs\":0,\"cacheScope\":\"public\"}" },
+        .{ methods.list_tools, "{\"resultType\":\"complete\",\"tools\":[],\"ttlMs\":1.5,\"cacheScope\":\"private\",\"nextCursor\":\"next\"}" },
+        .{ methods.list_prompts, "{\"prompts\":[],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_resources, "{\"resources\":[],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_resource_templates, "{\"resourceTemplates\":[],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.read_resource, "{\"contents\":[],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.get_prompt, "{\"messages\":[]}" },
+        .{ methods.call_tool, "{\"content\":[]}" },
+        .{ methods.complete, "{\"completion\":{\"values\":[\"one\"]}}" },
+        .{ methods.listen, "{\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":\"listen-1\"}}" },
+        .{ methods.call_tool, "{\"resultType\":\"input_required\",\"requestState\":\"state\"}" },
+        .{ methods.call_tool, "{\"resultType\":\"input_required\",\"inputRequests\":{\"a\":{\"method\":\"elicitation/create\",\"params\":{}},\"b\":{\"method\":\"roots/list\"},\"c\":{\"method\":\"sampling/createMessage\"}}}" },
+    };
+    for (valid) |case| try testValidateMethodResult(case[0], case[1]);
+}
+
+test "method result validation rejects every structural boundary" {
+    const invalid = [_]struct { []const u8, []const u8 }{
+        .{ "extension/custom", "[]" },
+        .{ "extension/custom", "{\"resultType\":1}" },
+        .{ "extension/custom", "{\"resultType\":\"other\"}" },
+        .{ methods.discover, "{\"supportedVersions\":[],\"capabilities\":{},\"ttlMs\":0,\"cacheScope\":\"public\"}" },
+        .{ methods.discover, "{\"supportedVersions\":[1],\"capabilities\":{},\"ttlMs\":0,\"cacheScope\":\"public\"}" },
+        .{ methods.discover, "{\"supportedVersions\":[\"v\"],\"capabilities\":[],\"ttlMs\":0,\"cacheScope\":\"public\"}" },
+        .{ methods.list_tools, "{\"tools\":{},\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_prompts, "{\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_resources, "{\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.list_resource_templates, "{\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.read_resource, "{\"ttlMs\":0,\"cacheScope\":\"private\"}" },
+        .{ methods.get_prompt, "{}" },
+        .{ methods.call_tool, "{}" },
+        .{ methods.complete, "{}" },
+        .{ methods.complete, "{\"completion\":{\"values\":[1]}}" },
+        .{ methods.listen, "{}" },
+        .{ methods.listen, "{\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":true}}" },
+        .{ methods.list_tools, "{\"tools\":[],\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[],\"ttlMs\":\"0\",\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[],\"ttlMs\":-1,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[],\"ttlMs\":-0.5,\"cacheScope\":\"private\"}" },
+        .{ methods.list_tools, "{\"tools\":[],\"ttlMs\":0,\"cacheScope\":\"shared\"}" },
+        .{ methods.list_tools, "{\"tools\":[],\"ttlMs\":0,\"cacheScope\":\"private\",\"nextCursor\":1}" },
+        .{ methods.call_tool, "{\"resultType\":\"input_required\"}" },
+        .{ methods.call_tool, "{\"resultType\":\"input_required\",\"requestState\":1}" },
+        .{ methods.call_tool, "{\"resultType\":\"input_required\",\"inputRequests\":[]}" },
+        .{ methods.call_tool, "{\"resultType\":\"input_required\",\"inputRequests\":{\"a\":[]}}" },
+        .{ methods.call_tool, "{\"resultType\":\"input_required\",\"inputRequests\":{\"a\":{}}}" },
+        .{ methods.call_tool, "{\"resultType\":\"input_required\",\"inputRequests\":{\"a\":{\"method\":\"unknown/input\"}}}" },
+        .{ methods.call_tool, "{\"resultType\":\"input_required\",\"inputRequests\":{\"a\":{\"method\":\"elicitation/create\",\"params\":[]}}}" },
+    };
+    for (invalid) |case| {
+        try std.testing.expectError(error.InvalidMcpResponse, testValidateMethodResult(case[0], case[1]));
+    }
+
+    var values: std.json.Array = .init(std.testing.allocator);
+    defer values.deinit();
+    for (0..101) |_| try values.append(.{ .string = "value" });
+    var completion: std.json.ObjectMap = .{};
+    defer completion.deinit(std.testing.allocator);
+    try completion.put(std.testing.allocator, "values", .{ .array = values });
+    var result: std.json.ObjectMap = .{};
+    defer result.deinit(std.testing.allocator);
+    try result.put(std.testing.allocator, "completion", .{ .object = completion });
+    try std.testing.expectError(error.InvalidMcpResponse, validateMethodResult(methods.complete, .{ .object = result }));
+}
+
+test "state-only MRTR retries without an input handler" {
+    const Stub = struct {
+        calls: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            if (self.calls == 1) return allocator.dupe(
+                u8,
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"input_required\",\"requestState\":\"retry-later\"}}",
+            );
+            try std.testing.expect(std.mem.indexOf(u8, request.message, "\"requestState\":\"retry-later\"") != null);
+            try std.testing.expect(std.mem.indexOf(u8, request.message, "inputResponses") == null);
+            return allocator.dupe(
+                u8,
+                "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resultType\":\"complete\",\"content\":[]}}",
+            );
+        }
+    };
+    var stub = Stub{};
+    var client = Client{ .transport = .{ .context = &stub, .sendFn = Stub.send } };
+    const result = try client.request(std.testing.allocator, methods.call_tool, "{}");
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqual(@as(usize, 2), stub.calls);
 }
 
 test "client emits self-describing requests and HTTP routing headers" {
@@ -1634,10 +1849,32 @@ test "generic client helpers cover every core request shape" {
             const parsed = try std.json.parseFromSlice(std.json.Value, allocator, request.message, .{});
             defer parsed.deinit();
             const id = (try requiredObject(parsed.value)).get("id").?;
+            const result_source = if (std.mem.eql(u8, request.method, methods.discover))
+                "{\"resultType\":\"complete\",\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{},\"ttlMs\":0,\"cacheScope\":\"public\"}"
+            else if (std.mem.eql(u8, request.method, methods.list_tools))
+                "{\"resultType\":\"complete\",\"tools\":[],\"ttlMs\":0,\"cacheScope\":\"private\"}"
+            else if (std.mem.eql(u8, request.method, methods.list_resources))
+                "{\"resultType\":\"complete\",\"resources\":[],\"ttlMs\":0,\"cacheScope\":\"private\"}"
+            else if (std.mem.eql(u8, request.method, methods.list_resource_templates))
+                "{\"resultType\":\"complete\",\"resourceTemplates\":[],\"ttlMs\":0,\"cacheScope\":\"private\"}"
+            else if (std.mem.eql(u8, request.method, methods.read_resource))
+                "{\"resultType\":\"complete\",\"contents\":[],\"ttlMs\":0,\"cacheScope\":\"private\"}"
+            else if (std.mem.eql(u8, request.method, methods.list_prompts))
+                "{\"resultType\":\"complete\",\"prompts\":[],\"ttlMs\":0,\"cacheScope\":\"private\"}"
+            else if (std.mem.eql(u8, request.method, methods.get_prompt))
+                "{\"resultType\":\"complete\",\"messages\":[]}"
+            else if (std.mem.eql(u8, request.method, methods.complete))
+                "{\"resultType\":\"complete\",\"completion\":{\"values\":[]}}"
+            else if (std.mem.eql(u8, request.method, methods.listen))
+                "{\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":1}}"
+            else
+                "{\"resultType\":\"complete\"}";
+            const result = try std.json.parseFromSlice(std.json.Value, allocator, result_source, .{});
+            defer result.deinit();
             return std.json.Stringify.valueAlloc(allocator, .{
                 .jsonrpc = "2.0",
                 .id = id,
-                .result = .{ .resultType = "complete" },
+                .result = result.value,
             }, .{});
         }
         fn event(_: *anyopaque, _: []const u8) !void {}
@@ -1681,7 +1918,7 @@ test "generic client helpers cover every core request shape" {
         fn send(_: *anyopaque, allocator: std.mem.Allocator, _: WireRequest) ![]const u8 {
             return allocator.dupe(
                 u8,
-                "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"input_required\"}}",
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"input_required\",\"inputRequests\":{\"confirm\":{\"method\":\"elicitation/create\",\"params\":{}}}}}",
             );
         }
     }.send } };

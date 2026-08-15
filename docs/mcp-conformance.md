@@ -30,11 +30,17 @@ advertises and every method-specific result it consumes or emits.
 
 ## Remaining executable matrix
 
+Implemented rows:
+
+- common `complete` and `input_required` result validation, with legacy
+  omission interpreted as `complete`;
+- required `ttlMs` and `cacheScope` validation on every cacheable core result;
+- top-level method-specific result shapes for every typed client helper; and
+- state-only and input-request MRTR retries.
+
 The following rows are intentionally not marked complete yet:
 
-- method-specific request, result, and notification shapes;
-- required `resultType`, with legacy omission interpreted as `complete`;
-- `ttlMs` and `cacheScope` on every cacheable result;
+- complete nested request, result, and notification shapes;
 - pagination cursors for tools, prompts, resources, and resource templates;
 - all JSON-RPC and MCP error envelopes and HTTP status mappings;
 - unknown extension preservation and prefixed extension negotiation;
