@@ -1,7 +1,11 @@
-//! Mistral AI client.
+//! Mistral's OpenAI-compatible Chat Completions adapter.
+//!
+//! This module deliberately excludes the native Conversations protocol. Use
+//! the parent package's explicit Conversations names for persistent entries
+//! and Mistral-managed tools.
 
-const compatible = @import("openai_compatible.zig");
-const profiles = @import("profiles.zig");
+const compatible = @import("../openai_compatible.zig");
+const profiles = @import("../profiles.zig");
 
 pub const api_base = "https://api.mistral.ai/v1";
 pub const api_key_env = "MISTRAL_API_KEY";
