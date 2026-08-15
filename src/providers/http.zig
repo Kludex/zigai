@@ -334,7 +334,7 @@ test "configured HTTP provider forwards non-inference operations" {
             var arena = std.heap.ArenaAllocator.init(allocator);
             errdefer arena.deinit();
             const owned_id = try arena.allocator().dupe(u8, id);
-            return .{ .arena = arena, .value = .{ .id = owned_id } };
+            return .{ .arena = arena, .value = .{ .id = owned_id, .provider_name = "example" } };
         }
 
         fn checkFileAllocation(allocator: std.mem.Allocator) !void {

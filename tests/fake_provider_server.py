@@ -123,6 +123,17 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def do_DELETE(self) -> None:
+        if self.path != "/delete":
+            self.send_error(404)
+            return
+        body = b"deleted"
+        self.send_response(200)
+        self.send_header("content-type", "text/plain")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def log_message(self, format: str, *args: object) -> None:
         pass
 

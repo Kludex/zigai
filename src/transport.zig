@@ -50,6 +50,7 @@ pub const Options = struct {
 pub const Method = enum {
     GET,
     POST,
+    DELETE,
 };
 
 pub const Header = struct {
@@ -212,10 +213,7 @@ pub const HttpTransport = struct {
             try headers.append(allocator, .{ .name = header.name, .value = header.value });
         }
 
-        const method: std.http.Method = switch (request_value.method) {
-            .GET => .GET,
-            .POST => .POST,
-        };
+        const method = httpMethod(request_value.method);
         const uri = try std.Uri.parse(request_value.url);
         var request = try self.client.request(method, uri, .{
             .redirect_behavior = .unhandled,
@@ -265,10 +263,7 @@ pub const HttpTransport = struct {
         var headers: std.ArrayList(std.http.Header) = .empty;
         defer headers.deinit(allocator);
         for (request_value.headers) |header| try headers.append(allocator, .{ .name = header.name, .value = header.value });
-        const method: std.http.Method = switch (request_value.method) {
-            .GET => .GET,
-            .POST => .POST,
-        };
+        const method = httpMethod(request_value.method);
         var request = try self.client.request(method, try std.Uri.parse(request_value.url), .{
             .redirect_behavior = .unhandled,
             .extra_headers = headers.items,
@@ -299,6 +294,14 @@ pub const HttpTransport = struct {
         return result;
     }
 };
+
+fn httpMethod(method: Method) std.http.Method {
+    return switch (method) {
+        .GET => .GET,
+        .POST => .POST,
+        .DELETE => .DELETE,
+    };
+}
 
 fn isRedirect(status: u16) bool {
     return status >= 300 and status < 400;

@@ -13,6 +13,12 @@ pub fn main(init: std.process.Init) !void {
     defer init.gpa.free(response.body);
     if (response.status != 200 or !std.mem.eql(u8, response.body, "healthy")) return error.UnexpectedFixtureResponse;
 
+    const delete_url = try std.fmt.allocPrint(init.gpa, "{s}/delete", .{base_url});
+    defer init.gpa.free(delete_url);
+    const deleted = try http.transport().send(init.gpa, .{ .method = .DELETE, .url = delete_url });
+    defer init.gpa.free(deleted.body);
+    if (deleted.status != 200 or !std.mem.eql(u8, deleted.body, "deleted")) return error.UnexpectedFixtureResponse;
+
     const stream_url = try std.fmt.allocPrint(init.gpa, "{s}/stream", .{base_url});
     defer init.gpa.free(stream_url);
     const Capture = struct {

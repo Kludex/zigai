@@ -186,6 +186,11 @@ identifiers and raw metadata. `Provider.Options.discovery_limits` bounds pages
 and total models for paginated APIs. Model adapters are not involved in
 discovery.
 
+Provider file descriptors always include `provider_name`. Their
+`uploadedFile()` view can be passed directly as provider-owned rich content;
+upload and inspect operations reject a descriptor whose owner differs from the
+provider that returned it. File results own an arena and require `deinit`.
+
 `agent_spec.Owned` owns parsed configuration in an arena. It is data-only and
 does not read secrets or construct clients. `validateResolution` uses
 application-supplied provider and capability catalogs without building a
