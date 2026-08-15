@@ -15,6 +15,9 @@
 - Add ordered output validators with run context, selected-choice awareness,
   transformation, explicit safe retries, capability composition, controlled
   execution, post-transformation schema checks, and lifecycle events.
+- Add accumulated partial-output events for text and structured streams, with
+  bounded incomplete-JSON repair, monotonic schema checks, partial-aware output
+  functions and validators, tool-output selection, and borrowed snapshots.
 - Complete provider-neutral model settings with sampling, penalties,
   log-probabilities, tool and parallel-call policy, thinking budgets, service
   tiers, truncation, safe request headers, profile preflight, and tagged bounded

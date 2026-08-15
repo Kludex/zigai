@@ -149,13 +149,13 @@ instructions live in the run arena and follow the result ownership boundary.
 tool support. Non-object schemas receive a provider-facing `{ "value": ... }`
 wrapper that the agent removes after local validation. `Result.output_name`
 identifies the chosen branch. An `OutputFunction` receives borrowed
-`output.RunContext` state and validated JSON; returned slices must be static or
+`OutputRunContext` state and validated JSON; returned slices must be static or
 allocated with its supplied run-arena allocator. Its explicit `.retry` result
 is safe to send to the model, while thrown errors stop the run.
 
 `Agent.output_validators` runs ordered `OutputValidator` callbacks after schema
 validation and after an output function. Each callback receives the selected
-choice name, borrowed `output.RunContext`, and the previous callback's output.
+choice name, borrowed `OutputRunContext`, and the previous callback's output.
 It returns `.output` to accept or transform the value, or `.retry` with a safe
 model-visible correction message. Transformed structured output is checked
 against its schema again. A thrown callback error aborts the run. Capabilities
@@ -205,10 +205,23 @@ assertion returns `OutputSchemaValidationFailed`.
 tool returns, media, speech, and compaction. Usage is reported separately.
 
 `AgentStreamEvent` wraps model events and adds function-tool call/result,
-tool-availability, deferred request/result, enqueued-message, and
-`final_result` events. Only `final_result` is accepted output. JSON object and
-schema modes attach a validated `std.json.Value` snapshot. All values are
-borrowed for the callback; copy them before returning if they must be retained.
+tool-availability, deferred request/result, enqueued-message,
+`partial_output`, and `final_result` events. A `partial_output` is the complete
+output accumulated so far, not the latest delta. The corresponding raw model
+event is delivered first. Text snapshots are accumulated directly. Structured
+snapshots are repaired into valid JSON, then checked against present types,
+properties/items, forbidden extras, and maximum bounds. Assertions that later
+bytes can satisfy or change, such as `required`, minimum bounds, `const`, and
+numeric limits, are deferred to final validation.
+
+Output functions and validators receive every useful partial snapshot with
+`OutputRunContext.partial_output = true`; `.retry` suppresses that snapshot and
+a thrown error stops the stream. They run again on the final candidate with
+`partial_output = false`. Structured transformations are partially checked
+again before delivery. Only `final_result` is accepted output and receives full
+validation. JSON object and schema events attach a `std.json.Value` snapshot.
+All values are borrowed for the callback; copy them before returning if they
+must be retained.
 
 `runUntilPauseStream` and `resumeRunStream` preserve the event flow across
 approval and external-tool boundaries. Providers restart part indexes for each

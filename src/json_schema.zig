@@ -75,6 +75,317 @@ pub fn validateSchema(allocator: std.mem.Allocator, schema: []const u8) !void {
     try validateSchemaValue(parsed.value);
 }
 
+/// One repaired, accumulated JSON snapshot. Both fields borrow `allocator`.
+pub const Partial = struct {
+    json: []const u8,
+    value: std.json.Value,
+};
+
+/// Repairs a bounded incomplete JSON prefix and applies monotonic partial
+/// validation. Missing required values and minimum bounds are deferred until
+/// final validation; present values, types, forbidden extras, and maximum
+/// bounds are enforced immediately. Invalid prefixes return null.
+pub fn validatePartial(
+    allocator: std.mem.Allocator,
+    output_format: model_types.OutputFormat,
+    output_prefix: []const u8,
+) !?Partial {
+    if (output_format == .text) return null;
+    const completed = try completePartialJson(allocator, output_prefix) orelse return null;
+    const parsed_output = json_limits.parseLeaky(
+        std.json.Value,
+        allocator,
+        completed,
+        json_limits.defaults.tool_payload,
+        .{},
+        Error.InvalidJsonOutput,
+    ) catch |failure| return switch (failure) {
+        error.OutOfMemory => error.OutOfMemory,
+        else => null,
+    };
+    switch (output_format) {
+        .text => unreachable,
+        .json_object => if (parsed_output != .object) return null,
+        .json_schema => |format| {
+            const parsed_schema = try json_limits.parseLeaky(
+                std.json.Value,
+                allocator,
+                format.schema,
+                json_limits.defaults.schema,
+                .{},
+                Error.InvalidJsonSchema,
+            );
+            try validateSchemaValue(parsed_schema);
+            if (!matchesPartial(.{ .root = parsed_schema }, parsed_schema, parsed_output)) return null;
+        },
+    }
+    return .{ .json = completed, .value = parsed_output };
+}
+
+const PartialContainer = enum { object, array };
+const PartialState = enum {
+    object_key_or_end,
+    object_colon,
+    object_value,
+    object_comma_or_end,
+    array_value_or_end,
+    array_comma_or_end,
+};
+
+const PartialFrame = struct {
+    container: PartialContainer,
+    state: PartialState,
+    safe_len: usize,
+};
+
+const PartialToken = enum { complete, opened, incomplete };
+
+fn completePartialJson(allocator: std.mem.Allocator, source: []const u8) !?[]const u8 {
+    if (source.len > json_limits.defaults.tool_payload.max_document_bytes) {
+        return json_limits.ValidationError.DocumentTooLarge;
+    }
+    var output: std.ArrayList(u8) = .empty;
+    defer output.deinit(allocator);
+    var frames: [json_limits.defaults.tool_payload.max_depth]PartialFrame = undefined;
+    var depth: usize = 0;
+    var index: usize = 0;
+    var root_complete = false;
+
+    while (true) {
+        skipJsonWhitespace(source, &index);
+        if (index >= source.len) break;
+        if (root_complete) return null;
+        if (depth == 0) {
+            switch (try parsePartialToken(allocator, &output, &frames, &depth, source, &index)) {
+                .complete => root_complete = true,
+                .opened => {},
+                .incomplete => return null,
+            }
+            continue;
+        }
+
+        const frame = &frames[depth - 1];
+        switch (frame.state) {
+            .object_key_or_end => {
+                if (source[index] == '}') {
+                    try output.append(allocator, '}');
+                    index += 1;
+                    depth -= 1;
+                    markPartialValueComplete(&frames, depth, &root_complete, output.items.len);
+                    continue;
+                }
+                if (source[index] != '"') return null;
+                const key = try appendPartialString(allocator, &output, source, &index, false);
+                if (key != .complete) {
+                    output.items.len = frame.safe_len;
+                    index = source.len;
+                    break;
+                }
+                frame.state = .object_colon;
+            },
+            .object_colon => {
+                if (source[index] != ':') return null;
+                try output.append(allocator, ':');
+                index += 1;
+                frame.state = .object_value;
+            },
+            .object_value, .array_value_or_end => {
+                if (frame.state == .array_value_or_end and source[index] == ']') {
+                    try output.append(allocator, ']');
+                    index += 1;
+                    depth -= 1;
+                    markPartialValueComplete(&frames, depth, &root_complete, output.items.len);
+                    continue;
+                }
+                switch (try parsePartialToken(allocator, &output, &frames, &depth, source, &index)) {
+                    .complete => markPartialValueComplete(&frames, depth, &root_complete, output.items.len),
+                    .opened => {},
+                    .incomplete => return null,
+                }
+            },
+            .object_comma_or_end => {
+                if (source[index] == '}') {
+                    try output.append(allocator, '}');
+                    index += 1;
+                    depth -= 1;
+                    markPartialValueComplete(&frames, depth, &root_complete, output.items.len);
+                } else if (source[index] == ',') {
+                    try output.append(allocator, ',');
+                    index += 1;
+                    frame.state = .object_key_or_end;
+                } else return null;
+            },
+            .array_comma_or_end => {
+                if (source[index] == ']') {
+                    try output.append(allocator, ']');
+                    index += 1;
+                    depth -= 1;
+                    markPartialValueComplete(&frames, depth, &root_complete, output.items.len);
+                } else if (source[index] == ',') {
+                    try output.append(allocator, ',');
+                    index += 1;
+                    frame.state = .array_value_or_end;
+                } else return null;
+            },
+        }
+    }
+
+    while (depth > 0) {
+        const frame = &frames[depth - 1];
+        switch (frame.state) {
+            .object_colon, .object_value, .object_key_or_end, .array_value_or_end => {
+                output.items.len = frame.safe_len;
+            },
+            .object_comma_or_end, .array_comma_or_end => {},
+        }
+        try output.append(allocator, if (frame.container == .object) '}' else ']');
+        depth -= 1;
+        markPartialValueComplete(&frames, depth, &root_complete, output.items.len);
+    }
+    if (!root_complete or output.items.len == 0) return null;
+    return try output.toOwnedSlice(allocator);
+}
+
+fn parsePartialToken(
+    allocator: std.mem.Allocator,
+    output: *std.ArrayList(u8),
+    frames: []PartialFrame,
+    depth: *usize,
+    source: []const u8,
+    index: *usize,
+) !PartialToken {
+    const byte = source[index.*];
+    if (byte == '{' or byte == '[') {
+        if (depth.* >= frames.len) return json_limits.ValidationError.NestingTooDeep;
+        try output.append(allocator, byte);
+        index.* += 1;
+        frames[depth.*] = .{
+            .container = if (byte == '{') .object else .array,
+            .state = if (byte == '{') .object_key_or_end else .array_value_or_end,
+            .safe_len = output.items.len,
+        };
+        depth.* += 1;
+        return .opened;
+    }
+    if (byte == '"') return appendPartialString(allocator, output, source, index, true);
+    if (byte == 't') return appendPartialLiteral(allocator, output, source, index, "true");
+    if (byte == 'f') return appendPartialLiteral(allocator, output, source, index, "false");
+    if (byte == 'n') return appendPartialLiteral(allocator, output, source, index, "null");
+    if (byte == '-' or (byte >= '0' and byte <= '9')) {
+        return appendPartialNumber(allocator, output, source, index);
+    }
+    return .incomplete;
+}
+
+fn appendPartialString(
+    allocator: std.mem.Allocator,
+    output: *std.ArrayList(u8),
+    source: []const u8,
+    index: *usize,
+    repair: bool,
+) !PartialToken {
+    const start = index.*;
+    var cursor = start + 1;
+    var safe_end = cursor;
+    while (cursor < source.len) {
+        const byte = source[cursor];
+        if (byte == '"') {
+            cursor += 1;
+            try output.appendSlice(allocator, source[start..cursor]);
+            index.* = cursor;
+            return .complete;
+        }
+        if (byte < 0x20) return .incomplete;
+        if (byte == '\\') {
+            if (cursor + 1 >= source.len) break;
+            const escaped = source[cursor + 1];
+            if (escaped == 'u') {
+                if (cursor + 6 > source.len) break;
+                for (source[cursor + 2 .. cursor + 6]) |hex| if (!std.ascii.isHex(hex)) return .incomplete;
+                cursor += 6;
+            } else {
+                if (std.mem.indexOfScalar(u8, "\"\\/bfnrt", escaped) == null) return .incomplete;
+                cursor += 2;
+            }
+        } else {
+            cursor += 1;
+        }
+        safe_end = cursor;
+    }
+    if (!repair) return .incomplete;
+    try output.appendSlice(allocator, source[start..safe_end]);
+    try output.append(allocator, '"');
+    index.* = source.len;
+    return .complete;
+}
+
+fn appendPartialLiteral(
+    allocator: std.mem.Allocator,
+    output: *std.ArrayList(u8),
+    source: []const u8,
+    index: *usize,
+    literal: []const u8,
+) !PartialToken {
+    const available = @min(literal.len, source.len - index.*);
+    if (!std.mem.eql(u8, source[index.* .. index.* + available], literal[0..available])) return .incomplete;
+    if (available < literal.len) {
+        try output.appendSlice(allocator, literal);
+        index.* = source.len;
+        return .complete;
+    }
+    try output.appendSlice(allocator, literal);
+    index.* += literal.len;
+    return .complete;
+}
+
+fn appendPartialNumber(
+    allocator: std.mem.Allocator,
+    output: *std.ArrayList(u8),
+    source: []const u8,
+    index: *usize,
+) !PartialToken {
+    const start = index.*;
+    while (index.* < source.len) : (index.* += 1) {
+        const byte = source[index.*];
+        if ((byte >= '0' and byte <= '9') or byte == '-' or byte == '+' or
+            byte == '.' or byte == 'e' or byte == 'E') continue;
+        break;
+    }
+    const token = source[start..index.*];
+    try output.appendSlice(allocator, token);
+    if (index.* == source.len) {
+        if (token.len == 1 and token[0] == '-') try output.append(allocator, '0') else if (token[token.len - 1] == '.') {
+            try output.append(allocator, '0');
+        } else if (token[token.len - 1] == 'e' or token[token.len - 1] == 'E') {
+            try output.append(allocator, '0');
+        } else if ((token[token.len - 1] == '+' or token[token.len - 1] == '-') and token.len >= 2 and
+            (token[token.len - 2] == 'e' or token[token.len - 2] == 'E'))
+        {
+            try output.append(allocator, '0');
+        }
+    }
+    return .complete;
+}
+
+fn skipJsonWhitespace(source: []const u8, index: *usize) void {
+    while (index.* < source.len and std.ascii.isWhitespace(source[index.*])) index.* += 1;
+}
+
+fn markPartialValueComplete(
+    frames: []PartialFrame,
+    depth: usize,
+    root_complete: *bool,
+    output_len: usize,
+) void {
+    if (depth == 0) {
+        root_complete.* = true;
+        return;
+    }
+    const parent = &frames[depth - 1];
+    parent.state = if (parent.container == .object) .object_comma_or_end else .array_comma_or_end;
+    parent.safe_len = output_len;
+}
+
 fn validateSchemaValue(schema: std.json.Value) Error!void {
     try validateSchemaNode(schema, schema);
 }
@@ -354,6 +665,71 @@ fn matches(context: MatchContext, schema: std.json.Value, value: std.json.Value)
         else => {},
     }
     return true;
+}
+
+fn matchesPartial(context: MatchContext, schema: std.json.Value, value: std.json.Value) bool {
+    const object = switch (schema) {
+        .bool => |allowed| return allowed,
+        .object => |item| item,
+        else => return false,
+    };
+    const nested = context.nested() orelse return false;
+    if (object.get("$ref")) |reference| {
+        const target = resolveReference(context.root, reference.string) orelse return false;
+        if (!matchesPartial(nested, target, value)) return false;
+    }
+    if (object.get("allOf")) |choices| for (choices.array.items) |choice| {
+        if (!matchesPartial(nested, choice, value)) return false;
+    };
+    if (object.get("anyOf")) |choices| if (!matchesPartialAny(nested, choices.array, value)) return false;
+    if (object.get("oneOf")) |choices| if (!matchesPartialAny(nested, choices.array, value)) return false;
+    if (object.get("type")) |expected| if (!matchesType(expected, value)) return false;
+    switch (value) {
+        .object => |actual| {
+            if (integerKeyword(object, "maxProperties")) |maximum| if (actual.count() > maximum) return false;
+            const properties = if (object.get("properties")) |item| item.object else null;
+            const property_names = object.get("propertyNames");
+            var iterator = actual.iterator();
+            while (iterator.next()) |entry| {
+                if (property_names) |name_schema| {
+                    if (!matches(nested, name_schema, .{ .string = entry.key_ptr.* })) return false;
+                }
+                if (properties) |known| if (known.get(entry.key_ptr.*)) |property_schema| {
+                    if (!matchesPartial(nested, property_schema, entry.value_ptr.*)) return false;
+                    continue;
+                };
+                if (object.get("additionalProperties")) |additional| switch (additional) {
+                    .bool => |allowed| if (!allowed) return false,
+                    .object => if (!matchesPartial(nested, additional, entry.value_ptr.*)) return false,
+                    else => return false,
+                };
+            }
+        },
+        .array => |actual| {
+            if (integerKeyword(object, "maxItems")) |maximum| if (actual.items.len > maximum) return false;
+            var prefix_length: usize = 0;
+            if (object.get("prefixItems")) |prefix| {
+                prefix_length = @min(prefix.array.items.len, actual.items.len);
+                for (prefix.array.items[0..prefix_length], actual.items[0..prefix_length]) |item_schema, item| {
+                    if (!matchesPartial(nested, item_schema, item)) return false;
+                }
+            }
+            if (object.get("items")) |item_schema| for (actual.items[prefix_length..]) |item| {
+                if (!matchesPartial(nested, item_schema, item)) return false;
+            };
+        },
+        .string => |actual| {
+            const length = std.unicode.utf8CountCodepoints(actual) catch return false;
+            if (integerKeyword(object, "maxLength")) |maximum| if (length > maximum) return false;
+        },
+        else => {},
+    }
+    return true;
+}
+
+fn matchesPartialAny(context: MatchContext, choices: std.json.Array, value: std.json.Value) bool {
+    for (choices.items) |choice| if (matchesPartial(context, choice, value)) return true;
+    return false;
 }
 
 fn matchesAny(context: MatchContext, choices: std.json.Value, value: std.json.Value, exactly_one: bool) bool {
@@ -743,4 +1119,68 @@ test "schema preflight distinguishes malformed and unsupported vocabulary" {
     }
 
     try std.testing.expect(equal(.{ .number_string = "not-a-number" }, .{ .number_string = "not-a-number" }));
+}
+
+test "partial JSON repairs accumulated object array string literal and number prefixes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const schema =
+        \\{"type":"object","properties":{"name":{"type":"string","maxLength":4},"items":{"type":"array","items":{"type":"number"},"maxItems":3},"ready":{"type":"boolean"}},"required":["name","ready"],"additionalProperties":false}
+    ;
+    const format: model_types.OutputFormat = .{ .json_schema = .{ .name = "partial", .schema = schema } };
+    const string_value = (try validatePartial(allocator, format, "{\"name\":\"Al")).?;
+    try std.testing.expectEqualStrings("{\"name\":\"Al\"}", string_value.json);
+    try std.testing.expectEqualStrings("Al", string_value.value.object.get("name").?.string);
+
+    const nested = (try validatePartial(allocator, format, "{\"name\":\"Al\",\"items\":[1,2e")).?;
+    try std.testing.expectEqualStrings("{\"name\":\"Al\",\"items\":[1,2e0]}", nested.json);
+    try std.testing.expectEqual(@as(usize, 2), nested.value.object.get("items").?.array.items.len);
+
+    const literal = (try validatePartial(allocator, format, "{\"ready\":tru")).?;
+    try std.testing.expectEqualStrings("{\"ready\":true}", literal.json);
+
+    const root_string = (try validatePartial(allocator, .{ .json_schema = .{
+        .name = "string",
+        .schema = "{\"type\":\"string\"}",
+    } }, "\"text")).?;
+    try std.testing.expect(root_string.value == .string);
+}
+
+test "partial JSON drops unfinished members and rejects impossible snapshots" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const format: model_types.OutputFormat = .{ .json_schema = .{
+        .name = "partial",
+        .schema = "{\"type\":\"object\",\"properties\":{\"ok\":{\"type\":\"string\",\"maxLength\":4}}," ++
+            "\"additionalProperties\":false,\"maxProperties\":1}",
+    } };
+    const key = (try validatePartial(allocator, format, "{\"ok\":\"yes\",\"lat")).?;
+    try std.testing.expectEqualStrings("{\"ok\":\"yes\"}", key.json);
+
+    const value = (try validatePartial(allocator, format, "{\"ok\":\"yes\",\"later\":")).?;
+    try std.testing.expectEqualStrings("{\"ok\":\"yes\"}", value.json);
+
+    try std.testing.expect((try validatePartial(allocator, .text, "anything")) == null);
+    try std.testing.expect((try validatePartial(allocator, .json_object, "1")) == null);
+    try std.testing.expect((try validatePartial(allocator, format, "{\"unknown\":1}")) == null);
+    try std.testing.expect((try validatePartial(allocator, format, "{\"ok\":1}")) == null);
+    try std.testing.expect((try validatePartial(allocator, format, "{\"ok\":\"toolong\"}")) == null);
+    try std.testing.expect((try validatePartial(allocator, format, "{\"ok\":\"yes\",\"other\":\"no\"}")) == null);
+    try std.testing.expect((try validatePartial(allocator, format, "{bad")) == null);
+    try std.testing.expect((try validatePartial(allocator, format, "{\"ok\":\"\\q")) == null);
+}
+
+test "partial schemas follow references and composition without requiring final assertions" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const schema =
+        \\{"$defs":{"item":{"type":"object","properties":{"value":{"type":"string"}},"additionalProperties":false}},"allOf":[{"$ref":"#/$defs/item"}],"anyOf":[{"type":"object"},{"type":"null"}],"oneOf":[{"type":"object"},{"type":"array"}],"not":{"const":null},"if":{"type":"object"},"then":{"required":["value"]}}
+    ;
+    const format: model_types.OutputFormat = .{ .json_schema = .{ .name = "partial", .schema = schema } };
+    const partial = (try validatePartial(allocator, format, "{\"value\":\"x")).?;
+    try std.testing.expectEqualStrings("{\"value\":\"x\"}", partial.json);
+    try std.testing.expect((try validatePartial(allocator, format, "[]")) == null);
 }

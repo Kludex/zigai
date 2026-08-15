@@ -295,6 +295,14 @@ pub const FinalResultEvent = struct {
     structured_output: ?std.json.Value = null,
 };
 
+/// One accumulated provisional output snapshot. Structured snapshots are
+/// repaired and partially validated; all values are borrowed for the callback.
+pub const PartialOutputEvent = struct {
+    output: []const u8,
+    output_name: ?[]const u8 = null,
+    structured_output: ?std.json.Value = null,
+};
+
 /// Borrowed agent-run events. Model part events are provisional; only
 /// `final_result` means output validation succeeded.
 pub const AgentStreamEvent = union(enum) {
@@ -305,6 +313,7 @@ pub const AgentStreamEvent = union(enum) {
     deferred_tool_requests: DeferredToolRequestsEvent,
     deferred_tool_results: DeferredToolResultsEvent,
     enqueued_messages: EnqueuedMessagesEvent,
+    partial_output: PartialOutputEvent,
     final_result: FinalResultEvent,
 };
 
@@ -1514,10 +1523,23 @@ pub const Agent = struct {
                 provider_errors.reset();
                 var stream_emitted = false;
                 var forwarder = ModelEventForwarder{
+                    .allocator = allocator,
                     .sink = stream_sink,
                     .emitted = &stream_emitted,
                     .hooks = hooks,
+                    .prepared_output = prepared_output,
+                    .validators = self.output_validators,
+                    .run_context = .{
+                        .dependencies = dependencies,
+                        .messages = messages.items,
+                        .usage = total_usage,
+                        .model_requests = model_requests,
+                        .partial_output = true,
+                        .control = control,
+                    },
+                    .max_tool_parts = self.limits.max_tool_calls,
                 };
+                defer forwarder.deinit();
                 const model_request = model_types.ModelRequest{
                     .messages = request_messages,
                     .instructions = resolved_instructions,
@@ -2350,7 +2372,7 @@ fn validateFinalOutput(
             .retry => |message| return .{ .retry = .{ .message = message } },
         }
     }
-    if (validate_locally and validators.len > 0) {
+    if (output_format != .text and validators.len > 0) {
         json_schema.validate(allocator, output_format, output) catch |failure| {
             if (failure == error.OutOfMemory) return failure;
             return .{ .retry = .{ .message = schema_retry_message, .failure = failure } };
@@ -3199,10 +3221,34 @@ const LockedAllocator = struct {
     }
 };
 
+const PartialToolAccumulator = struct {
+    index: usize,
+    name: std.ArrayList(u8) = .empty,
+    arguments: std.ArrayList(u8) = .empty,
+
+    fn deinit(self: *PartialToolAccumulator, allocator: std.mem.Allocator) void {
+        self.name.deinit(allocator);
+        self.arguments.deinit(allocator);
+    }
+};
+
 const ModelEventForwarder = struct {
+    allocator: std.mem.Allocator,
     sink: ?AgentStreamSink,
     emitted: *bool,
     hooks: []const LifecycleHook,
+    prepared_output: output_types.Prepared,
+    validators: []const output_types.Validator,
+    run_context: output_types.RunContext,
+    max_tool_parts: usize,
+    text: std.ArrayList(u8) = .empty,
+    tool_parts: std.ArrayList(PartialToolAccumulator) = .empty,
+
+    fn deinit(self: *ModelEventForwarder) void {
+        self.text.deinit(self.allocator);
+        for (self.tool_parts.items) |*part| part.deinit(self.allocator);
+        self.tool_parts.deinit(self.allocator);
+    }
 
     fn modelSink(self: *ModelEventForwarder) model_types.ModelStreamSink {
         return .{ .context = self, .eventFn = emit };
@@ -3212,8 +3258,155 @@ const ModelEventForwarder = struct {
         const self: *ModelEventForwarder = @ptrCast(@alignCast(context));
         self.emitted.* = true;
         try emitStreamEvent(self.hooks, self.sink.?, .{ .model = event });
+        switch (event) {
+            .part_start => |started| switch (started.part) {
+                .text => |content| try self.appendText(content),
+                .text_part => |part| try self.appendText(part.content),
+                .tool_call => |call| try self.appendTool(started.index, call.name, call.arguments_json),
+                else => {},
+            },
+            .part_delta => |changed| switch (changed.delta) {
+                .text => |delta| try self.appendText(delta.content_delta),
+                .tool_call => |delta| try self.appendTool(
+                    changed.index,
+                    delta.name,
+                    delta.arguments_delta,
+                ),
+                else => {},
+            },
+            .part_end => |ended| switch (ended.part) {
+                .text => |content| if (self.text.items.len == 0) try self.appendText(content),
+                .text_part => |part| if (self.text.items.len == 0) try self.appendText(part.content),
+                .tool_call => |call| {
+                    const accumulated = try self.toolPart(ended.index);
+                    if (accumulated.name.items.len == 0) try accumulated.name.appendSlice(self.allocator, call.name);
+                    if (accumulated.arguments.items.len == 0) {
+                        try accumulated.arguments.appendSlice(self.allocator, call.arguments_json);
+                        try self.emitToolPartial(accumulated);
+                    }
+                },
+                else => {},
+            },
+            .usage => {},
+        }
+    }
+
+    fn appendText(self: *ModelEventForwarder, content: []const u8) !void {
+        if (content.len == 0 or self.prepared_output.requires_tool_output) return;
+        try self.text.appendSlice(self.allocator, content);
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const event = try preparePartialOutput(
+            scratch.allocator(),
+            self.prepared_output.validation_format,
+            self.text.items,
+            null,
+            self.validators,
+            self.run_context,
+        ) orelse return;
+        try emitStreamEvent(self.hooks, self.sink.?, .{ .partial_output = event });
+    }
+
+    fn appendTool(
+        self: *ModelEventForwarder,
+        index: usize,
+        name: ?[]const u8,
+        arguments_delta: []const u8,
+    ) !void {
+        const accumulated = try self.toolPart(index);
+        if (name) |value| if (accumulated.name.items.len == 0 or
+            !std.mem.eql(u8, accumulated.name.items, value))
+        {
+            accumulated.name.clearRetainingCapacity();
+            try accumulated.name.appendSlice(self.allocator, value);
+        };
+        if (arguments_delta.len > 0) try accumulated.arguments.appendSlice(self.allocator, arguments_delta);
+        if (accumulated.arguments.items.len > 0) try self.emitToolPartial(accumulated);
+    }
+
+    fn toolPart(self: *ModelEventForwarder, index: usize) !*PartialToolAccumulator {
+        for (self.tool_parts.items) |*part| if (part.index == index) return part;
+        if (self.tool_parts.items.len >= self.max_tool_parts) return Agent.Error.MaxToolCallsExceeded;
+        try self.tool_parts.append(self.allocator, .{ .index = index });
+        return &self.tool_parts.items[self.tool_parts.items.len - 1];
+    }
+
+    fn emitToolPartial(self: *ModelEventForwarder, accumulated: *PartialToolAccumulator) !void {
+        const choice = self.prepared_output.findToolChoice(accumulated.name.items) orelse return;
+        var scratch = std.heap.ArenaAllocator.init(self.allocator);
+        defer scratch.deinit();
+        const memory = scratch.allocator();
+        var output = try output_types.decodePartialToolArguments(
+            memory,
+            choice,
+            accumulated.arguments.items,
+        ) orelse return;
+        var format: model_types.OutputFormat = .{ .json_schema = .{
+            .name = choice.choice.name,
+            .schema = choice.choice.schema,
+            .strict = choice.choice.strict,
+        } };
+        if (choice.choice.function) |function| {
+            const result = try self.run_context.control.invoke(
+                output_types.FunctionResult,
+                invokeOutputFunction,
+                .{ function, memory, self.run_context, output },
+            );
+            output = switch (result) {
+                .output => |value| value,
+                .retry => return,
+            };
+            format = .text;
+        }
+        const event = try preparePartialOutput(
+            memory,
+            format,
+            output,
+            choice.choice.name,
+            self.validators,
+            self.run_context,
+        ) orelse return;
+        try emitStreamEvent(self.hooks, self.sink.?, .{ .partial_output = event });
     }
 };
+
+fn preparePartialOutput(
+    allocator: std.mem.Allocator,
+    output_format: model_types.OutputFormat,
+    initial_output: []const u8,
+    output_name: ?[]const u8,
+    validators: []const output_types.Validator,
+    run_context: output_types.RunContext,
+) !?PartialOutputEvent {
+    var output = initial_output;
+    var structured_output: ?std.json.Value = null;
+    if (output_format != .text) {
+        const partial = try json_schema.validatePartial(allocator, output_format, output) orelse return null;
+        output = partial.json;
+        structured_output = partial.value;
+    }
+    for (validators) |validator| {
+        const result = try run_context.control.invoke(
+            output_types.ValidatorResult,
+            invokeConfiguredOutputValidator,
+            .{ validator, allocator, run_context, output_name, output },
+        );
+        output = switch (result) {
+            .output => |transformed| transformed,
+            .retry => return null,
+        };
+    }
+    if (output_format != .text and validators.len > 0) {
+        const partial = try json_schema.validatePartial(allocator, output_format, output) orelse return null;
+        output = partial.json;
+        structured_output = partial.value;
+    }
+    return .{
+        .output = output,
+        .output_name = output_name,
+        .structured_output = structured_output,
+    };
+}
 
 fn requestModel(
     model: model_types.Model,

@@ -350,6 +350,24 @@ pub fn decodeToolArguments(
     return std.json.Stringify.valueAlloc(arena, value, .{});
 }
 
+/// Repairs and partially validates accumulated provider tool arguments. The
+/// returned JSON lives in `arena`; null means the current prefix cannot yet
+/// produce a useful snapshot.
+pub fn decodePartialToolArguments(
+    arena: std.mem.Allocator,
+    prepared: PreparedChoice,
+    arguments_prefix: []const u8,
+) !?[]const u8 {
+    const partial = try json_schema.validatePartial(arena, .{ .json_schema = .{
+        .name = prepared.choice.name,
+        .schema = prepared.arguments_schema,
+        .strict = prepared.choice.strict,
+    } }, arguments_prefix) orelse return null;
+    if (!prepared.wrapped) return partial.json;
+    const value = partial.value.object.get("value") orelse return null;
+    return try std.json.Stringify.valueAlloc(arena, value, .{});
+}
+
 fn validateChoice(choice: Choice) Error!void {
     if (choice.name.len == 0 or choice.schema.len == 0) return error.InvalidOutputSpec;
 }
@@ -484,6 +502,14 @@ test "tool output exposes alternatives and wraps scalar schemas" {
     try std.testing.expectEqualStrings(
         "42",
         try decodeToolArguments(arena.allocator(), prepared.tool_choices[1], "{\"value\":42}"),
+    );
+    try std.testing.expectEqualStrings(
+        "4",
+        (try decodePartialToolArguments(
+            arena.allocator(),
+            prepared.tool_choices[1],
+            "{\"value\":4",
+        )).?,
     );
     try std.testing.expectError(
         json_schema.Error.OutputSchemaValidationFailed,

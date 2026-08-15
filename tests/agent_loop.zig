@@ -1423,7 +1423,7 @@ test "output functions receive run context and can request a model retry" {
         fn call(
             context: *anyopaque,
             allocator: std.mem.Allocator,
-            run_context: zigai.output.RunContext,
+            run_context: zigai.OutputRunContext,
             arguments: []const u8,
         ) !zigai.OutputFunctionResult {
             const self: *@This() = @ptrCast(@alignCast(context));
@@ -1484,7 +1484,7 @@ test "output validators receive run context retry and transform in order" {
         fn first(
             context: *anyopaque,
             _: std.mem.Allocator,
-            run_context: zigai.output.RunContext,
+            run_context: zigai.OutputRunContext,
             output_name: ?[]const u8,
             output_json: []const u8,
         ) !zigai.OutputValidatorResult {
@@ -1558,7 +1558,7 @@ test "tool output validators receive the selected name and transform output" {
         fn validate(
             context: *anyopaque,
             allocator: std.mem.Allocator,
-            run_context: zigai.output.RunContext,
+            run_context: zigai.OutputRunContext,
             output_name: ?[]const u8,
             output_json: []const u8,
         ) !zigai.OutputValidatorResult {
@@ -1755,7 +1755,6 @@ test "structured output is revalidated after validator transformation" {
         .model = scripted.model(),
         .output = .{ .json_schema = .{ .name = "answer", .schema = schema } },
         .output_validators = &.{.{ .context = &context, .validateFn = Callback.validate }},
-        .validate_output_locally = true,
         .max_output_retries = 0,
     }).run(std.testing.allocator, "answer"));
 }
@@ -2045,6 +2044,240 @@ test "typed agent output is available after streaming completes" {
     try std.testing.expectEqualStrings("yes", result.output.answer);
     try std.testing.expectEqual(@as(usize, 1), capture.finals);
     try std.testing.expectEqualStrings("yes", capture.snapshot_answer.?);
+}
+
+test "structured streaming emits accumulated partially validated snapshots" {
+    const State = struct {
+        partial_validations: usize = 0,
+        final_validations: usize = 0,
+        raw_deltas: usize = 0,
+        partials: usize = 0,
+
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: zigai.ModelRequest) !zigai.ModelResponse {
+            return error.UnexpectedBufferedRequest;
+        }
+
+        fn stream(
+            _: *anyopaque,
+            _: std.mem.Allocator,
+            _: zigai.ModelRequest,
+            sink: zigai.ModelStreamSink,
+        ) !zigai.ModelResponse {
+            try sink.emit(.{ .part_start = .{ .index = 0, .part = .{ .text = "" } } });
+            try sink.emit(.{ .part_delta = .{
+                .index = 0,
+                .delta = .{ .text = .{ .content_delta = "{\"name\":\"Al" } },
+            } });
+            try sink.emit(.{ .part_delta = .{
+                .index = 0,
+                .delta = .{ .text = .{ .content_delta = "ice\",\"age\":4" } },
+            } });
+            try sink.emit(.{ .part_delta = .{
+                .index = 0,
+                .delta = .{ .text = .{ .content_delta = "2}" } },
+            } });
+            const parts = &struct {
+                const value = [_]zigai.Part{.{ .text = "{\"name\":\"Alice\",\"age\":42}" }};
+            }.value;
+            try sink.emit(.{ .part_end = .{ .index = 0, .part = parts[0] } });
+            try sink.emit(.{ .usage = .{} });
+            return .{ .parts = parts };
+        }
+
+        fn validate(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            run_context: zigai.output.RunContext,
+            output_name: ?[]const u8,
+            output_json: []const u8,
+        ) !zigai.OutputValidatorResult {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expect(output_name == null);
+            if (run_context.partial_output) {
+                self.partial_validations += 1;
+                try std.testing.expect(run_context.messages[run_context.messages.len - 1] == .request);
+                return switch (self.partial_validations) {
+                    1 => .{ .output = try allocator.dupe(u8, "{\"name\":\"A\"}") },
+                    2 => .{ .retry = "wait for another snapshot" },
+                    else => .{ .output = output_json },
+                };
+            }
+            self.final_validations += 1;
+            try std.testing.expect(run_context.messages[run_context.messages.len - 1] == .response);
+            return .{ .output = output_json };
+        }
+
+        fn event(context: *anyopaque, value: zigai.AgentStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (value) {
+                .model => |model_event| if (model_event == .part_delta) {
+                    self.raw_deltas += 1;
+                },
+                .partial_output => |partial| {
+                    self.partials += 1;
+                    try std.testing.expectEqual(
+                        if (self.partials == 1) @as(usize, 1) else 3,
+                        self.raw_deltas,
+                    );
+                    try std.testing.expect(partial.output_name == null);
+                    const object = switch (partial.structured_output orelse return error.MissingPartialSnapshot) {
+                        .object => |item| item,
+                        else => return error.ExpectedObjectSnapshot,
+                    };
+                    if (self.partials == 1) {
+                        try std.testing.expectEqualStrings("{\"name\":\"A\"}", partial.output);
+                        try std.testing.expectEqualStrings("A", object.get("name").?.string);
+                    } else {
+                        try std.testing.expectEqualStrings("{\"name\":\"Alice\",\"age\":42}", partial.output);
+                        try std.testing.expectEqual(@as(i64, 42), object.get("age").?.integer);
+                    }
+                },
+                else => {},
+            }
+        }
+    };
+    const schema = "{\"type\":\"object\",\"properties\":{" ++
+        "\"name\":{\"type\":\"string\"},\"age\":{\"type\":\"integer\"}}," ++
+        "\"required\":[\"name\",\"age\"],\"additionalProperties\":false}";
+    var state: State = .{};
+    const validators = [_]zigai.OutputValidator{.{ .context = &state, .validateFn = State.validate }};
+    const model = zigai.Model{
+        .context = &state,
+        .profile = .{ .supports_json_schema_output = true, .supports_streaming = true },
+        .requestFn = State.request,
+        .streamFn = State.stream,
+    };
+    var result = try (zigai.Agent{
+        .model = model,
+        .output = .{ .json_schema = .{ .name = "person", .schema = schema } },
+        .output_validators = &validators,
+        .validate_output_locally = true,
+    }).runStream(std.testing.allocator, "answer", .{ .context = &state, .eventFn = State.event });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("{\"name\":\"Alice\",\"age\":42}", result.output);
+    try std.testing.expectEqual(@as(usize, 3), state.partial_validations);
+    try std.testing.expectEqual(@as(usize, 1), state.final_validations);
+    try std.testing.expectEqual(@as(usize, 3), state.raw_deltas);
+    try std.testing.expectEqual(@as(usize, 2), state.partials);
+}
+
+test "tool output functions receive partial and final streaming contexts" {
+    const State = struct {
+        function_partials: usize = 0,
+        function_finals: usize = 0,
+        validator_partials: usize = 0,
+        validator_finals: usize = 0,
+        streamed_partials: usize = 0,
+
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: zigai.ModelRequest) !zigai.ModelResponse {
+            return error.UnexpectedBufferedRequest;
+        }
+
+        fn stream(
+            _: *anyopaque,
+            _: std.mem.Allocator,
+            _: zigai.ModelRequest,
+            sink: zigai.ModelStreamSink,
+        ) !zigai.ModelResponse {
+            const initial = zigai.Part{ .tool_call = .{
+                .id = "finish-1",
+                .name = "finish",
+                .arguments_json = "",
+            } };
+            try sink.emit(.{ .part_start = .{ .index = 0, .part = initial } });
+            try sink.emit(.{ .part_delta = .{
+                .index = 0,
+                .delta = .{ .tool_call = .{ .arguments_delta = "{\"value\":" } },
+            } });
+            try sink.emit(.{ .part_delta = .{
+                .index = 0,
+                .delta = .{ .tool_call = .{ .arguments_delta = "4}" } },
+            } });
+            const parts = &struct {
+                const value = [_]zigai.Part{.{ .tool_call = .{
+                    .id = "finish-1",
+                    .name = "finish",
+                    .arguments_json = "{\"value\":4}",
+                } }};
+            }.value;
+            try sink.emit(.{ .part_end = .{ .index = 0, .part = parts[0] } });
+            return .{ .parts = parts };
+        }
+
+        fn outputFunction(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            run_context: zigai.output.RunContext,
+            arguments_json: []const u8,
+        ) !zigai.OutputFunctionResult {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (run_context.partial_output) {
+                self.function_partials += 1;
+                return .{ .output = try std.fmt.allocPrint(allocator, "preview:{s}", .{arguments_json}) };
+            }
+            self.function_finals += 1;
+            try std.testing.expectEqualStrings("{\"value\":4}", arguments_json);
+            return .{ .output = "accepted" };
+        }
+
+        fn validate(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            run_context: zigai.output.RunContext,
+            output_name: ?[]const u8,
+            output_json: []const u8,
+        ) !zigai.OutputValidatorResult {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expectEqualStrings("finish", output_name.?);
+            if (run_context.partial_output) {
+                self.validator_partials += 1;
+                try std.testing.expect(std.mem.startsWith(u8, output_json, "preview:"));
+            } else {
+                self.validator_finals += 1;
+                try std.testing.expectEqualStrings("accepted", output_json);
+            }
+            return .{ .output = output_json };
+        }
+
+        fn event(context: *anyopaque, value: zigai.AgentStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (value == .partial_output) {
+                const partial = value.partial_output;
+                self.streamed_partials += 1;
+                try std.testing.expectEqualStrings("finish", partial.output_name.?);
+                try std.testing.expect(partial.structured_output == null);
+                try std.testing.expect(std.mem.startsWith(u8, partial.output, "preview:"));
+            }
+        }
+    };
+    const schema = "{\"type\":\"object\",\"properties\":{" ++
+        "\"value\":{\"type\":\"integer\"}},\"required\":[\"value\"]," ++
+        "\"additionalProperties\":false}";
+    var state: State = .{};
+    const choices = [_]zigai.OutputChoice{.{
+        .name = "finish",
+        .schema = schema,
+        .function = .{ .context = &state, .callFn = State.outputFunction },
+    }};
+    const validators = [_]zigai.OutputValidator{.{ .context = &state, .validateFn = State.validate }};
+    const model = zigai.Model{
+        .context = &state,
+        .profile = .{ .supports_tools = true, .supports_streaming = true },
+        .requestFn = State.request,
+        .streamFn = State.stream,
+    };
+    var result = try (zigai.Agent{
+        .model = model,
+        .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
+        .output_validators = &validators,
+    }).runStream(std.testing.allocator, "answer", .{ .context = &state, .eventFn = State.event });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("accepted", result.output);
+    try std.testing.expectEqual(@as(usize, 2), state.function_partials);
+    try std.testing.expectEqual(@as(usize, 1), state.function_finals);
+    try std.testing.expectEqual(@as(usize, 2), state.validator_partials);
+    try std.testing.expectEqual(@as(usize, 1), state.validator_finals);
+    try std.testing.expectEqual(@as(usize, 2), state.streamed_partials);
 }
 
 test "streaming validation suppresses the final event for invalid output" {
@@ -2648,6 +2881,7 @@ test "lifecycle hooks wrap every emitted stream event" {
         before: usize = 0,
         after: usize = 0,
         sink: usize = 0,
+        partials: usize = 0,
 
         fn hook(context: *anyopaque, value: zigai.LifecycleEvent) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
@@ -2660,9 +2894,10 @@ test "lifecycle hooks wrap every emitted stream event" {
             }
         }
 
-        fn stream(context: *anyopaque, _: zigai.AgentStreamEvent) !void {
+        fn stream(context: *anyopaque, value: zigai.AgentStreamEvent) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
             self.sink += 1;
+            if (value == .partial_output) self.partials += 1;
         }
     };
     var capture: Capture = .{};
@@ -2675,7 +2910,8 @@ test "lifecycle hooks wrap every emitted stream event" {
         .{ .context = &capture, .eventFn = Capture.stream },
     );
     defer result.deinit();
-    try std.testing.expectEqual(@as(usize, 5), capture.sink);
+    try std.testing.expectEqual(@as(usize, 6), capture.sink);
+    try std.testing.expectEqual(@as(usize, 1), capture.partials);
     try std.testing.expectEqual(capture.sink, capture.before);
     try std.testing.expectEqual(capture.sink, capture.after);
 }

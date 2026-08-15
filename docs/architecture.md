@@ -124,8 +124,12 @@ history with a correction request, bounded by `max_output_retries`.
 Applications using `run` directly can still opt into provider-independent
 local schema validation and receive the same correction behavior. Streaming
 parts use stable indexes and explicit start/delta/end events. Deltas remain
-provisional, and the agent emits one `final_result` only after validation
-succeeds; structured results include a parsed JSON snapshot.
+provisional. The agent separately accumulates output-bearing text or tool
+arguments, repairs incomplete JSON into bounded snapshots, applies only
+monotonic schema assertions, and runs partial-aware output callbacks before
+emitting `partial_output`. Raw model events remain available and are always
+delivered first. The agent emits one `final_result` only after full validation
+succeeds; structured output events include parsed JSON snapshots.
 
 Rich message content is provider neutral too. `UserContent` covers text,
 tagged text, images, audio, video, documents, arbitrary binary data, uploaded
@@ -348,10 +352,10 @@ There is intentionally no graph. Applications can build orchestration on top
 of this loop without paying for an abstraction when they do not need one.
 
 `Agent.runStream` uses that exact loop rather than a parallel orchestration
-implementation. It forwards borrowed model deltas, completed calls, usage,
-tool results, and final output synchronously. Once visible stream output has
-been emitted, a failed request is never retried, preventing duplicated text or
-tool events.
+implementation. It forwards borrowed model deltas, derived output snapshots,
+completed calls, usage, tool results, and final output synchronously. Once
+visible stream output has been emitted, a failed request is never retried,
+preventing duplicated text or tool events.
 
 ## Evaluations
 

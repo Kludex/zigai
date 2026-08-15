@@ -667,6 +667,9 @@ calls before the selected output, and `.exhaustive` runs every call.
 Add ordered `OutputValidator` callbacks for semantic or I/O-backed checks.
 Validators can transform output, request a bounded model retry with a safe
 message, and inspect dependencies, history, usage, and the selected choice.
+Output functions and validators run for each useful streamed snapshot with
+`OutputRunContext.partial_output = true`, and once for the final candidate with
+it set to false. Keep side effects in the final branch.
 
 ## Streaming and resilience
 
@@ -680,9 +683,14 @@ indexed part lifecycle:
 - `usage` — provider token totals.
 
 Agent events add function-tool calls/results, deferred work, tool-availability
-changes, enqueued messages, and one `final_result`. Model parts are provisional;
-`final_result` is emitted only after output validation succeeds. For structured
-output it includes a borrowed parsed JSON snapshot.
+changes, enqueued messages, accumulated `partial_output` snapshots, and one
+`final_result`. Raw model deltas arrive before their derived snapshot. Partial
+structured JSON is repaired into a valid prefix snapshot and checked against
+every assertion that cannot become valid through later bytes; final validation
+still applies the complete schema. A validator retry suppresses only that
+partial snapshot. `final_result` is emitted only after output validation
+succeeds. Structured partial and final events include a borrowed parsed JSON
+value.
 
 Use `runUntilPauseStream` and `resumeRunStream` when approval or externally
 executed tools must remain in the same event flow.
