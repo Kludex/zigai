@@ -342,6 +342,12 @@ extension methods and unknown fields. The toolset adapter follows list cursors,
 preserves schemas, mirrors `x-mcp-header` arguments, and renders tool content
 through the normal agent loop.
 
+Streamable HTTP uses the generic HTTP transport's line interface when a caller
+provides an event sink. A request-local bounded parser delivers complete SSE
+events immediately and retains only the correlated JSON-RPC response. Direct
+JSON responses use the same path, while transports without line streaming use
+the bounded buffered fallback. No parser state crosses requests.
+
 The focused `mcp.primitives` module owns borrowed protocol value objects.
 `ClientCapabilities` and `ServerCapabilities` serialize standardized fields,
 validate object-valued experimental and extension settings, and enforce

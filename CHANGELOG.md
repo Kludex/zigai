@@ -5,7 +5,8 @@
 - Allow bounded concurrent MCP Streamable HTTP requests with configurable
   in-flight backpressure and request-local authorization retries.
 - Add a standalone bounded SSE parser with standard multi-line data framing
-  and use it for MCP response correlation and subscription event validation.
+  and use it for incremental MCP event delivery, response correlation,
+  streamed direct JSON, and subscription validation, with buffered fallback.
 - Add bounded, arena-owned task result parsing, typed client helpers, extension
   negotiation, task-ID routing, validated task status subscriptions, and
   bounded polling with deduplicated input handling and cooperative

@@ -411,39 +411,173 @@ pub const StreamableHttpTransport = struct {
         request: WireRequest,
         token: ?auth.AccessToken,
     ) !http.Response {
-        var headers: std.ArrayList(http.Header) = .empty;
-        defer headers.deinit(allocator);
-        try headers.appendSlice(allocator, &.{
+        var headers = try HttpRequestHeaders.init(
+            allocator,
+            request,
+            self.headers,
+            token,
+        );
+        defer headers.deinit();
+        const http_request = http.Request{
+            .method = .POST,
+            .url = self.endpoint,
+            .headers = headers.values.items,
+            .body = request.message,
+        };
+        if (request.expects_response and request.events != null and self.inner.streamLinesFn != null) {
+            return sendStreamingHttp(self.inner, allocator, request, http_request);
+        }
+        return self.inner.send(allocator, http_request);
+    }
+};
+
+const HttpRequestHeaders = struct {
+    allocator: std.mem.Allocator,
+    values: std.ArrayList(http.Header) = .empty,
+    authorization_value: ?[]u8 = null,
+
+    fn init(
+        allocator: std.mem.Allocator,
+        request: WireRequest,
+        transport_headers: []const http.Header,
+        token: ?auth.AccessToken,
+    ) !HttpRequestHeaders {
+        var result = HttpRequestHeaders{ .allocator = allocator };
+        errdefer result.deinit();
+        try result.values.appendSlice(allocator, &.{
             .{ .name = "content-type", .value = "application/json" },
             .{ .name = "accept", .value = "application/json, text/event-stream" },
             .{ .name = "mcp-protocol-version", .value = protocol_version },
             .{ .name = "mcp-method", .value = request.method },
         });
         if (request.routing_name) |name| {
-            try headers.append(allocator, .{ .name = "mcp-name", .value = name });
+            try result.values.append(allocator, .{ .name = "mcp-name", .value = name });
         }
-        try headers.appendSlice(allocator, request.headers);
-        try headers.appendSlice(allocator, self.headers);
-        var authorization_value: ?[]u8 = null;
-        defer if (authorization_value) |value| allocator.free(value);
+        try result.values.appendSlice(allocator, request.headers);
+        try result.values.appendSlice(allocator, transport_headers);
         if (token) |access_token| {
-            if (findHeader(headers.items, "authorization") != null) return error.InvalidBearerToken;
-            authorization_value = try std.fmt.allocPrint(allocator, "Bearer {s}", .{access_token.value});
-            try headers.append(allocator, .{
+            if (findHeader(result.values.items, "authorization") != null) return error.InvalidBearerToken;
+            result.authorization_value = try std.fmt.allocPrint(allocator, "Bearer {s}", .{access_token.value});
+            try result.values.append(allocator, .{
                 .name = "authorization",
-                .value = authorization_value.?,
+                .value = result.authorization_value.?,
                 .sensitive = true,
             });
         }
+        return result;
+    }
 
-        return self.inner.send(allocator, .{
-            .method = .POST,
-            .url = self.endpoint,
-            .headers = headers.items,
-            .body = request.message,
-        });
+    fn deinit(self: *HttpRequestHeaders) void {
+        if (self.authorization_value) |value| self.allocator.free(value);
+        self.values.deinit(self.allocator);
+        self.* = undefined;
     }
 };
+
+fn sendStreamingHttp(
+    transport_value: http.Transport,
+    allocator: std.mem.Allocator,
+    request: WireRequest,
+    http_request: http.Request,
+) !http.Response {
+    const request_id = try JsonRpcId.parse(allocator, request.message);
+    defer request_id.deinit(allocator);
+    var response_collector = SseResponseCollector{
+        .allocator = allocator,
+        .request_id = &request_id,
+        .request = request.message,
+        .is_subscription = std.mem.eql(u8, request.method, methods.listen),
+        .events = request.events,
+    };
+    response_collector.subscription_acknowledged = !response_collector.is_subscription;
+    errdefer if (response_collector.result) |result| allocator.free(result);
+    var parser = sse.Parser.init(
+        allocator,
+        json_limits.defaults.mcp_message.max_document_bytes,
+        .{ .context = &response_collector, .emitFn = SseResponseCollector.emit },
+    );
+    defer parser.deinit();
+    var stream = HttpMcpStream{
+        .allocator = allocator,
+        .parser = &parser,
+        .response = &response_collector,
+    };
+    defer stream.json.deinit(allocator);
+    const response = try transport_value.streamLines(allocator, http_request, .{
+        .context = &stream,
+        .startFn = HttpMcpStream.start,
+        .lineFn = HttpMcpStream.line,
+    });
+    if (stream.status == null or stream.status.? != response.status) return error.InvalidMcpMessage;
+    const body = try stream.finish();
+    return .{ .status = response.status, .body = body, .metadata = response.metadata };
+}
+
+const HttpMcpStream = struct {
+    const Mode = enum { unknown, json, sse };
+
+    allocator: std.mem.Allocator,
+    parser: *sse.Parser,
+    response: *SseResponseCollector,
+    status: ?u16 = null,
+    mode: Mode = .unknown,
+    json: std.ArrayList(u8) = .empty,
+
+    fn start(context: *anyopaque, response: http.StreamResponse) !void {
+        const self: *@This() = @ptrCast(@alignCast(context));
+        if (self.status != null) return error.InvalidMcpMessage;
+        self.status = response.status;
+    }
+
+    fn line(context: *anyopaque, raw_line: []const u8) !void {
+        const self: *@This() = @ptrCast(@alignCast(context));
+        const status = self.status orelse return error.InvalidMcpMessage;
+        if (status != 200 and status != 400) return;
+        if (self.mode == .unknown) {
+            const first = std.mem.trim(u8, raw_line, " \t\r");
+            if (first.len == 0) return;
+            if (first[0] == '{' or first[0] == '[') {
+                self.mode = .json;
+                return self.appendJson(first);
+            }
+            self.mode = .sse;
+        }
+        switch (self.mode) {
+            .unknown => unreachable,
+            .json => try self.appendJson(raw_line),
+            .sse => self.parser.line(raw_line) catch |failure| return mapSseFailure(failure),
+        }
+    }
+
+    fn finish(self: *@This()) ![]u8 {
+        const status = self.status orelse return error.InvalidMcpMessage;
+        if (status != 200 and status != 400) return self.allocator.dupe(u8, "");
+        return switch (self.mode) {
+            .unknown => error.MissingMcpSseResponse,
+            .json => self.json.toOwnedSlice(self.allocator),
+            .sse => result: {
+                self.parser.finish() catch |failure| return mapSseFailure(failure);
+                break :result self.response.takeResult() orelse error.MissingMcpSseResponse;
+            },
+        };
+    }
+
+    fn appendJson(self: *@This(), value: []const u8) !void {
+        const separator: usize = @intFromBool(self.json.items.len != 0);
+        const maximum = json_limits.defaults.mcp_message.max_document_bytes;
+        if (separator > maximum or self.json.items.len > maximum - separator or
+            value.len > maximum - separator - self.json.items.len)
+        {
+            return error.McpMessageTooLarge;
+        }
+        if (separator != 0) try self.json.append(self.allocator, '\n');
+        try self.json.appendSlice(self.allocator, value);
+    }
+};
+
+fn mapSseFailure(failure: anyerror) anyerror {
+    return if (failure == error.SseEventTooLarge) error.McpMessageTooLarge else failure;
+}
 
 fn finishHttpResponse(
     allocator: std.mem.Allocator,
@@ -2005,18 +2139,10 @@ fn extractSseResponse(
     defer parser.deinit();
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |raw_line| {
-        parser.line(raw_line) catch |failure| switch (failure) {
-            error.SseEventTooLarge => return error.McpMessageTooLarge,
-            else => |other| return other,
-        };
+        parser.line(raw_line) catch |failure| return mapSseFailure(failure);
     }
-    parser.finish() catch |failure| switch (failure) {
-        error.SseEventTooLarge => return error.McpMessageTooLarge,
-        else => |other| return other,
-    };
-    const result = collector.result orelse return error.MissingMcpSseResponse;
-    collector.result = null;
-    return result;
+    parser.finish() catch |failure| return mapSseFailure(failure);
+    return collector.takeResult() orelse error.MissingMcpSseResponse;
 }
 
 const SseResponseCollector = struct {
@@ -2027,6 +2153,12 @@ const SseResponseCollector = struct {
     subscription_acknowledged: bool = false,
     events: ?EventSink,
     result: ?[]u8 = null,
+
+    fn takeResult(self: *@This()) ?[]u8 {
+        const result = self.result;
+        self.result = null;
+        return result;
+    }
 
     fn emit(context: *anyopaque, data: []const u8) !void {
         const self: *@This() = @ptrCast(@alignCast(context));
@@ -6294,6 +6426,139 @@ test "HTTP transport handles SSE, notifications, and status failures" {
         error.McpMessageTooLarge,
         streamable.transport().send(std.testing.allocator, request),
     );
+}
+
+test "Streamable HTTP delivers SSE incrementally and accepts streamed JSON" {
+    const Events = struct {
+        count: usize = 0,
+
+        fn emit(context: *anyopaque, _: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.count += 1;
+        }
+    };
+    const Stub = struct {
+        lines: []const []const u8,
+        status: u16 = 200,
+        events: *Events,
+        require_event_before_result: bool = false,
+        fail_after_lines: bool = false,
+
+        fn send(_: *anyopaque, _: std.mem.Allocator, _: http.Request) !http.Response {
+            return error.BufferedRequestWasUsed;
+        }
+
+        fn stream(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            _: http.Request,
+            sink: http.LineSink,
+        ) !http.StreamResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const response = http.StreamResponse{ .status = self.status };
+            try sink.start(response);
+            for (self.lines, 0..) |line_value, index| {
+                if (self.require_event_before_result and index == 2 and self.events.count != 1) {
+                    return error.EventWasNotDeliveredIncrementally;
+                }
+                try sink.line(line_value);
+            }
+            if (self.fail_after_lines) return error.StreamEndedAbruptly;
+            return response;
+        }
+    };
+    const request = WireRequest{
+        .message = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\"}",
+        .method = methods.discover,
+    };
+    const sse_lines = [_][]const u8{
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progressToken\":1,\"progress\":0}}",
+        "",
+        "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}",
+        "",
+    };
+    var events: Events = .{};
+    var stub = Stub{
+        .lines = &sse_lines,
+        .events = &events,
+        .require_event_before_result = true,
+    };
+    try std.testing.expectError(
+        error.BufferedRequestWasUsed,
+        Stub.send(&stub, std.testing.allocator, .{ .method = .POST, .url = "https://example.test" }),
+    );
+    var streamable = StreamableHttpTransport.init(
+        std.testing.io,
+        .{ .context = &stub, .sendFn = Stub.send, .streamLinesFn = Stub.stream },
+        "https://example.test/mcp",
+    );
+    var response = try streamable.transport().send(std.testing.allocator, .{
+        .message = request.message,
+        .method = request.method,
+        .events = .{ .context = &events, .eventFn = Events.emit },
+    });
+    try std.testing.expectEqualStrings("{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}", response);
+    std.testing.allocator.free(response);
+
+    const json_lines = [_][]const u8{
+        "  ",
+        "  {",
+        "\"jsonrpc\": \"2.0\",",
+        "\"id\": 1,",
+        "\"result\": {}",
+        "}",
+    };
+    stub.lines = &json_lines;
+    stub.require_event_before_result = false;
+    response = try streamable.transport().send(std.testing.allocator, .{
+        .message = request.message,
+        .method = request.method,
+        .events = .{ .context = &events, .eventFn = Events.emit },
+    });
+    defer std.testing.allocator.free(response);
+    try std.testing.expect(std.mem.startsWith(u8, response, "{"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "\"result\": {}") != null);
+
+    const no_event_lines = [_][]const u8{ ": keepalive", "", "data: ignored" };
+    stub.lines = &no_event_lines;
+    stub.require_event_before_result = true;
+    events.count = 0;
+    try std.testing.expectError(error.EventWasNotDeliveredIncrementally, streamable.transport().send(
+        std.testing.allocator,
+        .{
+            .message = request.message,
+            .method = request.method,
+            .events = .{ .context = &events, .eventFn = Events.emit },
+        },
+    ));
+
+    const result_lines = [_][]const u8{
+        "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}",
+        "",
+    };
+    stub.lines = &result_lines;
+    stub.require_event_before_result = false;
+    stub.fail_after_lines = true;
+    try std.testing.expectError(error.StreamEndedAbruptly, streamable.transport().send(
+        std.testing.allocator,
+        .{
+            .message = request.message,
+            .method = request.method,
+            .events = .{ .context = &events, .eventFn = Events.emit },
+        },
+    ));
+
+    stub.status = 503;
+    stub.lines = &sse_lines;
+    stub.fail_after_lines = false;
+    try std.testing.expectError(error.McpHttpRequestFailed, streamable.transport().send(
+        std.testing.allocator,
+        .{
+            .message = request.message,
+            .method = request.method,
+            .events = .{ .context = &events, .eventFn = Events.emit },
+        },
+    ));
 }
 
 test "SSE response framing propagates sinks and releases partial allocations" {

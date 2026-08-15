@@ -31,7 +31,7 @@ API.
 | MRTR | Elicitation schemas/results, roots, sampling messages/tools, declared client capabilities, and bounded retries |
 | Pagination | Cursor encoding for all list methods; tool discovery rejects cursor cycles and honors `max_pages` |
 | Subscriptions | Typed filters, correlation IDs, acknowledgement-first ordering, requested updates, SSE, stdio, and cancellation |
-| HTTP | Routing headers, tool-argument headers, reserved MCP error status mappings, response limits, URL policy, OAuth discovery, bounded Bearer refresh/step-up, and server deployment guards |
+| HTTP | Incremental bounded request-scoped SSE, buffered fallback, concurrent requests, routing and tool-argument headers, reserved MCP error status mappings, response limits, URL policy, OAuth discovery, bounded Bearer refresh/step-up, and server deployment guards |
 | Extensions | Mandatory prefixed identifiers, object settings, lossless unknown JSON, generic methods, and `extensionSettings` |
 | Compatibility | Modern/legacy classification for stdio and HTTP; actionable rejection of legacy `initialize` |
 

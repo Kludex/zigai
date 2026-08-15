@@ -496,7 +496,10 @@ Streamable HTTP admits up to 64 requests at once. Set
 `StreamableHttpOptions.max_in_flight` with `initWithOptions` to match the
 upstream server's capacity; excess requests wait at the transport boundary.
 Request-scoped SSE uses bounded, standard multi-line `data:` framing. Event
-IDs and retry hints are ignored because MCP 2026-07-28 has no session resume.
+callbacks run as each complete event arrives; the final correlated response is
+returned normally. Event IDs and retry hints are ignored because MCP
+2026-07-28 has no session resume. HTTP transports without line streaming fall
+back to the same bounded buffered parser.
 
 For a local server, start it over stdio and use the same client:
 
