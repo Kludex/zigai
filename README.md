@@ -183,6 +183,7 @@ authentication style, or model profile overrides.
 | `zigai.providers.azure_openai` | Azure OpenAI v1 Responses and Chat Completions |
 | `zigai.providers.bedrock` | Amazon Bedrock Converse; Mantle Chat Completions |
 | `zigai.providers.xai` | xAI Responses; explicit Chat Completions compatibility |
+| `zigai.providers.zai` | Z.AI GLM Chat Completions |
 | `zigai.providers.cerebras` | Cerebras Inference |
 | `zigai.providers.cohere` | Cohere v2 Chat; explicit Compatibility API |
 | `zigai.providers.crusoe` | Crusoe Serverless Inference |
@@ -258,6 +259,10 @@ Snowflake Cortex derives its API root from `SNOWFLAKE_ACCOUNT` and authenticates
 with `SNOWFLAKE_TOKEN`. Use `snowflake.apiBase` rather than assembling an
 account hostname manually; it validates the identifier before the token can be
 sent. `SNOWFLAKE_MODEL` optionally selects the Cortex model.
+
+Z.AI uses bearer authentication from `ZAI_API_KEY` and defaults the compiled
+example to `glm-5.1`. GLM 5.2 reasoning-effort settings and JSON-object output
+are profiled explicitly; unknown model IDs remain fail-closed.
 
 Use `azure_openai.ChatClient` (or its backwards-compatible `Client` alias) only
 when a deployment requires Chat Completions.

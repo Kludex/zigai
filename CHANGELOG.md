@@ -8,6 +8,8 @@
   profiles, structured-output capabilities, and a compiled example.
 - Add a Snowflake Cortex provider with validated account-scoped API roots,
   family-specific Chat Completions profiles, and a compiled example.
+- Add a named Z.AI provider with GLM profiles, conservative pre-I/O capability
+  checks, and a compiled example.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

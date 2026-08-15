@@ -33,6 +33,7 @@ pub const snowflake = @import("providers/snowflake.zig");
 pub const together = @import("providers/together.zig");
 pub const vertex_ai = @import("providers/vertex_ai.zig");
 pub const xai = @import("providers/xai.zig");
+pub const zai = @import("providers/zai.zig");
 
 const TestTransport = struct {
     calls: usize = 0,
@@ -69,6 +70,7 @@ test {
     _ = together;
     _ = vertex_ai;
     _ = xai;
+    _ = zai;
 }
 
 fn namedCompatibleProfile(comptime ProviderType: type, comptime ClientType: type, model_name: []const u8) model.ModelProfile {
@@ -98,6 +100,7 @@ test "named compatible clients use their provider model profiles" {
     try std.testing.expect(namedCompatibleProfile(snowflake.Provider, snowflake.Client, "claude-sonnet-4-5").supports_json_schema_output);
     try std.testing.expect(namedCompatibleProfile(together.Provider, together.Client, "openai/gpt-oss-20b").supportsReasoningEffort(.low));
     try std.testing.expect(namedCompatibleProfile(xai.ChatProvider, xai.ChatClient, "grok-4.6").supports_tools);
+    try std.testing.expect(namedCompatibleProfile(zai.Provider, zai.Client, "glm-5.2").supportsReasoningEffort(.high));
 
     const unknown = namedCompatibleProfile(groq.Provider, groq.Client, "future-model");
     try std.testing.expect(!unknown.supports_tools);
@@ -167,6 +170,16 @@ test "named compatible profiles reject unsupported requests before transport" {
     };
     try std.testing.expectError(agent.Agent.Error.ModelDoesNotSupportTools, (agent.Agent{
         .model = snowflake_client.model(),
+        .tools = &.{tool},
+    }).run(std.testing.allocator, "hello"));
+
+    var zai_provider = zai.Provider.init("unused", counting_transport);
+    var zai_client = zai.Client{
+        .model_name = "private-model",
+        .provider = zai_provider.provider(),
+    };
+    try std.testing.expectError(agent.Agent.Error.ModelDoesNotSupportTools, (agent.Agent{
+        .model = zai_client.model(),
         .tools = &.{tool},
     }).run(std.testing.allocator, "hello"));
 

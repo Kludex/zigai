@@ -176,7 +176,8 @@ for source in "$project_dir"/src/*.zig "$project_dir"/src/cli/*.zig "$project_di
         "$project_dir"/src/providers/openrouter.zig|\
         "$project_dir"/src/providers/ovhcloud.zig|\
         "$project_dir"/src/providers/pydantic_gateway.zig|\
-        "$project_dir"/src/providers/together.zig)
+        "$project_dir"/src/providers/together.zig|\
+        "$project_dir"/src/providers/zai.zig)
             # These modules contain aliases only. Downstream consumer builds
             # compile them, but they have no executable lines for kcov.
             continue

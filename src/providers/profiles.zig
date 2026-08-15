@@ -259,6 +259,15 @@ pub fn xAIChat(model_name: []const u8) ?model.ModelProfile {
     return profile;
 }
 
+/// Native GLM model IDs exposed by Z.AI's Chat Completions endpoint.
+pub fn zAI(model_name: []const u8) ?model.ModelProfile {
+    if (!startsWith(model_name, "glm-")) return null;
+    var profile = familyProfile(.zai, model_name);
+    profile.supports_json_object_output = true;
+    if (startsWith(model_name, "glm-5.2")) profile.reasoning_efforts = reasoningEfforts();
+    return profile;
+}
+
 /// OpenAI model IDs exposed by Amazon Bedrock Mantle.
 pub fn bedrock(model_name: []const u8) ?model.ModelProfile {
     if (!startsWith(model_name, "openai.")) return null;
@@ -568,6 +577,11 @@ test "named compatible providers resolve known families and reject unknown ones"
     try std.testing.expect(!snowflake("deepseek-r1").?.supports_tools);
     try std.testing.expect(!snowflake("snowflake-arctic").?.supports_tools);
     try std.testing.expect(snowflake("private-model") == null);
+
+    try std.testing.expect(zAI("glm-5.1").?.supports_json_object_output);
+    try std.testing.expect(!zAI("glm-5.1").?.supportsReasoningEffort(.high));
+    try std.testing.expect(zAI("glm-5.2").?.supportsReasoningEffort(.low));
+    try std.testing.expect(zAI("private-model") == null);
 
     try std.testing.expect(bedrock("openai.gpt-oss-20b").?.supportsReasoningEffort(.medium));
     try std.testing.expect(bedrock("openai.gpt-5.4").?.supportsReasoningEffort(.high));

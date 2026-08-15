@@ -400,6 +400,13 @@ labels before authentication. Cortex profiles distinguish OpenAI, Claude, and
 text-only families so ignored or rejected tool and structured-output fields do
 not reach the network. Unknown models remain fail-closed.
 
+Z.AI's named provider uses the general `/api/paas/v4` Chat Completions root and
+native `glm-*` model IDs. The compatibility client supports the portable GLM
+surface, including JSON-object output and GLM 5.2 reasoning effort. Z.AI's
+`thinking` request object and `reasoning_content` replay require the separate
+native adapter tracked on the production roadmap; the generic codec does not
+claim to preserve them.
+
 `Provider.listModels` is implemented by OpenAI, Anthropic, Google, and
 OpenAI-compatible provider objects. It authenticates through the provider
 boundary and returns `OwnedProviderModels`; call `deinit` after consuming its
