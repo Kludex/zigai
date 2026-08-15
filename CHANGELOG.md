@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add MCP `2026-07-28` HTTP authorization and deployment security with bounded
+  RFC 9728/RFC 8414/OIDC discovery, exact issuer and resource binding, PKCE
+  checks, owned token callbacks, bounded refresh and scope step-up, pre-dispatch
+  TLS/Origin/Host enforcement, owned challenges, redirect isolation, redaction,
+  allocation-failure tests, and fuzzing.
 - Complete the MCP `2026-07-28` conformance matrix with strict nested message
   and metadata validation, stateless capability guards, MRTR validation,
   filtered acknowledgement-first subscriptions, bounded cycle-safe tool

@@ -130,6 +130,28 @@ pub fn extensionSettings(
 
 /// MCP protocol and transport failures defined by ZigAI.
 pub const Error = error{
+    /// An OAuth token, response, or metadata document names another issuer.
+    InvalidAuthorizationIssuer,
+    /// OAuth/OIDC discovery metadata is malformed or unsafe.
+    InvalidAuthorizationServerMetadata,
+    /// A Bearer challenge is malformed or ambiguous.
+    InvalidBearerChallenge,
+    /// A Bearer token is malformed, unsafe, or conflicts with token policy.
+    InvalidBearerToken,
+    /// A browser Origin is malformed or outside deployment policy.
+    InvalidOrigin,
+    /// RFC 9728 protected-resource metadata is malformed or mismatched.
+    InvalidProtectedResourceMetadata,
+    /// A required request Host is absent, malformed, or mismatched.
+    InvalidRequestHost,
+    /// The canonical OAuth resource URI is invalid or differs from the endpoint.
+    InvalidResourceUri,
+    /// Protected MCP HTTP was attempted over unapproved cleartext.
+    InsecureHttpTransport,
+    /// RFC 9207 issuer output was required but absent.
+    MissingAuthorizationIssuer,
+    /// Authorization-server metadata does not advertise S256 PKCE.
+    PkceUnsupported,
     /// A stdio transport was configured without a program command.
     EmptyCommand,
     /// An MCP header value does not match its schema annotation.

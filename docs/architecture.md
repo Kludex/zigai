@@ -351,14 +351,20 @@ notifications to an `EventSink` until the final response closes the stream.
 `StreamableHttpTransport` emits the required protocol, method, name, and tool
 parameter headers. It accepts direct JSON and request-scoped SSE responses.
 `StdioTransport` frames one JSON-RPC message per line and correlates response
-IDs. Authentication is supplied as custom HTTP headers and is outside the MCP
-message layer.
+IDs. The separate `mcp.auth` module owns transport-level authorization
+contracts: bounded protected-resource and authorization-server discovery,
+issuer-bound token acquisition, RFC 9207 response checks, and scope step-up.
+The HTTP transport adds one sensitive Bearer header per attempt; credentials
+never enter the JSON-RPC envelope.
 
 `mcp.Server` is a transport-neutral dispatcher. It provides discovery,
 per-request version checks, standard and tool-parameter header validation,
 server identity metadata, core or extension method dispatch, JSON-RPC errors,
-and a stdio serving loop. An HTTP application passes its request headers to
-the same dispatcher.
+and a stdio serving loop. An HTTP application passes request headers and TLS
+state to the same dispatcher. Deployment policy rejects invalid browser
+Origins, Host mismatches, and unexpected cleartext before JSON parsing;
+authorization policy validates the Bearer token for the canonical resource
+before application dispatch and returns owned `WWW-Authenticate` headers.
 
 ## Deferred tool execution
 

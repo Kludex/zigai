@@ -31,7 +31,7 @@ API.
 | MRTR | Elicitation schemas/results, roots, sampling messages/tools, declared client capabilities, and bounded retries |
 | Pagination | Cursor encoding for all list methods; tool discovery rejects cursor cycles and honors `max_pages` |
 | Subscriptions | Correlation IDs, acknowledgement-first ordering, requested filters, SSE, stdio, and cancellation |
-| HTTP | Routing headers, tool-argument headers, reserved MCP error status mappings, response limits, and URL policy |
+| HTTP | Routing headers, tool-argument headers, reserved MCP error status mappings, response limits, URL policy, OAuth discovery, bounded Bearer refresh/step-up, and server deployment guards |
 | Extensions | Mandatory prefixed identifiers, object settings, lossless unknown JSON, generic methods, and `extensionSettings` |
 | Compatibility | Modern/legacy classification for stdio and HTTP; actionable rejection of legacy `initialize` |
 
@@ -56,3 +56,12 @@ state or initiate fallback.
 - Event JSON is borrowed for the duration of the callback.
 - `max_round_trips` bounds MRTR retries; `max_pages` bounds tool discovery.
 - MCP documents use the shared bounded JSON parser and message byte limit.
+- Optional HTTP authorization follows the `2026-07-28` OAuth profile: RFC 9728
+  protected-resource discovery, RFC 8414/OIDC issuer discovery, exact RFC 9207
+  issuer checks, `S256` PKCE capability, RFC 8707 resource indicators, and
+  bounded 401/403 retries. OAuth remains disabled unless policy callbacks are
+  configured; stdio credentials remain an environment/application concern.
+- Protected HTTP servers can reject cleartext, duplicate or untrusted Origin
+  headers, and Host mismatches before parsing JSON-RPC. Bearer validators receive
+  the token, canonical audience, method, and params; MCP handlers never receive
+  the credential.

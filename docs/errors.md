@@ -128,6 +128,22 @@ or partially activate a bundle.
 | `LocalNetworkUrlForbidden` | The URL uses a local name or non-public literal IP. |
 | `UrlHostNotAllowed` | The URL host is absent from an explicit allowlist. |
 
+### MCP authorization
+
+| Error | Meaning |
+| --- | --- |
+| `InvalidAuthorizationIssuer` | A token, response, or metadata document is bound to a different authorization-server issuer. |
+| `MissingAuthorizationIssuer` | RFC 9207 support was advertised but the authorization response omitted `iss`. |
+| `InvalidAuthorizationServerMetadata` | Discovered OAuth/OIDC metadata is missing required fields or contains an ineligible endpoint. |
+| `InvalidProtectedResourceMetadata` | RFC 9728 metadata is malformed, mismatched, duplicated, or lacks Bearer-header support. |
+| `InvalidResourceUri` | The configured RFC 8707 resource is not an eligible canonical endpoint URI. |
+| `PkceUnsupported` | Authorization-server metadata does not advertise `S256`. |
+| `InvalidBearerChallenge` | A `WWW-Authenticate` Bearer challenge is malformed or ambiguous. |
+| `InvalidBearerToken` | A token is empty, unsafe for an HTTP header, malformed, or conflicts with a configured token provider. |
+| `InvalidOrigin` | A present browser Origin is malformed, duplicated, or outside the exact allowlist. |
+| `InvalidRequestHost` | A required Host is absent, malformed, duplicated, or does not match deployment policy. |
+| `InsecureHttpTransport` | A protected server request arrived over cleartext without an explicit development opt-in. |
+
 ## Provider errors
 
 All adapters use the stable `ProviderRequestError` categories.

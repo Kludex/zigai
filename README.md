@@ -541,12 +541,16 @@ defer if (settings) |json| allocator.free(json);
 `zigai.mcp.Server` provides the matching transport-neutral server dispatcher,
 automatic `server/discover`, protocol and HTTP header validation, extension
 dispatch, result metadata, and a stdio serving loop. HTTP hosts pass their
-request headers to `Server.handle`; authorization remains an HTTP concern and
-can be configured with `mcp_http.headers`. Core handlers run only when the
-matching capability appears in the server's `capabilities_json`.
+request headers and TLS state to `Server.handle`. Protected endpoints use
+`mcp.auth.ClientPolicy` and `mcp.auth.ServerPolicy`; browser-facing hosts add a
+separate `mcp.auth.DeploymentPolicy` for exact Origin and Host checks. Bearer
+tokens never enter MCP JSON or handler parameters, and refresh/step-up retries
+are bounded. Core handlers run only when the matching capability appears in
+the server's `capabilities_json`.
 
 See the [MCP conformance matrix](docs/mcp-conformance.md) for message coverage,
-compatibility boundaries, validation, and ownership.
+compatibility boundaries, validation, and ownership. The [security guide](docs/security.md#mcp-http-authorization)
+covers OAuth discovery, token callbacks, response headers, and deployment.
 
 ### Approval and deferred tools
 

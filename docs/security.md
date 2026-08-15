@@ -46,6 +46,47 @@ private address. For hostile inputs, combine an exact host allowlist with
 network egress controls or a transport whose resolver validates every resolved
 address.
 
+## MCP HTTP authorization
+
+MCP authorization is optional. When enabled, ZigAI follows the
+[`2026-07-28` authorization profile](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization)
+at the transport boundary:
+
+- `protectedResourceDiscoveryUrls` returns the endpoint-path and root RFC 9728
+  URLs in required order; `parseProtectedResourceMetadata` accepts extensions
+  but requires the canonical resource, at least one distinct issuer, and the
+  Bearer header method;
+- `authorizationServerDiscoveryUrls` returns RFC 8414 and OIDC URLs in required
+  path-aware order; parsed metadata must match the selected issuer exactly,
+  use eligible HTTPS endpoints, and advertise `S256` PKCE;
+- `ClientPolicy` binds one canonical resource and authorization-server issuer
+  to a `TokenProvider`. The callback receives the RFC 8707 `resource`, method,
+  accumulated scopes, and refresh reason. Return tokens with
+  `AccessToken.initAlloc` so partial allocation failures are cleaned safely;
+- Streamable HTTP adds `Authorization: Bearer ...` to every POST. A valid 401
+  challenge can request a bounded refresh; a 403 `insufficient_scope` challenge
+  can request a bounded stable-order scope union. Static Authorization headers
+  cannot be combined with a token policy;
+- `ServerPolicy` passes only the token value, canonical audience, method, and
+  params to the application verifier. The verifier must validate signature,
+  expiry, issuer, and audience before returning `authorized`. Denials produce
+  an owned `WWW-Authenticate` response header; callback descriptions and token
+  bytes are never reflected.
+
+Browser and network checks are separate in `DeploymentPolicy`. It rejects
+cleartext unless explicitly enabled, requires an exact allowed Origin whenever
+the header is present, and can require an exact Host value. Duplicate Origin,
+Host, and Authorization headers fail closed. This implements the
+[Streamable HTTP Origin requirement](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http)
+before JSON parsing. Bind local servers to loopback; use a reverse proxy or
+host framework that supplies truthful `HttpMetadata.is_tls`, preserves response
+headers, and validates resolved addresses at the network boundary.
+
+`ServerResponse.headers` is borrowed until `deinit`; an HTTP host must copy or
+write those headers first. The standard outbound HTTP transport does not follow
+redirects, so Bearer credentials cannot cross origins implicitly. Custom HTTP
+transports must preserve that rule and mark Authorization headers sensitive.
+
 ## Credentials and diagnostics
 
 Provider clients place API keys only in authentication headers. Standard names
@@ -73,6 +114,8 @@ reports that suppression.
 | Tool arguments and results | Untrusted data | JSON, size, timeout, queue, and concurrency limits apply. Tool implementations are trusted code and must authorize side effects. |
 | Provider and MCP endpoints | Operator configuration | URL policy runs before callbacks and socket work. Prefer exact host allowlists. |
 | MCP servers and discovered tools | Untrusted peers | Protocol, capability, schema, pagination, round-trip, and JSON limits apply. Review tool descriptions and requested actions before granting authority. |
+| MCP OAuth metadata and challenges | Untrusted network data | Bounded parsers, URL policy, exact issuer/resource binding, PKCE checks, and retry limits apply. Token storage and interactive authorization remain application-owned. |
+| MCP HTTP host | Trusted deployment boundary | Must provide truthful headers/TLS state, emit owned response headers before cleanup, bind local services to loopback, and enforce resolver/egress policy. |
 | MCP input handlers and extensions | Trusted application policy over untrusted JSON | MRTR requests and responses are schema-checked, but the callback decides whether elicitation, roots, or sampling is authorized. Extension settings remain application-defined. |
 | Provider-managed files | Provider-scoped handles | A provider guard is checked before network I/O; do not reuse opaque handles across providers. |
 | Persisted history and paused state | Untrusted input | Versioned parsers and allocation limits apply. Store it with application-appropriate access control and retention. |
