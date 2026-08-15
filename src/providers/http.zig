@@ -292,6 +292,7 @@ test "configured HTTP provider profiles redact credentials and reject conflicts"
         .model_profiles = .{ .context = &marker, .lookupFn = Profiles.lookup, .overrideFn = Profiles.override },
     };
     const provider = configured.provider();
+    try std.testing.expectError(error.UnexpectedRequest, provider.request(std.testing.allocator, .{ .method = .GET, .endpoint = "/models" }));
     const profile = provider.modelProfile("known", .{});
     try std.testing.expect(profile.supports_streaming);
     try std.testing.expect(!profile.supports_tools);
