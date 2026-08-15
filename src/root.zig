@@ -22,6 +22,7 @@ pub const google = providers.google;
 pub const Agent = agent.Agent;
 pub const AgentError = agent.Agent.Error;
 pub const CancellationToken = agent.CancellationToken;
+pub const RunControl = model.RunControl;
 pub const AgentStreamEvent = agent.AgentStreamEvent;
 pub const AgentStreamSink = agent.AgentStreamSink;
 pub const RetryEvent = agent.RetryEvent;

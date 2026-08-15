@@ -28,6 +28,7 @@ pub const Context = struct {
     profile: model.ModelProfile,
     usage: model.Usage,
     model_requests: usize,
+    control: model.RunControl = .{},
 };
 
 /// A built-in or application-defined transformation of provider-facing history.
@@ -73,11 +74,24 @@ pub const Processor = union(enum) {
             .trim => |options| trim(allocator, messages, options.max_messages),
             .compact => compact(allocator, messages),
             .provider_valid => providerValid(allocator, messages),
-            .summarize => |options| summarize(allocator, messages, options),
-            .custom => |custom| custom.processFn(custom.context, allocator, context, messages),
+            .summarize => |options| summarize(allocator, messages, options, context.control),
+            .custom => |custom| context.control.invoke(
+                []const model.Message,
+                invokeCustomProcessor,
+                .{ custom, allocator, context, messages },
+            ),
         };
     }
 };
+
+fn invokeCustomProcessor(
+    custom: Processor.Custom,
+    allocator: std.mem.Allocator,
+    context: Context,
+    messages: []const model.Message,
+) ![]const model.Message {
+    return custom.processFn(custom.context, allocator, context, messages);
+}
 
 /// Applies processors from left to right.
 pub fn processAll(
@@ -749,6 +763,7 @@ fn summarize(
     allocator: std.mem.Allocator,
     messages: []const model.Message,
     options: Processor.Summarize,
+    control: model.RunControl,
 ) ![]const model.Message {
     var ordinary: usize = 0;
     for (messages) |message| {
@@ -767,7 +782,11 @@ fn summarize(
             seen += 1;
         } else try retained.append(allocator, message);
     }
-    const summary = try options.summarizeFn(options.context, allocator, older.items);
+    const summary = try control.invoke(
+        []const u8,
+        invokeSummarizer,
+        .{ options, allocator, older.items },
+    );
     const summary_parts = try allocator.alloc(model.RequestPart, 1);
     summary_parts[0] = .{ .user_prompt = .{ .text = summary } };
     var with_summary: std.ArrayList(model.Message) = .empty;
@@ -781,6 +800,14 @@ fn summarize(
     }
     if (!inserted) try with_summary.append(allocator, .{ .request = .{ .parts = summary_parts } });
     return providerValid(allocator, try compact(allocator, with_summary.items));
+}
+
+fn invokeSummarizer(
+    options: Processor.Summarize,
+    allocator: std.mem.Allocator,
+    messages: []const model.Message,
+) ![]const u8 {
+    return options.summarizeFn(options.context, allocator, messages);
 }
 
 fn isSystemRequest(message: model.Message) bool {

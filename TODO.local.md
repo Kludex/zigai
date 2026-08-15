@@ -19,7 +19,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Isolate tool execution. Support per-tool timeouts, cancellation,
   concurrency limits, queue limits, maximum result/follow-up sizes, and explicit
   timeout/overflow results that providers can retry safely.
-- [ ] Finish deadline and cancellation propagation. Use one run deadline across
+- [x] Finish deadline and cancellation propagation. Use one run deadline across
   retries, DNS/connect/write/read, streaming, toolsets, tools, hooks, MCP, and
   deferred resume; prove that abandoned tasks are drained without late writes.
 - [ ] Harden retries. Add full-jitter exponential backoff, HTTP-date

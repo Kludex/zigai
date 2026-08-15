@@ -156,19 +156,24 @@ When a model requests multiple tools, the agent uses its `Io` runtime to run
 them through a bounded scheduler. Agent-wide and per-tool policies limit active
 and queued calls; excess work becomes a retryable tool result without executing
 the callback. Each accepted call races cooperative execution against its
-optional timeout and the run cancellation token, and every losing task is
-cancelled and drained before the agent continues. Allocations into the result
-arena are synchronized, result parts remain in model call order, and a fatal
-failure cancels outstanding work. Result and follow-up sizes are checked before
-they enter history or provider encoding. `limits.max_tool_calls` separately
-caps the total across every step of a run.
+optional timeout, the absolute run deadline, and the run cancellation token.
+Every losing task is cancelled and drained before the agent continues.
+Allocations into the result arena are synchronized, result parts remain in
+model call order, and a fatal failure cancels outstanding work. Result and
+follow-up sizes are checked before they enter history or provider encoding.
+`limits.max_tool_calls` separately caps the total across every step of a run.
 
-Cancellation is checked at loop boundaries and propagated through the model
-request so the standard HTTP transport can interrupt in-flight buffered and
-streaming work. Per-request deadlines use the same runtime contract. Retry
-decisions include timeouts. Optional exponential backoff uses the
-application's `Io`, honors numeric `Retry-After`, and remains interruptible; a
-fallible before-retry hook observes each planned delay and provider metadata.
+`RunControl` is created once per invocation from the agent and run options. It
+owns the monotonic deadline and races application callbacks, model work,
+streaming, retry waits, toolsets, tools, hooks, MCP calls, and output validation.
+The same remaining time tightens every model request, allowing the standard
+HTTP transport to interrupt DNS, connect, write, read, and streaming work.
+Cancellation uses the same task-draining path. A resumed approval is a new
+invocation and receives a fresh monotonic budget.
+
+Retry decisions include request timeouts. Optional exponential backoff uses
+the application's `Io`, honors numeric `Retry-After`, and remains interruptible;
+a fallible before-retry hook observes each planned delay and provider metadata.
 
 The HTTP transport parses allocation-free response metadata for numeric
 `Retry-After` and provider remaining-request/token headers. Provider error

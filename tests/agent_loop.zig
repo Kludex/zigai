@@ -1889,9 +1889,9 @@ test "tool isolation cancels in-flight work and requires IO for timeouts" {
         }
     };
     const Cancel = struct {
-        fn after(io: std.Io, token: *zigai.CancellationToken) !void {
-            try (std.Io.Timeout{ .duration = .{
-                .raw = .fromMilliseconds(5),
+        fn after(io: std.Io, token: *zigai.CancellationToken, state: *State) !void {
+            while (!state.active.load(.seq_cst)) try (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(1),
                 .clock = .awake,
             } }).sleep(io);
             token.cancel();
@@ -1942,7 +1942,7 @@ test "tool isolation cancels in-flight work and requires IO for timeouts" {
     var token: zigai.CancellationToken = .{};
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
-    var cancel = try threaded.io().concurrent(Cancel.after, .{ threaded.io(), &token });
+    var cancel = try threaded.io().concurrent(Cancel.after, .{ threaded.io(), &token, &state });
     try std.testing.expectError(
         zigai.Agent.Error.Cancelled,
         (zigai.Agent{
@@ -2613,6 +2613,37 @@ test "agent propagates runtime controls and normalizes in-flight cancellation" {
         .request_timeout_ms = 250,
         .cancellation = &token,
     }).run(std.testing.allocator, "cancel while waiting"));
+}
+
+test "one run deadline bounds model and tool work without late writes" {
+    const BlockingModel = struct {
+        io: std.Io,
+        active: std.atomic.Value(bool) = .init(false),
+        saw_bounded_timeout: std.atomic.Value(bool) = .init(false),
+
+        fn request(context: *anyopaque, _: std.mem.Allocator, model_request: zigai.ModelRequest) !zigai.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const timeout_ms = model_request.timeout_ms orelse return error.MissingRunTimeout;
+            self.saw_bounded_timeout.store(timeout_ms > 0 and timeout_ms <= 5, .seq_cst);
+            self.active.store(true, .seq_cst);
+            defer self.active.store(false, .seq_cst);
+            try (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(100),
+                .clock = .awake,
+            } }).sleep(self.io);
+            return .{ .parts = &.{.{ .text = "late" }} };
+        }
+    };
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var blocking_model = BlockingModel{ .io = threaded.io() };
+    try std.testing.expectError(zigai.Agent.Error.RunTimedOut, (zigai.Agent{
+        .model = .{ .context = &blocking_model, .profile = .{}, .requestFn = BlockingModel.request },
+        .io = threaded.io(),
+        .run_timeout_ms = 10,
+    }).runWithOptions(std.testing.allocator, "wait", .{ .timeout_ms = 5 }));
+    try std.testing.expect(blocking_model.saw_bounded_timeout.load(.seq_cst));
+    try std.testing.expect(!blocking_model.active.load(.seq_cst));
 }
 
 test "retry hooks receive captured provider response metadata" {

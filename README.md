@@ -107,6 +107,14 @@ Timeouts require `Agent.io`. Timeout, queue, result-size, and follow-up-size
 failures become ordinary error tool results so the model can recover without
 replaying a successful call.
 
+Set `Agent.run_timeout_ms` for one monotonic deadline across the complete run.
+`RunOptions.timeout_ms` can tighten it for one invocation, while
+`request_timeout_ms` remains a per-model-attempt ceiling. The remaining run
+time is passed through provider HTTP work, streaming, retries, tools, MCP, and
+application callbacks. Timed-out or cancelled tasks are drained before the
+agent returns, so they cannot write into result state later. Run deadlines
+require `Agent.io`; a resumed approval starts a fresh invocation deadline.
+
 Reflected tools also expose the return type as
 `ToolDefinition.return_json_schema`. To add context for the next model step,
 return `ToolReturn(T)`:
@@ -537,8 +545,8 @@ tool results, usage, and the final output.
 
 The same loop supports:
 
-- cooperative cancellation;
-- per-request deadlines;
+- cancellation with drained in-flight work;
+- one run deadline plus optional per-request ceilings;
 - bounded retries and exponential backoff;
 - `Retry-After` and rate-limit metadata;
 - request and token budgets.

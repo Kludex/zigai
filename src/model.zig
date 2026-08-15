@@ -13,6 +13,131 @@ pub const CancellationToken = struct {
     }
 };
 
+/// Shared cancellation and monotonic deadline state for one agent invocation.
+/// A deadline is created once and downstream operations consume its remaining
+/// time instead of restarting a timeout.
+pub const RunControl = struct {
+    io: ?std.Io = null,
+    cancellation: ?*const CancellationToken = null,
+    deadline: ?std.Io.Clock.Timestamp = null,
+
+    /// Creates a control using the awake monotonic clock. A deadline requires
+    /// an I/O runtime because every consumer must observe the same clock.
+    pub fn init(io: ?std.Io, cancellation: ?*const CancellationToken, timeout_ms: ?u64) !RunControl {
+        const runtime = if (timeout_ms != null)
+            io orelse return error.RunControlRequiresIo
+        else
+            io;
+        const deadline = if (timeout_ms) |milliseconds| blk: {
+            const maximum: u64 = @intCast(std.math.maxInt(i64));
+            break :blk std.Io.Clock.Timestamp.fromNow(runtime.?, .{
+                .raw = .fromMilliseconds(@intCast(@min(milliseconds, maximum))),
+                .clock = .awake,
+            });
+        } else null;
+        return .{ .io = runtime, .cancellation = cancellation, .deadline = deadline };
+    }
+
+    /// Fails when cancellation was requested or the deadline has elapsed.
+    pub fn check(self: RunControl) !void {
+        if (self.cancellation) |token| if (token.isCancelled()) return error.Cancelled;
+        _ = try self.remainingMilliseconds();
+    }
+
+    /// Returns the positive milliseconds left, rounded up so a live
+    /// sub-millisecond deadline is not mistaken for an expired one.
+    pub fn remainingMilliseconds(self: RunControl) !?u64 {
+        const deadline = self.deadline orelse return null;
+        const io = self.io orelse return error.RunControlRequiresIo;
+        const now = std.Io.Clock.Timestamp.now(io, deadline.clock);
+        const nanoseconds = now.durationTo(deadline).raw.nanoseconds;
+        if (nanoseconds <= 0) return error.RunTimedOut;
+        const unit: i96 = std.time.ns_per_ms;
+        const rounded = @divFloor(nanoseconds + unit - 1, unit);
+        return @intCast(@min(rounded, std.math.maxInt(u64)));
+    }
+
+    /// Tightens an operation-local timeout to the remaining run deadline.
+    pub fn timeoutMilliseconds(self: RunControl, local_timeout_ms: ?u64) !?u64 {
+        if (self.cancellation) |token| if (token.isCancelled()) return error.Cancelled;
+        const remaining = try self.remainingMilliseconds();
+        if (remaining) |run_timeout| {
+            if (local_timeout_ms) |local| return @min(run_timeout, local);
+            return run_timeout;
+        }
+        return local_timeout_ms;
+    }
+
+    /// Invokes one fallible operation while racing cancellation and the
+    /// absolute run deadline. Losing work is cancelled and drained before this
+    /// function returns, so it cannot mutate caller-owned state afterward.
+    /// Results that require cleanup should be allocated in the run-owned arena
+    /// because a result completed at the cancellation boundary may be discarded.
+    pub fn invoke(
+        self: RunControl,
+        comptime Result: type,
+        comptime operation: anytype,
+        args: anytype,
+    ) !Result {
+        try self.check();
+        if (self.cancellation == null and self.deadline == null)
+            return @call(.auto, operation, args);
+
+        const io = self.io orelse {
+            const result = try @call(.auto, operation, args);
+            try self.check();
+            return result;
+        };
+        const Outcome = InvocationOutcome(Result);
+        var buffer: [3]Outcome = undefined;
+        var select: std.Io.Select(Outcome) = .init(io, &buffer);
+        defer select.cancelDiscard();
+        select.concurrent(.operation, operation, args) catch
+            return error.RunControlConcurrencyUnavailable;
+        if (self.deadline) |deadline|
+            select.async(.deadline, waitForDeadline, .{ io, deadline });
+        if (self.cancellation) |token|
+            select.async(.cancelled, waitForCancellation, .{ io, token });
+
+        return switch (try select.await()) {
+            .operation => |result| operation: {
+                const value = try result;
+                try self.check();
+                break :operation value;
+            },
+            .deadline => |result| blk: {
+                result catch return error.Cancelled;
+                break :blk error.RunTimedOut;
+            },
+            .cancelled => |result| blk: {
+                result catch return error.Cancelled;
+                break :blk error.Cancelled;
+            },
+        };
+    }
+
+    fn InvocationOutcome(comptime Result: type) type {
+        return union(enum) {
+            operation: anyerror!Result,
+            deadline: anyerror!void,
+            cancelled: anyerror!void,
+        };
+    }
+
+    fn waitForDeadline(io: std.Io, deadline: std.Io.Clock.Timestamp) !void {
+        return deadline.wait(io);
+    }
+
+    fn waitForCancellation(io: std.Io, token: *const CancellationToken) !void {
+        while (!token.isCancelled()) {
+            try (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(5),
+                .clock = .awake,
+            } }).sleep(io);
+        }
+    }
+};
+
 pub const ToolCall = struct {
     id: []const u8,
     name: []const u8,
@@ -243,8 +368,10 @@ pub const Tool = struct {
 
     fn executePrepared(self: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) ![]const u8 {
         if (self.executeFn) |execute_fn| return execute_fn(self.context, allocator, arguments_json);
-        if (self.executeOutputFn) |execute_output|
-            return (try execute_output(self.context, allocator, arguments_json)).content;
+        if (self.executeOutputFn) |execute_output| {
+            const output = try execute_output(self.context, allocator, arguments_json);
+            return output.content;
+        }
         return error.MissingToolExecutor;
     }
 
@@ -299,6 +426,9 @@ pub const Tool = struct {
             error.OutOfMemory,
             error.Cancelled,
             error.RequestCancelled,
+            error.RunTimedOut,
+            error.RunControlRequiresIo,
+            error.RunControlConcurrencyUnavailable,
             error.ToolConcurrencyUnavailable,
             error.ToolIsolationRequiresIo,
             => false,
@@ -321,6 +451,8 @@ pub const ToolRunContext = struct {
     cancellation: ?*const CancellationToken = null,
     /// Runtime available to tools for cancellable I/O.
     io: ?std.Io = null,
+    /// Absolute monotonic deadline shared by the complete agent invocation.
+    deadline: ?std.Io.Clock.Timestamp = null,
 
     pub fn dependency(self: ToolRunContext, comptime T: type) ?*T {
         const pointer = self.dependencies orelse return null;
@@ -577,6 +709,117 @@ test "usage adds provider totals" {
     try std.testing.expectEqual(@as(u64, 7), usage.input_tokens);
     try std.testing.expectEqual(@as(u64, 10), usage.output_tokens);
     try std.testing.expectEqual(@as(u64, 17), usage.totalTokens());
+}
+
+test "run control shares one deadline and drains interrupted work" {
+    const State = struct {
+        active: std.atomic.Value(bool) = .init(false),
+
+        fn slow(self: *@This(), io: std.Io) !u8 {
+            self.active.store(true, .seq_cst);
+            defer self.active.store(false, .seq_cst);
+            while (true) try (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(100),
+                .clock = .awake,
+            } }).sleep(io);
+        }
+    };
+
+    try std.testing.expectError(
+        error.RunControlRequiresIo,
+        RunControl.init(null, null, 1),
+    );
+    try (RunControl{}).invoke(void, struct {
+        fn call() !void {
+            try std.testing.expect(true);
+        }
+    }.call, .{});
+
+    var unavailable = std.Io.Threaded.init(std.testing.allocator, .{ .concurrent_limit = .nothing });
+    defer unavailable.deinit();
+    const unavailable_control = try RunControl.init(unavailable.io(), null, 10);
+    try std.testing.expectError(
+        error.RunControlConcurrencyUnavailable,
+        unavailable_control.invoke(void, struct {
+            fn call() !void {
+                unreachable;
+            }
+        }.call, .{}),
+    );
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var state: State = .{};
+    const control = try RunControl.init(io, null, 2);
+    const first_remaining = (try control.remainingMilliseconds()).?;
+    try std.testing.expect(first_remaining > 0 and first_remaining <= 2);
+    try std.testing.expectEqual(@as(?u64, 1), try control.timeoutMilliseconds(1));
+    try std.testing.expectError(error.RunTimedOut, control.invoke(u8, State.slow, .{ &state, io }));
+    try std.testing.expect(!state.active.load(.seq_cst));
+    try std.testing.expectError(error.RunTimedOut, control.check());
+}
+
+test "run control drains cancellation and supports cooperative fallback" {
+    const State = struct {
+        active: std.atomic.Value(bool) = .init(false),
+
+        fn slow(self: *@This(), io: std.Io) !void {
+            self.active.store(true, .seq_cst);
+            defer self.active.store(false, .seq_cst);
+            try (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(100),
+                .clock = .awake,
+            } }).sleep(io);
+        }
+
+        fn cancelAfter(io: std.Io, token: *CancellationToken, state: *@This()) !void {
+            while (!state.active.load(.seq_cst)) try (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(1),
+                .clock = .awake,
+            } }).sleep(io);
+            try (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(10),
+                .clock = .awake,
+            } }).sleep(io);
+            token.cancel();
+        }
+
+        fn cancelCooperatively(token: *CancellationToken) !u8 {
+            token.cancel();
+            return 1;
+        }
+
+        fn succeed() !void {
+            try std.testing.expect(true);
+        }
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var token: CancellationToken = .{};
+    var state: State = .{};
+    var canceller = try io.concurrent(State.cancelAfter, .{ io, &token, &state });
+    try std.testing.expectError(
+        error.Cancelled,
+        (RunControl{ .io = io, .cancellation = &token }).invoke(void, State.slow, .{ &state, io }),
+    );
+    try canceller.await(io);
+    try std.testing.expect(!state.active.load(.seq_cst));
+
+    var live_token: CancellationToken = .{};
+    try (RunControl{ .cancellation = &live_token }).invoke(void, State.succeed, .{});
+
+    var cooperative_token: CancellationToken = .{};
+    try std.testing.expectError(
+        error.Cancelled,
+        (RunControl{ .cancellation = &cooperative_token }).invoke(
+            u8,
+            State.cancelCooperatively,
+            .{&cooperative_token},
+        ),
+    );
 }
 
 test "tool run context casts optional dependencies" {

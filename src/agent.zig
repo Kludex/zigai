@@ -63,6 +63,9 @@ const AgentError = error{
     InvalidToolFollowUpMessage,
     UnknownTool,
     RetryBackoffRequiresIo,
+    RunControlRequiresIo,
+    RunControlConcurrencyUnavailable,
+    RunTimedOut,
 };
 
 const AgentUsageLimits = struct {
@@ -110,6 +113,10 @@ pub const RetryHook = struct {
     }
 };
 
+fn invokeRetryHook(hook: RetryHook, event: RetryEvent) !void {
+    return hook.wait(event);
+}
+
 pub const AgentStreamEvent = union(enum) {
     model: model_types.ModelStreamEvent,
     tool_result: model_types.ToolResult,
@@ -134,9 +141,24 @@ const OutputValidator = struct {
     }
 };
 
+const ControlledOutputValidator = struct {
+    validator: OutputValidator,
+    control: model_types.RunControl,
+
+    fn validate(context: *anyopaque, allocator: std.mem.Allocator, output: []const u8) !void {
+        const self: *ControlledOutputValidator = @ptrCast(@alignCast(context));
+        return self.control.invoke(void, invokeOutputValidator, .{ self.validator, allocator, output });
+    }
+};
+
+fn invokeOutputValidator(validator: OutputValidator, allocator: std.mem.Allocator, output: []const u8) !void {
+    return validator.validate(allocator, output);
+}
+
 pub const InstructionContext = struct {
     dependencies: ?*anyopaque = null,
     prompt: []const u8,
+    control: model_types.RunControl = .{},
 
     /// Recovers the application dependency type supplied by the agent or run.
     pub fn dependency(self: InstructionContext, comptime T: type) ?*T {
@@ -182,6 +204,8 @@ pub const RunOptions = struct {
     model_settings: model_types.ModelSettings = .{},
     /// Extra provider-facing history processors applied after agent processors.
     history_processors: []const history.Processor = &.{},
+    /// Tightens `Agent.run_timeout_ms` for this invocation.
+    timeout_ms: ?u64 = null,
 };
 
 pub const DeferredToolCall = struct {
@@ -296,6 +320,7 @@ pub const CapabilityContext = struct {
     prompt: []const u8,
     dependencies: ?*anyopaque,
     model: model_types.Model,
+    control: model_types.RunControl = .{},
 };
 
 /// Current run state available while preparing tools for the next model step.
@@ -304,6 +329,7 @@ pub const ToolsetContext = struct {
     usage: model_types.Usage,
     model_requests: usize,
     dependencies: ?*anyopaque,
+    control: model_types.RunControl = .{},
 
     pub fn dependency(self: ToolsetContext, comptime T: type) ?*T {
         const pointer = self.dependencies orelse return null;
@@ -438,6 +464,60 @@ pub const LifecycleHook = struct {
     }
 };
 
+const ControlledLifecycleHook = struct {
+    hook: LifecycleHook,
+    control: model_types.RunControl,
+
+    fn emit(context: *anyopaque, event: LifecycleEvent) !void {
+        const self: *ControlledLifecycleHook = @ptrCast(@alignCast(context));
+        return self.control.invoke(void, invokeLifecycleHook, .{ self.hook, event });
+    }
+};
+
+const ControlledHooks = struct {
+    adapters: []ControlledLifecycleHook,
+    hooks: []LifecycleHook,
+
+    fn init(
+        allocator: std.mem.Allocator,
+        configured: []const LifecycleHook,
+        control: model_types.RunControl,
+    ) !ControlledHooks {
+        const adapters = try allocator.alloc(ControlledLifecycleHook, configured.len);
+        errdefer allocator.free(adapters);
+        const hooks = try allocator.alloc(LifecycleHook, configured.len);
+        errdefer allocator.free(hooks);
+        for (configured, adapters, hooks) |hook, *adapter, *wrapped| {
+            adapter.* = .{ .hook = hook, .control = control };
+            wrapped.* = .{ .context = adapter, .eventFn = ControlledLifecycleHook.emit };
+        }
+        return .{ .adapters = adapters, .hooks = hooks };
+    }
+
+    fn deinit(self: ControlledHooks, allocator: std.mem.Allocator) void {
+        allocator.free(self.hooks);
+        allocator.free(self.adapters);
+    }
+};
+
+fn invokeLifecycleHook(hook: LifecycleHook, event: LifecycleEvent) !void {
+    return hook.emit(event);
+}
+
+const ControlledStreamSink = struct {
+    sink: AgentStreamSink,
+    control: model_types.RunControl,
+
+    fn emit(context: *anyopaque, event: AgentStreamEvent) !void {
+        const self: *ControlledStreamSink = @ptrCast(@alignCast(context));
+        return self.control.invoke(void, invokeStreamSink, .{ self.sink, event });
+    }
+};
+
+fn invokeStreamSink(sink: AgentStreamSink, event: AgentStreamEvent) !void {
+    return sink.emit(event);
+}
+
 /// A reusable feature bundle applied in `Agent.capabilities` order.
 pub const Capability = struct {
     tools: []const model_types.Tool = &.{},
@@ -455,6 +535,10 @@ pub const Capability = struct {
         return select(self.context, run);
     }
 };
+
+fn selectCapabilityModel(capability: Capability, context: CapabilityContext) !model_types.Model {
+    return capability.selectModel(context);
+}
 
 /// An owned agent result whose JSON response has been decoded as `Output`.
 ///
@@ -495,7 +579,7 @@ pub const Agent = struct {
     max_output_retries: usize = 2,
     /// Default number of failures returned to the model for each tool.
     max_tool_retries: usize = 2,
-    /// Run-wide local tool execution limits. A tool may replace these limits.
+    /// Run-wide local tool execution limits. A tool may only tighten them.
     tool_limits: model_types.ToolLimits = .{},
     /// Overrides model defaults for every run of this agent.
     model_settings: model_types.ModelSettings = .{},
@@ -503,8 +587,13 @@ pub const Agent = struct {
     retry_policy: RetryPolicy = .{},
     provider_error_observer: ?model_types.ProviderErrorObserver = null,
     dependencies: ?*anyopaque = null,
+    /// Cooperative token raced against in-flight work when `io` is available.
     cancellation: ?*const CancellationToken = null,
+    /// One monotonic budget shared by the complete invocation.
+    run_timeout_ms: ?u64 = null,
+    /// Per-model-attempt ceiling, tightened by the remaining run budget.
     request_timeout_ms: ?u64 = null,
+    /// Runtime used for HTTP, parallel tools, and preemptive run controls.
     io: ?std.Io = null,
     /// Optional per-run OpenTelemetry spans and metrics.
     telemetry: ?telemetry_types.OpenTelemetry = null,
@@ -745,6 +834,22 @@ pub const Agent = struct {
         resume_state: ?ResumeState,
         decisions: []const ResumeDecision,
     ) !RunOutcome {
+        const control = try model_types.RunControl.init(
+            self.io,
+            self.cancellation,
+            earliestTimeout(self.run_timeout_ms, options.timeout_ms),
+        );
+        try control.check();
+        var sink_adapter: ControlledStreamSink = undefined;
+        const controlled_stream_sink: ?AgentStreamSink = if (stream_sink) |sink| sink: {
+            sink_adapter = .{ .sink = sink, .control = control };
+            break :sink .{ .context = &sink_adapter, .eventFn = ControlledStreamSink.emit };
+        } else null;
+        var validator_adapter: ControlledOutputValidator = undefined;
+        const controlled_output_validator: ?OutputValidator = if (output_validator) |validator| validator: {
+            validator_adapter = .{ .validator = validator, .control = control };
+            break :validator .{ .context = &validator_adapter, .validateFn = ControlledOutputValidator.validate };
+        } else null;
         var telemetry_run: ?telemetry_types.Run = if (self.telemetry) |configured|
             configured.start(allocator)
         else
@@ -757,8 +862,10 @@ pub const Agent = struct {
             defer hooks.deinit(allocator);
             try hooks.appendSlice(allocator, self.hooks);
             if (telemetry_run) |*instrumentation| try hooks.append(allocator, telemetryHook(instrumentation));
-            return self.runConfigured(allocator, prompt, options, stream_sink, output_validator, hooks.items, allow_pause, resume_state, decisions) catch |err| {
-                try emitLifecycle(hooks.items, .{ .run_error = .{ .failure = err } });
+            const controlled_hooks = try ControlledHooks.init(allocator, hooks.items, control);
+            defer controlled_hooks.deinit(allocator);
+            return self.runConfigured(allocator, prompt, options, controlled_stream_sink, controlled_output_validator, controlled_hooks.hooks, allow_pause, resume_state, decisions, control) catch |err| {
+                emitLifecycle(controlled_hooks.hooks, .{ .run_error = .{ .failure = err } }) catch {};
                 return err;
             };
         }
@@ -792,11 +899,13 @@ pub const Agent = struct {
             try hooks.appendSlice(allocator, capability.hooks);
             try history_processors.appendSlice(allocator, capability.history_processors);
             capability_settings = capability_settings.overrideWith(capability.model_settings);
-            model = try capability.selectModel(.{
+            const capability_context = CapabilityContext{
                 .prompt = prompt,
                 .dependencies = dependencies,
                 .model = model,
-            });
+                .control = control,
+            };
+            model = try control.invoke(model_types.Model, selectCapabilityModel, .{ capability, capability_context });
         }
         try ensureUniqueToolNames(tools.items);
 
@@ -810,8 +919,10 @@ pub const Agent = struct {
         configured.model_settings = capability_settings.overrideWith(self.model_settings);
         configured.capabilities = &.{};
         if (telemetry_run) |*instrumentation| try hooks.append(allocator, telemetryHook(instrumentation));
-        return configured.runConfigured(allocator, prompt, options, stream_sink, output_validator, hooks.items, allow_pause, resume_state, decisions) catch |err| {
-            try emitLifecycle(hooks.items, .{ .run_error = .{ .failure = err } });
+        const controlled_hooks = try ControlledHooks.init(allocator, hooks.items, control);
+        defer controlled_hooks.deinit(allocator);
+        return configured.runConfigured(allocator, prompt, options, controlled_stream_sink, controlled_output_validator, controlled_hooks.hooks, allow_pause, resume_state, decisions, control) catch |err| {
+            emitLifecycle(controlled_hooks.hooks, .{ .run_error = .{ .failure = err } }) catch {};
             return err;
         };
     }
@@ -827,8 +938,9 @@ pub const Agent = struct {
         allow_pause: bool,
         resume_state: ?ResumeState,
         decisions: []const ResumeDecision,
+        control: model_types.RunControl,
     ) !RunOutcome {
-        try checkCancellation(self.cancellation);
+        try control.check();
         if (stream_sink != null and !self.model.profile.supports_streaming) return Error.ModelDoesNotSupportStreaming;
         if (self.system_prompt != null and !self.model.profile.supports_system_messages) {
             return Error.ModelDoesNotSupportSystemMessages;
@@ -865,6 +977,7 @@ pub const Agent = struct {
             try resolveInstructions(memory, self.instructions, options.instructions, .{
                 .dependencies = dependencies,
                 .prompt = prompt,
+                .control = control,
             });
         if (resolved_instructions.len > 0 and !self.model.profile.supports_system_messages) {
             return Error.ModelDoesNotSupportSystemMessages;
@@ -897,6 +1010,7 @@ pub const Agent = struct {
                 .usage = total_usage,
                 .model_requests = model_requests,
                 .dependencies = dependencies,
+                .control = control,
             });
             try ensureUniqueToolNames(available_tools);
             if (available_tools.len > 0 and !self.model.profile.supports_tools) {
@@ -917,6 +1031,7 @@ pub const Agent = struct {
                         .model_requests = model_requests,
                         .cancellation = self.cancellation,
                         .io = self.io,
+                        .deadline = control.deadline,
                     },
                     hooks,
                 );
@@ -931,6 +1046,7 @@ pub const Agent = struct {
                 .profile = self.model.profile,
                 .usage = total_usage,
                 .model_requests = model_requests,
+                .control = control,
             };
             var request_messages = try history.processAll(
                 memory,
@@ -946,7 +1062,7 @@ pub const Agent = struct {
             );
             var retries: usize = 0;
             const response = request: while (true) {
-                try checkCancellation(self.cancellation);
+                try control.check();
                 if (model_requests >= self.limits.max_model_requests) {
                     return Error.MaxModelRequestsExceeded;
                 }
@@ -965,7 +1081,7 @@ pub const Agent = struct {
                     .builtin_tools = self.builtin_tools,
                     .output = self.output,
                     .error_observer = provider_errors.observer(),
-                    .timeout_ms = self.request_timeout_ms,
+                    .timeout_ms = try control.timeoutMilliseconds(self.request_timeout_ms),
                     .cancellation = self.cancellation,
                     .settings = resolved_settings,
                 };
@@ -975,9 +1091,17 @@ pub const Agent = struct {
                     .streaming = stream_sink != null,
                 } });
                 break :request (if (stream_sink != null)
-                    self.model.stream(memory, model_request, forwarder.modelSink())
+                    control.invoke(
+                        model_types.ModelResponse,
+                        streamModel,
+                        .{ self.model, memory, model_request, forwarder.modelSink() },
+                    )
                 else
-                    self.model.request(memory, model_request)) catch |err| {
+                    control.invoke(
+                        model_types.ModelResponse,
+                        requestModel,
+                        .{ self.model, memory, model_request },
+                    )) catch |err| {
                     const will_retry = !stream_emitted and retries < self.retry_policy.max_retries and
                         shouldRetry(err, self.retry_policy);
                     try emitLifecycle(hooks, .{ .model_request_error = .{
@@ -992,18 +1116,21 @@ pub const Agent = struct {
                             backoffDelayMilliseconds(backoff, retries, provider_errors.retry_after_seconds)
                         else
                             0;
-                        if (self.retry_policy.before_retry) |hook| try hook.wait(.{
-                            .failure = err,
-                            .retry_number = retries,
-                            .model_requests = model_requests,
-                            .retry_after_seconds = provider_errors.retry_after_seconds,
-                            .rate_limit_remaining_requests = provider_errors.rate_limit_remaining_requests,
-                            .rate_limit_remaining_tokens = provider_errors.rate_limit_remaining_tokens,
-                            .delay_ms = delay_ms,
-                        });
+                        if (self.retry_policy.before_retry) |hook| {
+                            const retry_event = RetryEvent{
+                                .failure = err,
+                                .retry_number = retries,
+                                .model_requests = model_requests,
+                                .retry_after_seconds = provider_errors.retry_after_seconds,
+                                .rate_limit_remaining_requests = provider_errors.rate_limit_remaining_requests,
+                                .rate_limit_remaining_tokens = provider_errors.rate_limit_remaining_tokens,
+                                .delay_ms = delay_ms,
+                            };
+                            try control.invoke(void, invokeRetryHook, .{ hook, retry_event });
+                        }
                         if (self.retry_policy.backoff != null) {
                             const io = self.io orelse return Error.RetryBackoffRequiresIo;
-                            try sleepBackoff(io, delay_ms, self.cancellation);
+                            try sleepBackoff(io, delay_ms, control);
                         }
                         continue;
                     }
@@ -1106,6 +1233,7 @@ pub const Agent = struct {
                     .model_requests = model_requests,
                     .cancellation = self.cancellation,
                     .io = self.io,
+                    .deadline = control.deadline,
                 },
                 hooks,
             );
@@ -1238,7 +1366,11 @@ fn executeResumedToolCalls(
             const tool_index = findToolIndex(tools, call.name) orelse return Agent.Error.UnknownTool;
             const tool = tools[tool_index];
             try emitLifecycle(hooks, .{ .tool_validation_start = .{ .call = call } });
-            tool.validate(allocator, call.arguments_json) catch |failure| {
+            toolRunControl(run_context).invoke(
+                void,
+                validateToolArguments,
+                .{ tool, allocator, call.arguments_json },
+            ) catch |failure| {
                 try emitLifecycle(hooks, .{ .tool_validation_error = .{ .call = call, .failure = failure } });
                 const work = ToolWork{ .call = call, .tool_index = tool_index, .validation_failure = failure };
                 const processed = try toolResult(
@@ -1499,7 +1631,11 @@ fn executeToolCalls(
                 .call = call,
                 .tool_index = tool_index,
             };
-            tools[tool_index].validate(allocator, call.arguments_json) catch |err| {
+            toolRunControl(run_context).invoke(
+                void,
+                validateToolArguments,
+                .{ tools[tool_index], allocator, call.arguments_json },
+            ) catch |err| {
                 work[work_index].validation_failure = err;
                 try emitLifecycle(hooks, .{ .tool_validation_error = .{
                     .call = call,
@@ -1519,7 +1655,7 @@ fn executeToolCalls(
 
     const result_parts = try allocator.alloc(RequestPart, call_count);
     if (call_count == 1) {
-        try checkCancellation(agent.cancellation);
+        try toolRunControl(run_context).check();
         const limits = effectiveToolLimits(agent.tool_limits, tools[work[0].tool_index].limits);
         const outcome: ToolOutcome = if (work[0].validation_failure) |failure|
             .{ .failure = failure }
@@ -1590,7 +1726,7 @@ fn executeToolCalls(
     }
     var running: usize = 0;
     while (completed < call_count) {
-        try checkCancellation(agent.cancellation);
+        try toolRunControl(run_context).check();
         for (work, states, futures) |item, *state, *future| {
             if (state.* != .pending or running >= agent.tool_limits.max_concurrency) continue;
             const limits = effectiveToolLimits(agent.tool_limits, tools[item.tool_index].limits);
@@ -1628,7 +1764,7 @@ fn executeToolCalls(
             return outcomes[index].failure;
         }
     }
-    try checkCancellation(agent.cancellation);
+    try toolRunControl(run_context).check();
     var follow_up_messages: std.ArrayList(model_types.RequestMessage) = .empty;
     for (work, outcomes, result_parts) |item, outcome, *result_part| {
         const processed = try toolResult(
@@ -1707,7 +1843,7 @@ fn executeTool(
     run_context: model_types.ToolRunContext,
     arguments_json: []const u8,
 ) ToolOutcome {
-    checkCancellation(run_context.cancellation) catch |err| return .{ .failure = err };
+    toolRunControl(run_context).check() catch |err| return .{ .failure = err };
     const output = tool.executeOutputWithContext(allocator, run_context, arguments_json) catch |err| {
         return .{ .failure = err };
     };
@@ -1715,9 +1851,26 @@ fn executeTool(
     return .{ .success = output };
 }
 
+fn validateToolArguments(
+    tool: model_types.Tool,
+    allocator: std.mem.Allocator,
+    arguments_json: []const u8,
+) !void {
+    return tool.validate(allocator, arguments_json);
+}
+
+fn toolRunControl(context: model_types.ToolRunContext) model_types.RunControl {
+    return .{
+        .io = context.io,
+        .cancellation = context.cancellation,
+        .deadline = context.deadline,
+    };
+}
+
 const ToolControlOutcome = union(enum) {
     tool: ToolOutcome,
     timeout: anyerror!void,
+    deadline: anyerror!void,
     cancelled: anyerror!void,
 };
 
@@ -1730,24 +1883,34 @@ fn executeToolControlled(
     arguments_json: []const u8,
 ) ToolOutcome {
     if (limits.max_concurrency == 0) return .{ .failure = Agent.Error.ToolQueueOverflow };
-    if (limits.timeout_ms == null and run_context.cancellation == null)
+    if (limits.timeout_ms == null and run_context.cancellation == null and run_context.deadline == null)
         return executeTool(tool, limits, allocator, run_context, arguments_json);
     const io = maybe_io orelse return .{ .failure = Agent.Error.ToolIsolationRequiresIo };
-    var buffer: [3]ToolControlOutcome = undefined;
+    var buffer: [4]ToolControlOutcome = undefined;
     var select: std.Io.Select(ToolControlOutcome) = .init(io, &buffer);
     defer select.cancelDiscard();
     select.concurrent(.tool, executeTool, .{ tool, limits, allocator, run_context, arguments_json }) catch
         return .{ .failure = Agent.Error.ToolConcurrencyUnavailable };
     if (limits.timeout_ms) |milliseconds|
         select.async(.timeout, waitForToolTimeout, .{ io, milliseconds });
+    if (run_context.deadline) |deadline|
+        select.async(.deadline, waitForToolDeadline, .{ io, deadline });
     if (run_context.cancellation) |token|
         select.async(.cancelled, waitForToolCancellation, .{ io, token });
     const outcome = select.await() catch return .{ .failure = Agent.Error.Cancelled };
     return switch (outcome) {
-        .tool => |result| result,
+        .tool => |result| tool_result: {
+            toolRunControl(run_context).check() catch |failure|
+                break :tool_result .{ .failure = failure };
+            break :tool_result result;
+        },
         .timeout => |result| timeout: {
             result catch return .{ .failure = Agent.Error.Cancelled };
             break :timeout .{ .failure = Agent.Error.ToolTimedOut };
+        },
+        .deadline => |result| deadline: {
+            result catch return .{ .failure = Agent.Error.Cancelled };
+            break :deadline .{ .failure = Agent.Error.RunTimedOut };
         },
         .cancelled => |result| cancelled: {
             result catch return .{ .failure = Agent.Error.Cancelled };
@@ -1759,6 +1922,10 @@ fn executeToolControlled(
 fn waitForToolTimeout(io: std.Io, milliseconds: u64) !void {
     const maximum: u64 = @intCast(std.math.maxInt(i64));
     return toolTimeout(@min(milliseconds, maximum)).sleep(io);
+}
+
+fn waitForToolDeadline(io: std.Io, deadline: std.Io.Clock.Timestamp) !void {
+    return deadline.wait(io);
 }
 
 fn waitForToolCancellation(io: std.Io, token: *const CancellationToken) !void {
@@ -1946,6 +2113,23 @@ const ModelEventForwarder = struct {
     }
 };
 
+fn requestModel(
+    model: model_types.Model,
+    allocator: std.mem.Allocator,
+    request: model_types.ModelRequest,
+) !model_types.ModelResponse {
+    return model.request(allocator, request);
+}
+
+fn streamModel(
+    model: model_types.Model,
+    allocator: std.mem.Allocator,
+    request: model_types.ModelRequest,
+    sink: model_types.ModelStreamSink,
+) !model_types.ModelResponse {
+    return model.stream(allocator, request, sink);
+}
+
 const ProviderErrorCapture = struct {
     target: ?model_types.ProviderErrorObserver,
     retry_after_seconds: ?u64 = null,
@@ -2016,18 +2200,13 @@ fn backoffDelayMilliseconds(backoff: Agent.Backoff, retry_number: usize, retry_a
     return delay;
 }
 
-fn sleepBackoff(io: std.Io, delay_ms: u64, token: ?*const CancellationToken) !void {
-    var remaining = delay_ms;
-    while (remaining > 0) {
-        try checkCancellation(token);
-        const chunk: u64 = @min(remaining, 25);
-        (std.Io.Timeout{ .duration = .{
-            .raw = .fromMilliseconds(@intCast(chunk)),
-            .clock = .awake,
-        } }).sleep(io) catch |err| return normalizeBackoffSleepError(err);
-        remaining -= chunk;
-    }
-    try checkCancellation(token);
+fn sleepBackoff(io: std.Io, delay_ms: u64, control: model_types.RunControl) !void {
+    return control.invoke(void, sleepBackoffDuration, .{ io, delay_ms });
+}
+
+fn sleepBackoffDuration(io: std.Io, delay_ms: u64) !void {
+    const maximum: u64 = @intCast(std.math.maxInt(i64));
+    toolTimeout(@min(delay_ms, maximum)).sleep(io) catch |err| return normalizeBackoffSleepError(err);
 }
 
 fn normalizeBackoffSleepError(err: error{Canceled}) Agent.Error {
@@ -2245,7 +2424,11 @@ fn resolveInstructions(
     for (configured) |instruction| switch (instruction) {
         .text => {},
         .dynamic => |dynamic| {
-            const value = try dynamic.resolve(allocator, context);
+            const value = try context.control.invoke(
+                []const u8,
+                resolveDynamicInstruction,
+                .{ dynamic, allocator, context },
+            );
             if (value.len > 0) try resolved.append(allocator, try allocator.dupe(u8, value));
         },
     };
@@ -2253,6 +2436,14 @@ fn resolveInstructions(
         try resolved.append(allocator, try allocator.dupe(u8, value));
     };
     return resolved.toOwnedSlice(allocator);
+}
+
+fn resolveDynamicInstruction(
+    instruction: Instruction.Dynamic,
+    allocator: std.mem.Allocator,
+    context: InstructionContext,
+) ![]const u8 {
+    return instruction.resolve(allocator, context);
 }
 
 fn emitLifecycle(hooks: []const LifecycleHook, event: LifecycleEvent) !void {
@@ -2285,7 +2476,11 @@ fn prepareTools(
     try prepared.appendSlice(allocator, direct_tools);
 
     for (toolsets) |toolset| {
-        const entries = try toolset.prepare(allocator, context);
+        const entries = try context.control.invoke(
+            []const ToolsetEntry,
+            prepareToolset,
+            .{ toolset, allocator, context },
+        );
         for (entries) |entry| {
             if (!entry.enabled) continue;
             var tool = entry.tool;
@@ -2308,6 +2503,14 @@ fn prepareTools(
         }
     }
     return prepared.toOwnedSlice(allocator);
+}
+
+fn prepareToolset(
+    toolset: Toolset,
+    allocator: std.mem.Allocator,
+    context: ToolsetContext,
+) ![]const ToolsetEntry {
+    return toolset.prepare(allocator, context);
 }
 
 fn mergeToolMetadata(
@@ -2488,6 +2691,47 @@ test "tool lookup is exact" {
     try std.testing.expectEqualStrings("ok", content);
 }
 
+test "tool control drains work at the absolute run deadline" {
+    const State = struct {
+        active: std.atomic.Value(bool) = .init(false),
+
+        fn execute(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            run: model_types.ToolRunContext,
+            _: []const u8,
+        ) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.active.store(true, .seq_cst);
+            defer self.active.store(false, .seq_cst);
+            _ = allocator;
+            while (true) try (std.Io.Timeout{ .duration = .{
+                .raw = .fromSeconds(10),
+                .clock = .awake,
+            } }).sleep(run.io.?);
+        }
+    };
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var state = State{ .active = .init(false) };
+    const tool = model_types.Tool{
+        .definition = .{ .name = "slow", .description = "", .parameters_json_schema = "{}" },
+        .context = &state,
+        .executeWithContextFn = State.execute,
+    };
+    const deadline = std.Io.Clock.Timestamp.fromNow(io, .{
+        .raw = .fromSeconds(1),
+        .clock = .awake,
+    });
+    const outcome = executeToolControlled(io, tool, .{}, std.testing.allocator, .{
+        .io = io,
+        .deadline = deadline,
+    }, "{}");
+    try std.testing.expectEqual(Agent.Error.RunTimedOut, outcome.failure);
+    try std.testing.expect(!state.active.load(.seq_cst));
+}
+
 test "capability requirement accepts and rejects" {
     try requireCapability(true, Agent.Error.ModelDoesNotSupportTools);
     try std.testing.expectError(
@@ -2561,8 +2805,31 @@ fn checkResumeDecisionAllocationFailure(allocator: std.mem.Allocator) !void {
     defer decisions.deinit();
 }
 
+fn checkControlledHooksAllocationFailure(allocator: std.mem.Allocator) !void {
+    var placeholder: u8 = 0;
+    const controlled = try ControlledHooks.init(allocator, &.{.{
+        .context = &placeholder,
+        .eventFn = ControlledLifecycleHook.emit,
+    }}, .{});
+    defer controlled.deinit(allocator);
+}
+
 test "agent private helpers cover ownership settings retries and rich content" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, checkResumeDecisionAllocationFailure, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, checkControlledHooksAllocationFailure, .{});
+
+    try std.testing.expectError(Agent.Error.ToolFollowUpOverflow, validateToolOutput(.{
+        .content = "",
+        .follow_up_messages = &.{.{ .parts = &.{}, .metadata = &.{.{ .key = "a", .value = "bc" }} }},
+    }, .{ .max_follow_up_bytes = 2 }));
+    try std.testing.expectError(Agent.Error.ToolFollowUpOverflow, validateToolOutput(.{
+        .content = "",
+        .follow_up_messages = &.{.{ .parts = &.{}, .instructions = "too long" }},
+    }, .{ .max_follow_up_bytes = 2 }));
+    try std.testing.expectError(Agent.Error.ToolFollowUpOverflow, validateToolOutput(.{
+        .content = "",
+        .follow_up_messages = &.{.{ .parts = &.{}, .run_id = "too long" }},
+    }, .{ .max_follow_up_bytes = 2 }));
 
     try std.testing.expectError(
         Agent.Error.ModelDoesNotSupportMaxTokens,

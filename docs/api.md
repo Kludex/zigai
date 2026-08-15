@@ -124,6 +124,33 @@ contain one complete JSON document within the tool-payload profile. Invalid or
 oversized arguments return `error.InvalidToolArguments` before the callback is
 invoked.
 
+## Run deadlines and cancellation
+
+`Agent.run_timeout_ms` creates one absolute monotonic deadline for an
+invocation. `RunOptions.timeout_ms` may tighten that budget for one buffered,
+streaming, pause, or resume call. `Agent.request_timeout_ms` is a separate
+per-model-attempt ceiling; each attempt receives the smaller of that value and
+the remaining run time, so retries never restart the run budget.
+
+The run control covers model requests and streams, retry waits, dynamic
+instructions, capability model selection, history processors, toolset
+preparation, argument validation, local and MCP tools, output validators,
+lifecycle hooks, stream sinks, and resumed tool decisions. Official HTTP
+transports apply the remaining timeout to the complete operation, including
+DNS, connect, write, read, and stream consumption. A timed-out or cancelled
+task is cancelled and drained before the public call returns.
+
+Deadlines require `Agent.io`. Cancellation remains cooperative without a
+runtime; with `Agent.io`, ZigAI also races the token against in-flight work.
+Terminal control errors are `RunTimedOut`, `Cancelled`,
+`RunControlRequiresIo`, and `RunControlConcurrencyUnavailable`. Callback
+contexts expose the shared `RunControl`, and `ToolRunContext` exposes its
+absolute `deadline` for nested work.
+
+A paused run ends its invocation. `resumeRunWithOptions` starts a new monotonic
+budget because a process-local monotonic timestamp cannot be serialized safely
+across restarts.
+
 ## Tool execution limits
 
 `Agent.tool_limits` applies `zigai.ToolLimits` to local calls. The defaults are
@@ -136,10 +163,10 @@ Parallel batches preserve provider call order while the scheduler respects
 both the agent-wide and per-tool concurrency and queue limits. `ToolTimedOut`,
 `ToolQueueOverflow`, `ToolResultTooLarge`, and `ToolFollowUpOverflow` are
 recoverable tool failures by default and are sent to the model through the
-normal bounded retry path. `ToolIsolationRequiresIo`, cancellation, allocation
-failure, and unavailable runtime concurrency remain fatal. Cancellation and
-timeouts are cooperative: tools should use `ToolRunContext.io` for blocking I/O
-and propagate cancellation errors instead of swallowing them.
+normal bounded retry path. Run deadline failures, `ToolIsolationRequiresIo`,
+cancellation, allocation failure, and unavailable runtime concurrency remain
+fatal. Tools should use `ToolRunContext.io` for blocking I/O and propagate
+cancellation errors instead of swallowing them.
 
 Public operations intentionally use inferred error unions. Allocator, network,
 process, application callback, tool, hook, exporter, and custom model errors

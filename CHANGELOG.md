@@ -8,6 +8,8 @@
   deferred state, providers, tools, MCP, schemas, and CLI manifests.
 - Bounded local tool execution with global and per-tool concurrency, queue,
   timeout, result, follow-up, and cooperative cancellation policies.
+- One monotonic run deadline across requests, retries, streaming, callbacks,
+  local and MCP tools, and deferred resume, with losing tasks drained.
 
 ## 0.1.0 — 2026-08-14
 
