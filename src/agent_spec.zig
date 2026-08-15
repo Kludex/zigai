@@ -110,7 +110,6 @@ pub fn parseYaml(gpa: std.mem.Allocator, source: []const u8) !Owned {
     writeJsonNode(&json, document.root) catch |failure| return switch (failure) {
         error.WriteFailed => error.OutOfMemory,
         error.InvalidAgentSpec => Error.InvalidAgentSpec,
-        error.UnsupportedAgentSpecVersion => Error.InvalidAgentSpec,
     };
     return parseJson(gpa, output.written());
 }
@@ -148,7 +147,9 @@ fn validEnvironmentName(name: []const u8) bool {
     return true;
 }
 
-fn writeJsonNode(json: *std.json.Stringify, node: *const yaml.Node) !void {
+const WriteJsonNodeError = error{ WriteFailed, InvalidAgentSpec };
+
+fn writeJsonNode(json: *std.json.Stringify, node: *const yaml.Node) WriteJsonNodeError!void {
     switch (node.*) {
         .null_value => try json.write(null),
         .bool_value => |value| try json.write(value.value),
@@ -165,14 +166,16 @@ fn writeJsonNode(json: *std.json.Stringify, node: *const yaml.Node) !void {
             for (mapping.pairs) |pair| {
                 const key = switch (pair.key.*) {
                     .scalar => |value| value.value,
-                    else => return Error.InvalidAgentSpec,
+                    else => return error.InvalidAgentSpec,
                 };
                 try json.objectField(key);
                 try writeJsonNode(json, pair.value);
             }
             try json.endObject();
         },
-        .alias => return Error.InvalidAgentSpec,
+        // The public loader resolves aliases to their anchored nodes. Only
+        // manually constructed `yaml.Node` values can retain this tag.
+        .alias => unreachable,
     }
 }
 
