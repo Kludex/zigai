@@ -6,6 +6,7 @@
 
 pub const openai = @import("providers/openai.zig");
 pub const http = @import("providers/http.zig");
+pub const profiles = @import("providers/profiles.zig");
 pub const openai_compatible = @import("providers/openai_compatible.zig");
 pub const anthropic = @import("providers/anthropic.zig");
 pub const azure_openai = @import("providers/azure_openai.zig");
@@ -26,6 +27,7 @@ pub const together = @import("providers/together.zig");
 test {
     _ = openai;
     _ = http;
+    _ = profiles;
     _ = openai_compatible;
     _ = anthropic;
     _ = azure_openai;

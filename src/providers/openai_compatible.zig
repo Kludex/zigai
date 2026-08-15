@@ -8,6 +8,7 @@ const operations = @import("operations.zig");
 const http = @import("../transport.zig");
 const common = @import("common.zig");
 const json_limits = @import("../json.zig");
+const provider_profiles = @import("profiles.zig");
 
 pub const api_base = "https://api.openai.com/v1";
 
@@ -18,62 +19,7 @@ pub const Error = model_types.ProviderRequestError || error{
     InvalidRequestEncoding,
 };
 
-pub const profiles = struct {
-    pub const full: model_types.ModelProfile = .{
-        .supports_tools = true,
-        .supports_parallel_tool_calls = true,
-        .supports_json_schema_output = true,
-        .supports_json_object_output = true,
-        .supports_system_messages = true,
-        .supports_streaming = true,
-        .supports_temperature = true,
-        .supports_max_tokens = true,
-        .supports_stop_sequences = true,
-        .supports_seed = true,
-        .supports_top_p = true,
-        .supports_presence_penalty = true,
-        .supports_frequency_penalty = true,
-        .supports_logprobs = true,
-        .supports_tool_choice = true,
-        .supports_parallel_tool_call_setting = true,
-        .supports_request_headers = true,
-        .extra_body_kind = .openai_compatible,
-        .reasoning_efforts = model_types.ModelProfile.ReasoningEffortSet.initFull(),
-        .service_tiers = model_types.ModelProfile.ServiceTierSet.initFull(),
-    };
-    pub const basic: model_types.ModelProfile = .{
-        .supports_tools = true,
-        .supports_parallel_tool_calls = false,
-        .supports_system_messages = true,
-        .supports_streaming = true,
-        .supports_temperature = true,
-        .supports_max_tokens = true,
-        .supports_stop_sequences = true,
-        .supports_seed = true,
-        .supports_top_p = true,
-        .supports_presence_penalty = true,
-        .supports_frequency_penalty = true,
-        .supports_tool_choice = true,
-        .supports_parallel_tool_call_setting = true,
-        .supports_request_headers = true,
-        .extra_body_kind = .openai_compatible,
-    };
-    pub const minimal: model_types.ModelProfile = .{
-        .supports_tools = false,
-        .supports_parallel_tool_calls = false,
-        .supports_system_messages = true,
-        .supports_streaming = true,
-        .supports_temperature = true,
-        .supports_max_tokens = true,
-        .supports_stop_sequences = true,
-        .supports_seed = true,
-        .supports_top_p = true,
-        .supports_presence_penalty = true,
-        .supports_frequency_penalty = true,
-        .supports_request_headers = true,
-        .extra_body_kind = .openai_compatible,
-    };
-};
+pub const profiles = provider_profiles.openai_compatible;
 
 /// Authentication applied to compatible API requests.
 pub const Authentication = struct {
