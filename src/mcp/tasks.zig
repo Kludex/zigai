@@ -16,6 +16,11 @@ pub const methods = struct {
     pub const status_notification = "notifications/tasks";
 };
 
+/// Extension-specific JSON-RPC errors defined by SEP-2663.
+pub const error_codes = struct {
+    pub const missing_required_client_capability = -32003;
+};
+
 pub const Error = error{
     InvalidTask,
     InvalidTaskRequest,
@@ -148,9 +153,28 @@ pub fn validateCreated(value: std.json.Value) !void {
     _ = try parseCommon(object);
 }
 
-/// Parses a `tasks/get` result, or a `notifications/tasks` parameter object when
-/// `has_result_type` is false.
-pub fn parseDetailed(
+/// Parses the detailed state returned by `tasks/get`.
+pub fn parseResult(allocator: std.mem.Allocator, source: []const u8) !Owned {
+    return parseDetailed(allocator, source, true);
+}
+
+/// Parses one complete `notifications/tasks` JSON-RPC notification.
+pub fn parseNotification(allocator: std.mem.Allocator, source: []const u8) !Owned {
+    var owned = Owned{ .arena = .init(allocator), .value = undefined };
+    errdefer owned.arena.deinit();
+    const root = try parseObject(owned.arena.allocator(), source, error.InvalidTask);
+    if (!std.mem.eql(u8, try requiredString(root, "jsonrpc"), "2.0") or root.get("id") != null) {
+        return error.InvalidTask;
+    }
+    if (!std.mem.eql(u8, try requiredString(root, "method"), methods.status_notification)) {
+        return error.InvalidTask;
+    }
+    const params = try requiredObject(root, "params");
+    owned.value = .{ .detailed = try detailedFromObject(params, false) };
+    return owned;
+}
+
+fn parseDetailed(
     allocator: std.mem.Allocator,
     source: []const u8,
     has_result_type: bool,
@@ -158,17 +182,30 @@ pub fn parseDetailed(
     var owned = Owned{ .arena = .init(allocator), .value = undefined };
     errdefer owned.arena.deinit();
     const object = try parseObject(owned.arena.allocator(), source, error.InvalidTask);
-    if (has_result_type) try expectResultType(object, "complete");
-    const common = try parseCommon(object);
-    owned.value = .{ .detailed = .{
-        .metadata = common.metadata,
-        .state = try parseState(object, common.status),
-    } };
+    owned.value = .{ .detailed = try detailedFromObject(object, has_result_type) };
     return owned;
 }
 
-/// Validates a borrowed detailed task result or notification payload.
-pub fn validateDetailed(value: std.json.Value, has_result_type: bool) !void {
+fn detailedFromObject(object: std.json.ObjectMap, has_result_type: bool) !DetailedTask {
+    if (has_result_type) try expectResultType(object, "complete");
+    const common = try parseCommon(object);
+    return .{
+        .metadata = common.metadata,
+        .state = try parseState(object, common.status),
+    };
+}
+
+/// Validates a borrowed `tasks/get` result without retaining it.
+pub fn validateResult(value: std.json.Value) !void {
+    return validateDetailed(value, true);
+}
+
+/// Validates borrowed `notifications/tasks` parameters without retaining them.
+pub fn validateNotification(value: std.json.Value) !void {
+    return validateDetailed(value, false);
+}
+
+fn validateDetailed(value: std.json.Value, has_result_type: bool) !void {
     const object = valueObject(value) catch return error.InvalidTask;
     if (has_result_type) try expectResultType(object, "complete");
     const common = try parseCommon(object);
@@ -382,22 +419,35 @@ test "detailed task parsing enforces status-specific payloads" {
         .{ .status = .failed, .source = "{\"resultType\":\"complete\",\"taskId\":\"e\",\"status\":\"failed\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":100,\"error\":{\"code\":-32603,\"message\":\"failed\",\"data\":{\"retry\":false}}}" },
     };
     for (cases) |case| {
-        var owned = try parseDetailed(std.testing.allocator, case.source, true);
+        var owned = try parseResult(std.testing.allocator, case.source);
         defer owned.deinit();
         const task = owned.value.detailed;
         try std.testing.expectEqual(case.status, task.status());
         try std.testing.expectEqual(case.status.terminal(), task.status().terminal());
     }
 
-    var notification = try parseDetailed(
+    var notification = try parseNotification(
         std.testing.allocator,
-        "{\"taskId\":\"n\",\"status\":\"failed\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":0,\"error\":{\"code\":-1,\"message\":\"no\"}}",
-        false,
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tasks\",\"params\":{" ++
+            "\"taskId\":\"n\",\"status\":\"failed\",\"createdAt\":\"now\"," ++
+            "\"lastUpdatedAt\":\"now\",\"ttlMs\":0,\"error\":{\"code\":-1,\"message\":\"no\"}}}",
     );
     defer notification.deinit();
     const failure = notification.value.detailed.state.failed;
     try std.testing.expectEqual(@as(i64, -1), failure.code);
     try std.testing.expect(failure.data == null);
+
+    const invalid_notifications = [_][]const u8{
+        "{}",
+        "{\"jsonrpc\":\"1.0\",\"method\":\"notifications/tasks\",\"params\":{}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"notifications/tasks\",\"params\":{}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tasks\"}",
+    };
+    for (invalid_notifications) |source| try std.testing.expectError(
+        error.InvalidTask,
+        parseNotification(std.testing.allocator, source),
+    );
 
     const borrowed = try json_limits.parseLeaky(
         std.json.Value,
@@ -407,7 +457,7 @@ test "detailed task parsing enforces status-specific payloads" {
         .{},
         error.InvalidTask,
     );
-    try validateDetailed(borrowed, false);
+    try validateNotification(borrowed);
 }
 
 test "borrowed task creation validation rejects non-objects" {
@@ -423,7 +473,7 @@ test "borrowed task creation validation rejects non-objects" {
     );
     try validateCreated(valid);
     try std.testing.expectError(error.InvalidTask, validateCreated(.{ .array = .init(arena.allocator()) }));
-    try std.testing.expectError(error.InvalidTask, validateDetailed(.null, false));
+    try std.testing.expectError(error.InvalidTask, validateNotification(.null));
 }
 
 test "task parsing rejects malformed metadata and payload combinations" {
@@ -456,7 +506,7 @@ test "task parsing rejects malformed metadata and payload combinations" {
     };
     for (invalid_details) |source| try std.testing.expectError(
         error.InvalidTask,
-        parseDetailed(std.testing.allocator, source, true),
+        parseResult(std.testing.allocator, source),
     );
 }
 
@@ -468,10 +518,9 @@ test "task parsing and serialization release partial allocations" {
                 .input_responses_json = "{\"a\":{\"action\":\"accept\",\"content\":{\"ok\":true}}}",
             }).stringifyAlloc(allocator);
             defer allocator.free(update);
-            var task = try parseDetailed(
+            var task = try parseResult(
                 allocator,
                 "{\"resultType\":\"complete\",\"taskId\":\"task\",\"status\":\"input_required\",\"statusMessage\":\"waiting\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":1000,\"pollIntervalMs\":10,\"inputRequests\":{\"a\":{\"method\":\"elicitation/create\",\"params\":{}}}}",
-                true,
             );
             defer task.deinit();
         }

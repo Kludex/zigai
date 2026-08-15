@@ -371,7 +371,11 @@ status, so completed, failed, and input-required states cannot be confused.
 application-facing boundary: they attach the task ID as both the body parameter
 and HTTP route, require the extension capability before I/O, and validate the
 status-specific response before returning. Servers enforce the same capability
-and routing invariants before dispatching an extension handler.
+and routing invariants before dispatching an extension handler. Task status
+streams extend the typed subscription filter with explicit task IDs. Incoming
+`notifications/tasks` events must contain a complete detailed state and match
+one of those IDs; task subscriptions without the extension capability fail
+before application dispatch.
 
 Multi round-trip requests replace server-initiated JSON-RPC calls. When a
 result requires sampling, roots, or elicitation, the configured `InputHandler`

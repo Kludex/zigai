@@ -3,8 +3,8 @@
 ## Unreleased
 
 - Add bounded, arena-owned task result parsing, typed client helpers, extension
-  negotiation, and task-ID routing for the current
-  `io.modelcontextprotocol/tasks` extension (SEP-2663).
+  negotiation, task-ID routing, and validated task status subscriptions for
+  the current `io.modelcontextprotocol/tasks` extension (SEP-2663).
 - Start the clean MCP primitives layer with typed, borrowed client and server
   capability documents, validated experimental/extension objects, prefixed
   extension identifiers, typed subscription filters and notifications,

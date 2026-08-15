@@ -141,6 +141,8 @@ pub const SubscriptionFilter = struct {
     prompts_list_changed: bool = false,
     resources_list_changed: bool = false,
     resource_subscriptions: []const []const u8 = &.{},
+    /// Task IDs selected for `notifications/tasks` by the Tasks extension.
+    task_ids: []const []const u8 = &.{},
 
     /// Serializes the filter object expected under the request's
     /// `notifications` field. The caller owns the returned JSON.
@@ -163,6 +165,14 @@ pub const SubscriptionFilter = struct {
                 try resources.append(.{ .string = uri });
             }
             try object.put(allocator, "resourceSubscriptions", .{ .array = resources });
+        }
+        if (self.task_ids.len > 0) {
+            var task_ids: std.json.Array = .init(allocator);
+            for (self.task_ids) |task_id| {
+                if (task_id.len == 0) return error.InvalidRequest;
+                try task_ids.append(.{ .string = task_id });
+            }
+            try object.put(allocator, "taskIds", .{ .array = task_ids });
         }
         return object;
     }
@@ -657,16 +667,22 @@ test "typed MCP subscription filters serialize selected notifications" {
         .tools_list_changed = true,
         .resources_list_changed = true,
         .resource_subscriptions = &.{ "file:///a", "https://example.com/resource" },
+        .task_ids = &.{ "task-1", "task-2" },
     }).stringifyAlloc(std.testing.allocator);
     defer std.testing.allocator.free(source);
     try std.testing.expectEqualStrings(
         "{\"toolsListChanged\":true,\"resourcesListChanged\":true," ++
-            "\"resourceSubscriptions\":[\"file:///a\",\"https://example.com/resource\"]}",
+            "\"resourceSubscriptions\":[\"file:///a\",\"https://example.com/resource\"]," ++
+            "\"taskIds\":[\"task-1\",\"task-2\"]}",
         source,
     );
     const empty = try (SubscriptionFilter{}).stringifyAlloc(std.testing.allocator);
     defer std.testing.allocator.free(empty);
     try std.testing.expectEqualStrings("{}", empty);
+    try std.testing.expectError(
+        error.InvalidRequest,
+        (SubscriptionFilter{ .task_ids = &.{""} }).stringifyAlloc(std.testing.allocator),
+    );
 }
 
 test "typed MCP input kinds map every MRTR method" {

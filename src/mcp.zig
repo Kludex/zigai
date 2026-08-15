@@ -761,7 +761,7 @@ pub const Client = struct {
             .{ .routing_name = task_id },
         );
         defer allocator.free(result);
-        return tasks.parseDetailed(allocator, result, true);
+        return tasks.parseResult(allocator, result);
     }
 
     /// Supplies one or more responses to an input-required task.
@@ -797,9 +797,20 @@ pub const Client = struct {
         params_json: []const u8,
         options: RequestOptions,
     ) ![]u8 {
-        if (isTaskMethod(method)) {
-            var capability_arena = std.heap.ArenaAllocator.init(allocator);
-            defer capability_arena.deinit();
+        var capability_arena = std.heap.ArenaAllocator.init(allocator);
+        defer capability_arena.deinit();
+        const task_capability_required = if (std.mem.eql(u8, method, methods.listen)) blk: {
+            const params_value = try json_limits.parseLeaky(
+                std.json.Value,
+                capability_arena.allocator(),
+                params_json,
+                json_limits.defaults.mcp_message,
+                .{},
+                error.InvalidMcpMessage,
+            );
+            break :blk requestsTaskNotifications(method, try capabilityObject(params_value, error.InvalidMcpMessage));
+        } else isTaskMethod(method);
+        if (task_capability_required) {
             const advertised = try json_limits.parseLeaky(
                 std.json.Value,
                 capability_arena.allocator(),
@@ -1208,7 +1219,9 @@ pub const Server = struct {
                 error.InvalidMcpResponse,
             );
             try validateServerCapabilities(server_capabilities, error.InvalidMcpResponse);
-            if (isTaskMethod(method) and request_client_capabilities != null) {
+            if ((isTaskMethod(method) or requestsTaskNotifications(method, params)) and
+                request_client_capabilities != null)
+            {
                 const requirements = ClientCapabilityRequirements{ .tasks = true };
                 if (!clientCapabilitiesSatisfy(request_client_capabilities.?, requirements)) {
                     return self.missingCapabilityResponse(
@@ -1356,11 +1369,15 @@ pub const Server = struct {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const missing = try missingClientCapabilities(arena.allocator(), client_capabilities, requirements);
+        const code: i64 = if (requirements.tasks)
+            tasks.error_codes.missing_required_client_capability
+        else
+            error_codes.missing_required_client_capability;
         const body = try std.json.Stringify.valueAlloc(allocator, .{
             .jsonrpc = "2.0",
             .id = id,
             .@"error" = .{
-                .code = error_codes.missing_required_client_capability,
+                .code = code,
                 .message = "Required client capability was not advertised",
                 .data = .{ .requiredCapabilities = missing },
             },
@@ -1770,6 +1787,7 @@ fn recognizedModernError(value: std.json.Value) bool {
     };
     return code == error_codes.header_mismatch or
         code == error_codes.missing_required_client_capability or
+        code == tasks.error_codes.missing_required_client_capability or
         code == error_codes.unsupported_protocol_version;
 }
 
@@ -1784,7 +1802,9 @@ fn validateRpcError(value: std.json.Value) !void {
         const data = try requiredObject(object.get("data") orelse return error.InvalidMcpResponse);
         try requireStringArray(data, "supported", 1, null);
         _ = try requiredString(data, "requested");
-    } else if (code == error_codes.missing_required_client_capability) {
+    } else if (code == error_codes.missing_required_client_capability or
+        code == tasks.error_codes.missing_required_client_capability)
+    {
         const data = try requiredObject(object.get("data") orelse return error.InvalidMcpResponse);
         try validateClientCapabilities(
             data.get("requiredCapabilities") orelse return error.InvalidMcpResponse,
@@ -1809,6 +1829,7 @@ fn validateHttpResponseStatus(allocator: std.mem.Allocator, status: u16, source:
     };
     if ((code == error_codes.header_mismatch or
         code == error_codes.missing_required_client_capability or
+        code == tasks.error_codes.missing_required_client_capability or
         code == error_codes.unsupported_protocol_version) and status != 400)
     {
         return error.InvalidMcpResponse;
@@ -1840,7 +1861,7 @@ fn validateMethodResult(method: []const u8, result: std.json.Value) !void {
     if (!std.mem.eql(u8, result_type, "complete")) return error.InvalidMcpResponse;
 
     if (std.mem.eql(u8, method, tasks.methods.get)) {
-        tasks.validateDetailed(result, true) catch return error.InvalidMcpResponse;
+        tasks.validateResult(result) catch return error.InvalidMcpResponse;
     } else if (std.mem.eql(u8, method, tasks.methods.update) or
         std.mem.eql(u8, method, tasks.methods.cancel))
     {
@@ -1962,6 +1983,8 @@ fn validateNotificationMethodParams(
             params.get("notifications") orelse return invalid_error,
             invalid_error,
         );
+    } else if (std.mem.eql(u8, method, tasks.methods.status_notification)) {
+        tasks.validateNotification(.{ .object = params }) catch return invalid_error;
     }
     if (params.get("_meta")) |meta_value| {
         const meta = try capabilityObject(meta_value, invalid_error);
@@ -2027,7 +2050,15 @@ fn validateSubscriptionNotification(
             .array => |items| items.items.len > 0,
             else => false,
         }
-    else if (std.mem.eql(u8, method, methods.progress) or
+    else if (std.mem.eql(u8, method, tasks.methods.status_notification)) blk: {
+        const notification_params = try capabilityObject(
+            notification.get("params") orelse return error.InvalidMcpMessage,
+            error.InvalidMcpMessage,
+        );
+        const task_id = optionalString(notification_params, "taskId") orelse
+            return error.InvalidMcpMessage;
+        break :blk subscriptionContains(filter, "taskIds", task_id);
+    } else if (std.mem.eql(u8, method, methods.progress) or
         std.mem.eql(u8, method, methods.logging_message))
         false
     else
@@ -2069,6 +2100,16 @@ fn validateSubscriptionFilter(value: std.json.Value, comptime invalid_error: any
             else => return invalid_error,
         };
         for (values.items) |uri| if (uri != .string) return invalid_error;
+    }
+    if (filter.get("taskIds")) |task_ids| {
+        const values = switch (task_ids) {
+            .array => |array| array,
+            else => return invalid_error,
+        };
+        for (values.items) |task_id| switch (task_id) {
+            .string => |identifier| if (identifier.len == 0) return invalid_error,
+            else => return invalid_error,
+        };
     }
 }
 
@@ -2967,6 +3008,30 @@ fn routingName(method: []const u8, params: std.json.ObjectMap) ?[]const u8 {
     return null;
 }
 
+fn requestsTaskNotifications(method: []const u8, params: std.json.ObjectMap) bool {
+    if (!std.mem.eql(u8, method, methods.listen)) return false;
+    const notifications = switch (params.get("notifications") orelse return false) {
+        .object => |object| object,
+        else => return false,
+    };
+    return switch (notifications.get("taskIds") orelse return false) {
+        .array => |array| array.items.len > 0,
+        else => false,
+    };
+}
+
+fn subscriptionContains(filter: std.json.ObjectMap, name: []const u8, expected: []const u8) bool {
+    const values = switch (filter.get(name) orelse return false) {
+        .array => |array| array,
+        else => return false,
+    };
+    for (values.items) |value| switch (value) {
+        .string => |string| if (std.mem.eql(u8, string, expected)) return true,
+        else => return false,
+    };
+    return false;
+}
+
 fn isTaskMethod(method: []const u8) bool {
     return std.mem.eql(u8, method, tasks.methods.get) or
         std.mem.eql(u8, method, tasks.methods.update) or
@@ -3410,6 +3475,7 @@ test "JSON-RPC response and MCP error envelopes are exact" {
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"missing\",\"data\":null}}",
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32020,\"message\":\"headers\"}}",
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32021,\"message\":\"capability\",\"data\":{\"requiredCapabilities\":{\"elicitation\":{}}}}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32003,\"message\":\"capability\",\"data\":{\"requiredCapabilities\":{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}}}}",
     };
     for (valid_errors) |source| try std.testing.expectError(
         error.McpRpcError,
@@ -3474,6 +3540,7 @@ test "HTTP response statuses match MCP result and reserved error envelopes" {
     const reserved = [_]i32{
         error_codes.header_mismatch,
         error_codes.missing_required_client_capability,
+        tasks.error_codes.missing_required_client_capability,
         error_codes.unsupported_protocol_version,
     };
     for (reserved) |code| {
@@ -4071,7 +4138,7 @@ test "core request params cover every standardized method shape" {
         .{ .method = methods.call_tool, .params = "{\"name\":\"weather\",\"arguments\":{\"city\":\"Madrid\"}}" },
         .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"review\"},\"argument\":{\"name\":\"language\",\"value\":\"z\"},\"context\":{\"arguments\":{\"other\":\"x\"}}}" },
         .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"ref/resource\",\"uri\":\"file:///{path}\"},\"argument\":{\"name\":\"path\",\"value\":\"src\"}}" },
-        .{ .method = methods.listen, .params = "{\"notifications\":{\"toolsListChanged\":true,\"promptsListChanged\":false,\"resourcesListChanged\":true,\"resourceSubscriptions\":[\"file:///a\"]}}" },
+        .{ .method = methods.listen, .params = "{\"notifications\":{\"toolsListChanged\":true,\"promptsListChanged\":false,\"resourcesListChanged\":true,\"resourceSubscriptions\":[\"file:///a\"],\"taskIds\":[\"task-1\"]}}" },
         .{ .method = tasks.methods.get, .params = "{\"taskId\":\"task-1\"}" },
         .{ .method = tasks.methods.cancel, .params = "{\"taskId\":\"task-1\"}" },
         .{ .method = tasks.methods.update, .params = "{\"taskId\":\"task-1\",\"inputResponses\":{\"approval\":{\"action\":\"accept\"}}}" },
@@ -4111,6 +4178,9 @@ test "core request params cover every standardized method shape" {
         .{ .method = methods.listen, .params = "{\"notifications\":{\"toolsListChanged\":1}}" },
         .{ .method = methods.listen, .params = "{\"notifications\":{\"resourceSubscriptions\":{}}}" },
         .{ .method = methods.listen, .params = "{\"notifications\":{\"resourceSubscriptions\":[1]}}" },
+        .{ .method = methods.listen, .params = "{\"notifications\":{\"taskIds\":{}}}" },
+        .{ .method = methods.listen, .params = "{\"notifications\":{\"taskIds\":[1]}}" },
+        .{ .method = methods.listen, .params = "{\"notifications\":{\"taskIds\":[\"\"]}}" },
         .{ .method = tasks.methods.get, .params = "{}" },
         .{ .method = tasks.methods.get, .params = "{\"taskId\":\"\"}" },
         .{ .method = tasks.methods.cancel, .params = "{\"taskId\":1}" },
@@ -4137,6 +4207,7 @@ test "core notification params and stream metadata are validated" {
         .{ .method = methods.progress, .params = "{\"progressToken\":\"p\",\"progress\":1.5,\"total\":2,\"message\":\"working\"}" },
         .{ .method = methods.resource_updated, .params = "{\"uri\":\"file:///a\"}" },
         .{ .method = methods.subscriptions_acknowledged, .params = "{\"notifications\":{}}" },
+        .{ .method = tasks.methods.status_notification, .params = "{\"taskId\":\"task-1\",\"status\":\"working\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":null}" },
         .{ .method = methods.tool_list_changed, .params = "{}" },
         .{ .method = "com.example/changed", .params = "{\"anything\":true}" },
     };
@@ -4177,6 +4248,7 @@ test "core notification params and stream metadata are validated" {
         .{ .method = methods.logging_message, .params = "{\"level\":\"info\",\"logger\":1,\"data\":1}" },
         .{ .method = methods.resource_updated, .params = "{}" },
         .{ .method = methods.subscriptions_acknowledged, .params = "{}" },
+        .{ .method = tasks.methods.status_notification, .params = "{\"taskId\":\"task-1\",\"status\":\"completed\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":null}" },
         .{ .method = methods.tool_list_changed, .params = "{\"_meta\":[]}" },
         .{ .method = methods.tool_list_changed, .params = "{\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":true}}" },
     };
@@ -4314,6 +4386,10 @@ test "server task dispatch requires capability and matching task route" {
         fn handle(context: *anyopaque, allocator: std.mem.Allocator, method: []const u8, params: []const u8) ![]u8 {
             const self: *@This() = @ptrCast(@alignCast(context));
             self.calls += 1;
+            if (std.mem.eql(u8, method, methods.listen)) return allocator.dupe(
+                u8,
+                "{\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":1}}",
+            );
             try std.testing.expectEqualStrings(tasks.methods.get, method);
             try std.testing.expect(std.mem.indexOf(u8, params, "\"taskId\":\"task-1\"") != null);
             return allocator.dupe(
@@ -4341,6 +4417,7 @@ test "server task dispatch requires capability and matching task route" {
     const missing = try server.handle(std.testing.allocator, missing_request, null);
     defer missing.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 400), missing.status);
+    try std.testing.expect(std.mem.indexOf(u8, missing.body.?, "-32003") != null);
     try std.testing.expect(std.mem.indexOf(u8, missing.body.?, tasks.extension_identifier) != null);
     try std.testing.expectEqual(@as(usize, 0), handler.calls);
 
@@ -4373,6 +4450,36 @@ test "server task dispatch requires capability and matching task route" {
     defer rejected.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 400), rejected.status);
     try std.testing.expectEqual(@as(usize, 1), handler.calls);
+
+    const missing_listen = try buildRequest(
+        std.testing.allocator,
+        3,
+        methods.listen,
+        "{\"notifications\":{\"taskIds\":[\"task-1\"]}}",
+        "client",
+        "1",
+        "{}",
+    );
+    defer std.testing.allocator.free(missing_listen);
+    const missing_subscription = try server.handle(std.testing.allocator, missing_listen, null);
+    defer missing_subscription.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 400), missing_subscription.status);
+    try std.testing.expectEqual(@as(usize, 1), handler.calls);
+
+    const capable_listen = try buildRequest(
+        std.testing.allocator,
+        4,
+        methods.listen,
+        "{\"notifications\":{\"taskIds\":[\"task-1\"]}}",
+        "client",
+        "1",
+        "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
+    );
+    defer std.testing.allocator.free(capable_listen);
+    const accepted_subscription = try server.handle(std.testing.allocator, capable_listen, null);
+    defer accepted_subscription.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 200), accepted_subscription.status);
+    try std.testing.expectEqual(@as(usize, 2), handler.calls);
 }
 
 test "MRTR input requirements match the capabilities sent on the request" {
@@ -4621,6 +4728,45 @@ test "typed task client helpers route requests and return owned state" {
         error.InvalidTaskRequest,
         client.cancelTask(std.testing.allocator, ""),
     );
+}
+
+test "task status subscriptions require the extension before transport I/O" {
+    const Stub = struct {
+        calls: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            try std.testing.expectEqualStrings(methods.listen, request.method);
+            try std.testing.expect(std.mem.indexOf(u8, request.message, "\"taskIds\":[\"task-1\"]") != null);
+            return allocator.dupe(
+                u8,
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\"," ++
+                    "\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":1}}}",
+            );
+        }
+        fn event(_: *anyopaque, _: []const u8) !void {}
+    };
+    var stub: Stub = .{};
+    var client = Client{ .transport = .{ .context = &stub, .sendFn = Stub.send } };
+    try std.testing.expectError(
+        error.MissingMcpClientCapability,
+        client.listen(
+            std.testing.allocator,
+            .{ .task_ids = &.{"task-1"} },
+            .{ .context = &stub, .eventFn = Stub.event },
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 0), stub.calls);
+    client.capabilities_json = "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}";
+    const result = try client.listen(
+        std.testing.allocator,
+        .{ .task_ids = &.{"task-1"} },
+        .{ .context = &stub, .eventFn = Stub.event },
+    );
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqual(@as(usize, 1), stub.calls);
+    try Stub.event(&stub, "{}");
 }
 
 test "tool-created tasks require the advertised client extension" {
@@ -5115,6 +5261,34 @@ test "subscription streams enforce acknowledgement order and requested filters" 
             arena.allocator(),
             notification,
             source,
+        ),
+    );
+
+    const task_notification = try parseResponse(
+        arena.allocator(),
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tasks\",\"params\":{" ++
+            "\"taskId\":\"task-1\",\"status\":\"completed\",\"createdAt\":\"then\"," ++
+            "\"lastUpdatedAt\":\"now\",\"ttlMs\":1000,\"result\":{\"content\":[]}}}",
+    );
+    try validateSubscriptionNotification(
+        arena.allocator(),
+        task_notification,
+        "{\"params\":{\"notifications\":{\"taskIds\":[\"task-1\",\"task-2\"]}}}",
+    );
+    try std.testing.expectError(
+        error.InvalidMcpMessage,
+        validateSubscriptionNotification(
+            arena.allocator(),
+            task_notification,
+            "{\"params\":{\"notifications\":{\"taskIds\":[\"task-2\"]}}}",
+        ),
+    );
+    try std.testing.expectError(
+        error.InvalidMcpMessage,
+        validateSubscriptionNotification(
+            arena.allocator(),
+            task_notification,
+            "{\"params\":{\"notifications\":{\"taskIds\":[true]}}}",
         ),
     );
 
