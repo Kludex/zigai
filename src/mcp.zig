@@ -212,6 +212,8 @@ pub const Error = error{
     McpMessageTooLarge,
     /// A stdio MCP child closed before returning the matching response.
     McpProcessClosed,
+    /// A stdio MCP transport reached its configured pending-request bound.
+    McpStdioBackpressure,
     /// A JSON-RPC response ID differs from the outstanding request ID.
     McpResponseIdMismatch,
     /// The peer returned a JSON-RPC error envelope.
@@ -610,30 +612,83 @@ fn finishHttpResponse(
     return extracted;
 }
 
+/// Child stderr behavior for an MCP stdio transport.
+pub const StdioStderrPolicy = enum {
+    /// Forward child diagnostics to the parent process.
+    inherit,
+    /// Send child diagnostics to the platform null device.
+    discard,
+};
+
+pub const StdioOptions = struct {
+    stderr: StdioStderrPolicy = .inherit,
+    /// Time after stdin closes for the child to exit before forced cleanup.
+    shutdown_grace_ms: u64 = 1_000,
+    /// Maximum active plus mutex-queued requests. Further calls fail fast.
+    max_pending_requests: usize = 64,
+};
+
+pub const StdioShutdown = enum { graceful, killed };
+
 /// MCP stdio transport using newline-delimited JSON-RPC messages.
 pub const StdioTransport = struct {
     io: std.Io,
     child: std.process.Child,
+    shutdown_grace_ms: u64 = 1_000,
+    max_pending_requests: usize = 64,
+    pending_requests: std.atomic.Value(usize) = .init(0),
     mutex: std.Io.Mutex = .init,
 
     pub fn init(io: std.Io, argv: []const []const u8) !StdioTransport {
+        return initWithOptions(io, argv, .{});
+    }
+
+    pub fn initWithOptions(
+        io: std.Io,
+        argv: []const []const u8,
+        options: StdioOptions,
+    ) !StdioTransport {
         if (argv.len == 0) return error.EmptyCommand;
+        if (options.max_pending_requests == 0) return error.InvalidMcpTransportConfiguration;
         return .{
             .io = io,
             .child = try std.process.spawn(io, .{
                 .argv = argv,
                 .stdin = .pipe,
                 .stdout = .pipe,
-                .stderr = .inherit,
+                .stderr = switch (options.stderr) {
+                    .inherit => .inherit,
+                    .discard => .ignore,
+                },
             }),
+            .shutdown_grace_ms = options.shutdown_grace_ms,
+            .max_pending_requests = options.max_pending_requests,
         };
     }
 
     pub fn deinit(self: *StdioTransport) void {
+        _ = self.shutdown();
+        self.* = undefined;
+    }
+
+    /// Closes child stdin, waits for an orderly exit, then kills and reaps the
+    /// process if the configured grace period expires.
+    pub fn shutdown(self: *StdioTransport) StdioShutdown {
+        self.mutex.lockUncancelable(self.io);
+        defer self.mutex.unlock(self.io);
         if (self.child.stdin) |stdin| stdin.close(self.io);
         self.child.stdin = null;
-        self.child.kill(self.io);
-        self.* = undefined;
+        if (self.child.id == null) return .graceful;
+        var elapsed_ms: u64 = 0;
+        while (elapsed_ms < self.shutdown_grace_ms) {
+            if (pollStdioChild(&self.child, self.io)) return .graceful;
+            const delay_ms = @min(@as(u64, 5), self.shutdown_grace_ms - elapsed_ms);
+            sleepForTaskPoll(self.io, delay_ms) catch break;
+            elapsed_ms += delay_ms;
+        }
+        if (pollStdioChild(&self.child, self.io)) return .graceful;
+        forceKillStdioChild(&self.child, self.io);
+        return .killed;
     }
 
     pub fn transport(self: *StdioTransport) Transport {
@@ -643,6 +698,13 @@ pub const StdioTransport = struct {
     fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
         const self: *StdioTransport = @ptrCast(@alignCast(context));
         try validateMcpMessage(allocator, request.message);
+        if (self.max_pending_requests == 0) return error.InvalidMcpTransportConfiguration;
+        const previous = self.pending_requests.fetchAdd(1, .seq_cst);
+        if (previous >= self.max_pending_requests) {
+            _ = self.pending_requests.fetchSub(1, .seq_cst);
+            return error.McpStdioBackpressure;
+        }
+        defer _ = self.pending_requests.fetchSub(1, .seq_cst);
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
         const stdin = self.child.stdin orelse return error.McpProcessClosed;
@@ -709,6 +771,56 @@ pub const StdioTransport = struct {
         }
     }
 };
+
+fn pollStdioChild(child: *std.process.Child, io: std.Io) bool {
+    const id = child.id orelse return true;
+    switch (builtin.os.tag) {
+        .windows => {
+            const windows = std.os.windows;
+            const timeout: windows.LARGE_INTEGER = -1;
+            if (windows.ntdll.NtWaitForSingleObject(id, .FALSE, &timeout) != .WAIT_0) return false;
+            _ = child.wait(io) catch {
+                child.kill(io);
+                return true;
+            };
+            return true;
+        },
+        .wasi => return false,
+        else => {
+            var status: if (builtin.link_libc) c_int else u32 = undefined;
+            while (true) {
+                const result = std.posix.system.waitpid(id, &status, std.posix.W.NOHANG);
+                const wait_error = std.posix.errno(result);
+                switch (wait_error) {
+                    .SUCCESS, .CHILD => {
+                        if (wait_error == .SUCCESS and result == 0) return false;
+                        cleanupPolledStdioChild(child, io);
+                        return true;
+                    },
+                    .INTR => continue,
+                    else => return false, // kcov-ignore: validated child IDs yield only success, interrupt, or already-reaped.
+                }
+            }
+        },
+    }
+}
+
+fn cleanupPolledStdioChild(child: *std.process.Child, io: std.Io) void {
+    child.id = null;
+    if (child.stdout) |stdout| stdout.close(io);
+    child.stdout = null;
+    if (child.stderr) |stderr| stderr.close(io);
+    child.stderr = null;
+}
+
+fn forceKillStdioChild(child: *std.process.Child, io: std.Io) void {
+    const id = child.id orelse return;
+    switch (builtin.os.tag) {
+        .windows, .wasi => {},
+        else => std.posix.kill(id, .KILL) catch {},
+    }
+    child.kill(io);
+}
 
 /// Handles an MRTR input request and returns a JSON result object.
 pub const InputHandler = struct {
@@ -6621,6 +6733,60 @@ test "stdio transport runs a modern MCP tool server child process" {
     const result = try tools[0].tool.execute(std.testing.allocator, "{}");
     defer std.testing.allocator.free(result);
     try std.testing.expectEqualStrings("echoed", result);
+}
+
+test "stdio options bound admission and shut children down deterministically" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    try std.testing.expectError(
+        error.InvalidMcpTransportConfiguration,
+        StdioTransport.initWithOptions(
+            std.testing.io,
+            &.{ "/bin/sh", "-c", "exit 0" },
+            .{ .max_pending_requests = 0 },
+        ),
+    );
+
+    var graceful = try StdioTransport.initWithOptions(
+        std.testing.io,
+        &.{ "/bin/sh", "-c", "while IFS= read -r line; do :; done" },
+        .{ .stderr = .discard, .shutdown_grace_ms = 1_000, .max_pending_requests = 1 },
+    );
+    graceful.pending_requests.store(1, .seq_cst);
+    const request = WireRequest{
+        .message = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\"}",
+        .method = methods.discover,
+    };
+    try std.testing.expectError(
+        error.McpStdioBackpressure,
+        graceful.transport().send(std.testing.allocator, request),
+    );
+    try std.testing.expectEqual(@as(usize, 1), graceful.pending_requests.load(.seq_cst));
+    graceful.pending_requests.store(0, .seq_cst);
+    graceful.max_pending_requests = 0;
+    try std.testing.expectError(
+        error.InvalidMcpTransportConfiguration,
+        graceful.transport().send(std.testing.allocator, request),
+    );
+    graceful.max_pending_requests = 1;
+    try std.testing.expectEqual(StdioShutdown.graceful, graceful.shutdown());
+    try std.testing.expectEqual(StdioShutdown.graceful, graceful.shutdown());
+    graceful.deinit();
+
+    var escalated = try StdioTransport.initWithOptions(
+        std.testing.io,
+        &.{ "/bin/sh", "-c", "trap '' TERM HUP; while :; do :; done" },
+        .{ .shutdown_grace_ms = 1 },
+    );
+    try std.testing.expectEqual(StdioShutdown.killed, escalated.shutdown());
+    escalated.deinit();
+
+    var immediate = try StdioTransport.initWithOptions(
+        std.testing.io,
+        &.{ "/bin/sh", "-c", "while :; do :; done" },
+        .{ .shutdown_grace_ms = 0 },
+    );
+    try std.testing.expectEqual(StdioShutdown.killed, immediate.shutdown());
+    immediate.deinit();
 }
 
 test "HTTP transport handles SSE, notifications, and status failures" {

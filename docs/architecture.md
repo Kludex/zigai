@@ -435,7 +435,11 @@ before JSON parsing, and ignores session-era `id` and `retry` fields. The MCP
 collector then applies response correlation, acknowledgement ordering, and
 subscription filters to each assembled value.
 `StdioTransport` frames one JSON-RPC message per line and correlates response
-IDs. The separate `mcp.auth` module owns transport-level authorization
+IDs. `StdioOptions` makes stderr inheritance or discard explicit and rejects
+requests beyond a bounded serialized queue. Shutdown closes stdin, polls for a
+graceful child exit without a cancellable-wait race, and escalates to a
+platform force-kill followed by reap at the deadline. The separate `mcp.auth`
+module owns transport-level authorization
 contracts: bounded protected-resource and authorization-server discovery,
 issuer-bound token acquisition, RFC 9207 response checks, and scope step-up.
 The HTTP transport adds one sensitive Bearer header per attempt; credentials

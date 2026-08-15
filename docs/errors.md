@@ -234,6 +234,7 @@ validation never invokes it.
 | `McpProcessClosed` | A stdio child closed before the matching response. |
 | `McpResponseIdMismatch` | A response ID does not match the request. |
 | `McpRpcError` | The peer returned a JSON-RPC error envelope. |
+| `McpStdioBackpressure` | A stdio transport reached its pending-request bound. |
 | `MissingMcpClient` | An MCP toolset has no client. |
 | `MissingMcpClientCapability` | A Tasks operation was attempted without the extension capability. |
 | `MissingMcpTaskStore` | Durable task resumption was requested without a store. |

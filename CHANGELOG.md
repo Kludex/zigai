@@ -10,6 +10,9 @@
 - Add opt-in bounded stateless subscription re-establishment with explicit
   failure classification, delay, cancellation, deadline, and at-least-once
   event semantics.
+- Add explicit stdio stderr policy, bounded request admission, graceful
+  stdin-close shutdown, deadline polling, force-kill escalation, and child
+  reaping.
 - Add bounded, arena-owned task result parsing, typed client helpers, extension
   negotiation, task-ID routing, validated task status subscriptions, and
   bounded polling with deduplicated input handling and cooperative

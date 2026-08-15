@@ -513,6 +513,12 @@ defer stdio.deinit();
 var mcp_client = zigai.mcp.Client{ .transport = stdio.transport() };
 ```
 
+Use `initWithOptions` to discard child diagnostics, change the graceful
+shutdown window, or tighten the pending-request bound. Stdio is serialized;
+calls beyond that bound fail with `McpStdioBackpressure` instead of growing an
+unbounded queue. Closing the transport closes stdin first, then force-kills and
+reaps a child that does not exit within the grace period.
+
 ZigAI implements MCP `2026-07-28`. Requests are stateless and self-describing;
 there is no initialize handshake or protocol session. The client handles
 discovery, every core request, pagination, SSE subscriptions, cancellation,

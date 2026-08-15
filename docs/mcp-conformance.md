@@ -32,6 +32,7 @@ API.
 | Pagination | Cursor encoding for all list methods; tool discovery rejects cursor cycles and honors `max_pages` |
 | Subscriptions | Typed filters, correlation IDs, acknowledgement-first ordering, requested updates, SSE, stdio, cancellation, and bounded stateless re-establishment |
 | HTTP | Incremental bounded request-scoped SSE, buffered fallback, concurrent requests, routing and tool-argument headers, reserved MCP error status mappings, response limits, URL policy, OAuth discovery, bounded Bearer refresh/step-up, and server deployment guards |
+| Stdio | Bounded newline framing, serialized admission, explicit stderr policy, graceful EOF shutdown, forced escalation, reap, and modern server-request rejection |
 | Extensions | Mandatory prefixed identifiers, object settings, lossless unknown JSON, generic methods, and `extensionSettings` |
 | Compatibility | Modern/legacy classification for stdio and HTTP; actionable rejection of legacy `initialize` |
 
