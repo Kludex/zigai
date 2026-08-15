@@ -111,6 +111,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
             defer allocator.free(body);
             const url = try endpointUrl(allocator, self.base_url);
             defer allocator.free(url);
+            try value.url_policy.validate(url);
             const authentication = try std.mem.concat(
                 allocator,
                 u8,
@@ -162,6 +163,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
             defer allocator.free(body);
             const url = try endpointUrl(allocator, self.base_url);
             defer allocator.free(url);
+            try value.url_policy.validate(url);
             const authentication = try std.mem.concat(
                 allocator,
                 u8,

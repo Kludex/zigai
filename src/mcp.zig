@@ -11,6 +11,7 @@ const agent = @import("agent.zig");
 const model = @import("model.zig");
 const http = @import("transport.zig");
 const json_limits = @import("json.zig");
+const security = @import("security.zig");
 
 /// Latest stable MCP protocol revision supported by ZigAI.
 pub const protocol_version = "2026-07-28";
@@ -118,10 +119,21 @@ pub const StreamableHttpTransport = struct {
     inner: http.Transport,
     endpoint: []const u8,
     headers: []const http.Header = &.{},
+    url_policy: security.UrlPolicy = .{},
     mutex: std.Io.Mutex = .init,
 
     pub fn init(io: std.Io, inner: http.Transport, endpoint: []const u8) StreamableHttpTransport {
-        return .{ .io = io, .inner = inner, .endpoint = endpoint };
+        return initWithPolicy(io, inner, endpoint, .{});
+    }
+
+    /// Initializes Streamable HTTP with an explicit endpoint policy.
+    pub fn initWithPolicy(
+        io: std.Io,
+        inner: http.Transport,
+        endpoint: []const u8,
+        url_policy: security.UrlPolicy,
+    ) StreamableHttpTransport {
+        return .{ .io = io, .inner = inner, .endpoint = endpoint, .url_policy = url_policy };
     }
 
     pub fn transport(self: *StreamableHttpTransport) Transport {
@@ -130,6 +142,7 @@ pub const StreamableHttpTransport = struct {
 
     fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
         const self: *StreamableHttpTransport = @ptrCast(@alignCast(context));
+        try self.url_policy.validate(self.endpoint);
         try validateMcpMessage(allocator, request.message);
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
@@ -1306,6 +1319,41 @@ test "client emits self-describing requests and HTTP routing headers" {
     const result = try client.callTool(std.testing.allocator, "weather", "{}");
     defer std.testing.allocator.free(result);
     try std.testing.expect(std.mem.indexOf(u8, result, "sunny") != null);
+}
+
+test "Streamable HTTP validates endpoints before transport callbacks" {
+    const Stub = struct {
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, _: http.Request) !http.Response {
+            const called: *bool = @ptrCast(@alignCast(context));
+            called.* = true;
+            return .{ .status = 200, .body = try allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}") };
+        }
+    };
+    var called = false;
+    var blocked = StreamableHttpTransport.init(
+        std.testing.io,
+        .{ .context = &called, .sendFn = Stub.send },
+        "https://127.0.0.1/mcp",
+    );
+    const request = WireRequest{
+        .message = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\"}",
+        .method = methods.discover,
+    };
+    try std.testing.expectError(
+        error.LocalNetworkUrlForbidden,
+        blocked.transport().send(std.testing.allocator, request),
+    );
+    try std.testing.expect(!called);
+
+    var allowed = StreamableHttpTransport.initWithPolicy(
+        std.testing.io,
+        .{ .context = &called, .sendFn = Stub.send },
+        "http://127.0.0.1/mcp",
+        .{ .allow_http = true, .allow_local_network = true },
+    );
+    const response = try allowed.transport().send(std.testing.allocator, request);
+    defer std.testing.allocator.free(response);
+    try std.testing.expect(called);
 }
 
 test "client bounds request response and tool-argument JSON before dispatch" {

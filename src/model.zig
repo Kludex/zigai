@@ -1,6 +1,7 @@
 const std = @import("std");
 const json_limits = @import("json.zig");
 const messages = @import("messages.zig");
+const security = @import("security.zig");
 
 pub const Content = messages.Content;
 pub const ContentSource = messages.ContentSource;
@@ -513,6 +514,8 @@ pub const ModelRequest = struct {
     output: OutputFormat = .text,
     error_observer: ?ProviderErrorObserver = null,
     error_policy: ProviderErrorPolicy = .{},
+    /// Outbound provider and remote-content URL policy for this logical call.
+    url_policy: security.UrlPolicy = .{},
     /// Caller correlation ID. Supporting providers forward it unchanged.
     request_id: ?[]const u8 = null,
     /// Stable across retries of this logical request. Ignored unless supported.

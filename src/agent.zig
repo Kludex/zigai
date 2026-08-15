@@ -9,6 +9,7 @@ const context_budget = @import("context_budget.zig");
 const telemetry_types = @import("telemetry.zig");
 const json_limits = @import("json.zig");
 const transport = @import("transport.zig");
+const security = @import("security.zig");
 
 const Message = model_types.Message;
 const PromptPart = model_types.PromptPart;
@@ -93,6 +94,18 @@ const AgentError = error{
     ParallelToolCallsRequireIo,
     /// A provider-managed file belongs to a different provider.
     ProviderFileProviderMismatch,
+    /// An outbound or provider-fetched URL is not syntactically valid.
+    InvalidUrl,
+    /// An outbound or provider-fetched URL has no host.
+    UrlMissingHost,
+    /// An outbound or provider-fetched URL uses a forbidden scheme.
+    UrlSchemeNotAllowed,
+    /// An outbound or provider-fetched URL embeds user information.
+    UrlCredentialsForbidden,
+    /// An outbound or provider-fetched URL targets a forbidden local address.
+    LocalNetworkUrlForbidden,
+    /// An outbound or provider-fetched URL host is absent from the allowlist.
+    UrlHostNotAllowed,
     /// Reported cumulative input plus output usage exceeded its run limit.
     TotalTokenLimitExceeded,
     /// The runtime could not schedule all required controlled tool tasks.
@@ -665,6 +678,8 @@ pub const Agent = struct {
     retry_policy: RetryPolicy = .{},
     /// Provider-request preflight limits and optional compaction policy.
     context_budget: ContextBudget = .{},
+    /// Policy for provider endpoints and URLs represented in rich content.
+    url_policy: security.UrlPolicy = .{},
     provider_error_observer: ?model_types.ProviderErrorObserver = null,
     /// Bounded provider details made visible to `provider_error_observer`.
     provider_error_policy: model_types.ProviderErrorPolicy = .{},
@@ -1043,10 +1058,10 @@ pub const Agent = struct {
         try requireModelSettings(self.model.profile, resolved_settings);
         try ensureBuiltinToolsSupported(self.model.profile, self.builtin_tools);
         if (resume_state) |state|
-            try ensureContentSupported(self.model, state.messages)
+            try ensureContentSupported(self.model, self.url_policy, state.messages)
         else
-            try ensureContentSupported(self.model, options.message_history);
-        try ensurePromptPartsSupported(self.model, options.prompt_parts);
+            try ensureContentSupported(self.model, self.url_policy, options.message_history);
+        try ensurePromptPartsSupported(self.model, self.url_policy, options.prompt_parts);
         try emitLifecycle(hooks, .{ .run_start = .{ .prompt = prompt, .model = self.model } });
 
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -1120,7 +1135,7 @@ pub const Agent = struct {
                     hooks,
                 );
                 try messages.append(memory, .{ .request = .{ .parts = tool_batch.parts } });
-                try appendToolFollowUps(self.model, memory, &messages, tool_batch.follow_up_messages);
+                try appendToolFollowUps(self.model, self.url_policy, memory, &messages, tool_batch.follow_up_messages);
                 resume_pending = false;
                 continue;
             }
@@ -1186,6 +1201,7 @@ pub const Agent = struct {
                     .output = self.output,
                     .error_observer = provider_errors.observer(),
                     .error_policy = self.provider_error_policy,
+                    .url_policy = self.url_policy,
                     .request_id = options.request_id,
                     .idempotency_key = idempotency_key,
                     .timeout_ms = try control.timeoutMilliseconds(self.request_timeout_ms),
@@ -1361,7 +1377,7 @@ pub const Agent = struct {
                 try emitStreamEvent(hooks, sink, .{ .tool_result = part.tool_return });
             };
             try messages.append(memory, .{ .request = .{ .parts = tool_batch.parts } });
-            try appendToolFollowUps(self.model, memory, &messages, tool_batch.follow_up_messages);
+            try appendToolFollowUps(self.model, self.url_policy, memory, &messages, tool_batch.follow_up_messages);
         }
     }
 };
@@ -2486,13 +2502,14 @@ fn appendMessageCopy(allocator: std.mem.Allocator, messages: *std.ArrayList(Mess
 
 fn appendToolFollowUps(
     selected_model: model_types.Model,
+    url_policy: security.UrlPolicy,
     allocator: std.mem.Allocator,
     messages: *std.ArrayList(Message),
     follow_ups: []const model_types.RequestMessage,
 ) !void {
     for (follow_ups) |request| {
         for (request.parts) |part| switch (part) {
-            .user_prompt => |content| try ensurePromptPartSupported(selected_model, content),
+            .user_prompt => |content| try ensurePromptPartSupported(selected_model, url_policy, content),
             else => return Agent.Error.InvalidToolFollowUpMessage,
         };
         try messages.append(allocator, .{ .request = try copyRequestMessage(allocator, request) });
@@ -2794,43 +2811,59 @@ fn ensureBuiltinToolsSupported(
     }
 }
 
-fn ensureContentSupported(selected_model: model_types.Model, messages: []const Message) Agent.Error!void {
+fn ensureContentSupported(
+    selected_model: model_types.Model,
+    url_policy: security.UrlPolicy,
+    messages: []const Message,
+) Agent.Error!void {
     for (messages) |message| switch (message) {
         .request => |request| for (request.parts) |part| switch (part) {
-            .user_prompt => |content| try ensurePromptPartSupported(selected_model, content),
+            .user_prompt => |content| try ensurePromptPartSupported(selected_model, url_policy, content),
             else => {},
         },
-        .response => |response| try ensureResponsePartsSupported(selected_model, response.parts),
+        .response => |response| try ensureResponsePartsSupported(selected_model, url_policy, response.parts),
     };
 }
 
-fn ensurePromptPartsSupported(selected_model: model_types.Model, parts: []const PromptPart) Agent.Error!void {
-    for (parts) |part| try ensurePromptPartSupported(selected_model, part);
+fn ensurePromptPartsSupported(
+    selected_model: model_types.Model,
+    url_policy: security.UrlPolicy,
+    parts: []const PromptPart,
+) Agent.Error!void {
+    for (parts) |part| try ensurePromptPartSupported(selected_model, url_policy, part);
 }
 
-fn ensurePromptPartSupported(selected_model: model_types.Model, part: PromptPart) Agent.Error!void {
+fn ensurePromptPartSupported(
+    selected_model: model_types.Model,
+    url_policy: security.UrlPolicy,
+    part: PromptPart,
+) Agent.Error!void {
     switch (part) {
-        .image => |content| try ensureContentPartSupported(selected_model, .image, content),
-        .audio => |content| try ensureContentPartSupported(selected_model, .audio, content),
-        .document => |content| try ensureContentPartSupported(selected_model, .document, content),
-        .binary => |content| try ensureContentPartSupported(selected_model, .binary, content),
+        .image => |content| try ensureContentPartSupported(selected_model, url_policy, .image, content),
+        .audio => |content| try ensureContentPartSupported(selected_model, url_policy, .audio, content),
+        .document => |content| try ensureContentPartSupported(selected_model, url_policy, .document, content),
+        .binary => |content| try ensureContentPartSupported(selected_model, url_policy, .binary, content),
         .text => {},
     }
 }
 
-fn ensureResponsePartsSupported(selected_model: model_types.Model, parts: []const ResponsePart) Agent.Error!void {
+fn ensureResponsePartsSupported(
+    selected_model: model_types.Model,
+    url_policy: security.UrlPolicy,
+    parts: []const ResponsePart,
+) Agent.Error!void {
     for (parts) |part| switch (part) {
         .image => |content| {
-            try ensureContentPartSupported(selected_model, .image, content);
+            try ensureContentPartSupported(selected_model, url_policy, .image, content);
         },
         .audio => |content| {
-            try ensureContentPartSupported(selected_model, .audio, content);
+            try ensureContentPartSupported(selected_model, url_policy, .audio, content);
         },
         .document => |content| {
-            try ensureContentPartSupported(selected_model, .document, content);
+            try ensureContentPartSupported(selected_model, url_policy, .document, content);
         },
         .binary => |content| {
-            try ensureContentPartSupported(selected_model, .binary, content);
+            try ensureContentPartSupported(selected_model, url_policy, .binary, content);
         },
         .thinking => {
             if (!selected_model.profile.supportsContentType(.thinking)) return Agent.Error.ModelDoesNotSupportThinking;
@@ -2841,6 +2874,7 @@ fn ensureResponsePartsSupported(selected_model: model_types.Model, parts: []cons
 
 fn ensureContentPartSupported(
     selected_model: model_types.Model,
+    url_policy: security.UrlPolicy,
     kind: model_types.ContentType,
     content: model_types.Content,
 ) Agent.Error!void {
@@ -2852,6 +2886,7 @@ fn ensureContentPartSupported(
         .thinking => Agent.Error.ModelDoesNotSupportThinking,
     };
     switch (content.source) {
+        .url => |url| try url_policy.validate(url),
         .provider_file => |file| if (file.provider) |expected| {
             const actual = selected_model.provider_name orelse return Agent.Error.ProviderFileProviderMismatch;
             if (!std.mem.eql(u8, expected, actual)) return Agent.Error.ProviderFileProviderMismatch;
@@ -3157,6 +3192,7 @@ test "agent private helpers cover ownership settings retries and rich content" {
     var messages: std.ArrayList(Message) = .empty;
     try std.testing.expectError(Agent.Error.InvalidToolFollowUpMessage, appendToolFollowUps(
         selected_model,
+        .{},
         allocator,
         &messages,
         &.{.{ .parts = &.{.{ .system_prompt = "not allowed" }} }},
@@ -3173,19 +3209,19 @@ test "agent private helpers cover ownership settings retries and rich content" {
         ensureBuiltinToolsSupported(.{}, &.{.{ .web_search = .{} }}),
     );
     const content = model_types.Content{ .source = .{ .bytes = "x" }, .media_type = "application/octet-stream" };
-    try ensurePromptPartsSupported(selected_model, &.{
+    try ensurePromptPartsSupported(selected_model, .{}, &.{
         .{ .image = content },
         .{ .audio = content },
         .{ .document = content },
         .{ .binary = content },
     });
-    try ensureResponsePartsSupported(selected_model, &.{
+    try ensureResponsePartsSupported(selected_model, .{}, &.{
         .{ .image = content },
         .{ .audio = content },
         .{ .document = content },
         .{ .binary = content },
     });
-    try ensureContentSupported(selected_model, &.{
+    try ensureContentSupported(selected_model, .{}, &.{
         .{ .request = .{ .parts = &.{.{ .user_prompt = .{ .text = "text" } }} } },
         .{ .response = .{ .parts = &.{.{ .text = "text" }} } },
     });
@@ -3195,13 +3231,23 @@ test "agent private helpers cover ownership settings retries and rich content" {
             .context = &unused,
             .profile = .{},
             .requestFn = Stub.request,
-        }, &.{.{ .thinking = .{ .content = "private" } }}),
+        }, .{}, &.{.{ .thinking = .{ .content = "private" } }}),
     );
     const unsupported_model = model_types.Model{ .context = &unused, .profile = .{}, .requestFn = Stub.request };
-    try std.testing.expectError(Agent.Error.ModelDoesNotSupportImages, ensureContentPartSupported(unsupported_model, .image, content));
-    try std.testing.expectError(Agent.Error.ModelDoesNotSupportDocuments, ensureContentPartSupported(unsupported_model, .document, content));
-    try std.testing.expectError(Agent.Error.ModelDoesNotSupportBinaryContent, ensureContentPartSupported(unsupported_model, .binary, content));
-    try std.testing.expectError(Agent.Error.ModelDoesNotSupportThinking, ensureContentPartSupported(unsupported_model, .thinking, content));
+    try std.testing.expectError(Agent.Error.ModelDoesNotSupportImages, ensureContentPartSupported(unsupported_model, .{}, .image, content));
+    try std.testing.expectError(Agent.Error.ModelDoesNotSupportDocuments, ensureContentPartSupported(unsupported_model, .{}, .document, content));
+    try std.testing.expectError(Agent.Error.ModelDoesNotSupportBinaryContent, ensureContentPartSupported(unsupported_model, .{}, .binary, content));
+    try std.testing.expectError(Agent.Error.ModelDoesNotSupportThinking, ensureContentPartSupported(unsupported_model, .{}, .thinking, content));
+
+    const local_url = model_types.Content{
+        .source = .{ .url = "https://127.0.0.1/private" },
+        .media_type = "image/png",
+    };
+    try std.testing.expectError(
+        Agent.Error.LocalNetworkUrlForbidden,
+        ensureContentPartSupported(selected_model, .{}, .image, local_url),
+    );
+    try ensureContentPartSupported(selected_model, .{ .allow_local_network = true }, .image, local_url);
 }
 
 test "typed result decoding releases invalid untyped results" {

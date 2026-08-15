@@ -58,6 +58,7 @@ pub const Client = struct {
         defer allocator.free(body);
         const url = try std.fmt.allocPrint(allocator, "{s}/responses", .{self.base_url});
         defer allocator.free(url);
+        try value.url_policy.validate(url);
         const authorization = try std.fmt.allocPrint(allocator, "Bearer {s}", .{self.api_key});
         defer allocator.free(authorization);
         var headers: std.ArrayList(http.Header) = .empty;
@@ -89,6 +90,7 @@ pub const Client = struct {
         defer allocator.free(body);
         const url = try std.fmt.allocPrint(allocator, "{s}/responses", .{self.base_url});
         defer allocator.free(url);
+        try value.url_policy.validate(url);
         const authorization = try std.fmt.allocPrint(allocator, "Bearer {s}", .{self.api_key});
         defer allocator.free(authorization);
         var headers: std.ArrayList(http.Header) = .empty;
@@ -784,4 +786,26 @@ test "covers Responses API refusal, incomplete, and malformed edges" {
 test "OpenAI rejects provider responses beyond the JSON nesting limit" {
     const source = "[" ** 129 ++ "0" ++ "]" ** 129;
     try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(std.testing.allocator, source));
+}
+
+test "OpenAI validates its endpoint before invoking a custom transport" {
+    const Stub = struct {
+        fn send(context: *anyopaque, _: std.mem.Allocator, _: http.Request) !http.Response {
+            const called: *bool = @ptrCast(@alignCast(context));
+            called.* = true;
+            return error.UnexpectedTransportCall;
+        }
+    };
+    var called = false;
+    var client = Client{
+        .model_name = "gpt-test",
+        .api_key = "secret",
+        .transport = .{ .context = &called, .sendFn = Stub.send },
+        .base_url = "https://127.0.0.1/v1",
+    };
+    try std.testing.expectError(
+        error.LocalNetworkUrlForbidden,
+        client.model().request(std.testing.allocator, .{ .messages = &.{} }),
+    );
+    try std.testing.expect(!called);
 }

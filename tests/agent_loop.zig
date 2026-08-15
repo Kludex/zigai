@@ -469,6 +469,20 @@ test "rich prompt parts are copied and capability-checked before requests" {
         ),
     );
 
+    const local_url = [_]zigai.PromptPart{.{ .image = .{
+        .source = .{ .url = "https://127.0.0.1/private.png" },
+        .media_type = "image/png",
+    } }};
+    try std.testing.expectError(
+        zigai.Agent.Error.LocalNetworkUrlForbidden,
+        (zigai.Agent{ .model = supported.model() }).runWithOptions(
+            std.testing.allocator,
+            "Describe it.",
+            .{ .prompt_parts = &local_url },
+        ),
+    );
+    try std.testing.expectEqual(@as(usize, 1), supported.request_count);
+
     const invalid_history = [_]zigai.Message{.{
         .response = .{ .parts = &.{.{ .thinking = .{ .content = "private" } }} },
     }};

@@ -61,6 +61,7 @@ pub const Client = struct {
         defer allocator.free(body);
         const url = try std.fmt.allocPrint(allocator, "{s}/models/{s}:generateContent", .{ self.base_url, self.model_name });
         defer allocator.free(url);
+        try value.url_policy.validate(url);
         const response = self.transport.send(allocator, .{
             .method = .POST,
             .url = url,
@@ -86,6 +87,7 @@ pub const Client = struct {
         defer allocator.free(body);
         const url = try std.fmt.allocPrint(allocator, "{s}/models/{s}:streamGenerateContent?alt=sse", .{ self.base_url, self.model_name });
         defer allocator.free(url);
+        try value.url_policy.validate(url);
         var state = StreamState{ .allocator = allocator, .sink = sink };
         defer state.parts.deinit(allocator);
         defer state.error_body.deinit(allocator);

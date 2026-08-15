@@ -67,6 +67,7 @@ pub const Client = struct {
         defer allocator.free(body);
         const url = try std.fmt.allocPrint(allocator, "{s}/messages", .{self.base_url});
         defer allocator.free(url);
+        try value.url_policy.validate(url);
         const stable_headers = [_]http.Header{
             .{ .name = "content-type", .value = "application/json" },
             .{ .name = "x-api-key", .value = self.api_key, .sensitive = true },
@@ -100,6 +101,7 @@ pub const Client = struct {
         defer allocator.free(body);
         const url = try std.fmt.allocPrint(allocator, "{s}/messages", .{self.base_url});
         defer allocator.free(url);
+        try value.url_policy.validate(url);
         const stable_headers = [_]http.Header{
             .{ .name = "content-type", .value = "application/json" },
             .{ .name = "x-api-key", .value = self.api_key, .sensitive = true },
