@@ -3,6 +3,7 @@ const json_limits = @import("json.zig");
 const messages = @import("messages.zig");
 const usage_types = @import("usage.zig");
 const security = @import("security.zig");
+const settings_types = @import("settings.zig");
 
 pub const Content = messages.Content;
 pub const ContentSource = messages.ContentSource;
@@ -400,18 +401,35 @@ pub const ModelProfile = struct {
     supports_max_tokens: bool = true,
     supports_stop_sequences: bool = false,
     supports_seed: bool = false,
+    supports_top_p: bool = false,
+    supports_top_k: bool = false,
+    supports_presence_penalty: bool = false,
+    supports_frequency_penalty: bool = false,
+    supports_logprobs: bool = false,
+    supports_tool_choice: bool = false,
+    supports_parallel_tool_call_setting: bool = false,
+    supports_thinking_budget: bool = false,
+    supports_truncation: bool = false,
+    supports_request_headers: bool = false,
+    extra_body_kind: ?ExtraBodyKind = null,
     /// The adapter can attach a caller-supplied key to retry attempts.
     supports_idempotency_key: bool = false,
     reasoning_efforts: ReasoningEffortSet = ReasoningEffortSet.initEmpty(),
+    service_tiers: ServiceTierSet = ServiceTierSet.initEmpty(),
     builtin_tools: BuiltinToolSet = BuiltinToolSet.initEmpty(),
     content_types: ContentTypeSet = ContentTypeSet.initEmpty(),
 
     pub const ReasoningEffortSet = std.EnumSet(ReasoningEffort);
+    pub const ServiceTierSet = std.EnumSet(ServiceTier);
     pub const BuiltinToolSet = std.EnumSet(BuiltinToolKind);
     pub const ContentTypeSet = std.EnumSet(ContentType);
 
     pub fn supportsReasoningEffort(self: ModelProfile, effort: ReasoningEffort) bool {
         return self.reasoning_efforts.contains(effort);
+    }
+
+    pub fn supportsServiceTier(self: ModelProfile, tier: ServiceTier) bool {
+        return self.service_tiers.contains(tier);
     }
 
     pub fn supportsBuiltinTool(self: ModelProfile, kind: BuiltinToolKind) bool {
@@ -451,35 +469,15 @@ pub const BuiltinTool = union(BuiltinToolKind) {
     }
 };
 
-pub const ReasoningEffort = enum {
-    none,
-    minimal,
-    low,
-    medium,
-    high,
-    xhigh,
-    max,
-};
-
-/// Provider-neutral generation controls. Null fields inherit from a lower-precedence layer.
-pub const ModelSettings = struct {
-    temperature: ?f64 = null,
-    max_tokens: ?u64 = null,
-    stop_sequences: ?[]const []const u8 = null,
-    seed: ?i64 = null,
-    reasoning_effort: ?ReasoningEffort = null,
-
-    /// Applies each non-null field from `overrides` to `self`.
-    pub fn overrideWith(self: ModelSettings, overrides: ModelSettings) ModelSettings {
-        return .{
-            .temperature = overrides.temperature orelse self.temperature,
-            .max_tokens = overrides.max_tokens orelse self.max_tokens,
-            .stop_sequences = overrides.stop_sequences orelse self.stop_sequences,
-            .seed = overrides.seed orelse self.seed,
-            .reasoning_effort = overrides.reasoning_effort orelse self.reasoning_effort,
-        };
-    }
-};
+pub const ReasoningEffort = settings_types.ReasoningEffort;
+pub const ServiceTier = settings_types.ServiceTier;
+pub const Truncation = settings_types.Truncation;
+pub const Logprobs = settings_types.Logprobs;
+pub const ToolChoice = settings_types.ToolChoice;
+pub const RequestHeader = settings_types.RequestHeader;
+pub const ExtraBodyKind = settings_types.ExtraBodyKind;
+pub const ProviderExtraBody = settings_types.ProviderExtraBody;
+pub const ModelSettings = settings_types.ModelSettings;
 
 /// Stable error categories emitted by provider adapters. Agents can make retry
 /// decisions from these without depending on a provider's private error JSON.

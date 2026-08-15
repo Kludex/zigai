@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Complete provider-neutral model settings with sampling, penalties,
+  log-probabilities, tool and parallel-call policy, thinking budgets, service
+  tiers, truncation, safe request headers, profile preflight, and tagged bounded
+  provider-extension objects that cannot shadow adapter-owned fields.
 - Add normalized request/run usage for caching, reasoning, audio, native
   counters, request/tool counts, latency, exact cost, cost limits, and opt-in
   estimation from an explicit versioned first-party price snapshot.

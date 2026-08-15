@@ -111,7 +111,8 @@ fn commonProfile(models: []const model_types.Model) model_types.ModelProfile {
     for (models[1..]) |candidate| {
         const other = candidate.profile;
         profile.supports_tools = profile.supports_tools and other.supports_tools;
-        profile.supports_parallel_tool_calls = profile.supports_parallel_tool_calls and other.supports_parallel_tool_calls;
+        profile.supports_parallel_tool_calls =
+            profile.supports_parallel_tool_calls and other.supports_parallel_tool_calls;
         profile.supports_json_schema_output = profile.supports_json_schema_output and other.supports_json_schema_output;
         profile.supports_json_object_output = profile.supports_json_object_output and other.supports_json_object_output;
         profile.supports_system_messages = profile.supports_system_messages and other.supports_system_messages;
@@ -121,7 +122,20 @@ fn commonProfile(models: []const model_types.Model) model_types.ModelProfile {
         profile.supports_max_tokens = profile.supports_max_tokens and other.supports_max_tokens;
         profile.supports_stop_sequences = profile.supports_stop_sequences and other.supports_stop_sequences;
         profile.supports_seed = profile.supports_seed and other.supports_seed;
+        profile.supports_top_p = profile.supports_top_p and other.supports_top_p;
+        profile.supports_top_k = profile.supports_top_k and other.supports_top_k;
+        profile.supports_presence_penalty = profile.supports_presence_penalty and other.supports_presence_penalty;
+        profile.supports_frequency_penalty = profile.supports_frequency_penalty and other.supports_frequency_penalty;
+        profile.supports_logprobs = profile.supports_logprobs and other.supports_logprobs;
+        profile.supports_tool_choice = profile.supports_tool_choice and other.supports_tool_choice;
+        profile.supports_parallel_tool_call_setting = profile.supports_parallel_tool_call_setting and
+            other.supports_parallel_tool_call_setting;
+        profile.supports_thinking_budget = profile.supports_thinking_budget and other.supports_thinking_budget;
+        profile.supports_truncation = profile.supports_truncation and other.supports_truncation;
+        profile.supports_request_headers = profile.supports_request_headers and other.supports_request_headers;
+        if (profile.extra_body_kind != other.extra_body_kind) profile.extra_body_kind = null;
         profile.reasoning_efforts.setIntersection(other.reasoning_efforts);
+        profile.service_tiers.setIntersection(other.service_tiers);
         profile.builtin_tools.setIntersection(other.builtin_tools);
         profile.content_types.setIntersection(other.content_types);
     }
@@ -212,10 +226,25 @@ test "fallback profile intersects builtin tools" {
     var unused: u8 = 0;
     const candidates = [_]model_types.Model{
         .{ .context = &unused, .profile = .{
+            .supports_top_p = true,
+            .supports_top_k = true,
+            .supports_presence_penalty = true,
+            .supports_frequency_penalty = true,
+            .supports_logprobs = true,
+            .supports_tool_choice = true,
+            .supports_parallel_tool_call_setting = true,
+            .supports_thinking_budget = true,
+            .supports_truncation = true,
+            .supports_request_headers = true,
+            .extra_body_kind = .openai,
+            .service_tiers = model_types.ModelProfile.ServiceTierSet.initFull(),
             .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{ .web_search, .web_fetch }),
             .content_types = model_types.ModelProfile.ContentTypeSet.initMany(&.{ .image, .audio }),
         }, .requestFn = Stub.request },
         .{ .context = &unused, .profile = .{
+            .supports_top_p = true,
+            .extra_body_kind = .anthropic,
+            .service_tiers = model_types.ModelProfile.ServiceTierSet.initOne(.default),
             .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{.web_search}),
             .content_types = model_types.ModelProfile.ContentTypeSet.initMany(&.{.image}),
         }, .requestFn = Stub.request },
@@ -228,6 +257,19 @@ test "fallback profile intersects builtin tools" {
     try std.testing.expect(!profile.supportsBuiltinTool(.web_fetch));
     try std.testing.expect(profile.supportsContentType(.image));
     try std.testing.expect(!profile.supportsContentType(.audio));
+    try std.testing.expect(profile.supports_top_p);
+    try std.testing.expect(!profile.supports_top_k);
+    try std.testing.expect(!profile.supports_presence_penalty);
+    try std.testing.expect(!profile.supports_frequency_penalty);
+    try std.testing.expect(!profile.supports_logprobs);
+    try std.testing.expect(!profile.supports_tool_choice);
+    try std.testing.expect(!profile.supports_parallel_tool_call_setting);
+    try std.testing.expect(!profile.supports_thinking_budget);
+    try std.testing.expect(!profile.supports_truncation);
+    try std.testing.expect(!profile.supports_request_headers);
+    try std.testing.expectEqual(@as(?model_types.ExtraBodyKind, null), profile.extra_body_kind);
+    try std.testing.expect(profile.supportsServiceTier(.default));
+    try std.testing.expect(!profile.supportsServiceTier(.priority));
     const response = try fallback.model().request(std.testing.allocator, .{ .messages = &.{} });
     try std.testing.expectEqualStrings("unused", response.parts[0].text);
 }

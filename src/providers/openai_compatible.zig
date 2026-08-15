@@ -27,7 +27,16 @@ pub const profiles = struct {
         .supports_max_tokens = true,
         .supports_stop_sequences = true,
         .supports_seed = true,
+        .supports_top_p = true,
+        .supports_presence_penalty = true,
+        .supports_frequency_penalty = true,
+        .supports_logprobs = true,
+        .supports_tool_choice = true,
+        .supports_parallel_tool_call_setting = true,
+        .supports_request_headers = true,
+        .extra_body_kind = .openai_compatible,
         .reasoning_efforts = model_types.ModelProfile.ReasoningEffortSet.initFull(),
+        .service_tiers = model_types.ModelProfile.ServiceTierSet.initFull(),
     };
     pub const basic: model_types.ModelProfile = .{
         .supports_tools = true,
@@ -38,6 +47,13 @@ pub const profiles = struct {
         .supports_max_tokens = true,
         .supports_stop_sequences = true,
         .supports_seed = true,
+        .supports_top_p = true,
+        .supports_presence_penalty = true,
+        .supports_frequency_penalty = true,
+        .supports_tool_choice = true,
+        .supports_parallel_tool_call_setting = true,
+        .supports_request_headers = true,
+        .extra_body_kind = .openai_compatible,
     };
     pub const minimal: model_types.ModelProfile = .{
         .supports_tools = false,
@@ -48,6 +64,11 @@ pub const profiles = struct {
         .supports_max_tokens = true,
         .supports_stop_sequences = true,
         .supports_seed = true,
+        .supports_top_p = true,
+        .supports_presence_penalty = true,
+        .supports_frequency_penalty = true,
+        .supports_request_headers = true,
+        .extra_body_kind = .openai_compatible,
     };
 };
 
@@ -128,6 +149,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
             if (value.request_id) |request_id| try headers.append(allocator, .{ .name = "x-client-request-id", .value = request_id });
             if (self.idempotency_header) |name| if (value.idempotency_key) |key|
                 try headers.append(allocator, .{ .name = name, .value = key });
+            try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
             const response = self.transport.send(allocator, .{
                 .method = .POST,
                 .url = url,
@@ -181,6 +203,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
             if (value.request_id) |request_id| try headers.append(allocator, .{ .name = "x-client-request-id", .value = request_id });
             if (self.idempotency_header) |name| if (value.idempotency_key) |key|
                 try headers.append(allocator, .{ .name = name, .value = key });
+            try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
             var state = StreamState{ .allocator = allocator, .sink = sink };
             defer state.deinit();
             const response = self.transport.streamLines(allocator, .{
@@ -229,6 +252,8 @@ fn endpointUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
 }
 
 pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {
+    request.settings.validate() catch return error.InvalidRequestEncoding;
+    try common.validateToolChoice(request.tools, request.builtin_tools.len, request.settings.tool_choice);
     var output: std.Io.Writer.Allocating = .init(allocator);
     defer output.deinit();
     var json: std.json.Stringify = .{ .writer = &output.writer };
@@ -280,6 +305,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
         try json.objectField("tools");
         try json.beginArray();
         for (request.tools) |tool| {
+            if (!common.toolIncluded(request.settings.tool_choice, tool.name)) continue;
             try json.beginObject();
             try json.objectField("type");
             try json.write("function");
@@ -316,6 +342,33 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
         try json.objectField("reasoning_effort");
         try json.write(@tagName(effort));
     }
+    if (request.settings.top_p) |top_p| {
+        try json.objectField("top_p");
+        try json.write(top_p);
+    }
+    if (request.settings.presence_penalty) |penalty| {
+        try json.objectField("presence_penalty");
+        try json.write(penalty);
+    }
+    if (request.settings.frequency_penalty) |penalty| {
+        try json.objectField("frequency_penalty");
+        try json.write(penalty);
+    }
+    if (request.settings.logprobs) |logprobs| {
+        try json.objectField("logprobs");
+        try json.write(true);
+        try json.objectField("top_logprobs");
+        try json.write(logprobs.top);
+    }
+    if (request.settings.parallel_tool_calls) |enabled| {
+        try json.objectField("parallel_tool_calls");
+        try json.write(enabled);
+    }
+    if (request.settings.tool_choice) |choice| try writeToolChoice(&json, choice);
+    if (request.settings.service_tier) |tier| {
+        try json.objectField("service_tier");
+        try json.write(@tagName(tier));
+    }
     switch (request.output) {
         .text => {},
         .json_object => {
@@ -339,8 +392,55 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
             try json.endObject();
         },
     }
+    try common.writeExtraBodyFields(
+        allocator,
+        &json,
+        request.settings.extra_body,
+        .openai_compatible,
+        &.{
+            "model",
+            "messages",
+            "tools",
+            "temperature",
+            "max_tokens",
+            "stop",
+            "seed",
+            "reasoning_effort",
+            "top_p",
+            "presence_penalty",
+            "frequency_penalty",
+            "logprobs",
+            "top_logprobs",
+            "parallel_tool_calls",
+            "tool_choice",
+            "service_tier",
+            "response_format",
+            "stream",
+            "stream_options",
+        },
+    );
     try json.endObject();
     return output.toOwnedSlice();
+}
+
+fn writeToolChoice(json: *std.json.Stringify, choice: model_types.ToolChoice) !void {
+    try json.objectField("tool_choice");
+    switch (choice) {
+        .auto => try json.write("auto"),
+        .none => try json.write("none"),
+        .required, .allowed => try json.write("required"),
+        .tool => |name| {
+            try json.beginObject();
+            try json.objectField("type");
+            try json.write("function");
+            try json.objectField("function");
+            try json.beginObject();
+            try json.objectField("name");
+            try json.write(name);
+            try json.endObject();
+            try json.endObject();
+        },
+    }
 }
 
 pub fn encodeStreamingRequest(allocator: std.mem.Allocator, model_name: []const u8, request: model_types.ModelRequest, include_usage: bool) ![]u8 {
@@ -823,6 +923,65 @@ test "encodes Chat Completions messages, tools, and schema output" {
     try std.testing.expect(std.mem.indexOf(u8, object_mode, "\"type\":\"json_object\"") != null);
 }
 
+test "encodes complete compatible settings and filters allowed tools" {
+    const tools = [_]model_types.ToolDefinition{
+        .{ .name = "search", .description = "Search.", .parameters_json_schema = "{}" },
+        .{ .name = "fetch", .description = "Fetch.", .parameters_json_schema = "{}" },
+    };
+    const body = try encodeRequest(std.testing.allocator, "model", .{
+        .messages = &.{},
+        .tools = &tools,
+        .settings = .{
+            .top_p = 0.7,
+            .presence_penalty = 0.2,
+            .frequency_penalty = -0.1,
+            .logprobs = .{ .top = 4 },
+            .parallel_tool_calls = false,
+            .tool_choice = .{ .allowed = &.{"search"} },
+            .service_tier = .flex,
+            .extra_body = .{ .openai_compatible = "{\"min_p\":0.05}" },
+        },
+    });
+    defer std.testing.allocator.free(body);
+    for ([_][]const u8{
+        "\"top_p\":0.7",
+        "\"presence_penalty\":0.2",
+        "\"frequency_penalty\":-0.1",
+        "\"logprobs\":true",
+        "\"top_logprobs\":4",
+        "\"parallel_tool_calls\":false",
+        "\"tool_choice\":\"required\"",
+        "\"service_tier\":\"flex\"",
+        "\"min_p\":0.05",
+    }) |expected| try std.testing.expect(std.mem.indexOf(u8, body, expected) != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"search\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"fetch\"") == null);
+
+    inline for (.{
+        model_types.ToolChoice.auto,
+        model_types.ToolChoice.none,
+        model_types.ToolChoice.required,
+    }) |choice| {
+        const scalar = try encodeRequest(std.testing.allocator, "model", .{
+            .messages = &.{},
+            .tools = &tools,
+            .settings = .{ .tool_choice = choice },
+        });
+        std.testing.allocator.free(scalar);
+    }
+    const named = try encodeRequest(std.testing.allocator, "model", .{
+        .messages = &.{},
+        .tools = &tools,
+        .settings = .{ .tool_choice = .{ .tool = "fetch" } },
+    });
+    defer std.testing.allocator.free(named);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        named,
+        "\"tool_choice\":{\"type\":\"function\",\"function\":{\"name\":\"fetch\"}}",
+    ) != null);
+}
+
 test "stream request usage collection is configurable" {
     const with_usage = try encodeStreamingRequest(std.testing.allocator, "model", .{ .messages = &.{} }, true);
     defer std.testing.allocator.free(with_usage);
@@ -840,13 +999,16 @@ test "compatible clients forward correlation and configured idempotency headers"
         fn hasHeaders(request: http.Request) bool {
             var correlation = false;
             var idempotency = false;
+            var feature = false;
             for (request.headers) |header| {
                 if (std.ascii.eqlIgnoreCase(header.name, "x-client-request-id"))
                     correlation = std.mem.eql(u8, header.value, "run-123");
                 if (std.ascii.eqlIgnoreCase(header.name, "x-idempotency-key"))
                     idempotency = std.mem.eql(u8, header.value, "attempt-123");
+                if (std.ascii.eqlIgnoreCase(header.name, "x-feature"))
+                    feature = std.mem.eql(u8, header.value, "on");
             }
-            return correlation and idempotency;
+            return correlation and idempotency and feature;
         }
 
         fn send(context: *anyopaque, allocator: std.mem.Allocator, request_value: http.Request) !http.Response {
@@ -875,6 +1037,7 @@ test "compatible clients forward correlation and configured idempotency headers"
         .messages = &.{},
         .request_id = "run-123",
         .idempotency_key = "attempt-123",
+        .settings = .{ .extra_headers = &.{.{ .name = "x-feature", .value = "on" }} },
     };
     _ = try client.model().request(arena.allocator(), request_value);
     const Sink = struct {

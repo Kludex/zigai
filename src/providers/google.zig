@@ -35,12 +35,22 @@ pub const Client = struct {
         .supports_max_tokens = true,
         .supports_stop_sequences = true,
         .supports_seed = true,
+        .supports_top_p = true,
+        .supports_top_k = true,
+        .supports_presence_penalty = true,
+        .supports_frequency_penalty = true,
+        .supports_logprobs = true,
+        .supports_tool_choice = true,
+        .supports_thinking_budget = true,
+        .supports_request_headers = true,
+        .extra_body_kind = .google,
         .reasoning_efforts = model_types.ModelProfile.ReasoningEffortSet.initMany(&.{
             .minimal,
             .low,
             .medium,
             .high,
         }),
+        .service_tiers = model_types.ModelProfile.ServiceTierSet.initFull(),
         .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{ .web_search, .web_fetch }),
         .content_types = model_types.ModelProfile.ContentTypeSet.initFull(),
     },
@@ -64,13 +74,17 @@ pub const Client = struct {
         const url = try std.fmt.allocPrint(allocator, "{s}/models/{s}:generateContent", .{ self.base_url, self.model_name });
         defer allocator.free(url);
         try value.url_policy.validate(url);
+        var headers: std.ArrayList(http.Header) = .empty;
+        defer headers.deinit(allocator);
+        try headers.appendSlice(allocator, &.{
+            .{ .name = "content-type", .value = "application/json" },
+            .{ .name = "x-goog-api-key", .value = self.api_key, .sensitive = true },
+        });
+        try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
         const response = self.transport.send(allocator, .{
             .method = .POST,
             .url = url,
-            .headers = &.{
-                .{ .name = "content-type", .value = "application/json" },
-                .{ .name = "x-goog-api-key", .value = self.api_key, .sensitive = true },
-            },
+            .headers = headers.items,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
@@ -99,16 +113,20 @@ pub const Client = struct {
         const url = try std.fmt.allocPrint(allocator, "{s}/models/{s}:streamGenerateContent?alt=sse", .{ self.base_url, self.model_name });
         defer allocator.free(url);
         try value.url_policy.validate(url);
+        var headers: std.ArrayList(http.Header) = .empty;
+        defer headers.deinit(allocator);
+        try headers.appendSlice(allocator, &.{
+            .{ .name = "content-type", .value = "application/json" },
+            .{ .name = "x-goog-api-key", .value = self.api_key, .sensitive = true },
+        });
+        try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
         var state = StreamState{ .allocator = allocator, .sink = sink };
         defer state.parts.deinit(allocator);
         defer state.error_body.deinit(allocator);
         const response = self.transport.streamLines(allocator, .{
             .method = .POST,
             .url = url,
-            .headers = &.{
-                .{ .name = "content-type", .value = "application/json" },
-                .{ .name = "x-goog-api-key", .value = self.api_key, .sensitive = true },
-            },
+            .headers = headers.items,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
@@ -178,6 +196,8 @@ const StreamState = struct {
 };
 
 pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelRequest) ![]u8 {
+    request.settings.validate() catch return error.InvalidRequestEncoding;
+    try common.validateToolChoice(request.tools, request.builtin_tools.len, request.settings.tool_choice);
     var output: std.Io.Writer.Allocating = .init(allocator);
     defer output.deinit();
     var json: std.json.Stringify = .{ .writer = &output.writer };
@@ -323,6 +343,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
             try json.objectField("functionDeclarations");
             try json.beginArray();
             for (request.tools) |tool| {
+                if (!common.toolIncluded(request.settings.tool_choice, tool.name)) continue;
                 try json.beginObject();
                 try json.objectField("name");
                 try json.write(tool.name);
@@ -347,6 +368,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
         }
         try json.endArray();
     }
+    if (request.settings.tool_choice) |choice| try writeToolConfig(&json, choice);
 
     const schema = switch (request.output) {
         .json_schema => |format| format.schema,
@@ -356,8 +378,53 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
     if (json_output or hasGenerationSettings(request.settings)) {
         try writeGenerationConfig(allocator, &json, schema, json_output, request.settings);
     }
+    if (request.settings.service_tier) |tier| switch (tier) {
+        .auto => {},
+        .default, .flex, .priority => {
+            try json.objectField("serviceTier");
+            try json.write(switch (tier) {
+                .default => "standard",
+                .flex => "flex",
+                .priority => "priority",
+                .auto => unreachable,
+            });
+        },
+    };
+    try common.writeExtraBodyFields(
+        allocator,
+        &json,
+        request.settings.extra_body,
+        .google,
+        &.{ "systemInstruction", "contents", "tools", "toolConfig", "generationConfig", "serviceTier" },
+    );
     try json.endObject();
     return output.toOwnedSlice();
+}
+
+fn writeToolConfig(json: *std.json.Stringify, choice: model_types.ToolChoice) !void {
+    try json.objectField("toolConfig");
+    try json.beginObject();
+    try json.objectField("functionCallingConfig");
+    try json.beginObject();
+    try json.objectField("mode");
+    try json.write(switch (choice) {
+        .auto => "AUTO",
+        .none => "NONE",
+        .required, .tool, .allowed => "ANY",
+    });
+    switch (choice) {
+        .tool => |name| {
+            try json.objectField("allowedFunctionNames");
+            try json.write(&.{name});
+        },
+        .allowed => |names| {
+            try json.objectField("allowedFunctionNames");
+            try json.write(names);
+        },
+        else => {},
+    }
+    try json.endObject();
+    try json.endObject();
 }
 
 fn writeToolSchema(allocator: std.mem.Allocator, json: *std.json.Stringify, source: []const u8) !void {
@@ -500,7 +567,9 @@ fn ensureProviderPartReplayable(provider: model_types.ProviderPart) !void {
 
 fn hasGenerationSettings(settings: model_types.ModelSettings) bool {
     return settings.temperature != null or settings.max_tokens != null or
-        settings.stop_sequences != null or settings.seed != null or settings.reasoning_effort != null;
+        settings.stop_sequences != null or settings.seed != null or settings.reasoning_effort != null or
+        settings.top_p != null or settings.top_k != null or settings.presence_penalty != null or
+        settings.frequency_penalty != null or settings.logprobs != null or settings.thinking_budget_tokens != null;
 }
 
 fn writeGenerationConfig(
@@ -536,6 +605,28 @@ fn writeGenerationConfig(
         try json.objectField("seed");
         try json.write(seed);
     }
+    if (settings.top_p) |top_p| {
+        try json.objectField("topP");
+        try json.write(top_p);
+    }
+    if (settings.top_k) |top_k| {
+        try json.objectField("topK");
+        try json.write(top_k);
+    }
+    if (settings.presence_penalty) |penalty| {
+        try json.objectField("presencePenalty");
+        try json.write(penalty);
+    }
+    if (settings.frequency_penalty) |penalty| {
+        try json.objectField("frequencyPenalty");
+        try json.write(penalty);
+    }
+    if (settings.logprobs) |logprobs| {
+        try json.objectField("responseLogprobs");
+        try json.write(true);
+        try json.objectField("logprobs");
+        try json.write(logprobs.top);
+    }
     if (settings.reasoning_effort) |effort| {
         try json.objectField("thinkingConfig");
         try json.beginObject();
@@ -547,6 +638,12 @@ fn writeGenerationConfig(
             .high => "HIGH",
             else => unreachable,
         });
+        try json.endObject();
+    } else if (settings.thinking_budget_tokens) |budget| {
+        try json.objectField("thinkingConfig");
+        try json.beginObject();
+        try json.objectField("thinkingBudget");
+        try json.write(budget);
         try json.endObject();
     }
     try json.endObject();
@@ -810,6 +907,126 @@ test "encodes Gemini Google Search and URL Context tools" {
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"googleSearch\":{}") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"urlContext\":{}") != null);
+}
+
+test "encodes complete Gemini settings and tool policy" {
+    const tools = [_]model_types.ToolDefinition{
+        .{ .name = "search", .description = "Search.", .parameters_json_schema = "{}" },
+        .{ .name = "fetch", .description = "Fetch.", .parameters_json_schema = "{}" },
+    };
+    const body = try encodeRequest(std.testing.allocator, .{
+        .messages = &.{},
+        .tools = &tools,
+        .settings = .{
+            .top_p = 0.75,
+            .top_k = 24,
+            .presence_penalty = 0.1,
+            .frequency_penalty = 0.2,
+            .logprobs = .{ .top = 3 },
+            .thinking_budget_tokens = 1_024,
+            .tool_choice = .{ .allowed = &.{"search"} },
+            .service_tier = .priority,
+            .extra_body = .{ .google = "{\"labels\":{\"team\":\"agents\"}}" },
+        },
+    });
+    defer std.testing.allocator.free(body);
+    for ([_][]const u8{
+        "\"topP\":0.75",
+        "\"topK\":24",
+        "\"presencePenalty\":0.1",
+        "\"frequencyPenalty\":0.2",
+        "\"responseLogprobs\":true",
+        "\"logprobs\":3",
+        "\"thinkingConfig\":{\"thinkingBudget\":1024}",
+        "\"mode\":\"ANY\"",
+        "\"allowedFunctionNames\":[\"search\"]",
+        "\"serviceTier\":\"priority\"",
+        "\"labels\":{\"team\":\"agents\"}",
+    }) |expected| try std.testing.expect(std.mem.indexOf(u8, body, expected) != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"search\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"fetch\"") == null);
+
+    inline for (.{
+        model_types.ToolChoice.auto,
+        model_types.ToolChoice.none,
+        model_types.ToolChoice.required,
+    }) |choice| {
+        const scalar = try encodeRequest(std.testing.allocator, .{
+            .messages = &.{},
+            .tools = &tools,
+            .settings = .{ .tool_choice = choice },
+        });
+        std.testing.allocator.free(scalar);
+    }
+    const named = try encodeRequest(std.testing.allocator, .{
+        .messages = &.{},
+        .tools = &tools,
+        .settings = .{ .tool_choice = .{ .tool = "fetch" }, .service_tier = .default },
+    });
+    defer std.testing.allocator.free(named);
+    try std.testing.expect(std.mem.indexOf(u8, named, "\"allowedFunctionNames\":[\"fetch\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, named, "\"serviceTier\":\"standard\"") != null);
+
+    const automatic = try encodeRequest(std.testing.allocator, .{
+        .messages = &.{},
+        .settings = .{ .service_tier = .auto },
+    });
+    defer std.testing.allocator.free(automatic);
+    try std.testing.expect(std.mem.indexOf(u8, automatic, "serviceTier") == null);
+    try std.testing.expectError(error.InvalidRequestEncoding, encodeRequest(std.testing.allocator, .{
+        .messages = &.{},
+        .settings = .{ .reasoning_effort = .high, .thinking_budget_tokens = 1_024 },
+    }));
+}
+
+test "Google clients forward validated request settings headers" {
+    const State = struct {
+        buffered: bool = false,
+        streaming: bool = false,
+
+        fn hasFeature(request: http.Request) bool {
+            for (request.headers) |header| if (std.ascii.eqlIgnoreCase(header.name, "x-feature") and
+                std.mem.eql(u8, header.value, "on")) return true;
+            return false;
+        }
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: http.Request) !http.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.buffered = hasFeature(request);
+            return .{ .status = 200, .body = try allocator.dupe(u8, "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"ok\"}]},\"finishReason\":\"STOP\"}]}") };
+        }
+
+        fn stream(context: *anyopaque, _: std.mem.Allocator, request: http.Request, _: http.LineSink) !http.StreamResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.streaming = hasFeature(request);
+            return error.ConnectionResetByPeer;
+        }
+    };
+    var state: State = .{};
+    try std.testing.expect(!State.hasFeature(.{ .method = .POST, .url = "https://example.test" }));
+    var client = Client{
+        .model_name = "gemini-test",
+        .api_key = "secret",
+        .transport = .{ .context = &state, .sendFn = State.send, .streamLinesFn = State.stream },
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const request = model_types.ModelRequest{
+        .messages = &.{},
+        .settings = .{ .extra_headers = &.{.{ .name = "x-feature", .value = "on" }} },
+    };
+    _ = try client.model().request(arena.allocator(), request);
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+    };
+    try Sink.emit(&state, .{ .usage = .{} });
+    try std.testing.expectError(error.ProviderConnectionError, client.model().stream(
+        arena.allocator(),
+        request,
+        .{ .context = &state, .eventFn = Sink.emit },
+    ));
+    try std.testing.expect(state.buffered);
+    try std.testing.expect(state.streaming);
 }
 
 test "encodes and decodes Gemini rich content and thinking" {

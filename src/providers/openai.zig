@@ -35,7 +35,15 @@ pub const Client = struct {
         .supports_streaming = true,
         .supports_temperature = true,
         .supports_max_tokens = true,
+        .supports_top_p = true,
+        .supports_logprobs = true,
+        .supports_tool_choice = true,
+        .supports_parallel_tool_call_setting = true,
+        .supports_truncation = true,
+        .supports_request_headers = true,
+        .extra_body_kind = .openai,
         .reasoning_efforts = model_types.ModelProfile.ReasoningEffortSet.initFull(),
+        .service_tiers = model_types.ModelProfile.ServiceTierSet.initFull(),
         .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{.web_search}),
         .content_types = model_types.ModelProfile.ContentTypeSet.initMany(&.{ .image, .document, .binary }),
     },
@@ -68,6 +76,7 @@ pub const Client = struct {
             .{ .name = "authorization", .value = authorization, .sensitive = true },
         });
         if (value.request_id) |request_id| try headers.append(allocator, .{ .name = "x-client-request-id", .value = request_id });
+        try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
         const response = self.transport.send(allocator, .{
             .method = .POST,
             .url = url,
@@ -109,6 +118,7 @@ pub const Client = struct {
             .{ .name = "authorization", .value = authorization, .sensitive = true },
         });
         if (value.request_id) |request_id| try headers.append(allocator, .{ .name = "x-client-request-id", .value = request_id });
+        try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
         var state = StreamState{ .allocator = allocator, .sink = sink };
         defer state.deinit();
         const response = self.transport.streamLines(allocator, .{
@@ -303,6 +313,8 @@ const StreamState = struct {
 };
 
 pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {
+    request.settings.validate() catch return error.InvalidRequestEncoding;
+    try common.validateToolChoice(request.tools, request.builtin_tools.len, request.settings.tool_choice);
     var output: std.Io.Writer.Allocating = .init(allocator);
     defer output.deinit();
     var json: std.json.Stringify = .{ .writer = &output.writer };
@@ -427,6 +439,27 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
         try json.write(@tagName(effort));
         try json.endObject();
     }
+    if (request.settings.top_p) |top_p| {
+        try json.objectField("top_p");
+        try json.write(top_p);
+    }
+    if (request.settings.logprobs) |logprobs| {
+        try json.objectField("top_logprobs");
+        try json.write(logprobs.top);
+    }
+    if (request.settings.parallel_tool_calls) |enabled| {
+        try json.objectField("parallel_tool_calls");
+        try json.write(enabled);
+    }
+    if (request.settings.tool_choice) |choice| try writeToolChoice(&json, choice);
+    if (request.settings.service_tier) |tier| {
+        try json.objectField("service_tier");
+        try json.write(@tagName(tier));
+    }
+    if (request.settings.truncation) |truncation| {
+        try json.objectField("truncation");
+        try json.write(@tagName(truncation));
+    }
     switch (request.output) {
         .text => {},
         .json_object => {
@@ -453,8 +486,69 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
             try json.endObject();
         },
     }
+    try common.writeExtraBodyFields(
+        allocator,
+        &json,
+        request.settings.extra_body,
+        .openai,
+        &.{
+            "model",
+            "instructions",
+            "input",
+            "tools",
+            "temperature",
+            "max_output_tokens",
+            "reasoning",
+            "top_p",
+            "presence_penalty",
+            "frequency_penalty",
+            "top_logprobs",
+            "parallel_tool_calls",
+            "tool_choice",
+            "service_tier",
+            "truncation",
+            "text",
+            "stream",
+        },
+    );
     try json.endObject();
     return output.toOwnedSlice();
+}
+
+fn writeToolChoice(json: *std.json.Stringify, choice: model_types.ToolChoice) !void {
+    try json.objectField("tool_choice");
+    switch (choice) {
+        .auto => try json.write("auto"),
+        .none => try json.write("none"),
+        .required => try json.write("required"),
+        .tool => |name| {
+            try json.beginObject();
+            try json.objectField("type");
+            try json.write("function");
+            try json.objectField("name");
+            try json.write(name);
+            try json.endObject();
+        },
+        .allowed => |names| {
+            try json.beginObject();
+            try json.objectField("type");
+            try json.write("allowed_tools");
+            try json.objectField("mode");
+            try json.write("required");
+            try json.objectField("tools");
+            try json.beginArray();
+            for (names) |name| {
+                try json.beginObject();
+                try json.objectField("type");
+                try json.write("function");
+                try json.objectField("name");
+                try json.write(name);
+                try json.endObject();
+            }
+            try json.endArray();
+            try json.endObject();
+        },
+    }
 }
 
 fn writeContentMessage(
@@ -807,9 +901,17 @@ test "client forwards OpenAI request correlation IDs" {
         streaming: bool = false,
 
         fn hasCorrelation(request: http.Request) bool {
+            var feature = false;
             for (request.headers) |header| if (std.ascii.eqlIgnoreCase(header.name, "x-client-request-id") and
-                std.mem.eql(u8, header.value, "run-123")) return true;
-            return false; // unreachable: every request in this header-forwarding test carries the header
+                std.mem.eql(u8, header.value, "run-123"))
+            {
+                for (request.headers) |candidate| {
+                    if (std.ascii.eqlIgnoreCase(candidate.name, "x-feature") and
+                        std.mem.eql(u8, candidate.value, "on")) feature = true;
+                }
+                return feature;
+            };
+            return false;
         }
 
         fn send(context: *anyopaque, allocator: std.mem.Allocator, request_value: http.Request) !http.Response {
@@ -825,6 +927,7 @@ test "client forwards OpenAI request correlation IDs" {
         }
     };
     var state: State = .{};
+    try std.testing.expect(!State.hasCorrelation(.{ .method = .POST, .url = "https://example.test" }));
     var client = Client{
         .model_name = "gpt-test",
         .api_key = "secret",
@@ -832,13 +935,18 @@ test "client forwards OpenAI request correlation IDs" {
     };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    _ = try client.model().request(arena.allocator(), .{ .messages = &.{}, .request_id = "run-123" });
+    _ = try client.model().request(arena.allocator(), .{
+        .messages = &.{},
+        .request_id = "run-123",
+        .settings = .{ .extra_headers = &.{.{ .name = "x-feature", .value = "on" }} },
+    });
     const Sink = struct {
         fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {} // unreachable: the transport fails before events
     };
     try std.testing.expectError(error.ProviderConnectionError, client.model().stream(arena.allocator(), .{
         .messages = &.{},
         .request_id = "run-123",
+        .settings = .{ .extra_headers = &.{.{ .name = "x-feature", .value = "on" }} },
     }, .{ .context = &state, .eventFn = Sink.emit }));
     try std.testing.expect(state.buffered);
     try std.testing.expect(state.streaming);
@@ -855,6 +963,60 @@ test "encodes OpenAI web search and rejects standalone web fetch" {
         .messages = &.{},
         .builtin_tools = &.{.{ .web_fetch = .{} }},
     }));
+}
+
+test "encodes complete OpenAI settings and tagged extensions" {
+    const tools = [_]model_types.ToolDefinition{
+        .{ .name = "search", .description = "Search.", .parameters_json_schema = "{}" },
+        .{ .name = "fetch", .description = "Fetch.", .parameters_json_schema = "{}" },
+    };
+    const body = try encodeRequest(std.testing.allocator, "gpt-test", .{
+        .messages = &.{},
+        .tools = &tools,
+        .settings = .{
+            .top_p = 0.7,
+            .logprobs = .{ .top = 4 },
+            .parallel_tool_calls = false,
+            .tool_choice = .{ .allowed = &.{ "search", "fetch" } },
+            .service_tier = .priority,
+            .truncation = .auto,
+            .extra_body = .{ .openai = "{\"store\":false}" },
+        },
+    });
+    defer std.testing.allocator.free(body);
+    for ([_][]const u8{
+        "\"top_p\":0.7",
+        "\"top_logprobs\":4",
+        "\"parallel_tool_calls\":false",
+        "\"type\":\"allowed_tools\"",
+        "\"service_tier\":\"priority\"",
+        "\"truncation\":\"auto\"",
+        "\"store\":false",
+    }) |expected| try std.testing.expect(std.mem.indexOf(u8, body, expected) != null);
+
+    inline for (.{
+        model_types.ToolChoice.auto,
+        model_types.ToolChoice.none,
+        model_types.ToolChoice.required,
+    }) |choice| {
+        const scalar = try encodeRequest(std.testing.allocator, "gpt-test", .{
+            .messages = &.{},
+            .tools = &tools,
+            .settings = .{ .tool_choice = choice },
+        });
+        std.testing.allocator.free(scalar);
+    }
+    const named = try encodeRequest(std.testing.allocator, "gpt-test", .{
+        .messages = &.{},
+        .tools = &tools,
+        .settings = .{ .tool_choice = .{ .tool = "search" } },
+    });
+    defer std.testing.allocator.free(named);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        named,
+        "\"tool_choice\":{\"type\":\"function\",\"name\":\"search\"}",
+    ) != null);
 }
 
 test "encodes OpenAI image, document, and provider file inputs" {

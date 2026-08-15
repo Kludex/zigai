@@ -579,15 +579,32 @@ Generation settings use one provider-neutral type:
 .model_settings = .{
     .temperature = 0.2,
     .max_tokens = 1_000,
+    .top_p = 0.9,
     .stop_sequences = &.{"END"},
-    .seed = 42,
     .reasoning_effort = .medium,
+    .parallel_tool_calls = false,
 },
 ```
 
 Defaults on `Model.settings` are overridden by `Agent.model_settings`, then by
 `RunOptions.model_settings`. The model profile rejects unsupported settings
 before network I/O; providers never silently discard a requested control.
+
+The portable controls also include `top_k`, presence/frequency penalties,
+log probabilities, tool choice, thinking token budgets, service tiers,
+truncation, seeds, and request headers. Slices are borrowed for the request.
+
+Provider-only request fields use a tagged, bounded JSON object:
+
+```zig
+.model_settings = .{
+    .extra_body = .{ .openai = "{\"store\":false}" },
+},
+```
+
+The tag must match the selected adapter. Extension objects cannot replace
+fields ZigAI owns, and request headers cannot replace credentials or HTTP
+framing. Prefer portable fields whenever one exists.
 
 ## Typed output
 

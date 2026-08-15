@@ -48,6 +48,8 @@ const AgentError = error{
     InputTokenLimitExceeded,
     /// Typed output could not be decoded after validation.
     InvalidTypedOutput,
+    /// A model setting is malformed or outside its provider-neutral range.
+    InvalidModelSettings,
     /// Structured output could not be decoded for its final stream snapshot.
     InvalidStructuredOutput,
     /// The run attempted more model requests than allowed.
@@ -90,6 +92,30 @@ const AgentError = error{
     ModelDoesNotSupportStreaming,
     /// `temperature` was set for a model profile that rejects it.
     ModelDoesNotSupportTemperature,
+    /// `top_p` was set for a model profile that rejects it.
+    ModelDoesNotSupportTopP,
+    /// `top_k` was set for a model profile that rejects it.
+    ModelDoesNotSupportTopK,
+    /// A presence penalty was set for a model profile that rejects it.
+    ModelDoesNotSupportPresencePenalty,
+    /// A frequency penalty was set for a model profile that rejects it.
+    ModelDoesNotSupportFrequencyPenalty,
+    /// Log probabilities were requested from a model profile that rejects them.
+    ModelDoesNotSupportLogprobs,
+    /// Tool choice was set for a model profile that rejects it.
+    ModelDoesNotSupportToolChoice,
+    /// Parallel-tool policy was set for a model profile that cannot encode it.
+    ModelDoesNotSupportParallelToolCallSetting,
+    /// A thinking token budget was set for a model profile that rejects it.
+    ModelDoesNotSupportThinkingBudget,
+    /// A service tier was set for a model profile that rejects it.
+    ModelDoesNotSupportServiceTier,
+    /// Truncation policy was set for a model profile that rejects it.
+    ModelDoesNotSupportTruncation,
+    /// Request headers were set for a model profile that rejects them.
+    ModelDoesNotSupportRequestHeaders,
+    /// Provider extension JSON does not match the selected model profile.
+    ModelDoesNotSupportExtraBody,
     /// Generation stopped for length before producing a complete result.
     ModelOutputTruncated,
     /// Reported cumulative output usage exceeded its run limit.
@@ -1648,7 +1674,9 @@ pub const Agent = struct {
             total_tool_calls += tool_call_count;
             total_usage.tool_calls = total_tool_calls;
             if (!self.model.profile.supports_tools) return Error.ModelDoesNotSupportTools;
-            if (tool_call_count > 1 and !self.model.profile.supports_parallel_tool_calls) {
+            if (tool_call_count > 1 and
+                (!self.model.profile.supports_parallel_tool_calls or resolved_settings.parallel_tool_calls == false))
+            {
                 return Error.ParallelToolCallsNotSupported;
             }
             if (hasDeferredToolCall(available_tools, response.parts)) {
@@ -2851,6 +2879,7 @@ fn requireCapability(supported: bool, failure: Agent.Error) Agent.Error!void {
 }
 
 fn requireModelSettings(profile: model_types.ModelProfile, settings: model_types.ModelSettings) Agent.Error!void {
+    settings.validate() catch return Agent.Error.InvalidModelSettings;
     if (settings.temperature != null and !profile.supports_temperature) {
         return Agent.Error.ModelDoesNotSupportTemperature;
     }
@@ -2863,6 +2892,40 @@ fn requireModelSettings(profile: model_types.ModelProfile, settings: model_types
     if (settings.seed != null and !profile.supports_seed) return Agent.Error.ModelDoesNotSupportSeed;
     if (settings.reasoning_effort) |effort| {
         if (!profile.supportsReasoningEffort(effort)) return Agent.Error.ModelDoesNotSupportReasoningEffort;
+    }
+    if (settings.top_p != null and !profile.supports_top_p) return Agent.Error.ModelDoesNotSupportTopP;
+    if (settings.top_k != null and !profile.supports_top_k) return Agent.Error.ModelDoesNotSupportTopK;
+    if (settings.presence_penalty != null and !profile.supports_presence_penalty) {
+        return Agent.Error.ModelDoesNotSupportPresencePenalty;
+    }
+    if (settings.frequency_penalty != null and !profile.supports_frequency_penalty) {
+        return Agent.Error.ModelDoesNotSupportFrequencyPenalty;
+    }
+    if (settings.logprobs != null and !profile.supports_logprobs) return Agent.Error.ModelDoesNotSupportLogprobs;
+    if (settings.tool_choice != null and !profile.supports_tool_choice) {
+        return Agent.Error.ModelDoesNotSupportToolChoice;
+    }
+    if (settings.parallel_tool_calls != null and !profile.supports_parallel_tool_call_setting) {
+        return Agent.Error.ModelDoesNotSupportParallelToolCallSetting;
+    }
+    if (settings.parallel_tool_calls == true and !profile.supports_parallel_tool_calls) {
+        return Agent.Error.ModelDoesNotSupportParallelToolCallSetting;
+    }
+    if (settings.thinking_budget_tokens != null and !profile.supports_thinking_budget) {
+        return Agent.Error.ModelDoesNotSupportThinkingBudget;
+    }
+    if (settings.service_tier) |tier|
+        if (!profile.supportsServiceTier(tier)) return Agent.Error.ModelDoesNotSupportServiceTier;
+    if (settings.truncation != null and !profile.supports_truncation) {
+        return Agent.Error.ModelDoesNotSupportTruncation;
+    }
+    if (settings.extra_headers != null and !profile.supports_request_headers) {
+        return Agent.Error.ModelDoesNotSupportRequestHeaders;
+    }
+    if (settings.extra_body) |body| {
+        if (profile.extra_body_kind == null or profile.extra_body_kind.? != body.kind()) {
+            return Agent.Error.ModelDoesNotSupportExtraBody;
+        }
     }
 }
 

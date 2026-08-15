@@ -47,6 +47,17 @@ cases relevant to the application, then propagate the remainder.
 | `ModelDoesNotSupportStopSequences` | The model rejects stop sequences. |
 | `ModelDoesNotSupportStreaming` | The selected model cannot stream. |
 | `ModelDoesNotSupportTemperature` | The model rejects temperature. |
+| `ModelDoesNotSupportTopP` / `ModelDoesNotSupportTopK` | The requested sampling control is unsupported. |
+| `ModelDoesNotSupportPresencePenalty` / `ModelDoesNotSupportFrequencyPenalty` | The requested penalty is unsupported. |
+| `ModelDoesNotSupportLogprobs` | The model cannot return requested log probabilities. |
+| `ModelDoesNotSupportToolChoice` | The model cannot encode the requested tool-choice policy. |
+| `ModelDoesNotSupportParallelToolCallSetting` | The provider cannot encode an explicit parallel-tool policy. |
+| `ModelDoesNotSupportThinkingBudget` | The model cannot accept a thinking token budget. |
+| `ModelDoesNotSupportServiceTier` | The requested service tier is absent from the profile. |
+| `ModelDoesNotSupportTruncation` | The model cannot encode truncation policy. |
+| `ModelDoesNotSupportRequestHeaders` | The model does not expose request-scoped headers. |
+| `ModelDoesNotSupportExtraBody` | The provider-extension tag does not match the model profile. |
+| `InvalidModelSettings` | A portable value, tool selector, or request header is malformed. |
 | `ContentFiltered` | Provider filtering ended generation. |
 | `EmptyModelResponse` | A successful response had no usable parts. |
 | `IncompleteToolCall` | Generation ended inside a tool call. |

@@ -43,6 +43,117 @@ pub fn responseDecodeError(failure: anyerror) anyerror {
     return error.ProviderResponseDecodeError;
 }
 
+/// Appends validated request-scoped headers without allowing callers to
+/// replace authentication, framing, or adapter-owned headers.
+pub fn appendRequestHeaders(
+    allocator: std.mem.Allocator,
+    target: *std.ArrayList(http.Header),
+    extra: ?[]const model_types.RequestHeader,
+) !void {
+    for (extra orelse return) |header| {
+        if (reservedHeaderName(header.name)) return error.InvalidRequestEncoding;
+        for (target.items) |existing| {
+            if (std.ascii.eqlIgnoreCase(existing.name, header.name)) return error.InvalidRequestEncoding;
+        }
+        try target.append(allocator, .{
+            .name = header.name,
+            .value = header.value,
+            .sensitive = header.sensitive,
+        });
+    }
+}
+
+/// Writes a tagged, bounded JSON extension object into an active request
+/// object. Adapter-owned fields cannot be shadowed by extension JSON.
+pub fn writeExtraBodyFields(
+    allocator: std.mem.Allocator,
+    json: *std.json.Stringify,
+    extra: ?model_types.ProviderExtraBody,
+    expected: model_types.ExtraBodyKind,
+    reserved_fields: []const []const u8,
+) !void {
+    const body = extra orelse return;
+    if (body.kind() != expected) return error.InvalidRequestEncoding;
+    const parsed = try json_limits.parse(
+        std.json.Value,
+        allocator,
+        body.json(),
+        json_limits.defaults.tool_payload,
+        .{},
+        error.InvalidRequestEncoding,
+    );
+    defer parsed.deinit();
+    const object = switch (parsed.value) {
+        .object => |value| value,
+        else => return error.InvalidRequestEncoding,
+    };
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| {
+        for (reserved_fields) |reserved| {
+            if (std.mem.eql(u8, entry.key_ptr.*, reserved)) return error.InvalidRequestEncoding;
+        }
+        try json.objectField(entry.key_ptr.*);
+        try json.write(entry.value_ptr.*);
+    }
+}
+
+fn reservedHeaderName(name: []const u8) bool {
+    const reserved = [_][]const u8{
+        "authorization",
+        "proxy-authorization",
+        "content-type",
+        "content-length",
+        "host",
+        "connection",
+        "transfer-encoding",
+        "x-api-key",
+        "x-goog-api-key",
+        "anthropic-version",
+        "anthropic-beta",
+        "x-client-request-id",
+        "idempotency-key",
+    };
+    for (reserved) |candidate| if (std.ascii.eqlIgnoreCase(name, candidate)) return true;
+    return false;
+}
+
+/// Validates that a tool-choice policy refers only to available local tools.
+pub fn validateToolChoice(
+    tools: []const model_types.ToolDefinition,
+    builtin_tool_count: usize,
+    choice: ?model_types.ToolChoice,
+) !void {
+    const value = choice orelse return;
+    switch (value) {
+        .auto, .none => {},
+        .required => if (tools.len == 0 and builtin_tool_count == 0) return error.InvalidRequestEncoding,
+        .tool => |name| if (!containsTool(tools, name)) return error.InvalidRequestEncoding,
+        .allowed => |names| for (names, 0..) |name, index| {
+            if (!containsTool(tools, name)) return error.InvalidRequestEncoding;
+            for (names[0..index]) |earlier| {
+                if (std.mem.eql(u8, name, earlier)) return error.InvalidRequestEncoding;
+            }
+        },
+    }
+}
+
+/// Returns whether a local tool definition survives an allow-list choice.
+pub fn toolIncluded(choice: ?model_types.ToolChoice, name: []const u8) bool {
+    const value = choice orelse return true;
+    return switch (value) {
+        .allowed => |names| included: {
+            for (names) |allowed| if (std.mem.eql(u8, name, allowed)) break :included true;
+            break :included false;
+        },
+        else => true,
+    };
+}
+
+fn containsTool(tools: []const model_types.ToolDefinition, name: []const u8) bool {
+    for (tools) |tool| if (std.mem.eql(u8, tool.name, name)) return true;
+    return false;
+}
+
 pub fn notifyProviderError(
     allocator: std.mem.Allocator,
     observer: ?model_types.ProviderErrorObserver,
@@ -478,4 +589,132 @@ pub fn base64DecodeAlloc(allocator: std.mem.Allocator, source: []const u8) ![]u8
     const decoded = try allocator.alloc(u8, size);
     try std.base64.standard.Decoder.decode(decoded, source);
     return decoded;
+}
+
+test "request settings headers preserve safe values and reject owned names" {
+    var headers: std.ArrayList(http.Header) = .empty;
+    defer headers.deinit(std.testing.allocator);
+    try headers.append(std.testing.allocator, .{ .name = "x-existing", .value = "one" });
+    try appendRequestHeaders(std.testing.allocator, &headers, &.{.{
+        .name = "x-feature",
+        .value = "enabled",
+        .sensitive = true,
+    }});
+    try std.testing.expectEqual(@as(usize, 2), headers.items.len);
+    try std.testing.expect(headers.items[1].sensitive);
+    try std.testing.expectError(error.InvalidRequestEncoding, appendRequestHeaders(
+        std.testing.allocator,
+        &headers,
+        &.{.{ .name = "Authorization", .value = "replacement" }},
+    ));
+    try std.testing.expectError(error.InvalidRequestEncoding, appendRequestHeaders(
+        std.testing.allocator,
+        &headers,
+        &.{.{ .name = "X-Existing", .value = "replacement" }},
+    ));
+    try appendRequestHeaders(std.testing.allocator, &headers, null);
+}
+
+test "provider extra bodies are tagged bounded objects without owned fields" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    var json: std.json.Stringify = .{ .writer = &output.writer };
+    try json.beginObject();
+    try writeExtraBodyFields(
+        std.testing.allocator,
+        &json,
+        .{ .openai = "{\"store\":false,\"metadata\":{\"safe\":true}}" },
+        .openai,
+        &.{"model"},
+    );
+    try writeExtraBodyFields(std.testing.allocator, &json, null, .openai, &.{});
+    try json.endObject();
+    const body = try output.toOwnedSlice();
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"store\":false") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"metadata\":{\"safe\":true}") != null);
+
+    var rejected_output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer rejected_output.deinit();
+    var rejected_json: std.json.Stringify = .{ .writer = &rejected_output.writer };
+    try rejected_json.beginObject();
+    try std.testing.expectError(error.InvalidRequestEncoding, writeExtraBodyFields(
+        std.testing.allocator,
+        &rejected_json,
+        .{ .anthropic = "{}" },
+        .openai,
+        &.{},
+    ));
+    try std.testing.expectError(error.InvalidRequestEncoding, writeExtraBodyFields(
+        std.testing.allocator,
+        &rejected_json,
+        .{ .openai = "[]" },
+        .openai,
+        &.{},
+    ));
+    try std.testing.expectError(error.InvalidRequestEncoding, writeExtraBodyFields(
+        std.testing.allocator,
+        &rejected_json,
+        .{ .openai = "{" },
+        .openai,
+        &.{},
+    ));
+    try std.testing.expectError(error.InvalidRequestEncoding, writeExtraBodyFields(
+        std.testing.allocator,
+        &rejected_json,
+        .{ .openai = "{\"model\":\"shadow\"}" },
+        .openai,
+        &.{"model"},
+    ));
+}
+
+test "provider extra body writing releases every partial allocation" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            runInner(allocator) catch |failure| switch (failure) {
+                error.WriteFailed => return error.OutOfMemory,
+                else => return failure,
+            };
+        }
+
+        fn runInner(allocator: std.mem.Allocator) !void {
+            var output: std.Io.Writer.Allocating = .init(allocator);
+            defer output.deinit();
+            var json: std.json.Stringify = .{ .writer = &output.writer };
+            try json.beginObject();
+            try writeExtraBodyFields(
+                allocator,
+                &json,
+                .{ .google = "{\"nested\":{\"items\":[1,2,3],\"label\":\"safe\"}}" },
+                .google,
+                &.{},
+            );
+            try json.endObject();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
+test "tool choice validates names and filters allow lists" {
+    const tools = [_]model_types.ToolDefinition{
+        .{ .name = "search", .description = "", .parameters_json_schema = "{}" },
+        .{ .name = "fetch", .description = "", .parameters_json_schema = "{}" },
+    };
+    try validateToolChoice(&tools, 0, null);
+    try validateToolChoice(&tools, 0, .auto);
+    try validateToolChoice(&tools, 0, .none);
+    try validateToolChoice(&tools, 0, .required);
+    try validateToolChoice(&tools, 0, .{ .tool = "search" });
+    try validateToolChoice(&tools, 0, .{ .allowed = &.{"fetch"} });
+    try std.testing.expect(toolIncluded(.{ .allowed = &.{"fetch"} }, "fetch"));
+    try std.testing.expect(!toolIncluded(.{ .allowed = &.{"fetch"} }, "search"));
+    try std.testing.expect(toolIncluded(.auto, "search"));
+    try std.testing.expectError(error.InvalidRequestEncoding, validateToolChoice(&.{}, 0, .required));
+    try std.testing.expectError(error.InvalidRequestEncoding, validateToolChoice(&tools, 0, .{ .tool = "missing" }));
+    try std.testing.expectError(error.InvalidRequestEncoding, validateToolChoice(
+        &tools,
+        0,
+        .{ .allowed = &.{ "search", "search" } },
+    ));
+    try validateToolChoice(&.{}, 1, .required);
 }

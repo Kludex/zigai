@@ -38,12 +38,19 @@ filtering, and incomplete tool calls fail with distinct agent errors before the
 generic empty-response check, so an empty successful response remains a
 separate condition.
 
-`ModelSettings` carries temperature, maximum output tokens, stop sequences,
-seed, and reasoning effort without exposing provider field names. Settings
-merge in model, agent, then run order. `ModelProfile` declares support,
-including the exact reasoning-effort levels, so an unsupported override fails
-before a request. Each adapter translates the resolved settings once at its
-wire boundary.
+`ModelSettings` carries portable sampling, penalty, log-probability, tool,
+thinking, service-tier, truncation, token, seed, stop, and request-header
+controls without exposing provider field names. Settings merge in model,
+agent, then run order; non-null slices remain borrowed. `ModelProfile` declares
+support, including exact reasoning-effort and service-tier sets, so an
+unsupported override fails before a request. Each adapter translates the
+resolved settings once at its wire boundary.
+
+Provider-only body fields use the `ProviderExtraBody` tagged union. Adapters
+accept only their own tag, parse the value as a bounded JSON object, and reject
+keys owned by the portable encoder. Request-scoped headers reject credentials,
+HTTP framing, correlation, and adapter-version fields. This keeps the escape
+hatch explicit without allowing it to mutate ZigAI's protocol invariants.
 
 Model composition also stays behind the same contract. `models.Fallback` tries
 an ordered candidate list for transient failures and exposes the intersection

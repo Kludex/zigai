@@ -62,6 +62,7 @@ Use these namespaces for the rest of the API:
 | Namespace | Purpose |
 | --- | --- |
 | `zigai.messages` | Provider-neutral request/response messages and parts |
+| `zigai.settings` | Portable model controls and tagged provider extensions |
 | `zigai.usage` | Per-request and aggregate run usage, exact costs, and native counters |
 | `zigai.pricing` | Explicit versioned price tables and deterministic estimates |
 | `zigai.codecs.pydantic_ai` | Lossless PydanticAI stable-v2 JSON interchange |
@@ -80,6 +81,11 @@ Use these namespaces for the rest of the API:
 Provider `Client.model()` values borrow their client. Keep the client and its
 transport alive for every agent run that uses the model. The same rule applies
 to model routers, MCP clients, callback contexts, dependencies, and toolsets.
+
+`ModelSettings` also borrows stop strings, tool names, request headers, and
+provider-extension JSON. Those values need to live only until the model request
+returns; results and reusable history do not retain them. An empty non-null
+slice is an explicit override, while null inherits the lower-precedence value.
 
 ## Ownership
 

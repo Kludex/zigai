@@ -163,3 +163,10 @@ is not deterministic.
 snapshot. Before changing it, verify every edited row against the provider URLs
 in `pricing.builtin_sources`, update the version date, and keep a focused unit
 test for each first-party provider. Pricing tests never call a live billing API.
+
+## Provider extension settings
+
+Provider request tests inspect every portable setting at the wire boundary.
+Extra-body fixtures must be small inline JSON objects without credentials.
+Tests cover provider-tag mismatches, malformed or non-object JSON, attempts to
+shadow adapter-owned fields, reserved headers, and CR/LF injection.

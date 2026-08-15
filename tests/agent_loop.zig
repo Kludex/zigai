@@ -1433,6 +1433,18 @@ test "model settings merge from model through agent and run" {
             try std.testing.expectEqualStrings("run-stop", request.settings.stop_sequences.?[0]);
             try std.testing.expectEqual(@as(i64, 3), request.settings.seed.?);
             try std.testing.expectEqual(zigai.ReasoningEffort.high, request.settings.reasoning_effort.?);
+            try std.testing.expectEqual(@as(f64, 0.6), request.settings.top_p.?);
+            try std.testing.expectEqual(@as(u32, 30), request.settings.top_k.?);
+            try std.testing.expectEqual(@as(f64, 0.4), request.settings.presence_penalty.?);
+            try std.testing.expectEqual(@as(f64, -0.2), request.settings.frequency_penalty.?);
+            try std.testing.expectEqual(@as(u8, 5), request.settings.logprobs.?.top);
+            try std.testing.expectEqualStrings("search", request.settings.tool_choice.?.tool);
+            try std.testing.expect(!request.settings.parallel_tool_calls.?);
+            try std.testing.expectEqual(@as(?u64, null), request.settings.thinking_budget_tokens);
+            try std.testing.expectEqual(zigai.ServiceTier.priority, request.settings.service_tier.?);
+            try std.testing.expectEqual(zigai.Truncation.auto, request.settings.truncation.?);
+            try std.testing.expectEqualStrings("x-feature", request.settings.extra_headers.?[0].name);
+            try std.testing.expectEqual(zigai.ExtraBodyKind.openai, request.settings.extra_body.?.kind());
         }
     };
     var scripted = zigai.testing.ScriptedModel{
@@ -1442,7 +1454,19 @@ test "model settings merge from model through agent and run" {
             .supports_temperature = true,
             .supports_stop_sequences = true,
             .supports_seed = true,
+            .supports_top_p = true,
+            .supports_top_k = true,
+            .supports_presence_penalty = true,
+            .supports_frequency_penalty = true,
+            .supports_logprobs = true,
+            .supports_tool_choice = true,
+            .supports_parallel_tool_call_setting = true,
+            .supports_thinking_budget = true,
+            .supports_truncation = true,
+            .supports_request_headers = true,
+            .extra_body_kind = .openai,
             .reasoning_efforts = zigai.ModelProfile.ReasoningEffortSet.initFull(),
+            .service_tiers = zigai.ModelProfile.ServiceTierSet.initFull(),
         },
     };
     var model = scripted.model();
@@ -1452,15 +1476,39 @@ test "model settings merge from model through agent and run" {
         .stop_sequences = &.{"model-stop"},
         .seed = 1,
         .reasoning_effort = .low,
+        .top_p = 0.5,
+        .top_k = 20,
+        .presence_penalty = 0.1,
+        .frequency_penalty = -0.1,
+        .logprobs = .{ .top = 2 },
+        .tool_choice = .auto,
+        .parallel_tool_calls = true,
+        .service_tier = .default,
+        .truncation = .disabled,
+        .extra_headers = &.{.{ .name = "x-feature", .value = "on" }},
+        .extra_body = .{ .openai = "{\"store\":false}" },
     };
     var result = try (zigai.Agent{
         .model = model,
-        .model_settings = .{ .temperature = 0.2, .max_tokens = 200, .seed = 2 },
+        .model_settings = .{
+            .temperature = 0.2,
+            .max_tokens = 200,
+            .seed = 2,
+            .top_p = 0.6,
+            .top_k = 30,
+            .presence_penalty = 0.4,
+            .frequency_penalty = -0.2,
+        },
     }).runWithOptions(std.testing.allocator, "hi", .{ .model_settings = .{
         .temperature = 0.3,
         .stop_sequences = &.{"run-stop"},
         .seed = 3,
         .reasoning_effort = .high,
+        .logprobs = .{ .top = 5 },
+        .tool_choice = .{ .tool = "search" },
+        .parallel_tool_calls = false,
+        .service_tier = .priority,
+        .truncation = .auto,
     } });
     defer result.deinit();
     try std.testing.expectEqualStrings("done", result.output);
@@ -1490,6 +1538,65 @@ test "unsupported model settings fail before requesting" {
         }).run(std.testing.allocator, "hi"),
     );
     try std.testing.expectEqual(@as(usize, 0), reasoning.request_count);
+
+    const Case = struct {
+        settings: zigai.ModelSettings,
+        failure: anyerror,
+    };
+    const cases = [_]Case{
+        .{ .settings = .{ .top_p = 0.5 }, .failure = zigai.Agent.Error.ModelDoesNotSupportTopP },
+        .{ .settings = .{ .top_k = 10 }, .failure = zigai.Agent.Error.ModelDoesNotSupportTopK },
+        .{ .settings = .{ .presence_penalty = 0.1 }, .failure = zigai.Agent.Error.ModelDoesNotSupportPresencePenalty },
+        .{
+            .settings = .{ .frequency_penalty = 0.1 },
+            .failure = zigai.Agent.Error.ModelDoesNotSupportFrequencyPenalty,
+        },
+        .{ .settings = .{ .logprobs = .{} }, .failure = zigai.Agent.Error.ModelDoesNotSupportLogprobs },
+        .{ .settings = .{ .tool_choice = .auto }, .failure = zigai.Agent.Error.ModelDoesNotSupportToolChoice },
+        .{
+            .settings = .{ .parallel_tool_calls = false },
+            .failure = zigai.Agent.Error.ModelDoesNotSupportParallelToolCallSetting,
+        },
+        .{
+            .settings = .{ .thinking_budget_tokens = 1_024 },
+            .failure = zigai.Agent.Error.ModelDoesNotSupportThinkingBudget,
+        },
+        .{ .settings = .{ .service_tier = .default }, .failure = zigai.Agent.Error.ModelDoesNotSupportServiceTier },
+        .{ .settings = .{ .truncation = .auto }, .failure = zigai.Agent.Error.ModelDoesNotSupportTruncation },
+        .{ .settings = .{ .extra_headers = &.{} }, .failure = zigai.Agent.Error.ModelDoesNotSupportRequestHeaders },
+        .{
+            .settings = .{ .extra_body = .{ .openai = "{}" } },
+            .failure = zigai.Agent.Error.ModelDoesNotSupportExtraBody,
+        },
+    };
+    for (cases) |case| {
+        var unsupported = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+        try std.testing.expectError(case.failure, (zigai.Agent{
+            .model = unsupported.model(),
+            .model_settings = case.settings,
+        }).run(std.testing.allocator, "hi"));
+        try std.testing.expectEqual(@as(usize, 0), unsupported.request_count);
+    }
+
+    var invalid = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    try std.testing.expectError(zigai.Agent.Error.InvalidModelSettings, (zigai.Agent{
+        .model = invalid.model(),
+        .model_settings = .{ .top_p = 2 },
+    }).run(std.testing.allocator, "hi"));
+    try std.testing.expectEqual(@as(usize, 0), invalid.request_count);
+
+    var serial_only = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .profile = .{
+            .supports_parallel_tool_calls = false,
+            .supports_parallel_tool_call_setting = true,
+        },
+    };
+    try std.testing.expectError(zigai.Agent.Error.ModelDoesNotSupportParallelToolCallSetting, (zigai.Agent{
+        .model = serial_only.model(),
+        .model_settings = .{ .parallel_tool_calls = true },
+    }).run(std.testing.allocator, "hi"));
+    try std.testing.expectEqual(@as(usize, 0), serial_only.request_count);
 }
 
 test "capabilities compose tools instructions hooks settings and model selection" {
@@ -1978,6 +2085,23 @@ test "agent enforces model request and parallel tool limits" {
     try std.testing.expectError(
         zigai.agent.Agent.Error.ParallelToolCallsNotSupported,
         (zigai.Agent{ .model = no_parallel.model(), .tools = &.{tool} }).run(std.testing.allocator, "hi"),
+    );
+    try std.testing.expectEqual(@as(u8, 0), calls);
+
+    var policy_disabled = zigai.testing.ScriptedModel{
+        .responses = &responses,
+        .profile = .{
+            .supports_parallel_tool_calls = true,
+            .supports_parallel_tool_call_setting = true,
+        },
+    };
+    try std.testing.expectError(
+        zigai.agent.Agent.Error.ParallelToolCallsNotSupported,
+        (zigai.Agent{
+            .model = policy_disabled.model(),
+            .tools = &.{tool},
+            .model_settings = .{ .parallel_tool_calls = false },
+        }).run(std.testing.allocator, "hi"),
     );
     try std.testing.expectEqual(@as(u8, 0), calls);
 

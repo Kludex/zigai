@@ -1,6 +1,7 @@
 //! Provider-neutral building blocks for tool-using LLM agents.
 
 pub const model = @import("model.zig");
+pub const settings = @import("settings.zig");
 pub const messages = @import("messages.zig");
 pub const usage = @import("usage.zig");
 pub const pricing = @import("pricing.zig");
@@ -92,6 +93,13 @@ pub const PromptPart = messages.PromptPart;
 pub const Part = messages.Part;
 pub const ModelSettings = model.ModelSettings;
 pub const ReasoningEffort = model.ReasoningEffort;
+pub const ServiceTier = model.ServiceTier;
+pub const Truncation = model.Truncation;
+pub const Logprobs = model.Logprobs;
+pub const ToolChoice = model.ToolChoice;
+pub const RequestHeader = model.RequestHeader;
+pub const ExtraBodyKind = model.ExtraBodyKind;
+pub const ProviderExtraBody = model.ProviderExtraBody;
 pub const FinishReason = messages.FinishReason;
 pub const Usage = messages.Usage;
 pub const RequestUsage = usage.RequestUsage;

@@ -38,6 +38,13 @@ pub const Client = struct {
         .supports_temperature = true,
         .supports_max_tokens = true,
         .supports_stop_sequences = true,
+        .supports_top_p = true,
+        .supports_top_k = true,
+        .supports_tool_choice = true,
+        .supports_parallel_tool_call_setting = true,
+        .supports_thinking_budget = true,
+        .supports_request_headers = true,
+        .extra_body_kind = .anthropic,
         .reasoning_efforts = model_types.ModelProfile.ReasoningEffortSet.initMany(&.{
             .low,
             .medium,
@@ -45,6 +52,7 @@ pub const Client = struct {
             .xhigh,
             .max,
         }),
+        .service_tiers = model_types.ModelProfile.ServiceTierSet.initMany(&.{ .auto, .default }),
         .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{ .web_search, .web_fetch }),
         .content_types = model_types.ModelProfile.ContentTypeSet.initMany(&.{ .image, .document, .thinking }),
     },
@@ -80,10 +88,14 @@ pub const Client = struct {
             .{ .name = "anthropic-version", .value = api_version },
             .{ .name = "anthropic-beta", .value = "files-api-2025-04-14" },
         };
+        var headers: std.ArrayList(http.Header) = .empty;
+        defer headers.deinit(allocator);
+        try headers.appendSlice(allocator, if (hasProviderFiles(value.messages)) &file_headers else &stable_headers);
+        try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
         const response = self.transport.send(allocator, .{
             .method = .POST,
             .url = url,
-            .headers = if (hasProviderFiles(value.messages)) &file_headers else &stable_headers,
+            .headers = headers.items,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
@@ -123,12 +135,16 @@ pub const Client = struct {
             .{ .name = "anthropic-version", .value = api_version },
             .{ .name = "anthropic-beta", .value = "files-api-2025-04-14" },
         };
+        var headers: std.ArrayList(http.Header) = .empty;
+        defer headers.deinit(allocator);
+        try headers.appendSlice(allocator, if (hasProviderFiles(value.messages)) &file_headers else &stable_headers);
+        try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
         var state = StreamState{ .allocator = allocator, .sink = sink };
         defer state.deinit();
         const response = self.transport.streamLines(allocator, .{
             .method = .POST,
             .url = url,
-            .headers = if (hasProviderFiles(value.messages)) &file_headers else &stable_headers,
+            .headers = headers.items,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
@@ -396,6 +412,8 @@ const StreamState = struct {
 };
 
 pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_tokens: u32, request: model_types.ModelRequest) ![]u8 {
+    request.settings.validate() catch return error.InvalidRequestEncoding;
+    try common.validateToolChoice(request.tools, request.builtin_tools.len, request.settings.tool_choice);
     var output: std.Io.Writer.Allocating = .init(allocator);
     defer output.deinit();
     var json: std.json.Stringify = .{ .writer = &output.writer };
@@ -411,6 +429,34 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
     if (request.settings.stop_sequences) |stop_sequences| {
         try json.objectField("stop_sequences");
         try json.write(stop_sequences);
+    }
+    if (request.settings.top_p) |top_p| {
+        try json.objectField("top_p");
+        try json.write(top_p);
+    }
+    if (request.settings.top_k) |top_k| {
+        try json.objectField("top_k");
+        try json.write(top_k);
+    }
+    if (request.settings.thinking_budget_tokens) |budget| {
+        try json.objectField("thinking");
+        try json.beginObject();
+        try json.objectField("type");
+        try json.write("enabled");
+        try json.objectField("budget_tokens");
+        try json.write(budget);
+        try json.endObject();
+    }
+    if (request.settings.tool_choice != null or request.settings.parallel_tool_calls != null) {
+        try writeToolChoice(&json, request.settings.tool_choice, request.settings.parallel_tool_calls);
+    }
+    if (request.settings.service_tier) |tier| {
+        try json.objectField("service_tier");
+        try json.write(switch (tier) {
+            .auto => "auto",
+            .default => "standard_only",
+            .flex, .priority => return error.InvalidRequestEncoding,
+        });
     }
 
     var has_system = request.instructions.len > 0;
@@ -612,6 +658,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
             try json.endObject();
         }
         for (request.tools) |tool| {
+            if (!common.toolIncluded(request.settings.tool_choice, tool.name)) continue;
             try json.beginObject();
             try json.objectField("name");
             try json.write(tool.name);
@@ -646,8 +693,52 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
         }
         try json.endObject();
     }
+    try common.writeExtraBodyFields(
+        allocator,
+        &json,
+        request.settings.extra_body,
+        .anthropic,
+        &.{
+            "model", "max_tokens", "system",   "messages",    "tools",        "temperature",   "stop_sequences",
+            "top_p", "top_k",      "thinking", "tool_choice", "service_tier", "output_config", "stream",
+        },
+    );
     try json.endObject();
     return output.toOwnedSlice();
+}
+
+fn writeToolChoice(
+    json: *std.json.Stringify,
+    choice: ?model_types.ToolChoice,
+    parallel: ?bool,
+) !void {
+    try json.objectField("tool_choice");
+    try json.beginObject();
+    switch (choice orelse .auto) {
+        .auto => {
+            try json.objectField("type");
+            try json.write("auto");
+        },
+        .none => {
+            try json.objectField("type");
+            try json.write("none");
+        },
+        .required, .allowed => {
+            try json.objectField("type");
+            try json.write("any");
+        },
+        .tool => |name| {
+            try json.objectField("type");
+            try json.write("tool");
+            try json.objectField("name");
+            try json.write(name);
+        },
+    }
+    if (parallel) |enabled| {
+        try json.objectField("disable_parallel_tool_use");
+        try json.write(!enabled);
+    }
+    try json.endObject();
 }
 
 fn messageHasAnthropicContent(message: model_types.Message) bool {
@@ -878,6 +969,119 @@ test "decodes Anthropic tool use" {
 test "maps Anthropic length and refusal reasons" {
     try std.testing.expectEqual(model_types.FinishReason.Kind.length, anthropicFinishReason("max_tokens").kind);
     try std.testing.expectEqual(model_types.FinishReason.Kind.content_filter, anthropicFinishReason("refusal").kind);
+}
+
+test "encodes complete Anthropic settings and filters allowed tools" {
+    const tools = [_]model_types.ToolDefinition{
+        .{ .name = "search", .description = "Search.", .parameters_json_schema = "{}" },
+        .{ .name = "fetch", .description = "Fetch.", .parameters_json_schema = "{}" },
+    };
+    const body = try encodeRequest(std.testing.allocator, "claude-test", 512, .{
+        .messages = &.{},
+        .tools = &tools,
+        .settings = .{
+            .top_p = 0.8,
+            .top_k = 32,
+            .thinking_budget_tokens = 2_048,
+            .tool_choice = .{ .allowed = &.{"search"} },
+            .parallel_tool_calls = false,
+            .service_tier = .default,
+            .extra_body = .{ .anthropic = "{\"metadata\":{\"user_id\":\"safe\"}}" },
+        },
+    });
+    defer std.testing.allocator.free(body);
+    for ([_][]const u8{
+        "\"top_p\":0.8",
+        "\"top_k\":32",
+        "\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":2048}",
+        "\"tool_choice\":{\"type\":\"any\",\"disable_parallel_tool_use\":true}",
+        "\"service_tier\":\"standard_only\"",
+        "\"metadata\":{\"user_id\":\"safe\"}",
+    }) |expected| try std.testing.expect(std.mem.indexOf(u8, body, expected) != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"search\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"name\":\"fetch\"") == null);
+
+    inline for (.{
+        model_types.ToolChoice.auto,
+        model_types.ToolChoice.none,
+        model_types.ToolChoice.required,
+    }) |choice| {
+        const scalar = try encodeRequest(std.testing.allocator, "claude-test", 512, .{
+            .messages = &.{},
+            .tools = &tools,
+            .settings = .{ .tool_choice = choice },
+        });
+        std.testing.allocator.free(scalar);
+    }
+    const named = try encodeRequest(std.testing.allocator, "claude-test", 512, .{
+        .messages = &.{},
+        .tools = &tools,
+        .settings = .{ .tool_choice = .{ .tool = "fetch" }, .service_tier = .auto },
+    });
+    defer std.testing.allocator.free(named);
+    try std.testing.expect(std.mem.indexOf(u8, named, "\"type\":\"tool\",\"name\":\"fetch\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, named, "\"service_tier\":\"auto\"") != null);
+
+    try std.testing.expectError(error.InvalidRequestEncoding, encodeRequest(std.testing.allocator, "claude-test", 512, .{
+        .messages = &.{},
+        .settings = .{ .reasoning_effort = .high, .thinking_budget_tokens = 1_024 },
+    }));
+    inline for (.{ model_types.ServiceTier.flex, model_types.ServiceTier.priority }) |tier| {
+        try std.testing.expectError(error.InvalidRequestEncoding, encodeRequest(std.testing.allocator, "claude-test", 512, .{
+            .messages = &.{},
+            .settings = .{ .service_tier = tier },
+        }));
+    }
+}
+
+test "Anthropic clients forward validated request settings headers" {
+    const State = struct {
+        buffered: bool = false,
+        streaming: bool = false,
+
+        fn hasFeature(request: http.Request) bool {
+            for (request.headers) |header| if (std.ascii.eqlIgnoreCase(header.name, "x-feature") and
+                std.mem.eql(u8, header.value, "on")) return true;
+            return false;
+        }
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: http.Request) !http.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.buffered = hasFeature(request);
+            return .{ .status = 200, .body = try allocator.dupe(u8, "{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}],\"stop_reason\":\"end_turn\"}") };
+        }
+
+        fn stream(context: *anyopaque, _: std.mem.Allocator, request: http.Request, _: http.LineSink) !http.StreamResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.streaming = hasFeature(request);
+            return error.ConnectionResetByPeer;
+        }
+    };
+    var state: State = .{};
+    try std.testing.expect(!State.hasFeature(.{ .method = .POST, .url = "https://example.test" }));
+    var client = Client{
+        .model_name = "claude-test",
+        .api_key = "secret",
+        .transport = .{ .context = &state, .sendFn = State.send, .streamLinesFn = State.stream },
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const request = model_types.ModelRequest{
+        .messages = &.{},
+        .settings = .{ .extra_headers = &.{.{ .name = "x-feature", .value = "on" }} },
+    };
+    _ = try client.model().request(arena.allocator(), request);
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+    };
+    try Sink.emit(&state, .{ .usage = .{} });
+    try std.testing.expectError(error.ProviderConnectionError, client.model().stream(
+        arena.allocator(),
+        request,
+        .{ .context = &state, .eventFn = Sink.emit },
+    ));
+    try std.testing.expect(state.buffered);
+    try std.testing.expect(state.streaming);
 }
 
 test "encodes instructions, tool errors, and requests without system content" {
