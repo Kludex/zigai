@@ -61,6 +61,7 @@ pub const ExtraBodyKind = enum {
     google,
     mistral,
     cohere,
+    openrouter,
 };
 
 /// A bounded JSON object for fields unavailable in the portable settings API.
@@ -75,6 +76,7 @@ pub const ProviderExtraBody = union(ExtraBodyKind) {
     google: []const u8,
     mistral: []const u8,
     cohere: []const u8,
+    openrouter: []const u8,
 
     pub fn kind(self: ProviderExtraBody) ExtraBodyKind {
         return std.meta.activeTag(self);

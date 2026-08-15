@@ -39,6 +39,7 @@ pub const ClientDefaults = struct {
     model_profile_lookup: ?*const fn ([]const u8) ?model_types.ModelProfile = null,
     authentication: Authentication = .{},
     include_stream_usage: bool = true,
+    extra_body_kind: model_types.ExtraBodyKind = .openai_compatible,
 };
 
 /// Defines provider state for an OpenAI-compatible API while retaining
@@ -150,6 +151,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
         pub fn model(self: *Self) model_types.Model {
             var model_profile = self.provider.modelProfile(self.model_name, self.profile);
             model_profile.supports_idempotency_key = self.idempotency_header != null;
+            model_profile.extra_body_kind = defaults.extra_body_kind;
             return .{
                 .context = self,
                 .profile = model_profile,
@@ -167,7 +169,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
             value: model_types.ModelRequest,
         ) !model_types.ModelResponse {
             const self: *Self = @ptrCast(@alignCast(context));
-            const body = try encodeRequest(allocator, self.model_name, value);
+            const body = try encodeRequestFor(allocator, self.model_name, value, defaults.extra_body_kind);
             defer allocator.free(body);
             var headers: std.ArrayList(http.Header) = .empty;
             defer headers.deinit(allocator);
@@ -207,7 +209,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
             sink: model_types.ModelStreamSink,
         ) !model_types.ModelResponse {
             const self: *Self = @ptrCast(@alignCast(context));
-            const body = try encodeStreamingRequest(allocator, self.model_name, value, self.include_stream_usage);
+            const body = try encodeStreamingRequestFor(allocator, self.model_name, value, self.include_stream_usage, defaults.extra_body_kind);
             defer allocator.free(body);
             var headers: std.ArrayList(http.Header) = .empty;
             defer headers.deinit(allocator);
@@ -255,6 +257,15 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
 pub const Client = ClientWithDefaults(.{});
 
 pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {
+    return encodeRequestFor(allocator, model_name, request, .openai_compatible);
+}
+
+fn encodeRequestFor(
+    allocator: std.mem.Allocator,
+    model_name: []const u8,
+    request: model_types.ModelRequest,
+    extra_body_kind: model_types.ExtraBodyKind,
+) ![]u8 {
     request.settings.validate() catch return error.InvalidRequestEncoding;
     try common.validateToolChoice(request.tools, request.builtin_tools.len, request.settings.tool_choice);
     var output: std.Io.Writer.Allocating = .init(allocator);
@@ -402,7 +413,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
         allocator,
         &json,
         request.settings.extra_body,
-        .openai_compatible,
+        extra_body_kind,
         &.{
             "model",
             "messages",
@@ -450,7 +461,17 @@ fn writeToolChoice(json: *std.json.Stringify, choice: model_types.ToolChoice) !v
 }
 
 pub fn encodeStreamingRequest(allocator: std.mem.Allocator, model_name: []const u8, request: model_types.ModelRequest, include_usage: bool) ![]u8 {
-    const buffered = try encodeRequest(allocator, model_name, request);
+    return encodeStreamingRequestFor(allocator, model_name, request, include_usage, .openai_compatible);
+}
+
+fn encodeStreamingRequestFor(
+    allocator: std.mem.Allocator,
+    model_name: []const u8,
+    request: model_types.ModelRequest,
+    include_usage: bool,
+    extra_body_kind: model_types.ExtraBodyKind,
+) ![]u8 {
+    const buffered = try encodeRequestFor(allocator, model_name, request, extra_body_kind);
     defer allocator.free(buffered);
     if (buffered.len == 0 or buffered[buffered.len - 1] != '}') return error.InvalidRequestEncoding;
     if (include_usage) return std.fmt.allocPrint(
