@@ -185,6 +185,7 @@ authentication style, or model profile overrides.
 | `zigai.providers.xai` | xAI Responses; explicit Chat Completions compatibility |
 | `zigai.providers.cerebras` | Cerebras Inference |
 | `zigai.providers.cohere` | Cohere v2 Chat; explicit Compatibility API |
+| `zigai.providers.crusoe` | Crusoe Serverless Inference |
 | `zigai.providers.deepseek` | DeepSeek |
 | `zigai.providers.doubleword` | Doubleword |
 | `zigai.providers.groq` | Groq |
@@ -247,6 +248,10 @@ var result = try (zigai.Agent{
     .url_policy = zigai.providers.ollama.local_request_policy.url_policy,
 }).run(allocator, "Why is the sky blue?");
 ```
+
+Crusoe uses the same client boundary with bearer authentication. Set
+`CRUSOE_API_KEY`; `CRUSOE_MODEL` optionally selects a vendor-qualified model or
+deployment alias. The compiled example is available as `examples/crusoe.zig`.
 
 Use `azure_openai.ChatClient` (or its backwards-compatible `Client` alias) only
 when a deployment requires Chat Completions.

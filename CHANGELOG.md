@@ -4,6 +4,8 @@
 
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
+- Add a named Crusoe Serverless Inference provider with vendor-qualified model
+  profiles, structured-output capabilities, and a compiled example.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

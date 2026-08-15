@@ -18,6 +18,7 @@ pub const azure_openai = @import("providers/azure_openai.zig");
 pub const bedrock = @import("providers/bedrock.zig");
 pub const cerebras = @import("providers/cerebras.zig");
 pub const cohere = @import("providers/cohere/root.zig");
+pub const crusoe = @import("providers/crusoe.zig");
 pub const deepseek = @import("providers/deepseek.zig");
 pub const doubleword = @import("providers/doubleword.zig");
 pub const google = @import("providers/google.zig");
@@ -52,6 +53,7 @@ test {
     _ = bedrock;
     _ = cerebras;
     _ = cohere;
+    _ = crusoe;
     _ = deepseek;
     _ = doubleword;
     _ = google;
@@ -82,6 +84,7 @@ test "named compatible clients use their provider model profiles" {
     try std.testing.expect(namedCompatibleProfile(bedrock.MantleProvider, bedrock.MantleClient, "openai.gpt-oss-20b").supportsReasoningEffort(.medium));
     try std.testing.expect(!namedCompatibleProfile(cerebras.Provider, cerebras.Client, "gpt-oss-120b").supports_parallel_tool_calls);
     try std.testing.expect(namedCompatibleProfile(cohere.Provider, cohere.Client, "command-a-plus").supports_tools);
+    try std.testing.expect(namedCompatibleProfile(crusoe.Provider, crusoe.Client, "openai/gpt-oss-120b").supportsReasoningEffort(.high));
     try std.testing.expect(!namedCompatibleProfile(deepseek.Provider, deepseek.Client, "deepseek-v4-flash").supports_temperature);
     try std.testing.expect(namedCompatibleProfile(doubleword.Provider, doubleword.Client, "openai/gpt-oss-20b").supportsReasoningEffort(.high));
     try std.testing.expect(!namedCompatibleProfile(groq.Provider, groq.Client, "openai/gpt-oss-20b").supports_logprobs);
@@ -120,6 +123,16 @@ test "named compatible profiles reject unsupported requests before transport" {
     };
     try std.testing.expectError(agent.Agent.Error.ModelDoesNotSupportTemperature, (agent.Agent{
         .model = deepseek_client.model(),
+        .model_settings = .{ .temperature = 0.2 },
+    }).run(std.testing.allocator, "hello"));
+
+    var crusoe_provider = crusoe.Provider.init("unused", counting_transport);
+    var crusoe_client = crusoe.Client{
+        .model_name = "private/deployment",
+        .provider = crusoe_provider.provider(),
+    };
+    try std.testing.expectError(agent.Agent.Error.ModelDoesNotSupportTemperature, (agent.Agent{
+        .model = crusoe_client.model(),
         .model_settings = .{ .temperature = 0.2 },
     }).run(std.testing.allocator, "hello"));
 

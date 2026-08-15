@@ -386,6 +386,13 @@ standard HTTP transport. Tagged and namespaced library models resolve through
 Ollama-specific family profiles. Unknown model families retain the fail-closed
 compatible profile, so unsupported settings and tools are rejected before I/O.
 
+Crusoe's named provider uses bearer authentication from the caller and the
+Serverless Inference `/v1` root. Its profile lookup recognizes Crusoe's
+vendor-qualified Meta, DeepSeek, Qwen, Google, OpenAI Harmony, Moonshot, and
+Z.AI families. Crusoe's guided decoding enables both structured-output modes;
+unknown deployment aliases remain fail-closed unless the application supplies
+an explicit profile.
+
 `Provider.listModels` is implemented by OpenAI, Anthropic, Google, and
 OpenAI-compatible provider objects. It authenticates through the provider
 boundary and returns `OwnedProviderModels`; call `deinit` after consuming its

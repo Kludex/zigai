@@ -166,6 +166,7 @@ for source in "$project_dir"/src/*.zig "$project_dir"/src/cli/*.zig "$project_di
         "$project_dir"/src/zopenai.zig|\
         "$project_dir"/src/zopenai_compatible.zig|\
         "$project_dir"/src/providers/cerebras.zig|\
+        "$project_dir"/src/providers/crusoe.zig|\
         "$project_dir"/src/providers/cohere.zig|\
         "$project_dir"/src/providers/deepseek.zig|\
         "$project_dir"/src/providers/doubleword.zig|\

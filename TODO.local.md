@@ -129,7 +129,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   GenerateContent codec without coupling Google AI Studio credentials or URLs.
 - [x] Add a focused Ollama example with an explicit local-endpoint policy,
   provider-specific profiles, and pre-I/O validation.
-- [ ] Add a focused Crusoe example with provider-specific profiles and pre-I/O
+- [x] Add a focused Crusoe example with provider-specific profiles and pre-I/O
   validation.
 - [ ] Add a focused Snowflake Cortex example with provider-specific profiles
   and pre-I/O validation.

@@ -346,6 +346,19 @@ pub fn cohere(model_name: []const u8) ?model.ModelProfile {
     return familyProfile(.cohere, model_name);
 }
 
+/// Vendor-qualified model families exposed by Crusoe Serverless Inference.
+pub fn crusoe(model_name: []const u8) ?model.ModelProfile {
+    var profile = if (startsWith(model_name, "openai/gpt-oss"))
+        familyProfile(.harmony, model_name["openai/".len..])
+    else if (startsWith(model_name, "zai/"))
+        familyProfile(.zai, model_name["zai/".len..])
+    else
+        routedProfile(model_name, '/') orelse return null;
+    profile.supports_json_schema_output = true;
+    profile.supports_json_object_output = true;
+    return profile;
+}
+
 pub fn deepseek(model_name: []const u8) ?model.ModelProfile {
     if (!startsWith(model_name, "deepseek-")) return null;
     return familyProfile(.deepseek, model_name);
@@ -499,6 +512,15 @@ test "named compatible providers resolve known families and reject unknown ones"
     try std.testing.expect(ollama("command-r").?.supports_tools);
     try std.testing.expect(ollama("c4ai-command-r7b").?.supports_tools);
     try std.testing.expect(ollama("unknown") == null);
+
+    try std.testing.expect(crusoe("openai/gpt-oss-120b").?.supportsReasoningEffort(.high));
+    try std.testing.expect(crusoe("meta-llama/llama-3.3").?.supports_json_schema_output);
+    try std.testing.expect(crusoe("deepseek-ai/deepseek-v4-flash").?.supports_json_object_output);
+    try std.testing.expect(crusoe("qwen/qwen3").?.supports_tools);
+    try std.testing.expect(crusoe("google/gemma-4").?.supports_tools);
+    try std.testing.expect(crusoe("moonshotai/kimi-k2").?.supports_tools);
+    try std.testing.expect(crusoe("zai/glm-4.5").?.supports_tools);
+    try std.testing.expect(crusoe("private/deployment") == null);
 
     try std.testing.expect(bedrock("openai.gpt-oss-20b").?.supportsReasoningEffort(.medium));
     try std.testing.expect(bedrock("openai.gpt-5.4").?.supportsReasoningEffort(.high));
