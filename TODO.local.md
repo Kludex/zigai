@@ -35,7 +35,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   from all callbacks/telemetry, validate provider-file ownership, define URL and
   redirect policy, prevent accidental local-network fetching, and document the
   trust boundary for prompts, tools, MCP servers, and persisted state.
-- [ ] Add fuzz targets for every parser and wire state machine: history,
+- [x] Add fuzz targets for every parser and wire state machine: history,
   deferred state, JSON Schema, provider buffered/streaming decoders, cassette
   YAML, MCP JSON-RPC/SSE/stdio, CLI manifests, and HTTP metadata parsing.
 - [ ] Add soak, stress, and allocation-failure suites. Exercise long tool loops,
