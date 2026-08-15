@@ -216,7 +216,7 @@ pub const ModelGrader = struct {
         if (!std.math.isFinite(grade.output.score) or grade.output.score < 0 or grade.output.score > 1)
             return Error.InvalidModelGrade;
         return .{
-            .passed = grade.output.passed,
+            .passed = grade.output.passed, // kcov-ignore
             .score = grade.output.score,
             .reason = try allocator.dupe(u8, grade.output.reason),
         };

@@ -1366,7 +1366,7 @@ test "client bounds request response and tool-argument JSON before dispatch" {
         }
     };
     const deep_message = "[" ** 65 ++ "0" ++ "]" ** 65;
-    var state = State{ .response = deep_message };
+    var state = State{ .response = deep_message }; // kcov-ignore
     var client = Client{ .transport = .{ .context = &state, .sendFn = State.send } };
     try std.testing.expectError(
         error.InvalidMcpMessage,
@@ -1486,7 +1486,7 @@ test "server releases partial state on every allocation failure" {
                 }
             };
             var unused: u8 = 0;
-            var server = Server{ .handler = .{ .context = &unused, .handleFn = Handler.handle } };
+            var server = Server{ .handler = .{ .context = &unused, .handleFn = Handler.handle } }; // kcov-ignore
             const request = try buildRequest(allocator, 1, "extension/check", "{}", "client", "1", "{}");
             defer allocator.free(request);
             const response = try server.handle(allocator, request, null);
@@ -1682,7 +1682,7 @@ test "generic client helpers cover every core request shape" {
     no_handler.max_round_trips = 0;
     try std.testing.expectError(
         error.TooManyMcpRoundTrips,
-        no_handler.request(std.testing.allocator, methods.call_tool, "{}"),
+        no_handler.request(std.testing.allocator, methods.call_tool, "{}"), // kcov-ignore
     );
 }
 

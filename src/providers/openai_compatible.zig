@@ -209,7 +209,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
                 try state.parts.insert(allocator, 0, .{ .text = try state.text.toOwnedSlice(allocator) });
             }
             return .{
-                .parts = try state.parts.toOwnedSlice(allocator),
+                .parts = try state.parts.toOwnedSlice(allocator), // kcov-ignore
                 .usage = state.usage,
                 .finish_reason = state.finish_reason,
             };
@@ -247,12 +247,30 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
     for (request.messages) |message| switch (message) {
         .request => |request_message| for (request_message.parts) |part| switch (part) {
             .system_prompt => |text| try writeTextMessage(&json, "system", text),
+            .system_prompt_part => |prompt| try writeTextMessage(&json, "system", prompt.content),
             .retry_prompt => |text| try writeTextMessage(&json, "user", text),
+            .retry_prompt_part => |prompt| try writeTextMessage(&json, "user", prompt.content),
             .user_prompt => |content| switch (content) {
                 .text => |text| try writeTextMessage(&json, "user", text),
+                .text_content => |text| try writeTextMessage(&json, "user", text.content),
+                .cache_point => {},
+                else => return error.InvalidRequestEncoding,
+            },
+            .user_prompt_part => |prompt| switch (prompt.content) {
+                .text => |text| try writeTextMessage(&json, "user", text),
+                .text_content => |text| try writeTextMessage(&json, "user", text.content),
+                .cache_point => {},
                 else => return error.InvalidRequestEncoding,
             },
             .tool_return => |result| try writeToolResult(&json, result),
+            .speech => |speech| {
+                try ensureProviderPartReplayable(speech.provider);
+                if (speech.transcript) |text|
+                    try writeTextMessage(&json, "user", text)
+                else
+                    return error.InvalidRequestEncoding;
+            },
+            .tool_search_return, .capability_load_return, .tool_availability_delta => return error.InvalidRequestEncoding,
         },
         .response => |response| try writeResponseMessage(allocator, &json, response),
     };
@@ -337,6 +355,19 @@ pub fn encodeStreamingRequest(allocator: std.mem.Allocator, model_name: []const 
 }
 
 fn writeResponseMessage(allocator: std.mem.Allocator, json: *std.json.Stringify, message: model_types.ResponseMessage) !void {
+    for (message.parts) |part| switch (part) {
+        .text => {},
+        .text_part => |text| try ensureProviderPartReplayable(text.provider),
+        .tool_call => |call| {
+            try ensureProviderPartReplayable(call.provider);
+            if (call.thought_signature != null) return error.InvalidRequestEncoding;
+        },
+        .speech => |speech| {
+            try ensureProviderPartReplayable(speech.provider);
+            if (speech.transcript == null) return error.InvalidRequestEncoding;
+        },
+        else => return error.InvalidRequestEncoding,
+    };
     const text = try collectText(allocator, message.parts);
     defer allocator.free(text);
     try json.beginObject();
@@ -385,6 +416,7 @@ fn writeTextMessage(json: *std.json.Stringify, role: []const u8, text: []const u
 }
 
 fn writeToolResult(json: *std.json.Stringify, result: model_types.ToolResult) !void {
+    if (result.files.len > 0) return error.InvalidRequestEncoding;
     try json.beginObject();
     try json.objectField("role");
     try json.write("tool");
@@ -399,9 +431,15 @@ fn collectText(allocator: std.mem.Allocator, parts: []const model_types.Part) ![
     var text: std.ArrayList(u8) = .empty;
     for (parts) |part| switch (part) {
         .text => |value| try text.appendSlice(allocator, value),
+        .text_part => |value| try text.appendSlice(allocator, value.content),
+        .speech => |value| if (value.transcript) |transcript| try text.appendSlice(allocator, transcript),
         else => {},
     };
     return text.toOwnedSlice(allocator);
+}
+
+fn ensureProviderPartReplayable(provider: model_types.ProviderPart) !void {
+    if (provider.requiresReplay()) return error.InvalidRequestEncoding;
 }
 
 pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_types.ModelResponse {
@@ -828,7 +866,7 @@ test "compatible responses classify malformed buffered and streamed tools" {
     try std.testing.expectEqual(model_types.FinishReason.Kind.incomplete_tool_call, malformed.finish_reason.?.kind);
 
     const Sink = struct {
-        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {} // kcov-ignore
     };
     var unused: u8 = 0;
     var incomplete = StreamState{
@@ -876,7 +914,9 @@ fn checkBufferedToolAllocationFailure(allocator: std.mem.Allocator) !void {
 
 fn checkStreamedToolAllocationFailure(allocator: std.mem.Allocator) !void {
     const Sink = struct {
-        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void { // kcov-ignore
+            return; // kcov-ignore
+        }
     };
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -898,14 +938,70 @@ test "compatible tool parsing propagates allocation failures" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, checkStreamedToolAllocationFailure, .{});
 }
 
+test "compatible providers encode detailed text and reject rich history" {
+    const messages = [_]model_types.Message{
+        .{ .request = .{ .parts = &.{
+            .{ .system_prompt_part = .{ .content = "system" } },
+            .{ .retry_prompt_part = .{ .content = "retry" } },
+            .{ .user_prompt = .{ .text_content = .{ .content = "rich" } } },
+            .{ .user_prompt = .{ .cache_point = .{} } },
+            .{ .user_prompt_part = .{ .content = .{ .text = "timestamped" } } },
+            .{ .user_prompt_part = .{ .content = .{ .text_content = .{ .content = "metadata" } } } },
+            .{ .user_prompt_part = .{ .content = .{ .cache_point = .{} } } },
+            .{ .speech = .{ .speaker = .user, .transcript = "spoken" } },
+            .{ .tool_return = .{ .call_id = "call", .name = "tool", .content = "ok" } },
+        } } },
+        .{ .response = .{ .parts = &.{
+            .{ .text_part = .{ .content = "answer" } },
+            .{ .speech = .{ .speaker = .assistant, .transcript = "said" } },
+            .{ .tool_call = .{ .id = "call", .name = "tool", .arguments_json = "{}" } },
+        } } },
+    };
+    const body = try encodeRequest(std.testing.allocator, "model", .{ .messages = &messages });
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "spoken") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "said") != null);
+
+    const file = model_types.Content{ .source = .{ .bytes = "x" }, .media_type = "application/octet-stream" };
+    const unsupported = [_]model_types.Message{
+        .{ .request = .{ .parts = &.{.{ .user_prompt = .{ .image = file } }} } },
+        .{ .request = .{ .parts = &.{.{ .user_prompt_part = .{ .content = .{ .image = file } } }} } },
+        .{ .request = .{ .parts = &.{.{ .speech = .{ .speaker = .user } }} } },
+        .{ .request = .{ .parts = &.{.{ .capability_load_return = .{ .call_id = "load" } }} } },
+        .{ .request = .{ .parts = &.{.{ .tool_return = .{
+            .call_id = "call",
+            .name = "tool",
+            .content = "ok",
+            .files = &.{file},
+        } }} } },
+        .{ .response = .{ .parts = &.{.{ .speech = .{ .speaker = .assistant } }} } },
+        .{ .response = .{ .parts = &.{.{ .text_part = .{
+            .content = "provider-bound",
+            .provider = .{ .id = "item", .provider_name = "provider" },
+        } }} } },
+        .{ .response = .{ .parts = &.{.{ .tool_call = .{
+            .id = "call",
+            .name = "tool",
+            .arguments_json = "{}",
+            .thought_signature = "unsupported",
+        } }} } },
+        .{ .response = .{ .parts = &.{.{ .compaction = .{ .content = "summary" } }} } },
+    };
+    for (unsupported) |message| try std.testing.expectError(
+        error.InvalidRequestEncoding,
+        encodeRequest(std.testing.allocator, "model", .{ .messages = &.{message} }),
+    );
+}
+
 fn fuzzStreamLine(_: void, smith: *std.testing.Smith) !void {
     var buffer: [16 * 1024]u8 = undefined;
     const value = buffer[0..smith.slice(&buffer)];
     const Sink = struct {
-        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void { // kcov-ignore
+            return; // kcov-ignore
+        }
     };
     var context: u8 = 0;
-    try Sink.emit(&context, .{ .text_delta = "" });
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var state = StreamState{

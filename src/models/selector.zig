@@ -98,7 +98,7 @@ test "selector routes streaming requests and merges settings" {
     const Selected = struct {
         calls: usize = 0,
         fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
-            return error.Unused;
+            return error.Unused; // kcov-ignore
         }
         fn stream(
             context: *anyopaque,

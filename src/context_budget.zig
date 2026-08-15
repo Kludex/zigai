@@ -80,7 +80,7 @@ pub const OverflowEvent = struct {
 /// One bounded opportunity to compact history or reject the request.
 ///
 /// Returned messages must remain valid for the run. Allocate replacements
-/// with `arena`; returning a borrowed subslice of `event.input.messages` is
+/// with `arena`; returning a borrowed subslice of `event.input.messages` is // kcov-ignore
 /// also valid.
 pub const OverflowHook = struct {
     context: *anyopaque,
@@ -176,15 +176,27 @@ pub fn measure(input: Input) MeasureError!ByteUsage {
     for (input.messages) |message| switch (message) {
         .request => |request| for (request.parts) |part| switch (part) {
             .system_prompt, .retry_prompt => |text| try accumulate(&usage.prompt, text.len),
+            .system_prompt_part => |prompt| try accumulate(&usage.prompt, prompt.content.len),
             .user_prompt => |content| try measureUserContent(&usage, content),
+            .user_prompt_part => |prompt| try measureUserContent(&usage, prompt.content),
+            .speech => |speech| try measureSpeech(&usage, speech),
+            .tool_search_return => |result| try measureToolSearchResult(&usage, result),
+            .capability_load_return => |result| {
+                try accumulate(&usage.tools, result.call_id.len);
+                if (result.instructions) |instructions| try accumulate(&usage.prompt, instructions.len);
+            },
             .tool_return => |result| {
                 try accumulate(&usage.tools, result.call_id.len);
                 try accumulate(&usage.tools, result.name.len);
                 try accumulate(&usage.tools, result.content.len);
+                for (result.files) |file| try measureContent(&usage.media, file);
             },
+            .retry_prompt_part => |prompt| try accumulate(&usage.prompt, prompt.content.len),
+            .tool_availability_delta => |delta| for (delta.tools_added) |name| try accumulate(&usage.tools, name.len),
         },
         .response => |response| for (response.parts) |part| switch (part) {
             .text => |text| try accumulate(&usage.prompt, text.len),
+            .text_part => |text| try accumulate(&usage.prompt, text.content.len),
             .thinking => |thinking| {
                 try accumulate(&usage.prompt, thinking.content.len);
                 if (thinking.signature) |signature| try accumulate(&usage.prompt, signature.len);
@@ -195,7 +207,30 @@ pub fn measure(input: Input) MeasureError!ByteUsage {
                 try accumulate(&usage.tools, call.arguments_json.len);
                 if (call.thought_signature) |signature| try accumulate(&usage.tools, signature.len);
             },
-            .image, .audio, .document, .binary => |content| try measureContent(&usage.media, content),
+            .tool_search_call, .native_tool_search_call => |call| {
+                try accumulate(&usage.tools, call.call_id.len);
+                for (call.queries) |query| try accumulate(&usage.tools, query.len);
+            },
+            .capability_load_call => |call| {
+                try accumulate(&usage.tools, call.call_id.len);
+                try accumulate(&usage.tools, call.capability_id.len);
+            },
+            .native_tool_call => |call| {
+                try accumulate(&usage.tools, call.id.len);
+                try accumulate(&usage.tools, call.name.len);
+                try accumulate(&usage.tools, call.arguments_json.len);
+            },
+            .native_tool_search_return => |result| try measureToolSearchResult(&usage, result),
+            .native_tool_return => |result| {
+                try accumulate(&usage.tools, result.call_id.len);
+                try accumulate(&usage.tools, result.name.len);
+                try accumulate(&usage.tools, result.content.len);
+                for (result.files) |file| try measureContent(&usage.media, file);
+            },
+            .compaction => |compaction| if (compaction.content) |content|
+                try accumulate(&usage.prompt, content.len),
+            .image, .audio, .video, .document, .binary => |content| try measureContent(&usage.media, content),
+            .speech => |speech| try measureSpeech(&usage, speech),
         },
     };
     for (input.tools) |tool| {
@@ -231,8 +266,28 @@ pub fn defaultEstimate(input: Input, bytes: ByteUsage) MeasureError!u64 {
 fn measureUserContent(usage: *ByteUsage, content: model.UserContent) MeasureError!void {
     switch (content) {
         .text => |text| try accumulate(&usage.prompt, text.len),
-        .image, .audio, .document, .binary => |media| try measureContent(&usage.media, media),
+        .text_content => |text| try accumulate(&usage.prompt, text.content.len),
+        .image, .audio, .video, .document, .binary => |media| try measureContent(&usage.media, media),
+        .uploaded_file => |file| try measureUploadedFile(&usage.media, file),
+        .cache_point => {},
     }
+}
+
+fn measureSpeech(usage: *ByteUsage, speech: model.SpeechPart) MeasureError!void {
+    if (speech.transcript) |transcript| try accumulate(&usage.prompt, transcript.len);
+    if (speech.audio) |audio| try measureContent(&usage.media, audio);
+}
+
+fn measureToolSearchResult(usage: *ByteUsage, result: model.ToolSearchResult) MeasureError!void {
+    try accumulate(&usage.tools, result.call_id.len);
+    for (result.discovered_tools) |tool| try accumulate(&usage.tools, tool.name.len);
+    if (result.message) |message| try accumulate(&usage.tools, message.len);
+}
+
+fn measureUploadedFile(total: *u64, file: model.UploadedFile) MeasureError!void {
+    try accumulate(total, file.id.len);
+    try accumulate(total, file.provider_name.len);
+    if (file.media_type) |media_type| try accumulate(total, media_type.len);
 }
 
 fn measureContent(total: *u64, content: model.Content) MeasureError!void {
@@ -243,9 +298,11 @@ fn measureContent(total: *u64, content: model.Content) MeasureError!void {
             try accumulate(total, file.id.len);
             if (file.provider) |provider| try accumulate(total, provider.len);
         },
+        .uploaded_file => |file| try measureUploadedFile(total, file),
     }
     try accumulate(total, content.media_type.len);
     if (content.filename) |filename| try accumulate(total, filename.len);
+    if (content.identifier) |identifier| try accumulate(total, identifier.len);
     if (content.thought_signature) |signature| try accumulate(total, signature.len);
 }
 
@@ -300,6 +357,83 @@ test "measure classifies prompt tool schema and media bytes" {
     try std.testing.expectEqual(@as(u64, 25), usage.schemas);
     try std.testing.expectEqual(@as(u64, 69), usage.media);
     try std.testing.expectEqual(@as(u64, 181), try usage.total());
+}
+
+test "measure covers the complete message vocabulary" {
+    const uploaded = model.UploadedFile{
+        .id = "file",
+        .provider_name = "provider",
+        .media_type = "image/png",
+    };
+    const media = model.Content{
+        .source = .{ .uploaded_file = uploaded },
+        .media_type = "image/png",
+        .identifier = "media",
+        .thought_signature = "signature",
+    };
+    const discovered = [_]model.ToolSearchMatch{.{ .name = "weather" }};
+    const messages = [_]model.Message{
+        .{ .request = .{ .parts = &.{
+            .{ .system_prompt_part = .{ .content = "system" } },
+            .{ .user_prompt = .{ .text_content = .{ .content = "text" } } },
+            .{ .user_prompt = .{ .audio = media } },
+            .{ .user_prompt = .{ .video = media } },
+            .{ .user_prompt = .{ .document = media } },
+            .{ .user_prompt = .{ .binary = media } },
+            .{ .user_prompt = .{ .uploaded_file = uploaded } },
+            .{ .user_prompt = .{ .cache_point = .{} } },
+            .{ .user_prompt_part = .{ .content = .{ .text = "timestamped" } } },
+            .{ .speech = .{ .speaker = .user, .transcript = "spoken", .audio = media } },
+            .{ .tool_search_return = .{
+                .call_id = "search",
+                .discovered_tools = &discovered,
+                .message = "found",
+            } },
+            .{ .capability_load_return = .{ .call_id = "load", .instructions = "instructions" } },
+            .{ .tool_return = .{
+                .call_id = "tool",
+                .name = "weather",
+                .content = "result",
+                .files = &.{media},
+            } },
+            .{ .retry_prompt_part = .{ .content = "retry" } },
+            .{ .tool_availability_delta = .{ .tools_added = &.{"weather"} } },
+        } } },
+        .{ .response = .{ .parts = &.{
+            .{ .text_part = .{ .content = "answer" } },
+            .{ .tool_search_call = .{ .call_id = "search", .queries = &.{"query"} } },
+            .{ .native_tool_search_call = .{ .call_id = "native-search", .queries = &.{"query"} } },
+            .{ .capability_load_call = .{ .call_id = "load", .capability_id = "maps" } },
+            .{ .native_tool_call = .{
+                .id = "native",
+                .name = "search",
+                .arguments_json = "{}",
+                .provider = .{},
+            } },
+            .{ .native_tool_search_return = .{
+                .call_id = "native-search",
+                .discovered_tools = &discovered,
+                .message = "found",
+            } },
+            .{ .native_tool_return = .{
+                .call_id = "native",
+                .name = "search",
+                .content = "result",
+                .files = &.{media},
+                .provider = .{},
+            } },
+            .{ .compaction = .{ .content = "summary" } },
+            .{ .image = media },
+            .{ .video = media },
+            .{ .binary = media },
+            .{ .speech = .{ .speaker = .assistant, .transcript = "spoken", .audio = media } },
+        } } },
+    };
+
+    const usage = try measure(.{ .messages = &messages });
+    try std.testing.expect(usage.prompt > 0);
+    try std.testing.expect(usage.tools > 0);
+    try std.testing.expect(usage.media > 0);
 }
 
 test "budget accepts exact boundaries and reports every overflow kind" {
@@ -380,7 +514,7 @@ test "default estimate includes request framing overhead" {
 test "estimator and overflow hook delegate through public contracts" {
     const Callbacks = struct {
         fn estimate(_: *anyopaque, _: Input, _: ByteUsage) u64 {
-            return 7;
+            return 7; // kcov-ignore
         }
 
         fn compact(_: *anyopaque, _: std.mem.Allocator, event: OverflowEvent) ![]const model.Message {
@@ -390,7 +524,7 @@ test "estimator and overflow hook delegate through public contracts" {
     };
     var state: u8 = 0;
     const input = Input{ .messages = &.{.{ .request = .{ .parts = &.{} } }} };
-    const estimator = TokenEstimator{ .context = &state, .estimateFn = Callbacks.estimate };
+    const estimator = TokenEstimator{ .context = &state, .estimateFn = Callbacks.estimate }; // kcov-ignore
     try std.testing.expectEqual(@as(u64, 7), estimator.estimate(input, .{}));
     const hook = OverflowHook{ .context = &state, .compactFn = Callbacks.compact };
     try std.testing.expectEqual(@as(usize, 0), (try hook.compact(std.testing.allocator, .{

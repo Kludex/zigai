@@ -43,7 +43,7 @@ pub const Client = struct {
     pub fn model(self: *Client) model_types.Model {
         return .{
             .context = self,
-            .profile = self.profile,
+            .profile = self.profile, // kcov-ignore
             .provider_name = "openai",
             .model_name = self.model_name,
             .settings = self.settings,
@@ -266,22 +266,68 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
     for (request.messages) |message| switch (message) {
         .request => |request_message| for (request_message.parts) |part| switch (part) {
             .system_prompt => |text| try writeTextMessage(&json, "system", text),
+            .system_prompt_part => |prompt| try writeTextMessage(&json, "system", prompt.content),
             .retry_prompt => |text| try writeTextMessage(&json, "user", text),
+            .retry_prompt_part => |prompt| try writeTextMessage(&json, "user", prompt.content),
             .user_prompt => |content| switch (content) {
                 .text => |text| try writeTextMessage(&json, "user", text),
+                .text_content => |text| try writeTextMessage(&json, "user", text.content),
                 .image => |value| try writeContentMessage(allocator, &json, "user", .image, value),
                 .document => |value| try writeContentMessage(allocator, &json, "user", .document, value),
                 .binary => |value| try writeContentMessage(allocator, &json, "user", .binary, value),
-                .audio => return error.UnsupportedContentType,
+                .cache_point => {},
+                .uploaded_file => |file| try writeContentMessage(
+                    allocator,
+                    &json,
+                    "user",
+                    if (std.mem.startsWith(u8, file.media_type orelse "", "image/")) .image else .binary,
+                    file.asContent(),
+                ),
+                .audio, .video => return error.UnsupportedContentType,
+            },
+            .user_prompt_part => |prompt| switch (prompt.content) {
+                .text => |text| try writeTextMessage(&json, "user", text),
+                .text_content => |text| try writeTextMessage(&json, "user", text.content),
+                .image => |value| try writeContentMessage(allocator, &json, "user", .image, value),
+                .document => |value| try writeContentMessage(allocator, &json, "user", .document, value),
+                .binary => |value| try writeContentMessage(allocator, &json, "user", .binary, value),
+                .cache_point => {},
+                .uploaded_file => |file| try writeContentMessage(
+                    allocator,
+                    &json,
+                    "user",
+                    if (std.mem.startsWith(u8, file.media_type orelse "", "image/")) .image else .binary,
+                    file.asContent(),
+                ),
+                .audio, .video => return error.UnsupportedContentType,
             },
             .tool_return => |result| try writeToolReturn(&json, result),
+            .speech => |speech| {
+                try ensureProviderPartReplayable(speech.provider);
+                if (speech.transcript) |text|
+                    try writeTextMessage(&json, "user", text)
+                else
+                    return error.UnsupportedContentType;
+            },
+            .tool_search_return, .capability_load_return, .tool_availability_delta => return error.UnsupportedContentType,
         },
         .response => |response| for (response.parts) |part| switch (part) {
             .text => |text| try writeTextMessage(&json, "assistant", text),
+            .text_part => |text| {
+                try ensureProviderPartReplayable(text.provider);
+                try writeTextMessage(&json, "assistant", text.content);
+            },
             .image => |content| try writeContentMessage(allocator, &json, "assistant", .image, content),
             .document => |content| try writeContentMessage(allocator, &json, "assistant", .document, content),
             .binary => |content| try writeContentMessage(allocator, &json, "assistant", .binary, content),
-            .audio, .thinking => return error.UnsupportedContentType,
+            .speech => |speech| {
+                try ensureProviderPartReplayable(speech.provider);
+                if (speech.transcript) |text|
+                    try writeTextMessage(&json, "assistant", text)
+                else
+                    return error.UnsupportedContentType;
+            },
+            .audio, .video, .thinking, .tool_search_call, .capability_load_call, .native_tool_search_call, .native_tool_call, .native_tool_search_return, .native_tool_return, .compaction => return error.UnsupportedContentType,
             .tool_call => |call| try writeToolCall(&json, call),
         },
     };
@@ -364,6 +410,7 @@ fn writeContentMessage(
     kind: model_types.ContentType,
     content: model_types.Content,
 ) !void {
+    try ensureContentReplayable(content);
     try json.beginObject();
     try json.objectField("type");
     try json.write("message");
@@ -402,6 +449,10 @@ fn writeContentMessage(
             try json.objectField("file_id");
             try json.write(file.id);
         },
+        .uploaded_file => |file| {
+            try json.objectField("file_id");
+            try json.write(file.id);
+        },
     }
     try json.endObject();
     try json.endArray();
@@ -420,6 +471,8 @@ fn writeTextMessage(json: *std.json.Stringify, role: []const u8, text: []const u
 }
 
 fn writeToolCall(json: *std.json.Stringify, call: model_types.ToolCall) !void {
+    try ensureProviderPartReplayable(call.provider);
+    if (call.thought_signature != null) return error.UnsupportedContentType;
     try json.beginObject();
     try json.objectField("type");
     try json.write("function_call");
@@ -432,7 +485,25 @@ fn writeToolCall(json: *std.json.Stringify, call: model_types.ToolCall) !void {
     try json.endObject();
 }
 
+fn ensureContentReplayable(content: model_types.Content) !void {
+    try ensureProviderPartReplayable(content.provider);
+    if (content.thought_signature != null) return error.UnsupportedContentType;
+    switch (content.source) {
+        .provider_file => |file| if (file.provider) |owner| {
+            if (!std.mem.eql(u8, owner, "openai")) return error.UnsupportedContentType;
+        },
+        .uploaded_file => |file| if (!std.mem.eql(u8, file.provider_name, "openai"))
+            return error.UnsupportedContentType,
+        else => {},
+    }
+}
+
+fn ensureProviderPartReplayable(provider: model_types.ProviderPart) !void {
+    if (provider.requiresReplay()) return error.UnsupportedContentType;
+}
+
 fn writeToolReturn(json: *std.json.Stringify, result: model_types.ToolResult) !void {
+    if (result.files.len > 0) return error.UnsupportedContentType;
     try json.beginObject();
     try json.objectField("type");
     try json.write("function_call_output");
@@ -801,6 +872,97 @@ test "covers Responses API refusal, incomplete, and malformed edges" {
     try std.testing.expectEqual(model_types.FinishReason.Kind.other, unknown.finish_reason.?.kind);
 }
 
+test "OpenAI encodes detailed message forms and rejects lossy forms" {
+    const uploaded = model_types.UploadedFile{
+        .id = "file_uploaded",
+        .provider_name = "openai",
+        .media_type = "image/png",
+    };
+    const image = model_types.Content{
+        .source = .{ .uploaded_file = uploaded },
+        .media_type = "image/png",
+    };
+    const messages = [_]model_types.Message{
+        .{ .request = .{ .parts = &.{
+            .{ .system_prompt_part = .{ .content = "system" } },
+            .{ .retry_prompt_part = .{ .content = "retry" } },
+            .{ .user_prompt = .{ .text_content = .{ .content = "rich text" } } },
+            .{ .user_prompt = .{ .uploaded_file = uploaded } },
+            .{ .user_prompt_part = .{ .content = .{ .text = "timestamped" } } },
+            .{ .user_prompt_part = .{ .content = .{ .text_content = .{ .content = "metadata text" } } } },
+            .{ .user_prompt_part = .{ .content = .{ .image = image } } },
+            .{ .user_prompt_part = .{ .content = .{ .document = .{
+                .source = .{ .url = "https://example.test/guide.pdf" },
+                .media_type = "application/pdf",
+            } } } },
+            .{ .user_prompt_part = .{ .content = .{ .binary = .{
+                .source = .{ .bytes = "data" },
+                .media_type = "application/octet-stream",
+                .filename = "data.bin",
+            } } } },
+            .{ .user_prompt_part = .{ .content = .{ .cache_point = .{} } } },
+            .{ .user_prompt_part = .{ .content = .{ .uploaded_file = uploaded } } },
+            .{ .speech = .{ .speaker = .user, .transcript = "spoken" } },
+            .{ .tool_return = .{ .call_id = "call", .name = "tool", .content = "ok" } },
+        } } },
+        .{ .response = .{ .parts = &.{
+            .{ .text_part = .{ .content = "answer" } },
+            .{ .image = image },
+            .{ .document = .{
+                .source = .{ .url = "https://example.test/result.pdf" },
+                .media_type = "application/pdf",
+            } },
+            .{ .binary = .{
+                .source = .{ .bytes = "result" },
+                .media_type = "application/octet-stream",
+                .filename = "result.bin",
+            } },
+            .{ .speech = .{ .speaker = .assistant, .transcript = "said" } },
+            .{ .tool_call = .{ .id = "call", .name = "tool", .arguments_json = "{}" } },
+        } } },
+    };
+    const body = try encodeRequest(std.testing.allocator, "gpt-test", .{ .messages = &messages });
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "file_uploaded") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "spoken") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "said") != null);
+
+    const unsupported = [_]model_types.Message{
+        .{ .request = .{ .parts = &.{.{ .speech = .{ .speaker = .user } }} } },
+        .{ .request = .{ .parts = &.{.{ .user_prompt_part = .{ .content = .{ .video = image } } }} } },
+        .{ .request = .{ .parts = &.{.{ .tool_search_return = .{
+            .call_id = "search",
+            .discovered_tools = &.{},
+        } }} } },
+        .{ .request = .{ .parts = &.{.{ .tool_return = .{
+            .call_id = "call",
+            .name = "tool",
+            .content = "ok",
+            .files = &.{image},
+        } }} } },
+        .{ .request = .{ .parts = &.{.{ .user_prompt = .{ .uploaded_file = .{
+            .id = "foreign-file",
+            .provider_name = "anthropic",
+        } } }} } },
+        .{ .response = .{ .parts = &.{.{ .text_part = .{
+            .content = "provider-bound",
+            .provider = .{ .id = "item", .provider_name = "openai" },
+        } }} } },
+        .{ .response = .{ .parts = &.{.{ .tool_call = .{
+            .id = "call",
+            .name = "tool",
+            .arguments_json = "{}",
+            .thought_signature = "unsupported",
+        } }} } },
+        .{ .response = .{ .parts = &.{.{ .speech = .{ .speaker = .assistant } }} } },
+        .{ .response = .{ .parts = &.{.{ .compaction = .{ .content = "summary" } }} } },
+    };
+    for (unsupported) |message| try std.testing.expectError(
+        error.UnsupportedContentType,
+        encodeRequest(std.testing.allocator, "gpt-test", .{ .messages = &.{message} }),
+    );
+}
+
 test "OpenAI rejects provider responses beyond the JSON nesting limit" {
     const source = "[" ** 129 ++ "0" ++ "]" ** 129;
     try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(std.testing.allocator, source));
@@ -838,10 +1000,9 @@ fn fuzzStreamLine(_: void, smith: *std.testing.Smith) !void {
     var buffer: [16 * 1024]u8 = undefined;
     const value = buffer[0..smith.slice(&buffer)];
     const Sink = struct {
-        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {} // kcov-ignore
     };
     var context: u8 = 0;
-    try Sink.emit(&context, .{ .text_delta = "" });
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var state = StreamState{

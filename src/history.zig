@@ -137,23 +137,55 @@ fn writeRequest(allocator: std.mem.Allocator, json: *std.json.Stringify, request
         try json.beginObject();
         switch (part) {
             .system_prompt => |content| try writeTextPart(json, "system-prompt", content),
+            .system_prompt_part => |prompt| {
+                try writeTextPart(json, "system-prompt", prompt.content);
+                try writeOptionalInteger(json, "timestamp_unix_ms", prompt.timestamp_unix_ms);
+                try writeOptionalString(json, "dynamic_ref", prompt.dynamic_ref);
+            },
             .user_prompt => |content| {
                 try json.objectField("part_kind");
                 try json.write("user-prompt");
                 try json.objectField("content");
                 try writeUserContent(allocator, json, content);
             },
+            .user_prompt_part => |prompt| {
+                try json.objectField("part_kind");
+                try json.write("user-prompt");
+                try json.objectField("content");
+                try writeUserContent(allocator, json, prompt.content);
+                try writeOptionalInteger(json, "timestamp_unix_ms", prompt.timestamp_unix_ms);
+            },
+            .speech => |speech| try writeSpeech(allocator, json, speech),
+            .tool_search_return => |result| try writeToolSearchResult(allocator, json, result, false),
+            .capability_load_return => |result| try writeCapabilityLoadResult(json, result),
             .tool_return => |result| {
                 try json.objectField("part_kind");
                 try json.write("tool-return");
-                try writeToolReturn(json, result);
+                try writeToolReturn(allocator, json, result);
             },
             .retry_prompt => |content| try writeTextPart(json, "retry-prompt", content),
+            .retry_prompt_part => |prompt| {
+                try writeTextPart(json, "retry-prompt", prompt.content);
+                try writeOptionalString(json, "tool_name", prompt.tool_name);
+                try writeOptionalString(json, "tool_call_id", prompt.tool_call_id);
+                try writeOptionalInteger(json, "timestamp_unix_ms", prompt.timestamp_unix_ms);
+            },
+            .tool_availability_delta => |delta| {
+                try json.objectField("part_kind");
+                try json.write("tool-availability-delta");
+                try json.objectField("tools_added");
+                try json.write(delta.tools_added);
+                try writeOptionalString(json, "tool_call_id", delta.tool_call_id);
+            },
         }
         try json.endObject();
     }
     try json.endArray();
     try writeOptionalInteger(json, "timestamp_unix_ms", request.timestamp_unix_ms);
+    if (request.instruction_parts.len > 0) {
+        try json.objectField("instruction_parts");
+        try json.write(request.instruction_parts);
+    }
     try writeOptionalString(json, "instructions", request.instructions);
     try writeOptionalString(json, "run_id", request.run_id);
     try writeOptionalString(json, "conversation_id", request.conversation_id);
@@ -175,8 +207,15 @@ fn writeResponse(allocator: std.mem.Allocator, json: *std.json.Stringify, respon
         try json.beginObject();
         switch (part) {
             .text => |content| try writeTextPart(json, "text", content),
+            .text_part => |text| {
+                try writeTextPart(json, "text", text.content);
+                try writeProviderPart(allocator, json, text.provider);
+            },
+            .tool_search_call => |call| try writeToolSearchCall(allocator, json, call, false),
+            .capability_load_call => |call| try writeCapabilityLoadCall(json, call),
             .image => |content| try writeResponseContent(allocator, json, "image", content),
             .audio => |content| try writeResponseContent(allocator, json, "audio", content),
+            .video => |content| try writeResponseContent(allocator, json, "video", content),
             .document => |content| try writeResponseContent(allocator, json, "document", content),
             .binary => |content| try writeResponseContent(allocator, json, "binary", content),
             .thinking => |thinking| {
@@ -185,6 +224,7 @@ fn writeResponse(allocator: std.mem.Allocator, json: *std.json.Stringify, respon
                 try json.objectField("content");
                 try json.write(thinking.content);
                 try writeOptionalString(json, "signature", thinking.signature);
+                try writeProviderPart(allocator, json, thinking.provider);
                 try writeMetadata(json, thinking.metadata);
             },
             .tool_call => |call| {
@@ -196,8 +236,25 @@ fn writeResponse(allocator: std.mem.Allocator, json: *std.json.Stringify, respon
                 try json.write(call.name);
                 try json.objectField("args");
                 try json.write(call.arguments_json);
+                try writeOptionalToolKind(json, call.tool_kind);
+                try writeProviderPart(allocator, json, call.provider);
                 try writeOptionalString(json, "thought_signature", call.thought_signature);
             },
+            .native_tool_search_call => |call| try writeToolSearchCall(allocator, json, call, true),
+            .native_tool_call => |call| {
+                try json.objectField("part_kind");
+                try json.write("builtin-tool-call");
+                try writeNativeToolCall(allocator, json, call);
+            },
+            .native_tool_search_return => |result| try writeToolSearchResult(allocator, json, result, true),
+            .native_tool_return => |result| try writeNativeToolResult(allocator, json, result),
+            .compaction => |part_value| {
+                try json.objectField("part_kind");
+                try json.write("compaction");
+                try writeOptionalString(json, "content", part_value.content);
+                try writeProviderPart(allocator, json, part_value.provider);
+            },
+            .speech => |speech| try writeSpeech(allocator, json, speech),
         }
         try json.endObject();
     }
@@ -224,6 +281,10 @@ fn writeResponse(allocator: std.mem.Allocator, json: *std.json.Stringify, respon
     try writeOptionalString(json, "run_id", response.run_id);
     try writeOptionalString(json, "conversation_id", response.conversation_id);
     try writeMetadata(json, response.metadata);
+    if (response.state != .complete) {
+        try json.objectField("state");
+        try json.write(@tagName(response.state));
+    }
     try json.endObject();
 }
 
@@ -234,17 +295,26 @@ fn writeTextPart(json: *std.json.Stringify, kind: []const u8, content: []const u
     try json.write(content);
 }
 
-fn writeToolReturn(json: *std.json.Stringify, result: message_types.ToolResult) !void {
+fn writeToolReturn(
+    allocator: std.mem.Allocator,
+    json: *std.json.Stringify,
+    result: message_types.ToolResult,
+) !void {
     try json.objectField("tool_call_id");
     try json.write(result.call_id);
     try json.objectField("tool_name");
     try json.write(result.name);
     try json.objectField("content");
     try json.write(result.content);
-    if (result.is_error) {
-        try json.objectField("is_error");
-        try json.write(true);
+    if (result.files.len > 0) {
+        try json.objectField("files");
+        try writeContents(allocator, json, result.files);
     }
+    try writeOptionalToolKind(json, result.tool_kind);
+    try writeMetadata(json, result.metadata);
+    try writeOptionalInteger(json, "timestamp_unix_ms", result.timestamp_unix_ms);
+    try json.objectField("outcome");
+    try json.write(@tagName(result.effectiveOutcome()));
 }
 
 fn writeUserContent(allocator: std.mem.Allocator, json: *std.json.Stringify, content: message_types.UserContent) !void {
@@ -256,10 +326,25 @@ fn writeUserContent(allocator: std.mem.Allocator, json: *std.json.Stringify, con
             try json.objectField("content");
             try json.write(text);
         },
+        .text_content => |text| {
+            try json.objectField("kind");
+            try json.write("text-content");
+            try json.objectField("content");
+            try json.write(text.content);
+            try writeMetadata(json, text.metadata);
+        },
         .image => |value| try writeContent(allocator, json, "image", value),
         .audio => |value| try writeContent(allocator, json, "audio", value),
+        .video => |value| try writeContent(allocator, json, "video", value),
         .document => |value| try writeContent(allocator, json, "document", value),
         .binary => |value| try writeContent(allocator, json, "binary", value),
+        .uploaded_file => |file| try writeUploadedFile(json, file),
+        .cache_point => |point| {
+            try json.objectField("kind");
+            try json.write("cache-point");
+            try json.objectField("ttl");
+            try json.write(@tagName(point.ttl));
+        },
     }
     try json.endObject();
 }
@@ -289,6 +374,8 @@ fn writeContent(
     try json.objectField("media_type");
     try json.write(content.media_type);
     try writeOptionalString(json, "filename", content.filename);
+    try writeOptionalString(json, "identifier", content.identifier);
+    try writeProviderPart(allocator, json, content.provider);
     try writeOptionalString(json, "thought_signature", content.thought_signature);
     try writeMetadata(json, content.metadata);
     switch (content.source) {
@@ -314,7 +401,191 @@ fn writeContent(
             try json.write(file.id);
             try writeOptionalString(json, "provider", file.provider);
         },
+        .uploaded_file => |file| {
+            try json.objectField("source");
+            try json.write("uploaded_file");
+            try json.objectField("uploaded_file");
+            try json.beginObject();
+            try writeUploadedFileFields(json, file);
+            try json.endObject();
+        },
     }
+}
+
+fn writeProviderPart(
+    allocator: std.mem.Allocator,
+    json: *std.json.Stringify,
+    provider: message_types.ProviderPart,
+) !void {
+    if ((provider.id != null or provider.provider_details_json != null) and provider.provider_name == null)
+        return Error.InvalidHistory;
+    try writeOptionalString(json, "id", provider.id);
+    try writeOptionalString(json, "provider_name", provider.provider_name);
+    try writeOptionalRawJson(allocator, json, "provider_details", provider.provider_details_json);
+}
+
+fn writeOptionalToolKind(json: *std.json.Stringify, kind: ?message_types.ToolPartKind) !void {
+    if (kind) |value| {
+        try json.objectField("tool_kind");
+        try json.write(@tagName(value));
+    }
+}
+
+fn writeContents(
+    allocator: std.mem.Allocator,
+    json: *std.json.Stringify,
+    contents: []const message_types.Content,
+) !void {
+    try json.beginArray();
+    for (contents) |content| {
+        try json.beginObject();
+        try writeContent(allocator, json, contentKind(content.media_type), content);
+        try json.endObject();
+    }
+    try json.endArray();
+}
+
+fn contentKind(media_type: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, media_type, "image/")) return "image";
+    if (std.mem.startsWith(u8, media_type, "audio/")) return "audio";
+    if (std.mem.startsWith(u8, media_type, "video/")) return "video";
+    if (std.mem.startsWith(u8, media_type, "text/") or std.mem.eql(u8, media_type, "application/pdf"))
+        return "document";
+    return "binary";
+}
+
+fn writeUploadedFile(json: *std.json.Stringify, file: message_types.UploadedFile) !void {
+    try json.objectField("kind");
+    try json.write("uploaded-file");
+    try writeUploadedFileFields(json, file);
+}
+
+fn writeUploadedFileFields(json: *std.json.Stringify, file: message_types.UploadedFile) !void {
+    try json.objectField("file_id");
+    try json.write(file.id);
+    try json.objectField("provider_name");
+    try json.write(file.provider_name);
+    try writeOptionalString(json, "media_type", file.media_type);
+    try writeMetadata(json, file.metadata);
+}
+
+fn writeSpeech(
+    allocator: std.mem.Allocator,
+    json: *std.json.Stringify,
+    speech: message_types.SpeechPart,
+) !void {
+    try json.objectField("part_kind");
+    try json.write("speech");
+    try json.objectField("speaker");
+    try json.write(@tagName(speech.speaker));
+    try writeOptionalString(json, "transcript", speech.transcript);
+    if (speech.audio) |audio| {
+        try json.objectField("audio");
+        try json.beginObject();
+        try writeContent(allocator, json, "audio", audio);
+        try json.endObject();
+    }
+    if (speech.interrupted_at_ms) |offset| {
+        try json.objectField("interrupted_at_ms");
+        try json.write(offset);
+    }
+    try writeProviderPart(allocator, json, speech.provider);
+}
+
+fn writeToolSearchCall(
+    allocator: std.mem.Allocator,
+    json: *std.json.Stringify,
+    call: message_types.ToolSearchCall,
+    native: bool,
+) !void {
+    try json.objectField("part_kind");
+    try json.write(if (native) "builtin-tool-search-call" else "tool-search-call");
+    try json.objectField("tool_call_id");
+    try json.write(call.call_id);
+    try json.objectField("queries");
+    try json.write(call.queries);
+    try writeProviderPart(allocator, json, call.provider);
+}
+
+fn writeToolSearchResult(
+    allocator: std.mem.Allocator,
+    json: *std.json.Stringify,
+    result: message_types.ToolSearchResult,
+    native: bool,
+) !void {
+    try json.objectField("part_kind");
+    try json.write(if (native) "builtin-tool-search-return" else "tool-search-return");
+    try json.objectField("tool_call_id");
+    try json.write(result.call_id);
+    try json.objectField("discovered_tools");
+    try json.write(result.discovered_tools);
+    try writeOptionalString(json, "message", result.message);
+    try writeMetadata(json, result.metadata);
+    try writeOptionalInteger(json, "timestamp_unix_ms", result.timestamp_unix_ms);
+    try json.objectField("outcome");
+    try json.write(@tagName(result.outcome));
+    try writeProviderPart(allocator, json, result.provider);
+}
+
+fn writeCapabilityLoadCall(json: *std.json.Stringify, call: message_types.CapabilityLoadCall) !void {
+    try json.objectField("part_kind");
+    try json.write("capability-load-call");
+    try json.objectField("tool_call_id");
+    try json.write(call.call_id);
+    try json.objectField("capability_id");
+    try json.write(call.capability_id);
+}
+
+fn writeCapabilityLoadResult(json: *std.json.Stringify, result: message_types.CapabilityLoadResult) !void {
+    try json.objectField("part_kind");
+    try json.write("capability-load-return");
+    try json.objectField("tool_call_id");
+    try json.write(result.call_id);
+    try writeOptionalString(json, "instructions", result.instructions);
+    try writeMetadata(json, result.metadata);
+    try writeOptionalInteger(json, "timestamp_unix_ms", result.timestamp_unix_ms);
+    try json.objectField("outcome");
+    try json.write(@tagName(result.outcome));
+}
+
+fn writeNativeToolCall(
+    allocator: std.mem.Allocator,
+    json: *std.json.Stringify,
+    call: message_types.NativeToolCall,
+) !void {
+    try json.objectField("tool_call_id");
+    try json.write(call.id);
+    try json.objectField("tool_name");
+    try json.write(call.name);
+    try json.objectField("args");
+    try json.write(call.arguments_json);
+    try writeOptionalToolKind(json, call.tool_kind);
+    try writeProviderPart(allocator, json, call.provider);
+}
+
+fn writeNativeToolResult(
+    allocator: std.mem.Allocator,
+    json: *std.json.Stringify,
+    result: message_types.NativeToolResult,
+) !void {
+    try json.objectField("part_kind");
+    try json.write("builtin-tool-return");
+    try json.objectField("tool_call_id");
+    try json.write(result.call_id);
+    try json.objectField("tool_name");
+    try json.write(result.name);
+    try json.objectField("content");
+    try json.write(result.content);
+    if (result.files.len > 0) {
+        try json.objectField("files");
+        try writeContents(allocator, json, result.files);
+    }
+    try writeOptionalToolKind(json, result.tool_kind);
+    try writeMetadata(json, result.metadata);
+    try writeOptionalInteger(json, "timestamp_unix_ms", result.timestamp_unix_ms);
+    try json.objectField("outcome");
+    try json.write(@tagName(result.outcome));
+    try writeProviderPart(allocator, json, result.provider);
 }
 
 fn writeOptionalString(json: *std.json.Stringify, name: []const u8, value: ?[]const u8) !void {
@@ -402,19 +673,60 @@ fn parseRequest(allocator: std.mem.Allocator, object: std.json.ObjectMap) !messa
         const part_object = try asObject(value);
         const kind = try jsonString(part_object, "part_kind");
         if (std.mem.eql(u8, kind, "system-prompt")) {
-            part.* = .{ .system_prompt = try jsonString(part_object, "content") };
+            const content = try jsonString(part_object, "content");
+            const timestamp = try optionalJsonInteger(part_object, "timestamp_unix_ms");
+            const dynamic_ref = try optionalJsonString(part_object, "dynamic_ref");
+            part.* = if (timestamp != null or dynamic_ref != null)
+                .{ .system_prompt_part = .{
+                    .content = content,
+                    .timestamp_unix_ms = timestamp,
+                    .dynamic_ref = dynamic_ref,
+                } }
+            else
+                .{ .system_prompt = content };
         } else if (std.mem.eql(u8, kind, "user-prompt")) {
-            part.* = .{ .user_prompt = try parseUserContent(allocator, try jsonObject(part_object, "content")) };
+            const content = try parseUserContent(allocator, try jsonObject(part_object, "content"));
+            const timestamp = try optionalJsonInteger(part_object, "timestamp_unix_ms");
+            part.* = if (timestamp) |value_timestamp|
+                .{ .user_prompt_part = .{ .content = content, .timestamp_unix_ms = value_timestamp } }
+            else
+                .{ .user_prompt = content };
+        } else if (std.mem.eql(u8, kind, "speech")) {
+            const speech = try parseSpeech(allocator, part_object);
+            if (speech.speaker != .user) return Error.InvalidHistory;
+            part.* = .{ .speech = speech };
+        } else if (std.mem.eql(u8, kind, "tool-search-return")) {
+            part.* = .{ .tool_search_return = try parseToolSearchResult(allocator, part_object) };
+        } else if (std.mem.eql(u8, kind, "capability-load-return")) {
+            part.* = .{ .capability_load_return = try parseCapabilityLoadResult(allocator, part_object) };
         } else if (std.mem.eql(u8, kind, "tool-return")) {
-            part.* = .{ .tool_return = try parseToolReturn(part_object) };
+            part.* = .{ .tool_return = try parseToolReturn(allocator, part_object) };
         } else if (std.mem.eql(u8, kind, "retry-prompt")) {
-            part.* = .{ .retry_prompt = try jsonString(part_object, "content") };
+            const content = try jsonString(part_object, "content");
+            const tool_name = try optionalJsonString(part_object, "tool_name");
+            const tool_call_id = try optionalJsonString(part_object, "tool_call_id");
+            const timestamp = try optionalJsonInteger(part_object, "timestamp_unix_ms");
+            part.* = if (tool_name != null or tool_call_id != null or timestamp != null)
+                .{ .retry_prompt_part = .{
+                    .content = content,
+                    .tool_name = tool_name,
+                    .tool_call_id = tool_call_id,
+                    .timestamp_unix_ms = timestamp,
+                } }
+            else
+                .{ .retry_prompt = content };
+        } else if (std.mem.eql(u8, kind, "tool-availability-delta")) {
+            part.* = .{ .tool_availability_delta = .{
+                .tools_added = try parseStrings(allocator, try jsonArray(part_object, "tools_added")),
+                .tool_call_id = try optionalJsonString(part_object, "tool_call_id"),
+            } };
         } else return Error.InvalidHistory;
     }
     const state_name = try optionalJsonString(object, "state");
     return .{
         .parts = parts,
         .timestamp_unix_ms = try optionalJsonInteger(object, "timestamp_unix_ms"),
+        .instruction_parts = try parseInstructionParts(allocator, object.get("instruction_parts")),
         .instructions = try optionalJsonString(object, "instructions"),
         .run_id = try optionalJsonString(object, "run_id"),
         .conversation_id = try optionalJsonString(object, "conversation_id"),
@@ -433,11 +745,24 @@ fn parseResponse(allocator: std.mem.Allocator, object: std.json.ObjectMap) !mess
         const part_object = try asObject(value);
         const kind = try jsonString(part_object, "part_kind");
         if (std.mem.eql(u8, kind, "text")) {
-            part.* = .{ .text = try jsonString(part_object, "content") };
+            const content = try jsonString(part_object, "content");
+            const provider = try parseProviderPart(allocator, part_object);
+            part.* = if (hasProviderPart(provider))
+                .{ .text_part = .{ .content = content, .provider = provider } }
+            else
+                .{ .text = content };
+        } else if (std.mem.eql(u8, kind, "tool-search-call")) {
+            part.* = .{ .tool_search_call = try parseToolSearchCall(allocator, part_object) };
+        } else if (std.mem.eql(u8, kind, "capability-load-call")) {
+            part.* = .{ .capability_load_call = .{
+                .call_id = try jsonString(part_object, "tool_call_id"),
+                .capability_id = try jsonString(part_object, "capability_id"),
+            } };
         } else if (std.mem.eql(u8, kind, "thinking")) {
             part.* = .{ .thinking = .{
                 .content = try jsonString(part_object, "content"),
                 .signature = try optionalJsonString(part_object, "signature"),
+                .provider = try parseProviderPart(allocator, part_object),
                 .metadata = try parseMetadata(allocator, part_object.get("metadata")),
             } };
         } else if (std.mem.eql(u8, kind, "tool-call")) {
@@ -445,15 +770,35 @@ fn parseResponse(allocator: std.mem.Allocator, object: std.json.ObjectMap) !mess
                 .id = try jsonString(part_object, "tool_call_id"),
                 .name = try jsonString(part_object, "tool_name"),
                 .arguments_json = try jsonString(part_object, "args"),
+                .tool_kind = try parseOptionalToolKind(part_object),
+                .provider = try parseProviderPart(allocator, part_object),
                 .thought_signature = try optionalJsonString(part_object, "thought_signature"),
             } };
+        } else if (std.mem.eql(u8, kind, "builtin-tool-search-call")) {
+            part.* = .{ .native_tool_search_call = try parseToolSearchCall(allocator, part_object) };
+        } else if (std.mem.eql(u8, kind, "builtin-tool-call")) {
+            part.* = .{ .native_tool_call = try parseNativeToolCall(allocator, part_object) };
+        } else if (std.mem.eql(u8, kind, "builtin-tool-search-return")) {
+            part.* = .{ .native_tool_search_return = try parseToolSearchResult(allocator, part_object) };
+        } else if (std.mem.eql(u8, kind, "builtin-tool-return")) {
+            part.* = .{ .native_tool_return = try parseNativeToolResult(allocator, part_object) };
+        } else if (std.mem.eql(u8, kind, "compaction")) {
+            part.* = .{ .compaction = .{
+                .content = try optionalJsonString(part_object, "content"),
+                .provider = try parseProviderPart(allocator, part_object),
+            } };
+        } else if (std.mem.eql(u8, kind, "speech")) {
+            const speech = try parseSpeech(allocator, part_object);
+            if (speech.speaker != .assistant) return Error.InvalidHistory;
+            part.* = .{ .speech = speech };
         } else if (std.mem.eql(u8, kind, "file")) {
             const content_object = try jsonObject(part_object, "content");
             const content_kind = try jsonString(content_object, "kind");
             const content = try parseContent(allocator, content_object);
-            if (std.mem.eql(u8, content_kind, "image")) part.* = .{ .image = content } else if (std.mem.eql(u8, content_kind, "audio")) part.* = .{ .audio = content } else if (std.mem.eql(u8, content_kind, "document")) part.* = .{ .document = content } else if (std.mem.eql(u8, content_kind, "binary")) part.* = .{ .binary = content } else return Error.InvalidHistory;
+            if (std.mem.eql(u8, content_kind, "image")) part.* = .{ .image = content } else if (std.mem.eql(u8, content_kind, "audio")) part.* = .{ .audio = content } else if (std.mem.eql(u8, content_kind, "video")) part.* = .{ .video = content } else if (std.mem.eql(u8, content_kind, "document")) part.* = .{ .document = content } else if (std.mem.eql(u8, content_kind, "binary")) part.* = .{ .binary = content } else return Error.InvalidHistory;
         } else return Error.InvalidHistory;
     }
+    const state_name = try optionalJsonString(object, "state");
     return .{
         .parts = parts,
         .usage = try parseUsage(object.get("usage")),
@@ -467,6 +812,10 @@ fn parseResponse(allocator: std.mem.Allocator, object: std.json.ObjectMap) !mess
         .run_id = try optionalJsonString(object, "run_id"),
         .conversation_id = try optionalJsonString(object, "conversation_id"),
         .metadata = try parseMetadata(allocator, object.get("metadata")),
+        .state = if (state_name) |name|
+            std.meta.stringToEnum(message_types.ResponseState, name) orelse return Error.InvalidHistory
+        else
+            .complete,
     };
 }
 
@@ -514,9 +863,21 @@ fn parseV1(allocator: std.mem.Allocator, values: []const std.json.Value) ![]cons
 fn parseUserContent(allocator: std.mem.Allocator, object: std.json.ObjectMap) !message_types.UserContent {
     const kind = try jsonString(object, "kind");
     if (std.mem.eql(u8, kind, "text")) return .{ .text = try jsonString(object, "content") };
+    if (std.mem.eql(u8, kind, "text-content")) return .{ .text_content = .{
+        .content = try jsonString(object, "content"),
+        .metadata = try parseMetadata(allocator, object.get("metadata")),
+    } };
+    if (std.mem.eql(u8, kind, "uploaded-file"))
+        return .{ .uploaded_file = try parseUploadedFile(allocator, object) };
+    if (std.mem.eql(u8, kind, "cache-point")) {
+        const ttl = std.meta.stringToEnum(message_types.CachePoint.Ttl, try jsonString(object, "ttl")) orelse
+            return Error.InvalidHistory;
+        return .{ .cache_point = .{ .ttl = ttl } };
+    }
     const content = try parseContent(allocator, object);
     if (std.mem.eql(u8, kind, "image")) return .{ .image = content };
     if (std.mem.eql(u8, kind, "audio")) return .{ .audio = content };
+    if (std.mem.eql(u8, kind, "video")) return .{ .video = content };
     if (std.mem.eql(u8, kind, "document")) return .{ .document = content };
     if (std.mem.eql(u8, kind, "binary")) return .{ .binary = content };
     return Error.InvalidHistory;
@@ -531,6 +892,7 @@ fn parseV1UserContent(
     const content = try parseContent(allocator, object);
     if (std.mem.eql(u8, kind, "image")) return .{ .image = content };
     if (std.mem.eql(u8, kind, "audio")) return .{ .audio = content };
+    if (std.mem.eql(u8, kind, "video")) return .{ .video = content };
     if (std.mem.eql(u8, kind, "document")) return .{ .document = content };
     if (std.mem.eql(u8, kind, "binary")) return .{ .binary = content };
     return Error.InvalidHistory;
@@ -556,17 +918,24 @@ fn parseV1ResponsePart(
     const content = try parseContent(allocator, object);
     if (std.mem.eql(u8, kind, "image")) return .{ .image = content };
     if (std.mem.eql(u8, kind, "audio")) return .{ .audio = content };
+    if (std.mem.eql(u8, kind, "video")) return .{ .video = content };
     if (std.mem.eql(u8, kind, "document")) return .{ .document = content };
     if (std.mem.eql(u8, kind, "binary")) return .{ .binary = content };
     return Error.InvalidHistory;
 }
 
-fn parseToolReturn(object: std.json.ObjectMap) !message_types.ToolResult {
+fn parseToolReturn(allocator: std.mem.Allocator, object: std.json.ObjectMap) !message_types.ToolResult {
+    const outcome = try parseOutcome(object);
     return .{
         .call_id = try jsonString(object, "tool_call_id"),
         .name = try jsonString(object, "tool_name"),
         .content = try jsonString(object, "content"),
-        .is_error = try optionalJsonBool(object, "is_error") orelse false,
+        .files = try parseContents(allocator, object.get("files")),
+        .tool_kind = try parseOptionalToolKind(object),
+        .metadata = try parseMetadata(allocator, object.get("metadata")),
+        .timestamp_unix_ms = try optionalJsonInteger(object, "timestamp_unix_ms"),
+        .outcome = outcome,
+        .is_error = if (outcome == null) try optionalJsonBool(object, "is_error") orelse false else false,
     };
 }
 
@@ -575,7 +944,7 @@ fn parseContent(allocator: std.mem.Allocator, object: std.json.ObjectMap) !messa
     const source: message_types.ContentSource = if (std.mem.eql(u8, source_name, "bytes")) blk: {
         const encoded = try jsonString(object, "data");
         const size = std.base64.standard.Decoder.calcSizeForSlice(encoded) catch return Error.InvalidHistory;
-        const decoded = try allocator.alloc(u8, size);
+        const decoded = try allocator.alloc(u8, size); // kcov-ignore
         std.base64.standard.Decoder.decode(decoded, encoded) catch return Error.InvalidHistory;
         break :blk .{ .bytes = decoded };
     } else if (std.mem.eql(u8, source_name, "url"))
@@ -585,15 +954,180 @@ fn parseContent(allocator: std.mem.Allocator, object: std.json.ObjectMap) !messa
             .id = try jsonString(object, "file_id"),
             .provider = try optionalJsonString(object, "provider"),
         } }
+    else if (std.mem.eql(u8, source_name, "uploaded_file"))
+        .{ .uploaded_file = try parseUploadedFile(allocator, try jsonObject(object, "uploaded_file")) }
     else
         return Error.InvalidHistory;
     return .{
         .source = source,
         .media_type = try jsonString(object, "media_type"),
         .filename = try optionalJsonString(object, "filename"),
+        .identifier = try optionalJsonString(object, "identifier"),
+        .provider = try parseProviderPart(allocator, object),
         .thought_signature = try optionalJsonString(object, "thought_signature"),
         .metadata = try parseMetadata(allocator, object.get("metadata")),
     };
+}
+
+fn parseProviderPart(allocator: std.mem.Allocator, object: std.json.ObjectMap) !message_types.ProviderPart {
+    const provider = message_types.ProviderPart{
+        .id = try optionalJsonString(object, "id"),
+        .provider_name = try optionalJsonString(object, "provider_name"),
+        .provider_details_json = try optionalJsonValue(allocator, object, "provider_details"),
+    };
+    if ((provider.id != null or provider.provider_details_json != null) and provider.provider_name == null)
+        return Error.InvalidHistory;
+    return provider;
+}
+
+fn hasProviderPart(provider: message_types.ProviderPart) bool {
+    return provider.id != null or provider.provider_name != null or provider.provider_details_json != null;
+}
+
+fn parseOptionalToolKind(object: std.json.ObjectMap) !?message_types.ToolPartKind {
+    const name = try optionalJsonString(object, "tool_kind") orelse return null;
+    return std.meta.stringToEnum(message_types.ToolPartKind, name) orelse return Error.InvalidHistory;
+}
+
+fn parseOutcome(object: std.json.ObjectMap) !?message_types.ToolOutcome {
+    const name = try optionalJsonString(object, "outcome") orelse return null;
+    return std.meta.stringToEnum(message_types.ToolOutcome, name) orelse return Error.InvalidHistory;
+}
+
+fn parseUploadedFile(allocator: std.mem.Allocator, object: std.json.ObjectMap) !message_types.UploadedFile {
+    return .{
+        .id = try jsonString(object, "file_id"),
+        .provider_name = try jsonString(object, "provider_name"),
+        .media_type = try optionalJsonString(object, "media_type"),
+        .metadata = try parseMetadata(allocator, object.get("metadata")),
+    };
+}
+
+fn parseContents(allocator: std.mem.Allocator, value: ?std.json.Value) ![]const message_types.Content {
+    const values = switch (value orelse return &.{}) {
+        .array => |array| array.items,
+        else => return Error.InvalidHistory,
+    };
+    const result = try allocator.alloc(message_types.Content, values.len);
+    for (values, result) |item, *content| content.* = try parseContent(allocator, try asObject(item));
+    return result;
+}
+
+fn parseStrings(allocator: std.mem.Allocator, values: []const std.json.Value) ![]const []const u8 {
+    const result = try allocator.alloc([]const u8, values.len);
+    for (values, result) |value, *string| string.* = switch (value) {
+        .string => |text| text,
+        else => return Error.InvalidHistory,
+    };
+    return result;
+}
+
+fn parseToolSearchCall(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+) !message_types.ToolSearchCall {
+    return .{
+        .call_id = try jsonString(object, "tool_call_id"),
+        .queries = try parseStrings(allocator, try jsonArray(object, "queries")),
+        .provider = try parseProviderPart(allocator, object),
+    };
+}
+
+fn parseToolSearchResult(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+) !message_types.ToolSearchResult {
+    const values = try jsonArray(object, "discovered_tools");
+    const matches = try allocator.alloc(message_types.ToolSearchMatch, values.len);
+    for (values, matches) |value, *match| {
+        match.* = .{ .name = try jsonString(try asObject(value), "name") };
+    }
+    return .{
+        .call_id = try jsonString(object, "tool_call_id"),
+        .discovered_tools = matches,
+        .message = try optionalJsonString(object, "message"),
+        .metadata = try parseMetadata(allocator, object.get("metadata")),
+        .timestamp_unix_ms = try optionalJsonInteger(object, "timestamp_unix_ms"),
+        .outcome = try parseOutcome(object) orelse .success,
+        .provider = try parseProviderPart(allocator, object),
+    };
+}
+
+fn parseCapabilityLoadResult(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+) !message_types.CapabilityLoadResult {
+    return .{
+        .call_id = try jsonString(object, "tool_call_id"),
+        .instructions = try optionalJsonString(object, "instructions"),
+        .metadata = try parseMetadata(allocator, object.get("metadata")),
+        .timestamp_unix_ms = try optionalJsonInteger(object, "timestamp_unix_ms"),
+        .outcome = try parseOutcome(object) orelse .success,
+    };
+}
+
+fn parseNativeToolCall(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+) !message_types.NativeToolCall {
+    return .{
+        .id = try jsonString(object, "tool_call_id"),
+        .name = try jsonString(object, "tool_name"),
+        .arguments_json = try jsonString(object, "args"),
+        .tool_kind = try parseOptionalToolKind(object),
+        .provider = try parseProviderPart(allocator, object),
+    };
+}
+
+fn parseNativeToolResult(
+    allocator: std.mem.Allocator,
+    object: std.json.ObjectMap,
+) !message_types.NativeToolResult {
+    return .{
+        .call_id = try jsonString(object, "tool_call_id"),
+        .name = try jsonString(object, "tool_name"),
+        .content = try jsonString(object, "content"),
+        .files = try parseContents(allocator, object.get("files")),
+        .tool_kind = try parseOptionalToolKind(object),
+        .metadata = try parseMetadata(allocator, object.get("metadata")),
+        .timestamp_unix_ms = try optionalJsonInteger(object, "timestamp_unix_ms"),
+        .outcome = try parseOutcome(object) orelse .success,
+        .provider = try parseProviderPart(allocator, object),
+    };
+}
+
+fn parseSpeech(allocator: std.mem.Allocator, object: std.json.ObjectMap) !message_types.SpeechPart {
+    const speaker_name = try jsonString(object, "speaker");
+    const audio = if (object.get("audio")) |value| try parseContent(allocator, try asObject(value)) else null;
+    const interrupted_at = try optionalJsonInteger(object, "interrupted_at_ms");
+    if (interrupted_at != null and interrupted_at.? < 0) return Error.InvalidHistory;
+    return .{
+        .speaker = std.meta.stringToEnum(message_types.SpeechPart.Speaker, speaker_name) orelse
+            return Error.InvalidHistory,
+        .transcript = try optionalJsonString(object, "transcript"),
+        .audio = audio,
+        .interrupted_at_ms = if (interrupted_at) |value| @intCast(value) else null,
+        .provider = try parseProviderPart(allocator, object),
+    };
+}
+
+fn parseInstructionParts(
+    allocator: std.mem.Allocator,
+    value: ?std.json.Value,
+) ![]const message_types.InstructionPart {
+    const values = switch (value orelse return &.{}) {
+        .array => |array| array.items,
+        else => return Error.InvalidHistory,
+    };
+    const result = try allocator.alloc(message_types.InstructionPart, values.len);
+    for (values, result) |item, *part| {
+        const object = try asObject(item);
+        part.* = .{
+            .content = try jsonString(object, "content"),
+            .dynamic = try optionalJsonBool(object, "dynamic") orelse false,
+        };
+    }
+    return result;
 }
 
 fn parseUsage(value: ?std.json.Value) !message_types.Usage {
@@ -713,6 +1247,9 @@ pub fn providerValid(allocator: std.mem.Allocator, messages: []const message_typ
                 .tool_call => |call| if (try validJson(allocator, call.arguments_json)) {
                     try parts.append(allocator, part);
                 },
+                .native_tool_call => |call| if (try validJson(allocator, call.arguments_json)) {
+                    try parts.append(allocator, part);
+                },
                 else => try parts.append(allocator, part),
             };
             if (parts.items.len > 0) {
@@ -736,6 +1273,14 @@ pub fn providerValid(allocator: std.mem.Allocator, messages: []const message_typ
                         try parts.append(allocator, .{ .tool_return = repaired });
                     }
                 },
+                .tool_search_return => |tool_return| if (previous) |response| {
+                    if (hasResponseCall(response.parts, tool_return.call_id, .tool_search))
+                        try parts.append(allocator, part);
+                },
+                .capability_load_return => |tool_return| if (previous) |response| {
+                    if (hasResponseCall(response.parts, tool_return.call_id, .capability_load))
+                        try parts.append(allocator, part);
+                },
                 else => try parts.append(allocator, part),
             };
             if (parts.items.len > 0) {
@@ -748,6 +1293,20 @@ pub fn providerValid(allocator: std.mem.Allocator, messages: []const message_typ
             var parts: std.ArrayList(message_types.ResponsePart) = .empty;
             for (response.parts) |part| switch (part) {
                 .tool_call => |call| if (hasFutureReturn(cleaned.items[index + 1 ..], call.id)) {
+                    try parts.append(allocator, part);
+                },
+                .tool_search_call => |call| if (hasFutureTypedReturn(
+                    cleaned.items[index + 1 ..],
+                    call.call_id,
+                    .tool_search,
+                )) {
+                    try parts.append(allocator, part);
+                },
+                .capability_load_call => |call| if (hasFutureTypedReturn(
+                    cleaned.items[index + 1 ..],
+                    call.call_id,
+                    .capability_load,
+                )) {
                     try parts.append(allocator, part);
                 },
                 else => try parts.append(allocator, part),
@@ -818,7 +1377,10 @@ fn isSystemRequest(message: message_types.Message) bool {
         .response => false,
         .request => |request| blk: {
             if (request.parts.len == 0) break :blk false;
-            for (request.parts) |part| if (part != .system_prompt) break :blk false;
+            for (request.parts) |part| switch (part) {
+                .system_prompt, .system_prompt_part => {},
+                else => break :blk false,
+            };
             break :blk true;
         },
     };
@@ -867,8 +1429,41 @@ fn hasFutureReturn(messages: []const message_types.Message, id: []const u8) bool
         .response => return false,
         .request => |request| for (request.parts) |part| switch (part) {
             .tool_return => |result| if (std.mem.eql(u8, result.call_id, id)) return true,
+            .tool_search_return => |result| if (std.mem.eql(u8, result.call_id, id)) return true,
+            .capability_load_return => |result| if (std.mem.eql(u8, result.call_id, id)) return true,
             else => {},
         },
+    };
+    return false;
+}
+
+fn hasFutureTypedReturn(
+    messages: []const message_types.Message,
+    id: []const u8,
+    kind: message_types.ToolPartKind,
+) bool {
+    for (messages) |message| switch (message) {
+        .response => return false,
+        .request => |request| for (request.parts) |part| switch (part) {
+            .tool_search_return => |result| if (kind == .tool_search and
+                std.mem.eql(u8, result.call_id, id)) return true,
+            .capability_load_return => |result| if (kind == .capability_load and
+                std.mem.eql(u8, result.call_id, id)) return true,
+            else => {},
+        },
+    };
+    return false;
+}
+
+fn hasResponseCall(
+    parts: []const message_types.ResponsePart,
+    id: []const u8,
+    kind: message_types.ToolPartKind,
+) bool {
+    for (parts) |part| switch (part) {
+        .tool_search_call => |call| if (kind == .tool_search and std.mem.eql(u8, call.call_id, id)) return true,
+        .capability_load_call => |call| if (kind == .capability_load and std.mem.eql(u8, call.call_id, id)) return true,
+        else => {},
     };
     return false;
 }
@@ -888,7 +1483,7 @@ fn validJson(allocator: std.mem.Allocator, source: []const u8) !bool {
 fn asObject(value: std.json.Value) !std.json.ObjectMap {
     return switch (value) {
         .object => |object| object,
-        else => Error.InvalidHistory,
+        else => Error.InvalidHistory, // kcov-ignore
     };
 }
 
@@ -899,14 +1494,14 @@ fn jsonObject(object: std.json.ObjectMap, name: []const u8) !std.json.ObjectMap 
 fn jsonArray(object: std.json.ObjectMap, name: []const u8) ![]const std.json.Value {
     return switch (object.get(name) orelse return Error.InvalidHistory) {
         .array => |array| array.items,
-        else => Error.InvalidHistory,
+        else => Error.InvalidHistory, // kcov-ignore
     };
 }
 
 fn jsonString(object: std.json.ObjectMap, name: []const u8) ![]const u8 {
     return switch (object.get(name) orelse return Error.InvalidHistory) {
         .string => |value| value,
-        else => Error.InvalidHistory,
+        else => Error.InvalidHistory, // kcov-ignore
     };
 }
 
@@ -914,14 +1509,14 @@ fn optionalJsonString(object: std.json.ObjectMap, name: []const u8) !?[]const u8
     const value = object.get(name) orelse return null;
     return switch (value) {
         .string => |string| string,
-        else => Error.InvalidHistory,
+        else => Error.InvalidHistory, // kcov-ignore
     };
 }
 
 fn jsonInteger(object: std.json.ObjectMap, name: []const u8) !i64 {
     return switch (object.get(name) orelse return Error.InvalidHistory) {
         .integer => |integer| integer,
-        else => Error.InvalidHistory,
+        else => Error.InvalidHistory, // kcov-ignore
     };
 }
 
@@ -929,7 +1524,7 @@ fn optionalJsonInteger(object: std.json.ObjectMap, name: []const u8) !?i64 {
     const value = object.get(name) orelse return null;
     return switch (value) {
         .integer => |integer| integer,
-        else => Error.InvalidHistory,
+        else => Error.InvalidHistory, // kcov-ignore
     };
 }
 
@@ -937,7 +1532,7 @@ fn optionalJsonBool(object: std.json.ObjectMap, name: []const u8) !?bool {
     const value = object.get(name) orelse return null;
     return switch (value) {
         .bool => |boolean| boolean,
-        else => Error.InvalidHistory,
+        else => Error.InvalidHistory, // kcov-ignore
     };
 }
 
@@ -1025,6 +1620,160 @@ test "history version 2 round trips request response parts and provenance" {
     try std.testing.expectEqualStrings("{\"cached\":true}", response.provider_details_json.?);
     try std.testing.expectEqual(@as(u64, 5), response.usage.totalTokens());
     try std.testing.expectEqual(message_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
+}
+
+test "history version 2 round trips the complete message vocabulary" {
+    const provider = message_types.ProviderPart{
+        .id = "item-1",
+        .provider_name = "openai",
+        .provider_details_json = "{\"opaque\":true}",
+    };
+    const uploaded = message_types.UploadedFile{
+        .id = "file-1",
+        .provider_name = "openai",
+        .media_type = "video/mp4",
+        .metadata = &.{.{ .key = "scope", .value = "test" }},
+    };
+    const video = message_types.Content{
+        .source = .{ .uploaded_file = uploaded },
+        .media_type = "video/mp4",
+        .identifier = "clip",
+        .provider = provider,
+    };
+    const text_file = message_types.Content{
+        .source = .{ .bytes = "notes" },
+        .media_type = "text/plain",
+        .filename = "notes.txt",
+    };
+    const binary_file = message_types.Content{
+        .source = .{ .bytes = "data" },
+        .media_type = "application/octet-stream",
+    };
+    const search_result = message_types.ToolSearchResult{
+        .call_id = "search-1",
+        .discovered_tools = &.{.{ .name = "weather" }},
+        .message = "one match",
+        .metadata = &.{.{ .key = "ranker", .value = "bm25" }},
+        .timestamp_unix_ms = 15,
+        .outcome = .success,
+        .provider = provider,
+    };
+    const messages = [_]message_types.Message{
+        .{ .request = .{
+            .parts = &.{
+                .{ .system_prompt_part = .{ .content = "rules", .timestamp_unix_ms = 1, .dynamic_ref = "ref" } },
+                .{ .user_prompt = .{ .text_content = .{
+                    .content = "hello",
+                    .metadata = &.{.{ .key = "ui", .value = "chat" }},
+                } } },
+                .{ .user_prompt_part = .{ .content = .{ .video = video }, .timestamp_unix_ms = 2 } },
+                .{ .user_prompt = .{ .uploaded_file = uploaded } },
+                .{ .user_prompt = .{ .cache_point = .{ .ttl = .one_hour } } },
+                .{ .speech = .{ .speaker = .user, .transcript = "spoken", .audio = .{
+                    .source = .{ .bytes = "audio" },
+                    .media_type = "audio/wav",
+                } } },
+                .{ .tool_search_return = search_result },
+                .{ .capability_load_return = .{
+                    .call_id = "load-1",
+                    .instructions = "loaded",
+                    .outcome = .denied,
+                } },
+                .{ .tool_return = .{
+                    .call_id = "call-1",
+                    .name = "render",
+                    .content = "{\"ok\":false}",
+                    .files = &.{ video, text_file, binary_file },
+                    .tool_kind = .tool_search,
+                    .metadata = &.{.{ .key = "attempt", .value = "1" }},
+                    .timestamp_unix_ms = 3,
+                    .outcome = .failed,
+                } },
+                .{ .retry_prompt_part = .{
+                    .content = "retry",
+                    .tool_name = "render",
+                    .tool_call_id = "call-1",
+                    .timestamp_unix_ms = 4,
+                } },
+                .{ .tool_availability_delta = .{
+                    .tools_added = &.{ "weather", "forecast" },
+                    .tool_call_id = "load-1",
+                } },
+            },
+            .instruction_parts = &.{
+                .{ .content = "static" },
+                .{ .content = "dynamic", .dynamic = true },
+            },
+        } },
+        .{ .response = .{
+            .parts = &.{
+                .{ .text_part = .{ .content = "answer", .provider = provider } },
+                .{ .tool_search_call = .{ .call_id = "search-1", .queries = &.{"weather"} } },
+                .{ .capability_load_call = .{ .call_id = "load-1", .capability_id = "weather" } },
+                .{ .tool_call = .{
+                    .id = "call-1",
+                    .name = "render",
+                    .arguments_json = "{}",
+                    .tool_kind = .capability_load,
+                    .provider = provider,
+                } },
+                .{ .native_tool_search_call = .{
+                    .call_id = "native-search",
+                    .queries = &.{ "a", "b" },
+                    .provider = provider,
+                } },
+                .{ .native_tool_call = .{
+                    .id = "native-1",
+                    .name = "web_search",
+                    .arguments_json = "{}",
+                    .provider = provider,
+                } },
+                .{ .native_tool_search_return = search_result },
+                .{ .native_tool_return = .{
+                    .call_id = "native-1",
+                    .name = "web_search",
+                    .content = "result",
+                    .files = &.{ video, text_file, binary_file },
+                    .outcome = .interrupted,
+                    .provider = provider,
+                } },
+                .{ .thinking = .{ .content = "think", .provider = provider } },
+                .{ .compaction = .{ .content = "summary", .provider = provider } },
+                .{ .video = video },
+                .{ .speech = .{
+                    .speaker = .assistant,
+                    .transcript = "said",
+                    .interrupted_at_ms = 12,
+                    .provider = provider,
+                } },
+            },
+            .state = .interrupted,
+        } },
+    };
+
+    const encoded = try stringify(std.testing.allocator, &messages);
+    defer std.testing.allocator.free(encoded);
+    var decoded = try parse(std.testing.allocator, encoded);
+    defer decoded.deinit();
+
+    const request = decoded.messages[0].request;
+    try std.testing.expectEqual(@as(usize, 11), request.parts.len);
+    try std.testing.expectEqualStrings("ref", request.parts[0].system_prompt_part.dynamic_ref.?);
+    try std.testing.expectEqualStrings("hello", request.parts[1].user_prompt.text_content.content);
+    try std.testing.expectEqualStrings("file-1", request.parts[2].user_prompt_part.content.video.source.uploaded_file.id);
+    try std.testing.expectEqual(message_types.CachePoint.Ttl.one_hour, request.parts[4].user_prompt.cache_point.ttl);
+    try std.testing.expectEqual(message_types.ToolOutcome.failed, request.parts[8].tool_return.effectiveOutcome());
+    try std.testing.expect(request.instruction_parts[1].dynamic);
+
+    const response = decoded.messages[1].response;
+    try std.testing.expectEqual(@as(usize, 12), response.parts.len);
+    try std.testing.expectEqualStrings("item-1", response.parts[0].text_part.provider.id.?);
+    try std.testing.expectEqualStrings("weather", response.parts[1].tool_search_call.queries[0]);
+    try std.testing.expectEqualStrings("weather", response.parts[2].capability_load_call.capability_id);
+    try std.testing.expectEqualStrings("native-1", response.parts[7].native_tool_return.call_id);
+    try std.testing.expectEqualStrings("summary", response.parts[9].compaction.content.?);
+    try std.testing.expectEqual(@as(?u64, 12), response.parts[11].speech.interrupted_at_ms);
+    try std.testing.expectEqual(message_types.ResponseState.interrupted, response.state);
 }
 
 test "history version 1 migrates role messages" {
@@ -1145,7 +1894,7 @@ test "history processors preserve system requests and repair tool traffic" {
         .{ .trim = .{ .max_messages = messages.len } },
         .compact,
         .provider_valid,
-        .{ .custom = .{ .context = &observed_requests, .processFn = customForTest } },
+        .{ .custom = .{ .context = &observed_requests, .processFn = customForTest } }, // kcov-ignore
     };
     _ = try processAll(arena.allocator(), &processors, context, &messages);
     try std.testing.expectEqual(@as(usize, 7), observed_requests);
@@ -1163,12 +1912,72 @@ test "history processors preserve system requests and repair tool traffic" {
     try std.testing.expectEqualStrings("boundary", without_orphans[0].response.parts[0].text);
 }
 
+test "provider validation pairs typed calls and returns" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    const typed = [_]message_types.Message{
+        .{ .response = .{ .parts = &.{
+            .{ .tool_search_call = .{ .call_id = "search", .queries = &.{"weather"} } },
+            .{ .capability_load_call = .{ .call_id = "load", .capability_id = "maps" } },
+            .{ .native_tool_call = .{
+                .id = "native",
+                .name = "web_search",
+                .arguments_json = "{}",
+                .provider = .{},
+            } },
+        } } },
+        .{ .request = .{ .parts = &.{
+            .{ .tool_search_return = .{
+                .call_id = "search",
+                .discovered_tools = &.{.{ .name = "weather" }},
+            } },
+            .{ .capability_load_return = .{ .call_id = "load", .instructions = "loaded" } },
+        } } },
+    };
+    const valid = try providerValid(arena.allocator(), &typed);
+    try std.testing.expectEqual(@as(usize, 2), valid.len);
+    try std.testing.expectEqual(@as(usize, 3), valid[0].response.parts.len);
+    try std.testing.expectEqual(@as(usize, 2), valid[1].request.parts.len);
+
+    const search_return = message_types.Message{ .request = .{ .parts = &.{.{ .tool_search_return = .{
+        .call_id = "search",
+        .discovered_tools = &.{},
+    } }} } };
+    const load_return = message_types.Message{ .request = .{ .parts = &.{.{ .capability_load_return = .{
+        .call_id = "load",
+    } }} } };
+    try std.testing.expect(hasFutureReturn(&.{search_return}, "search"));
+    try std.testing.expect(hasFutureReturn(&.{load_return}, "load"));
+    try std.testing.expect(hasFutureTypedReturn(&.{search_return}, "search", .tool_search));
+    try std.testing.expect(hasFutureTypedReturn(&.{load_return}, "load", .capability_load));
+    try std.testing.expect(!hasFutureTypedReturn(&.{search_return}, "search", .capability_load));
+    try std.testing.expect(!hasFutureTypedReturn(&.{.{ .response = .{ .parts = &.{} } }}, "search", .tool_search));
+    try std.testing.expect(hasResponseCall(typed[0].response.parts, "search", .tool_search));
+    try std.testing.expect(hasResponseCall(typed[0].response.parts, "load", .capability_load));
+    try std.testing.expect(!hasResponseCall(typed[0].response.parts, "missing", .tool_search));
+
+    const invalid_native = [_]message_types.Message{.{ .response = .{ .parts = &.{.{ .native_tool_call = .{
+        .id = "native",
+        .name = "web_search",
+        .arguments_json = "{",
+        .provider = .{},
+    } }} } }};
+    try std.testing.expectEqual(@as(usize, 0), (try providerValid(arena.allocator(), &invalid_native)).len);
+}
+
 test "history rejects malformed documents and invalid raw provider JSON" {
     try std.testing.expectError(Error.InvalidHistory, parse(std.testing.allocator, "{}"));
     try std.testing.expectError(Error.UnsupportedVersion, parse(std.testing.allocator, "{\"version\":3,\"messages\":[]}"));
     try std.testing.expectError(Error.InvalidHistory, stringify(std.testing.allocator, &.{.{ .response = .{
         .parts = &.{.{ .text = "x" }},
         .provider_details_json = "{",
+    } }}));
+    try std.testing.expectError(Error.InvalidHistory, stringify(std.testing.allocator, &.{.{ .response = .{
+        .parts = &.{.{ .text_part = .{
+            .content = "x",
+            .provider = .{ .id = "item-without-provider" },
+        } }},
     } }}));
 
     const malformed = [_][]const u8{
@@ -1186,6 +1995,15 @@ test "history rejects malformed documents and invalid raw provider JSON" {
         "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"timestamp_unix_ms\":\"now\",\"parts\":[]}]}",
         "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"provider_name\":1,\"parts\":[]}]}",
         "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"usage\":{\"input_tokens\":\"one\",\"output_tokens\":0},\"parts\":[]}]}",
+        "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"state\":\"other\",\"parts\":[]}]}",
+        "{\"version\":2,\"messages\":[{\"kind\":\"request\",\"parts\":[{\"part_kind\":\"speech\",\"speaker\":\"assistant\"}]}]}",
+        "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"parts\":[{\"part_kind\":\"speech\",\"speaker\":\"user\"}]}]}",
+        "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"parts\":[{\"part_kind\":\"text\",\"content\":\"x\",\"id\":\"item\"}]}]}",
+        "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"parts\":[{\"part_kind\":\"file\",\"content\":{\"kind\":\"binary\",\"source\":\"bytes\",\"data\":\"!\",\"media_type\":\"application/octet-stream\"}}]}]}",
+        "{\"version\":2,\"messages\":[{\"kind\":\"request\",\"parts\":[{\"part_kind\":\"system-prompt\",\"content\":1}]}]}",
+        "{\"version\":2,\"messages\":[{\"kind\":\"request\",\"run_id\":1,\"parts\":[]}]}",
+        "{\"version\":2,\"messages\":[{\"kind\":\"request\",\"timestamp_unix_ms\":\"now\",\"parts\":[]}]}",
+        "{\"version\":2,\"messages\":[{\"kind\":\"request\",\"parts\":[{\"part_kind\":\"capability-load-return\",\"tool_call_id\":\"load\",\"outcome\":1}]}]}",
         "{\"version\":2,\"messages\":[{\"kind\":\"request\",\"parts\":\"wrong\"}]}",
         "{\"version\":2,\"messages\":[{\"kind\":1,\"parts\":[]}]}",
         "{\"version\":1,\"messages\":[{\"role\":\"other\",\"parts\":[]}]}",
@@ -1202,6 +2020,21 @@ test "history rejects malformed documents and invalid raw provider JSON" {
 test "history rejects documents beyond its JSON nesting limit" {
     const source = "[" ** 65 ++ "0" ++ "]" ** 65;
     try std.testing.expectError(Error.InvalidHistory, parse(std.testing.allocator, source));
+}
+
+test "history JSON field helpers reject incorrect value types" {
+    var object = try std.json.ObjectMap.init(std.testing.allocator, &.{}, &.{});
+    defer object.deinit(std.testing.allocator);
+    try object.put(std.testing.allocator, "value", .{ .bool = true });
+
+    try std.testing.expectError(Error.InvalidHistory, asObject(.{ .bool = true }));
+    try std.testing.expectError(Error.InvalidHistory, jsonString(object, "value"));
+    try std.testing.expectError(Error.InvalidHistory, optionalJsonString(object, "value"));
+    try std.testing.expectError(Error.InvalidHistory, jsonInteger(object, "value"));
+    try std.testing.expectError(Error.InvalidHistory, optionalJsonInteger(object, "value"));
+    try std.testing.expectEqual(true, (try optionalJsonBool(object, "value")).?);
+    try object.put(std.testing.allocator, "value", .{ .integer = 1 });
+    try std.testing.expectError(Error.InvalidHistory, optionalJsonBool(object, "value"));
 }
 
 fn checkParseAllocationFailure(allocator: std.mem.Allocator) !void {

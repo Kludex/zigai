@@ -224,9 +224,9 @@ var result = try agent.runWithOptions(
 );
 ```
 
-A content source can be raw bytes, a URL, or a provider file ID or URI. Set
-`ProviderFile.provider` to guard a stored file against use with the wrong
-provider. Use the model's provider name: `openai`, `anthropic`, or
+A content source can be raw bytes, a URL, or a provider file ID or URI. Prefer
+`UploadedFile`, which requires the owning provider. `ProviderFile` remains as a
+compatibility type. Use the model's provider name: `openai`, `anthropic`, or
 `gcp.gen_ai`. Message and content metadata stay in ZigAI history and are not
 sent to providers.
 
@@ -234,11 +234,13 @@ sent to providers.
 | --- | --- |
 | OpenAI | Images, documents, binary files |
 | Anthropic | Images, documents |
-| Google | Images, audio, documents, binary files |
+| Google | Images, audio, video, documents, binary files |
 
 Anthropic and Google thinking parts, opaque signatures, and Gemini media
 signatures are preserved across history and follow-up turns. Unsupported
-content fails before the first request.
+content fails before the first request. Provider-owned file IDs are checked at
+both the agent and adapter boundaries. Opaque provider part data is never
+silently flattened by an adapter that cannot replay it.
 
 Gemini tool schemas are converted to its supported JSON Schema subset. Thinking
 models' encrypted tool-call signatures are preserved automatically across
@@ -300,14 +302,15 @@ clear `deinit` ownership boundary.
 
 History cannot represent invalid role/part combinations. `Message` is a tagged
 union of `RequestMessage` and `ResponseMessage`. Requests use `RequestPart`
-(`system_prompt`, `user_prompt`, `tool_return`, or `retry_prompt`), while
-responses use `ResponsePart` for text, thinking, files, and tool calls.
-These durable types live in `zigai.messages`; the short root aliases are the
-same types.
+for prompts and tool results; responses use `ResponsePart` for model output.
+The vocabulary includes multimodal content, uploaded files, cache points,
+speech, compaction, native tools, tool search, capability loading, and
+provider replay metadata. These durable types live in `zigai.messages`; common
+types also have short root aliases.
 
-Version 2 preserves request state and instructions plus response usage, finish
-reason, provider identity, response ID, and raw provider details. The parser
-also migrates version-1 role-based ZigAI histories.
+Version 2 preserves the complete vocabulary, request and response state,
+instructions, usage, finish reason, and provider provenance. The parser also
+migrates version-1 role-based ZigAI histories.
 
 History processors change only the view sent to the provider:
 

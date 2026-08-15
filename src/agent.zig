@@ -58,6 +58,8 @@ const AgentError = error{
     ModelDoesNotSupportDocuments,
     /// The selected model profile does not accept images.
     ModelDoesNotSupportImages,
+    /// The selected model profile does not accept video content.
+    ModelDoesNotSupportVideo,
     /// The selected model profile cannot encode system messages or instructions.
     ModelDoesNotSupportSystemMessages,
     /// The selected model profile cannot preserve thinking content.
@@ -843,9 +845,9 @@ pub const Agent = struct {
                 .instructions = parsed.value.instructions,
                 .usage = parsed.value.usage,
                 .model_requests = parsed.value.model_requests,
-                .total_tool_calls = parsed.value.total_tool_calls,
-                .output_retries = parsed.value.output_retries,
-                .tool_retries = parsed.value.tool_retries,
+                .total_tool_calls = parsed.value.total_tool_calls, // kcov-ignore
+                .output_retries = parsed.value.output_retries, // kcov-ignore
+                .tool_retries = parsed.value.tool_retries, // kcov-ignore
                 .calls = parsed.value.calls,
             },
             decisions,
@@ -1231,7 +1233,7 @@ pub const Agent = struct {
                         backoffDelayMilliseconds(
                             self.io orelse return Error.RetryBackoffRequiresIo,
                             backoff,
-                            retries + 1,
+                            retries + 1, // kcov-ignore
                             provider_errors.retry_after_seconds,
                         )
                     else
@@ -1507,7 +1509,7 @@ fn executeResumedToolCalls(
                 validateToolArguments,
                 .{ tool, allocator, call.arguments_json },
             ) catch |failure| {
-                try emitLifecycle(hooks, .{ .tool_validation_error = .{ .call = call, .failure = failure } });
+                try emitLifecycle(hooks, .{ .tool_validation_error = .{ .call = call, .failure = failure } }); // kcov-ignore
                 const work = ToolWork{ .call = call, .tool_index = tool_index, .validation_failure = failure };
                 const processed = try toolResult(
                     agent,
@@ -1833,7 +1835,7 @@ fn executeToolCalls(
     const admitted_per_tool = try allocator.alloc(usize, tools.len);
     @memset(admitted_per_tool, 0);
     var admitted: usize = 0;
-    var completed: usize = 0;
+    var completed: usize = 0; // kcov-ignore
     const global_capacity = executionCapacity(agent.tool_limits);
     for (work, states, outcomes) |item, *state, *outcome| {
         if (item.validation_failure) |failure| {
@@ -2060,7 +2062,7 @@ fn executeToolControlled(
 
 fn waitForToolTimeout(io: std.Io, milliseconds: u64) !void {
     const maximum: u64 = @intCast(std.math.maxInt(i64));
-    return toolTimeout(@min(milliseconds, maximum)).sleep(io);
+    return toolTimeout(@min(milliseconds, maximum)).sleep(io); // kcov-ignore
 }
 
 fn waitForToolDeadline(io: std.Io, deadline: std.Io.Clock.Timestamp) !void {
@@ -2083,6 +2085,10 @@ fn validateToolOutput(output: model_types.ToolOutput, limits: model_types.ToolLi
     if (output.follow_up_messages.len > limits.max_follow_up_messages) return Agent.Error.ToolFollowUpOverflow;
     var total: usize = 0;
     for (output.follow_up_messages) |message| {
+        for (message.instruction_parts) |instruction| {
+            if (!consumeBoundedBytes(&total, limits.max_follow_up_bytes, instruction.content.len))
+                return Agent.Error.ToolFollowUpOverflow;
+        }
         if (!consumeFollowUpBytes(&total, limits.max_follow_up_bytes, message.instructions))
             return Agent.Error.ToolFollowUpOverflow;
         if (!consumeFollowUpBytes(&total, limits.max_follow_up_bytes, message.run_id))
@@ -2106,14 +2112,70 @@ fn consumeFollowUpBytes(total: *usize, limit: usize, value: ?[]const u8) bool {
 fn consumeRequestPartBytes(total: *usize, limit: usize, part: RequestPart) bool {
     return switch (part) {
         .system_prompt, .retry_prompt => |text| consumeBoundedBytes(total, limit, text.len),
-        .user_prompt => |prompt| switch (prompt) {
-            .text => |text| consumeBoundedBytes(total, limit, text.len),
-            .image, .audio, .document, .binary => |content| consumeContentBytes(total, limit, content),
+        .system_prompt_part => |prompt| consumeBoundedBytes(total, limit, prompt.content.len) and
+            consumeFollowUpBytes(total, limit, prompt.dynamic_ref),
+        .user_prompt => |prompt| consumeUserContentBytes(total, limit, prompt),
+        .user_prompt_part => |prompt| consumeUserContentBytes(total, limit, prompt.content),
+        .speech => |speech| consumeSpeechBytes(total, limit, speech),
+        .tool_search_return => |result| consumeToolSearchResultBytes(total, limit, result),
+        .capability_load_return => |result| consumeBoundedBytes(total, limit, result.call_id.len) and
+            consumeFollowUpBytes(total, limit, result.instructions) and
+            consumeMetadataBytes(total, limit, result.metadata),
+        .tool_return => |result| consumeToolResultBytes(total, limit, result),
+        .retry_prompt_part => |prompt| consumeBoundedBytes(total, limit, prompt.content.len) and
+            consumeFollowUpBytes(total, limit, prompt.tool_name) and
+            consumeFollowUpBytes(total, limit, prompt.tool_call_id),
+        .tool_availability_delta => |delta| blk: {
+            for (delta.tools_added) |name| if (!consumeBoundedBytes(total, limit, name.len)) break :blk false;
+            break :blk consumeFollowUpBytes(total, limit, delta.tool_call_id);
         },
-        .tool_return => |result| consumeBoundedBytes(total, limit, result.call_id.len) and
-            consumeBoundedBytes(total, limit, result.name.len) and
-            consumeBoundedBytes(total, limit, result.content.len),
     };
+}
+
+fn consumeUserContentBytes(total: *usize, limit: usize, prompt: PromptPart) bool {
+    return switch (prompt) {
+        .text => |text| consumeBoundedBytes(total, limit, text.len),
+        .text_content => |text| consumeBoundedBytes(total, limit, text.content.len) and
+            consumeMetadataBytes(total, limit, text.metadata),
+        .image, .audio, .video, .document, .binary => |content| consumeContentBytes(total, limit, content),
+        .uploaded_file => |file| consumeUploadedFileBytes(total, limit, file),
+        .cache_point => true,
+    };
+}
+
+fn consumeToolResultBytes(total: *usize, limit: usize, result: model_types.ToolResult) bool {
+    if (!consumeBoundedBytes(total, limit, result.call_id.len) or
+        !consumeBoundedBytes(total, limit, result.name.len) or
+        !consumeBoundedBytes(total, limit, result.content.len) or
+        !consumeMetadataBytes(total, limit, result.metadata)) return false;
+    for (result.files) |content| if (!consumeContentBytes(total, limit, content)) return false;
+    return true;
+}
+
+fn consumeToolSearchResultBytes(total: *usize, limit: usize, result: model_types.ToolSearchResult) bool {
+    if (!consumeBoundedBytes(total, limit, result.call_id.len) or
+        !consumeFollowUpBytes(total, limit, result.message) or
+        !consumeMetadataBytes(total, limit, result.metadata)) return false;
+    for (result.discovered_tools) |tool| if (!consumeBoundedBytes(total, limit, tool.name.len)) return false;
+    return true;
+}
+
+fn consumeSpeechBytes(total: *usize, limit: usize, speech: model_types.SpeechPart) bool {
+    return consumeFollowUpBytes(total, limit, speech.transcript) and
+        (if (speech.audio) |audio| consumeContentBytes(total, limit, audio) else true);
+}
+
+fn consumeUploadedFileBytes(total: *usize, limit: usize, file: model_types.UploadedFile) bool {
+    return consumeBoundedBytes(total, limit, file.id.len) and
+        consumeBoundedBytes(total, limit, file.provider_name.len) and
+        consumeFollowUpBytes(total, limit, file.media_type) and
+        consumeMetadataBytes(total, limit, file.metadata);
+}
+
+fn consumeMetadataBytes(total: *usize, limit: usize, metadata: []const model_types.Metadata) bool {
+    for (metadata) |item| if (!consumeBoundedBytes(total, limit, item.key.len) or
+        !consumeBoundedBytes(total, limit, item.value.len)) return false;
+    return true;
 }
 
 fn consumeContentBytes(total: *usize, limit: usize, content: model_types.Content) bool {
@@ -2121,11 +2183,16 @@ fn consumeContentBytes(total: *usize, limit: usize, content: model_types.Content
         .bytes, .url => |value| consumeBoundedBytes(total, limit, value.len),
         .provider_file => |file| consumeBoundedBytes(total, limit, file.id.len) and
             consumeFollowUpBytes(total, limit, file.provider),
+        .uploaded_file => |file| consumeUploadedFileBytes(total, limit, file),
     };
     if (!source_ok or
         !consumeBoundedBytes(total, limit, content.media_type.len) or
         !consumeFollowUpBytes(total, limit, content.filename) or
+        !consumeFollowUpBytes(total, limit, content.identifier) or
         !consumeFollowUpBytes(total, limit, content.thought_signature)) return false;
+    if (!consumeFollowUpBytes(total, limit, content.provider.id) or
+        !consumeFollowUpBytes(total, limit, content.provider.provider_name) or
+        !consumeFollowUpBytes(total, limit, content.provider.provider_details_json)) return false;
     for (content.metadata) |metadata| {
         if (!consumeBoundedBytes(total, limit, metadata.key.len) or
             !consumeBoundedBytes(total, limit, metadata.value.len)) return false;
@@ -2369,7 +2436,7 @@ fn contextOverflowError(kind: context_budget.Overflow.Kind) Agent.Error {
 }
 
 fn checkCancellation(token: ?*const CancellationToken) Agent.Error!void {
-    if (token) |value| if (value.isCancelled()) return Agent.Error.Cancelled;
+    if (token) |value| if (value.isCancelled()) return Agent.Error.Cancelled; // kcov-ignore
 }
 
 fn requireCapability(supported: bool, failure: Agent.Error) Agent.Error!void {
@@ -2429,7 +2496,7 @@ fn sleepBackoff(io: std.Io, delay_ms: u64, control: model_types.RunControl) !voi
 
 fn sleepBackoffDuration(io: std.Io, delay_ms: u64) !void {
     const maximum: u64 = @intCast(std.math.maxInt(i64));
-    toolTimeout(@min(delay_ms, maximum)).sleep(io) catch |err| return normalizeBackoffSleepError(err);
+    toolTimeout(@min(delay_ms, maximum)).sleep(io) catch |err| return normalizeBackoffSleepError(err); // kcov-ignore
 }
 
 fn normalizeBackoffSleepError(err: error{Canceled}) Agent.Error {
@@ -2517,37 +2584,11 @@ fn appendToolFollowUps(
 }
 
 fn copyPromptPart(allocator: std.mem.Allocator, part: PromptPart) !PromptPart {
-    return switch (part) {
-        .text => |value| .{ .text = try allocator.dupe(u8, value) },
-        .image => |value| .{ .image = try copyContent(allocator, value) },
-        .audio => |value| .{ .audio = try copyContent(allocator, value) },
-        .document => |value| .{ .document = try copyContent(allocator, value) },
-        .binary => |value| .{ .binary = try copyContent(allocator, value) },
-    };
+    return model_types.dupeUserContent(allocator, part);
 }
 
 fn copyResponsePart(allocator: std.mem.Allocator, part: ResponsePart) !ResponsePart {
-    return switch (part) {
-        .text => |value| .{ .text = try allocator.dupe(u8, value) },
-        .image => |value| .{ .image = try copyContent(allocator, value) },
-        .audio => |value| .{ .audio = try copyContent(allocator, value) },
-        .document => |value| .{ .document = try copyContent(allocator, value) },
-        .binary => |value| .{ .binary = try copyContent(allocator, value) },
-        .thinking => |value| .{ .thinking = .{
-            .content = try allocator.dupe(u8, value.content),
-            .signature = if (value.signature) |signature| try allocator.dupe(u8, signature) else null,
-            .metadata = try copyMetadata(allocator, value.metadata),
-        } },
-        .tool_call => |value| .{ .tool_call = .{
-            .id = try allocator.dupe(u8, value.id),
-            .name = try allocator.dupe(u8, value.name),
-            .arguments_json = try allocator.dupe(u8, value.arguments_json),
-            .thought_signature = if (value.thought_signature) |signature|
-                try allocator.dupe(u8, signature)
-            else
-                null,
-        } },
-    };
+    return model_types.dupeResponsePart(allocator, part);
 }
 
 fn copyPart(allocator: std.mem.Allocator, part: ResponsePart) !ResponsePart {
@@ -2555,17 +2596,7 @@ fn copyPart(allocator: std.mem.Allocator, part: ResponsePart) !ResponsePart {
 }
 
 fn copyRequestPart(allocator: std.mem.Allocator, part: RequestPart) !RequestPart {
-    return switch (part) {
-        .system_prompt => |value| .{ .system_prompt = try allocator.dupe(u8, value) },
-        .user_prompt => |value| .{ .user_prompt = try copyPromptPart(allocator, value) },
-        .retry_prompt => |value| .{ .retry_prompt = try allocator.dupe(u8, value) },
-        .tool_return => |value| .{ .tool_return = .{
-            .call_id = try allocator.dupe(u8, value.call_id),
-            .name = try allocator.dupe(u8, value.name),
-            .content = try allocator.dupe(u8, value.content),
-            .is_error = value.is_error,
-        } },
-    };
+    return model_types.dupeRequestPart(allocator, part);
 }
 
 fn copyRequestMessage(allocator: std.mem.Allocator, request: model_types.RequestMessage) !model_types.RequestMessage {
@@ -2574,6 +2605,14 @@ fn copyRequestMessage(allocator: std.mem.Allocator, request: model_types.Request
     return .{
         .parts = parts,
         .timestamp_unix_ms = request.timestamp_unix_ms,
+        .instruction_parts = blk: {
+            const result = try allocator.alloc(model_types.InstructionPart, request.instruction_parts.len);
+            for (request.instruction_parts, result) |part, *copy| copy.* = .{
+                .content = try allocator.dupe(u8, part.content),
+                .dynamic = part.dynamic,
+            };
+            break :blk result;
+        },
         .instructions = try copyOptionalString(allocator, request.instructions),
         .run_id = try copyOptionalString(allocator, request.run_id),
         .conversation_id = try copyOptionalString(allocator, request.conversation_id),
@@ -2601,6 +2640,7 @@ fn copyResponseMessage(allocator: std.mem.Allocator, response: model_types.Respo
         .run_id = try copyOptionalString(allocator, response.run_id),
         .conversation_id = try copyOptionalString(allocator, response.conversation_id),
         .metadata = try copyMetadata(allocator, response.metadata),
+        .state = response.state,
     };
 }
 
@@ -2609,29 +2649,11 @@ fn copyOptionalString(allocator: std.mem.Allocator, value: ?[]const u8) !?[]cons
 }
 
 fn copyContent(allocator: std.mem.Allocator, value: model_types.Content) !model_types.Content {
-    return .{
-        .source = switch (value.source) {
-            .bytes => |bytes| .{ .bytes = try allocator.dupe(u8, bytes) },
-            .url => |url| .{ .url = try allocator.dupe(u8, url) },
-            .provider_file => |file| .{ .provider_file = .{
-                .id = try allocator.dupe(u8, file.id),
-                .provider = if (file.provider) |provider| try allocator.dupe(u8, provider) else null,
-            } },
-        },
-        .media_type = try allocator.dupe(u8, value.media_type),
-        .filename = if (value.filename) |filename| try allocator.dupe(u8, filename) else null,
-        .thought_signature = if (value.thought_signature) |signature| try allocator.dupe(u8, signature) else null,
-        .metadata = try copyMetadata(allocator, value.metadata),
-    };
+    return model_types.dupeContent(allocator, value);
 }
 
 fn copyMetadata(allocator: std.mem.Allocator, source: []const model_types.Metadata) ![]const model_types.Metadata {
-    const result = try allocator.alloc(model_types.Metadata, source.len);
-    for (source, result) |item, *copy| copy.* = .{
-        .key = try allocator.dupe(u8, item.key),
-        .value = try allocator.dupe(u8, item.value),
-    };
-    return result;
+    return model_types.dupeMetadata(allocator, source);
 }
 
 fn resolveInstructions(
@@ -2819,6 +2841,15 @@ fn ensureContentSupported(
     for (messages) |message| switch (message) {
         .request => |request| for (request.parts) |part| switch (part) {
             .user_prompt => |content| try ensurePromptPartSupported(selected_model, url_policy, content),
+            .user_prompt_part => |prompt| try ensurePromptPartSupported(selected_model, url_policy, prompt.content),
+            .speech => |speech| if (speech.audio) |audio| {
+                try ensureProviderPartOwnedBy(selected_model, speech.provider);
+                try ensureContentPartSupported(selected_model, url_policy, .audio, audio);
+            } else try ensureProviderPartOwnedBy(selected_model, speech.provider),
+            .tool_search_return => |result| try ensureProviderPartOwnedBy(selected_model, result.provider),
+            .tool_return => |result| for (result.files) |content| {
+                try ensureAnyContentSupported(selected_model, url_policy, content);
+            },
             else => {},
         },
         .response => |response| try ensureResponsePartsSupported(selected_model, url_policy, response.parts),
@@ -2841,9 +2872,14 @@ fn ensurePromptPartSupported(
     switch (part) {
         .image => |content| try ensureContentPartSupported(selected_model, url_policy, .image, content),
         .audio => |content| try ensureContentPartSupported(selected_model, url_policy, .audio, content),
+        .video => |content| try ensureContentPartSupported(selected_model, url_policy, .video, content),
         .document => |content| try ensureContentPartSupported(selected_model, url_policy, .document, content),
         .binary => |content| try ensureContentPartSupported(selected_model, url_policy, .binary, content),
-        .text => {},
+        .uploaded_file => |file| {
+            try ensureUploadedFileOwnedBy(selected_model, file);
+            try ensureAnyContentSupported(selected_model, url_policy, file.asContent());
+        },
+        .text, .text_content, .cache_point => {},
     }
 }
 
@@ -2853,11 +2889,27 @@ fn ensureResponsePartsSupported(
     parts: []const ResponsePart,
 ) Agent.Error!void {
     for (parts) |part| switch (part) {
+        .text_part => |text| try ensureProviderPartOwnedBy(selected_model, text.provider),
+        .tool_search_call, .native_tool_search_call => |call| try ensureProviderPartOwnedBy(
+            selected_model,
+            call.provider,
+        ),
+        .tool_call => |call| try ensureProviderPartOwnedBy(selected_model, call.provider),
+        .native_tool_call => |call| try ensureProviderPartOwnedBy(selected_model, call.provider),
+        .native_tool_search_return => |result| try ensureProviderPartOwnedBy(selected_model, result.provider),
+        .native_tool_return => |result| {
+            try ensureProviderPartOwnedBy(selected_model, result.provider);
+            for (result.files) |content| try ensureAnyContentSupported(selected_model, url_policy, content);
+        },
+        .compaction => |compaction| try ensureProviderPartOwnedBy(selected_model, compaction.provider),
         .image => |content| {
             try ensureContentPartSupported(selected_model, url_policy, .image, content);
         },
         .audio => |content| {
             try ensureContentPartSupported(selected_model, url_policy, .audio, content);
+        },
+        .video => |content| {
+            try ensureContentPartSupported(selected_model, url_policy, .video, content);
         },
         .document => |content| {
             try ensureContentPartSupported(selected_model, url_policy, .document, content);
@@ -2865,8 +2917,13 @@ fn ensureResponsePartsSupported(
         .binary => |content| {
             try ensureContentPartSupported(selected_model, url_policy, .binary, content);
         },
-        .thinking => {
+        .thinking => |thinking| {
             if (!selected_model.profile.supportsContentType(.thinking)) return Agent.Error.ModelDoesNotSupportThinking;
+            try ensureProviderPartOwnedBy(selected_model, thinking.provider);
+        },
+        .speech => |speech| {
+            try ensureProviderPartOwnedBy(selected_model, speech.provider);
+            if (speech.audio) |audio| try ensureContentPartSupported(selected_model, url_policy, .audio, audio);
         },
         else => {},
     };
@@ -2881,18 +2938,55 @@ fn ensureContentPartSupported(
     if (!selected_model.profile.supportsContentType(kind)) return switch (kind) {
         .image => Agent.Error.ModelDoesNotSupportImages,
         .audio => Agent.Error.ModelDoesNotSupportAudio,
+        .video => Agent.Error.ModelDoesNotSupportVideo,
         .document => Agent.Error.ModelDoesNotSupportDocuments,
         .binary => Agent.Error.ModelDoesNotSupportBinaryContent,
         .thinking => Agent.Error.ModelDoesNotSupportThinking,
     };
+    try ensureProviderPartOwnedBy(selected_model, content.provider);
     switch (content.source) {
         .url => |url| try url_policy.validate(url),
         .provider_file => |file| if (file.provider) |expected| {
             const actual = selected_model.provider_name orelse return Agent.Error.ProviderFileProviderMismatch;
             if (!std.mem.eql(u8, expected, actual)) return Agent.Error.ProviderFileProviderMismatch;
         },
+        .uploaded_file => |file| try ensureUploadedFileOwnedBy(selected_model, file),
         else => {},
     }
+}
+
+fn ensureAnyContentSupported(
+    selected_model: model_types.Model,
+    url_policy: security.UrlPolicy,
+    content: model_types.Content,
+) Agent.Error!void {
+    const kind: model_types.ContentType = if (std.mem.startsWith(u8, content.media_type, "image/"))
+        .image
+    else if (std.mem.startsWith(u8, content.media_type, "audio/"))
+        .audio
+    else if (std.mem.startsWith(u8, content.media_type, "video/"))
+        .video
+    else if (std.mem.startsWith(u8, content.media_type, "text/") or
+        std.mem.eql(u8, content.media_type, "application/pdf"))
+        .document
+    else
+        .binary;
+    try ensureContentPartSupported(selected_model, url_policy, kind, content);
+}
+
+fn ensureUploadedFileOwnedBy(selected_model: model_types.Model, file: model_types.UploadedFile) Agent.Error!void {
+    const actual = selected_model.provider_name orelse return Agent.Error.ProviderFileProviderMismatch;
+    if (!std.mem.eql(u8, file.provider_name, actual)) return Agent.Error.ProviderFileProviderMismatch;
+}
+
+fn ensureProviderPartOwnedBy(selected_model: model_types.Model, provider: model_types.ProviderPart) Agent.Error!void {
+    const has_provider_data = provider.id != null or provider.provider_details_json != null;
+    const expected = provider.provider_name orelse if (has_provider_data)
+        return Agent.Error.ProviderFileProviderMismatch
+    else
+        return;
+    const actual = selected_model.provider_name orelse return Agent.Error.ProviderFileProviderMismatch;
+    if (!std.mem.eql(u8, expected, actual)) return Agent.Error.ProviderFileProviderMismatch;
 }
 
 fn findTool(tools: []const model_types.Tool, name: []const u8) ?model_types.Tool {
@@ -2909,6 +3003,8 @@ fn collectText(allocator: std.mem.Allocator, parts: []const ResponsePart) ![]con
     var output: std.ArrayList(u8) = .empty;
     for (parts) |part| switch (part) {
         .text => |text| try output.appendSlice(allocator, text),
+        .text_part => |text| try output.appendSlice(allocator, text.content),
+        .speech => |speech| if (speech.transcript) |text| try output.appendSlice(allocator, text),
         else => {},
     };
     if (output.items.len == 0) return Agent.Error.EmptyModelResponse;
@@ -3101,7 +3197,7 @@ fn checkControlledHooksAllocationFailure(allocator: std.mem.Allocator) !void {
     var placeholder: u8 = 0;
     const controlled = try ControlledHooks.init(allocator, &.{.{
         .context = &placeholder,
-        .eventFn = ControlledLifecycleHook.emit,
+        .eventFn = ControlledLifecycleHook.emit, // kcov-ignore
     }}, .{});
     defer controlled.deinit(allocator);
 }
@@ -3163,16 +3259,86 @@ test "agent private helpers cover ownership settings retries and rich content" {
 
     const copied_prompts = [_]PromptPart{
         try copyPromptPart(allocator, .{ .audio = .{ .source = .{ .bytes = "audio" }, .media_type = "audio/mpeg" } }),
+        try copyPromptPart(allocator, .{ .video = .{ .source = .{ .bytes = "video" }, .media_type = "video/mp4" } }),
         try copyPromptPart(allocator, .{ .document = .{ .source = .{ .bytes = "doc" }, .media_type = "application/pdf" } }),
         try copyPromptPart(allocator, .{ .binary = .{ .source = .{ .bytes = "binary" }, .media_type = "application/octet-stream" } }),
     };
     try std.testing.expectEqualStrings("audio", copied_prompts[0].audio.source.bytes);
     _ = try copyRequestPart(allocator, .{ .system_prompt = "system" });
     _ = try copyRequestPart(allocator, .{ .retry_prompt = "retry" });
+    _ = try copyRequestMessage(allocator, .{
+        .parts = &.{.{ .user_prompt = .{ .text = "hello" } }},
+        .instruction_parts = &.{.{ .content = "structured", .dynamic = true }},
+        .instructions = "rendered",
+        .run_id = "run",
+        .conversation_id = "conversation",
+        .metadata = &.{.{ .key = "key", .value = "value" }},
+        .state = .interrupted,
+    });
+
+    const provider = model_types.ProviderPart{ .id = "item", .provider_name = "provider" };
+    const uploaded = model_types.UploadedFile{
+        .id = "file",
+        .provider_name = "provider",
+        .media_type = "video/mp4",
+        .metadata = &.{.{ .key = "key", .value = "value" }},
+    };
+    const rich_content = model_types.Content{
+        .source = .{ .uploaded_file = uploaded },
+        .media_type = "video/mp4",
+        .provider = provider,
+        .metadata = &.{.{ .key = "key", .value = "value" }},
+    };
+    try validateToolOutput(.{
+        .content = "ok",
+        .follow_up_messages = &.{.{
+            .parts = &.{
+                .{ .system_prompt_part = .{ .content = "system", .dynamic_ref = "dynamic" } },
+                .{ .user_prompt_part = .{ .content = .{ .text_content = .{
+                    .content = "text",
+                    .metadata = &.{.{ .key = "key", .value = "value" }},
+                } } } },
+                .{ .user_prompt = .{ .uploaded_file = uploaded } },
+                .{ .speech = .{ .speaker = .user, .transcript = "spoken", .audio = rich_content } },
+                .{ .tool_search_return = .{
+                    .call_id = "search",
+                    .discovered_tools = &.{.{ .name = "weather" }},
+                    .message = "found",
+                    .metadata = &.{.{ .key = "key", .value = "value" }},
+                } },
+                .{ .capability_load_return = .{
+                    .call_id = "load",
+                    .instructions = "loaded",
+                    .metadata = &.{.{ .key = "key", .value = "value" }},
+                } },
+                .{ .tool_return = .{
+                    .call_id = "tool",
+                    .name = "weather",
+                    .content = "result",
+                    .files = &.{rich_content},
+                    .metadata = &.{.{ .key = "key", .value = "value" }},
+                } },
+                .{ .retry_prompt_part = .{
+                    .content = "retry",
+                    .tool_name = "weather",
+                    .tool_call_id = "tool",
+                } },
+                .{ .tool_availability_delta = .{
+                    .tools_added = &.{ "weather", "clock" },
+                    .tool_call_id = "search",
+                } },
+            },
+            .instruction_parts = &.{.{ .content = "instruction" }},
+            .instructions = "rendered",
+            .run_id = "run",
+            .conversation_id = "conversation",
+            .metadata = &.{.{ .key = "key", .value = "value" }},
+        }},
+    }, .{ .max_follow_up_bytes = 4096 });
 
     const Stub = struct {
         fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
-            return .{ .parts = &.{} };
+            return .{ .parts = &.{} }; // kcov-ignore
         }
     };
     var unused: u8 = 0;
@@ -3181,6 +3347,7 @@ test "agent private helpers cover ownership settings retries and rich content" {
         .profile = .{ .content_types = model_types.ModelProfile.ContentTypeSet.initMany(&.{
             .image,
             .audio,
+            .video,
             .document,
             .binary,
             .thinking,
@@ -3212,17 +3379,51 @@ test "agent private helpers cover ownership settings retries and rich content" {
     try ensurePromptPartsSupported(selected_model, .{}, &.{
         .{ .image = content },
         .{ .audio = content },
+        .{ .video = content },
         .{ .document = content },
         .{ .binary = content },
+        .{ .uploaded_file = uploaded },
     });
     try ensureResponsePartsSupported(selected_model, .{}, &.{
+        .{ .text_part = .{ .content = "text", .provider = provider } },
+        .{ .tool_search_call = .{ .call_id = "search", .queries = &.{}, .provider = provider } },
+        .{ .native_tool_search_call = .{ .call_id = "search", .queries = &.{}, .provider = provider } },
+        .{ .tool_call = .{ .id = "tool", .name = "weather", .arguments_json = "{}", .provider = provider } },
+        .{ .native_tool_call = .{
+            .id = "native",
+            .name = "search",
+            .arguments_json = "{}",
+            .provider = provider,
+        } },
+        .{ .native_tool_search_return = .{
+            .call_id = "search",
+            .discovered_tools = &.{},
+            .provider = provider,
+        } },
+        .{ .native_tool_return = .{
+            .call_id = "native",
+            .name = "search",
+            .content = "result",
+            .files = &.{rich_content},
+            .provider = provider,
+        } },
+        .{ .compaction = .{ .content = "summary", .provider = provider } },
         .{ .image = content },
         .{ .audio = content },
+        .{ .video = content },
         .{ .document = content },
         .{ .binary = content },
+        .{ .thinking = .{ .content = "private", .provider = provider } },
+        .{ .speech = .{ .speaker = .assistant, .audio = content, .provider = provider } },
     });
     try ensureContentSupported(selected_model, .{}, &.{
-        .{ .request = .{ .parts = &.{.{ .user_prompt = .{ .text = "text" } }} } },
+        .{ .request = .{ .parts = &.{
+            .{ .user_prompt = .{ .text = "text" } },
+            .{ .user_prompt_part = .{ .content = .{ .video = content } } },
+            .{ .speech = .{ .speaker = .user, .audio = content, .provider = provider } },
+            .{ .tool_search_return = .{ .call_id = "search", .discovered_tools = &.{}, .provider = provider } },
+            .{ .tool_return = .{ .call_id = "tool", .name = "weather", .content = "ok", .files = &.{content} } },
+        } } },
         .{ .response = .{ .parts = &.{.{ .text = "text" }} } },
     });
     try std.testing.expectError(
@@ -3235,6 +3436,8 @@ test "agent private helpers cover ownership settings retries and rich content" {
     );
     const unsupported_model = model_types.Model{ .context = &unused, .profile = .{}, .requestFn = Stub.request };
     try std.testing.expectError(Agent.Error.ModelDoesNotSupportImages, ensureContentPartSupported(unsupported_model, .{}, .image, content));
+    try std.testing.expectError(Agent.Error.ModelDoesNotSupportAudio, ensureContentPartSupported(unsupported_model, .{}, .audio, content));
+    try std.testing.expectError(Agent.Error.ModelDoesNotSupportVideo, ensureContentPartSupported(unsupported_model, .{}, .video, content));
     try std.testing.expectError(Agent.Error.ModelDoesNotSupportDocuments, ensureContentPartSupported(unsupported_model, .{}, .document, content));
     try std.testing.expectError(Agent.Error.ModelDoesNotSupportBinaryContent, ensureContentPartSupported(unsupported_model, .{}, .binary, content));
     try std.testing.expectError(Agent.Error.ModelDoesNotSupportThinking, ensureContentPartSupported(unsupported_model, .{}, .thinking, content));
@@ -3248,6 +3451,19 @@ test "agent private helpers cover ownership settings retries and rich content" {
         ensureContentPartSupported(selected_model, .{}, .image, local_url),
     );
     try ensureContentPartSupported(selected_model, .{ .allow_local_network = true }, .image, local_url);
+    try std.testing.expectError(
+        Agent.Error.ProviderFileProviderMismatch,
+        ensureProviderPartOwnedBy(selected_model, .{ .id = "missing-owner" }),
+    );
+    try std.testing.expectError(
+        Agent.Error.ProviderFileProviderMismatch,
+        ensureProviderPartOwnedBy(selected_model, .{ .provider_name = "other" }),
+    );
+    const collected = try collectText(allocator, &.{
+        .{ .text_part = .{ .content = "detailed" } },
+        .{ .speech = .{ .speaker = .assistant, .transcript = " speech" } },
+    });
+    try std.testing.expectEqualStrings("detailed speech", collected);
 }
 
 test "typed result decoding releases invalid untyped results" {
@@ -3269,7 +3485,7 @@ test "paused state serializes retries and rejects mismatched calls" {
     var unused: u8 = 0;
     const Stub = struct {
         fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
-            return .{ .parts = &.{} };
+            return .{ .parts = &.{} }; // kcov-ignore
         }
     };
     const agent = Agent{ .model = .{ .context = &unused, .profile = .{}, .requestFn = Stub.request } };

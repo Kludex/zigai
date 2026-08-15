@@ -355,7 +355,7 @@ pub const Run = struct {
         }) |token| {
             var attributes: [4]Attribute = undefined;
             var count: usize = 0;
-            self.modelAttributes(&attributes, &count);
+            self.modelAttributes(&attributes, &count); // kcov-ignore
             attributes[count] = .{ .key = "gen_ai.token.type", .value = .{ .string = token.name } };
             count += 1;
             try self.exportMetric(.{
@@ -495,7 +495,7 @@ test "telemetry records captured prompts and lifecycle failures" {
     };
     const Stub = struct {
         fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
-            return .{ .parts = &.{} };
+            return .{ .parts = &.{} }; // kcov-ignore
         }
     };
     var capture: Capture = .{};

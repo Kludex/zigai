@@ -89,18 +89,21 @@ local schema validation and receive the same correction behavior. Streaming
 deltas remain provisional, and the agent emits `final_output` only after
 validation succeeds.
 
-Rich message content is provider neutral too. `UserContent` distinguishes
-text, image, audio, document, and arbitrary binary prompt content.
-`ResponsePart` adds thinking and tool calls for model output. Media uses one
-source union for bytes, URLs, or provider file references, with a MIME type and
-optional filename. `RunOptions.prompt_parts` places rich content before the
-current text prompt. Message and content metadata are application-owned and
-survive copying and versioned history serialization without crossing the
-provider boundary.
+Rich message content is provider neutral too. `UserContent` covers text,
+tagged text, images, audio, video, documents, arbitrary binary data, uploaded
+files, and cache points. Response parts add thinking, compaction, generated
+files, speech, function tools, provider-native tools, tool search, and
+capability loading.
+
+Media uses one source union for bytes, URLs, legacy provider files, or an
+owner-qualified `UploadedFile`. Provider-generated parts keep IDs and opaque
+replay details in `ProviderPart`. Application metadata remains separate and is
+never sent to a model. Both kinds survive copying and versioned ZigAI history
+serialization.
 
 Profiles advertise supported content kinds. Request and response part unions
-make invalid content roles unrepresentable. The agent validates optional
-provider guards on file references before network I/O.
+make invalid content roles unrepresentable. The agent validates URLs and all
+provider-owned parts before network I/O.
 Adapters base64-encode bytes only at their wire boundary. Anthropic and Google
 decode and retain thinking state; Gemini output media keeps its opaque thought
 signature on the neutral content part so the next request can return it

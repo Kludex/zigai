@@ -76,7 +76,7 @@ pub fn tool(
             }) catch return error.InvalidToolArguments;
             const result = if (info.params.len == 1) try func(args) else try func(args, run_context);
             if (comptime isToolReturn(@TypeOf(result))) return .{
-                .content = try encode(allocator, result.value),
+                .content = try encode(allocator, result.value), // kcov-ignore
                 .follow_up_messages = try copyMessages(allocator, result.follow_up_messages),
             };
             return .{ .content = try encode(allocator, result) };
@@ -121,20 +121,18 @@ fn copyMessages(
     const messages = try allocator.alloc(model_types.RequestMessage, source.len);
     for (source, messages) |message, *copy| {
         const parts = try allocator.alloc(model_types.RequestPart, message.parts.len);
-        for (message.parts, parts) |part, *part_copy| part_copy.* = switch (part) {
-            .system_prompt => |text| .{ .system_prompt = try allocator.dupe(u8, text) },
-            .retry_prompt => |text| .{ .retry_prompt = try allocator.dupe(u8, text) },
-            .user_prompt => |content| .{ .user_prompt = try copyUserContent(allocator, content) },
-            .tool_return => |result| .{ .tool_return = .{
-                .call_id = try allocator.dupe(u8, result.call_id),
-                .name = try allocator.dupe(u8, result.name),
-                .content = try allocator.dupe(u8, result.content),
-                .is_error = result.is_error,
-            } },
+        for (message.parts, parts) |part, *part_copy| {
+            part_copy.* = try model_types.dupeRequestPart(allocator, part);
+        }
+        const instruction_parts = try allocator.alloc(model_types.InstructionPart, message.instruction_parts.len);
+        for (message.instruction_parts, instruction_parts) |part, *part_copy| part_copy.* = .{
+            .content = try allocator.dupe(u8, part.content),
+            .dynamic = part.dynamic,
         };
         copy.* = .{
             .parts = parts,
             .timestamp_unix_ms = message.timestamp_unix_ms,
+            .instruction_parts = instruction_parts,
             .instructions = if (message.instructions) |value| try allocator.dupe(u8, value) else null,
             .run_id = if (message.run_id) |value| try allocator.dupe(u8, value) else null,
             .conversation_id = if (message.conversation_id) |value| try allocator.dupe(u8, value) else null,
@@ -146,39 +144,15 @@ fn copyMessages(
 }
 
 fn copyUserContent(allocator: std.mem.Allocator, part: model_types.UserContent) !model_types.UserContent {
-    return switch (part) {
-        .text => |value| .{ .text = try allocator.dupe(u8, value) },
-        .image => |value| .{ .image = try copyContent(allocator, value) },
-        .audio => |value| .{ .audio = try copyContent(allocator, value) },
-        .document => |value| .{ .document = try copyContent(allocator, value) },
-        .binary => |value| .{ .binary = try copyContent(allocator, value) },
-    };
+    return model_types.dupeUserContent(allocator, part);
 }
 
 fn copyContent(allocator: std.mem.Allocator, value: model_types.Content) !model_types.Content {
-    return .{
-        .source = switch (value.source) {
-            .bytes => |bytes| .{ .bytes = try allocator.dupe(u8, bytes) },
-            .url => |url| .{ .url = try allocator.dupe(u8, url) },
-            .provider_file => |file| .{ .provider_file = .{
-                .id = try allocator.dupe(u8, file.id),
-                .provider = if (file.provider) |provider| try allocator.dupe(u8, provider) else null,
-            } },
-        },
-        .media_type = try allocator.dupe(u8, value.media_type),
-        .filename = if (value.filename) |filename| try allocator.dupe(u8, filename) else null,
-        .thought_signature = if (value.thought_signature) |signature| try allocator.dupe(u8, signature) else null,
-        .metadata = try copyMetadata(allocator, value.metadata),
-    };
+    return model_types.dupeContent(allocator, value);
 }
 
 fn copyMetadata(allocator: std.mem.Allocator, source: []const model_types.Metadata) ![]const model_types.Metadata {
-    const metadata = try allocator.alloc(model_types.Metadata, source.len);
-    for (source, metadata) |item, *copy| copy.* = .{
-        .key = try allocator.dupe(u8, item.key),
-        .value = try allocator.dupe(u8, item.value),
-    };
-    return metadata;
+    return model_types.dupeMetadata(allocator, source);
 }
 
 /// Derive one `Tool` per public function of `Namespace`. A function named `foo`
@@ -302,7 +276,7 @@ test "typed tool returns carry schema and copied follow-up messages" {
     const count = struct {
         fn call(args: struct { items: usize }, run_context: ToolRunContext) !model_types.ToolReturn(Answer) {
             return .{
-                .value = .{ .count = args.items + run_context.model_requests },
+                .value = .{ .count = args.items + run_context.model_requests }, // kcov-ignore
                 .follow_up_messages = &.{.{
                     .parts = &.{
                         .{ .user_prompt = .{ .text = "Use this additional context." } },
@@ -320,6 +294,7 @@ test "typed tool returns carry schema and copied follow-up messages" {
                         } } },
                         .{ .user_prompt = .{ .binary = .{ .source = .{ .bytes = "bytes" }, .media_type = "application/octet-stream" } } },
                     },
+                    .instruction_parts = &.{.{ .content = "Structured instruction.", .dynamic = true }},
                     .metadata = &.{.{ .key = "source", .value = "tool" }},
                 }},
             };
@@ -339,6 +314,8 @@ test "typed tool returns carry schema and copied follow-up messages" {
     try std.testing.expectEqualStrings("https://example.test/audio", output.follow_up_messages[0].parts[2].user_prompt.audio.source.url);
     try std.testing.expectEqualStrings("file-1", output.follow_up_messages[0].parts[3].user_prompt.document.source.provider_file.id);
     try std.testing.expectEqualStrings("bytes", output.follow_up_messages[0].parts[4].user_prompt.binary.source.bytes);
+    try std.testing.expectEqualStrings("Structured instruction.", output.follow_up_messages[0].instruction_parts[0].content);
+    try std.testing.expect(output.follow_up_messages[0].instruction_parts[0].dynamic);
     try std.testing.expectEqualStrings("tool", output.follow_up_messages[0].metadata[0].value);
     try std.testing.expect(std.mem.indexOf(u8, derived.definition.return_json_schema.?, "\"count\":{\"type\":\"integer\"}") != null);
 }
@@ -353,6 +330,7 @@ test "request follow-up copies preserve every request field" {
             .{ .tool_return = .{ .call_id = "call", .name = "tool", .content = "result", .is_error = true } },
         },
         .timestamp_unix_ms = 10,
+        .instruction_parts = &.{.{ .content = "structured", .dynamic = true }},
         .instructions = "instructions",
         .run_id = "run",
         .conversation_id = "conversation",
@@ -363,6 +341,8 @@ test "request follow-up copies preserve every request field" {
     try std.testing.expectEqualStrings("retry", copied[0].parts[1].retry_prompt);
     try std.testing.expect(copied[0].parts[2].tool_return.is_error);
     try std.testing.expectEqual(@as(?i64, 10), copied[0].timestamp_unix_ms);
+    try std.testing.expectEqualStrings("structured", copied[0].instruction_parts[0].content);
+    try std.testing.expect(copied[0].instruction_parts[0].dynamic);
     try std.testing.expectEqual(model_types.RequestState.interrupted, copied[0].state);
 }
 

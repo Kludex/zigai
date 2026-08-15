@@ -27,6 +27,29 @@ model implementations return `ResponsePart`. `PromptPart` is the short alias
 for rich `UserContent` accepted by `RunOptions.prompt_parts`. `Part` remains a
 compatibility alias for `ResponsePart`.
 
+The vocabulary follows PydanticAI's message model while staying idiomatic in
+Zig:
+
+| Area | Types |
+| --- | --- |
+| Prompts | system, user, retry, instruction, speech, and tool-availability parts |
+| User content | text, tagged text, image, audio, video, document, binary, uploaded file, and cache point |
+| Tools | function, provider-native, tool-search, and capability-load calls and returns |
+| Model output | text, thinking, compaction, files, speech, and tool parts |
+
+The short `system_prompt`, `user_prompt`, `retry_prompt`, and `text` variants
+are convenient when no part metadata is needed. Their `*_part` counterparts
+retain timestamps, IDs, and provider replay data. Provider-bound parts carry a
+`ProviderPart`; file IDs carry their owner in `UploadedFile`.
+
+History preserves opaque provider data. Current adapters reject provider-bound
+part IDs or raw provider details they cannot replay, and validate uploaded-file
+ownership before encoding. They never silently flatten those fields.
+
+All slices are borrowed. `Agent.Result`, `history.Owned`, and other explicitly
+owned containers define the lifetime of copied or parsed messages. The message
+types themselves never allocate and never store an allocator.
+
 The same types live under `zigai.messages`. The namespace is the canonical home
 for durable conversation data; the root aliases keep common application code
 short, and `zigai.model` keeps compatibility aliases for model implementers.
@@ -39,7 +62,7 @@ Use these namespaces for the rest of the API:
 | `zigai.security` | Outbound URL validation and diagnostic redaction |
 | `zigai.providers` | Native and named OpenAI-compatible provider clients |
 | `zigai.models` | Fallback and application-selected model routing |
-| `zigai.history` | Version-2 history serialization, version-1 migration, and processors |
+| `zigai.history` | Version-2 ZigAI history serialization, version-1 migration, and processors |
 | `zigai.evals` | Datasets, evaluators, reports, and model grading |
 | `zigai.mcp` | MCP 2026 client, server, Streamable HTTP, and stdio |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |

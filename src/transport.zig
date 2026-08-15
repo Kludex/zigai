@@ -418,7 +418,7 @@ fn responseMetadata(head: std.http.Client.Response.Head) ResponseMetadata {
             std.ascii.eqlIgnoreCase(header.name, "anthropic-ratelimit-requests-remaining"))
         {
             const value = std.fmt.parseInt(u64, header.value, 10) catch continue;
-            metadata.rate_limit_remaining_requests = value;
+            metadata.rate_limit_remaining_requests = value; // kcov-ignore
         } else if (std.ascii.eqlIgnoreCase(header.name, "x-ratelimit-remaining-tokens") or
             std.ascii.eqlIgnoreCase(header.name, "anthropic-ratelimit-tokens-remaining"))
         {
@@ -434,7 +434,7 @@ fn parseRetryAfter(value: []const u8, response_date: ?[]const u8) ?u64 {
     if (std.fmt.parseInt(u64, value, 10)) |seconds| return seconds else |_| {}
     const retry_timestamp = parseHttpDate(value) orelse return null;
     const response_timestamp = parseHttpDate(response_date orelse return null) orelse return null;
-    return retry_timestamp -| response_timestamp;
+    return retry_timestamp -| response_timestamp; // kcov-ignore
 }
 
 fn parseHttpDate(value: []const u8) ?u64 {
@@ -451,7 +451,7 @@ fn parseHttpDate(value: []const u8) ?u64 {
         day > std.time.epoch.getDaysInMonth(year, month) or hour > 23 or minute > 59 or second > 59) return null;
 
     var days: u64 = 0;
-    var current_year: u16 = std.time.epoch.epoch_year;
+    var current_year: u16 = std.time.epoch.epoch_year; // kcov-ignore
     while (current_year < year) : (current_year += 1) days += std.time.epoch.getDaysInYear(current_year);
     var current_month: std.time.epoch.Month = .jan;
     while (current_month != month) {

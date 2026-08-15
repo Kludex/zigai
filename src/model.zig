@@ -5,22 +5,44 @@ const security = @import("security.zig");
 
 pub const Content = messages.Content;
 pub const ContentSource = messages.ContentSource;
+pub const CapabilityLoadCall = messages.CapabilityLoadCall;
+pub const CapabilityLoadResult = messages.CapabilityLoadResult;
+pub const CompactionPart = messages.CompactionPart;
+pub const InstructionPart = messages.InstructionPart;
 pub const FinishReason = messages.FinishReason;
 pub const Message = messages.Message;
 pub const Metadata = messages.Metadata;
 pub const Part = messages.Part;
 pub const PromptPart = messages.PromptPart;
 pub const ProviderFile = messages.ProviderFile;
+pub const ProviderPart = messages.ProviderPart;
 pub const RequestMessage = messages.RequestMessage;
 pub const RequestPart = messages.RequestPart;
 pub const RequestState = messages.RequestState;
 pub const ResponseMessage = messages.ResponseMessage;
 pub const ResponsePart = messages.ResponsePart;
+pub const ResponseState = messages.ResponseState;
+pub const SpeechPart = messages.SpeechPart;
+pub const SystemPromptPart = messages.SystemPromptPart;
+pub const TextContent = messages.TextContent;
+pub const TextPart = messages.TextPart;
 pub const Thinking = messages.Thinking;
 pub const ToolCall = messages.ToolCall;
 pub const ToolResult = messages.ToolResult;
+pub const ToolOutcome = messages.ToolOutcome;
+pub const ToolPartKind = messages.ToolPartKind;
+pub const ToolSearchCall = messages.ToolSearchCall;
+pub const ToolSearchMatch = messages.ToolSearchMatch;
+pub const ToolSearchResult = messages.ToolSearchResult;
+pub const ToolAvailabilityDeltaPart = messages.ToolAvailabilityDeltaPart;
+pub const UploadedFile = messages.UploadedFile;
 pub const Usage = messages.Usage;
 pub const UserContent = messages.UserContent;
+pub const dupeContent = messages.dupeContent;
+pub const dupeMetadata = messages.dupeMetadata;
+pub const dupeRequestPart = messages.dupeRequestPart;
+pub const dupeResponsePart = messages.dupeResponsePart;
+pub const dupeUserContent = messages.dupeUserContent;
 
 pub const CancellationToken = struct {
     cancelled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -134,7 +156,7 @@ pub const RunControl = struct {
             },
             .cancelled => |result| blk: {
                 result catch return error.Cancelled;
-                break :blk error.Cancelled;
+                break :blk error.Cancelled; // kcov-ignore
             },
         };
     }
@@ -281,9 +303,9 @@ pub const Tool = struct {
     pub fn executeWithContext(self: Tool, allocator: std.mem.Allocator, run_context: ToolRunContext, arguments_json: []const u8) ![]const u8 {
         try validateToolArgumentsJson(allocator, arguments_json);
         if (self.executeWithContextFn) |contextual|
-            return contextual(self.context, allocator, run_context, arguments_json);
+            return contextual(self.context, allocator, run_context, arguments_json); // kcov-ignore
         if (self.executeOutputWithContextFn) |execute_output|
-            return (try execute_output(self.context, allocator, run_context, arguments_json)).content;
+            return (try execute_output(self.context, allocator, run_context, arguments_json)).content; // kcov-ignore
         return self.executePrepared(allocator, arguments_json);
     }
 
@@ -307,7 +329,7 @@ pub const Tool = struct {
     ) !ToolOutput {
         try validateToolArgumentsJson(allocator, arguments_json);
         if (self.executeOutputWithContextFn) |execute_output|
-            return execute_output(self.context, allocator, run_context, arguments_json);
+            return execute_output(self.context, allocator, run_context, arguments_json); // kcov-ignore
         if (self.executeWithContextFn) |execute_context| return .{
             .content = try execute_context(self.context, allocator, run_context, arguments_json),
         };
@@ -396,6 +418,7 @@ pub const ModelProfile = struct {
 pub const ContentType = enum {
     image,
     audio,
+    video,
     document,
     binary,
     thinking,

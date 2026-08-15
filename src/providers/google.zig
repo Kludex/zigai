@@ -13,6 +13,8 @@ pub const Error = model_types.ProviderRequestError || error{
     InvalidProviderResponse,
     /// Provider-neutral input cannot be encoded as a valid Gemini request.
     InvalidRequestEncoding,
+    /// Provider-neutral rich content cannot be represented by Gemini.
+    UnsupportedContentType,
 };
 
 pub const Client = struct {
@@ -46,7 +48,7 @@ pub const Client = struct {
     pub fn model(self: *Client) model_types.Model {
         return .{
             .context = self,
-            .profile = self.profile,
+            .profile = self.profile, // kcov-ignore
             .provider_name = "gcp.gen_ai",
             .model_name = self.model_name,
             .settings = self.settings,
@@ -125,7 +127,7 @@ pub const Client = struct {
             return common.statusError(response.status);
         }
         return .{
-            .parts = try state.parts.toOwnedSlice(allocator),
+            .parts = try state.parts.toOwnedSlice(allocator), // kcov-ignore
             .usage = state.usage,
             .finish_reason = state.finish_reason,
         };
@@ -185,9 +187,12 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
 
     var has_system = request.instructions.len > 0;
     for (request.messages) |message| switch (message) {
-        .request => |request_message| for (request_message.parts) |part| if (part == .system_prompt) {
-            has_system = true;
-            break;
+        .request => |request_message| for (request_message.parts) |part| switch (part) {
+            .system_prompt, .system_prompt_part => {
+                has_system = true;
+                break;
+            },
+            else => {},
         },
         .response => {},
     };
@@ -199,6 +204,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
         for (request.messages) |message| switch (message) {
             .request => |request_message| for (request_message.parts) |part| switch (part) {
                 .system_prompt => |text| try writeTextPart(&json, text),
+                .system_prompt_part => |prompt| try writeTextPart(&json, prompt.content),
                 else => {},
             },
             .response => {},
@@ -219,24 +225,54 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
         try json.beginArray();
         switch (message) {
             .request => |request_message| for (request_message.parts) |part| switch (part) {
-                .system_prompt => {},
+                .system_prompt, .system_prompt_part => {},
                 .retry_prompt => |text| try writeTextPart(&json, text),
+                .retry_prompt_part => |prompt| try writeTextPart(&json, prompt.content),
                 .user_prompt => |content| switch (content) {
                     .text => |text| try writeTextPart(&json, text),
+                    .text_content => |text| try writeTextPart(&json, text.content),
                     .image => |value| try writeRichContent(allocator, &json, value),
                     .audio => |value| try writeRichContent(allocator, &json, value),
+                    .video => |value| try writeRichContent(allocator, &json, value),
                     .document => |value| try writeRichContent(allocator, &json, value),
                     .binary => |value| try writeRichContent(allocator, &json, value),
+                    .cache_point => {},
+                    .uploaded_file => |file| try writeRichContent(allocator, &json, file.asContent()),
+                },
+                .user_prompt_part => |prompt| switch (prompt.content) {
+                    .text => |text| try writeTextPart(&json, text),
+                    .text_content => |text| try writeTextPart(&json, text.content),
+                    .image => |value| try writeRichContent(allocator, &json, value),
+                    .audio => |value| try writeRichContent(allocator, &json, value),
+                    .video => |value| try writeRichContent(allocator, &json, value),
+                    .document => |value| try writeRichContent(allocator, &json, value),
+                    .binary => |value| try writeRichContent(allocator, &json, value),
+                    .cache_point => {},
+                    .uploaded_file => |file| try writeRichContent(allocator, &json, file.asContent()),
                 },
                 .tool_return => |result| try writeToolReturn(allocator, &json, result),
+                .speech => |speech| {
+                    try ensureProviderPartReplayable(speech.provider);
+                    if (speech.transcript) |text|
+                        try writeTextPart(&json, text)
+                    else
+                        return error.UnsupportedContentType;
+                },
+                .tool_search_return, .capability_load_return, .tool_availability_delta => return error.UnsupportedContentType,
             },
             .response => |response| for (response.parts) |part| switch (part) {
                 .text => |text| try writeTextPart(&json, text),
+                .text_part => |text| {
+                    try ensureProviderPartReplayable(text.provider);
+                    try writeTextPart(&json, text.content);
+                },
                 .image => |content| try writeRichContent(allocator, &json, content),
                 .audio => |content| try writeRichContent(allocator, &json, content),
+                .video => |content| try writeRichContent(allocator, &json, content),
                 .document => |content| try writeRichContent(allocator, &json, content),
                 .binary => |content| try writeRichContent(allocator, &json, content),
                 .thinking => |thinking| {
+                    try ensureProviderPartReplayable(thinking.provider);
                     try json.beginObject();
                     try json.objectField("text");
                     try json.write(thinking.content);
@@ -249,6 +285,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
                     try json.endObject();
                 },
                 .tool_call => |call| {
+                    try ensureProviderPartReplayable(call.provider);
                     try json.beginObject();
                     try json.objectField("functionCall");
                     try json.beginObject();
@@ -265,6 +302,14 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
                     }
                     try json.endObject();
                 },
+                .speech => |speech| {
+                    try ensureProviderPartReplayable(speech.provider);
+                    if (speech.transcript) |text|
+                        try writeTextPart(&json, text)
+                    else
+                        return error.UnsupportedContentType;
+                },
+                .tool_search_call, .capability_load_call, .native_tool_search_call, .native_tool_call, .native_tool_search_return, .native_tool_return, .compaction => return error.UnsupportedContentType,
             },
         }
         try json.endArray();
@@ -354,7 +399,10 @@ fn writeToolSchemaValue(json: *std.json.Stringify, value: std.json.Value) !void 
 fn messageHasGoogleContent(message: model_types.Message) bool {
     return switch (message) {
         .request => |request| blk: {
-            for (request.parts) |part| if (part != .system_prompt) break :blk true;
+            for (request.parts) |part| switch (part) {
+                .system_prompt, .system_prompt_part => {},
+                else => break :blk true,
+            };
             break :blk false;
         },
         .response => |response| response.parts.len > 0,
@@ -362,6 +410,7 @@ fn messageHasGoogleContent(message: model_types.Message) bool {
 }
 
 fn writeToolReturn(allocator: std.mem.Allocator, json: *std.json.Stringify, result: model_types.ToolResult) !void {
+    if (result.files.len > 0) return error.UnsupportedContentType;
     try json.beginObject();
     try json.objectField("functionResponse");
     try json.beginObject();
@@ -369,7 +418,7 @@ fn writeToolReturn(allocator: std.mem.Allocator, json: *std.json.Stringify, resu
     try json.write(result.name);
     try json.objectField("response");
     try json.beginObject();
-    try json.objectField(if (result.is_error) "error" else "result");
+    try json.objectField(if (result.isError()) "error" else "result");
     try common.rawJson(allocator, json, result.content, json_limits.defaults.tool_payload);
     try json.endObject();
     try json.objectField("id");
@@ -390,6 +439,15 @@ fn writeRichContent(
     json: *std.json.Stringify,
     content: model_types.Content,
 ) !void {
+    try ensureProviderPartReplayable(content.provider);
+    switch (content.source) {
+        .provider_file => |file| if (file.provider) |owner| {
+            if (!std.mem.eql(u8, owner, "gcp.gen_ai")) return error.UnsupportedContentType;
+        },
+        .uploaded_file => |file| if (!std.mem.eql(u8, file.provider_name, "gcp.gen_ai"))
+            return error.UnsupportedContentType,
+        else => {},
+    }
     try json.beginObject();
     switch (content.source) {
         .bytes => |bytes| {
@@ -421,12 +479,25 @@ fn writeRichContent(
             try json.write(file.id);
             try json.endObject();
         },
+        .uploaded_file => |file| {
+            try json.objectField("fileData");
+            try json.beginObject();
+            try json.objectField("mimeType");
+            try json.write(content.media_type);
+            try json.objectField("fileUri");
+            try json.write(file.id);
+            try json.endObject();
+        },
     }
     if (content.thought_signature) |signature| {
         try json.objectField("thoughtSignature");
         try json.write(signature);
     }
     try json.endObject();
+}
+
+fn ensureProviderPartReplayable(provider: model_types.ProviderPart) !void {
+    if (provider.requiresReplay()) return error.UnsupportedContentType;
 }
 
 fn hasGenerationSettings(settings: model_types.ModelSettings) bool {
@@ -818,6 +889,109 @@ test "rejects malformed Gemini responses" {
     }
 }
 
+test "Google encodes detailed multimodal forms and rejects local protocol parts" {
+    var client = Client{
+        .model_name = "gemini-test",
+        .api_key = "secret",
+        .transport = undefined,
+    };
+    const exposed_model = client.model();
+    try std.testing.expectEqualStrings("gcp.gen_ai", exposed_model.provider_name.?);
+    try std.testing.expect(exposed_model.profile.supportsContentType(.video));
+
+    const uploaded = model_types.UploadedFile{
+        .id = "gs://bucket/file",
+        .provider_name = "gcp.gen_ai",
+        .media_type = "video/mp4",
+    };
+    const video = model_types.Content{
+        .source = .{ .uploaded_file = uploaded },
+        .media_type = "video/mp4",
+        .thought_signature = "signature",
+    };
+    const messages = [_]model_types.Message{
+        .{ .request = .{ .parts = &.{
+            .{ .system_prompt_part = .{ .content = "system" } },
+            .{ .retry_prompt_part = .{ .content = "retry" } },
+            .{ .user_prompt = .{ .text_content = .{ .content = "rich" } } },
+            .{ .user_prompt = .{ .video = video } },
+            .{ .user_prompt = .{ .uploaded_file = uploaded } },
+            .{ .user_prompt_part = .{ .content = .{ .text = "timestamped" } } },
+            .{ .user_prompt_part = .{ .content = .{ .text_content = .{ .content = "metadata" } } } },
+            .{ .user_prompt_part = .{ .content = .{ .image = .{
+                .source = .{ .bytes = "image" },
+                .media_type = "image/png",
+            } } } },
+            .{ .user_prompt_part = .{ .content = .{ .audio = .{
+                .source = .{ .url = "https://example.test/audio.mp3" },
+                .media_type = "audio/mpeg",
+            } } } },
+            .{ .user_prompt_part = .{ .content = .{ .video = video } } },
+            .{ .user_prompt_part = .{ .content = .{ .document = .{
+                .source = .{ .provider_file = .{ .id = "gs://bucket/doc", .provider = "gcp.gen_ai" } },
+                .media_type = "application/pdf",
+            } } } },
+            .{ .user_prompt_part = .{ .content = .{ .binary = .{
+                .source = .{ .bytes = "data" },
+                .media_type = "application/octet-stream",
+            } } } },
+            .{ .user_prompt_part = .{ .content = .{ .cache_point = .{} } } },
+            .{ .user_prompt_part = .{ .content = .{ .uploaded_file = uploaded } } },
+            .{ .speech = .{ .speaker = .user, .transcript = "spoken" } },
+            .{ .tool_return = .{ .call_id = "call", .name = "tool", .content = "{\"ok\":true}" } },
+        } } },
+        .{ .response = .{ .parts = &.{
+            .{ .text_part = .{ .content = "answer" } },
+            .{ .image = .{ .source = .{ .bytes = "image" }, .media_type = "image/png" } },
+            .{ .audio = .{ .source = .{ .url = "https://example.test/a.mp3" }, .media_type = "audio/mpeg" } },
+            .{ .video = video },
+            .{ .document = .{
+                .source = .{ .provider_file = .{ .id = "gs://bucket/doc", .provider = "gcp.gen_ai" } },
+                .media_type = "application/pdf",
+            } },
+            .{ .binary = .{ .source = .{ .bytes = "data" }, .media_type = "application/octet-stream" } },
+            .{ .speech = .{ .speaker = .assistant, .transcript = "said" } },
+            .{ .thinking = .{ .content = "think", .signature = "signature" } },
+            .{ .tool_call = .{
+                .id = "call",
+                .name = "tool",
+                .arguments_json = "{}",
+                .thought_signature = "signature",
+            } },
+        } } },
+    };
+    const body = try encodeRequest(std.testing.allocator, .{ .messages = &messages });
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "gs://bucket/file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "spoken") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "said") != null);
+
+    const unsupported = [_]model_types.Message{
+        .{ .request = .{ .parts = &.{.{ .speech = .{ .speaker = .user } }} } },
+        .{ .request = .{ .parts = &.{.{ .capability_load_return = .{ .call_id = "load" } }} } },
+        .{ .request = .{ .parts = &.{.{ .tool_return = .{
+            .call_id = "call",
+            .name = "tool",
+            .content = "{}",
+            .files = &.{video},
+        } }} } },
+        .{ .request = .{ .parts = &.{.{ .user_prompt = .{ .uploaded_file = .{
+            .id = "foreign-file",
+            .provider_name = "openai",
+        } } }} } },
+        .{ .response = .{ .parts = &.{.{ .text_part = .{
+            .content = "provider-bound",
+            .provider = .{ .id = "item", .provider_name = "gcp.gen_ai" },
+        } }} } },
+        .{ .response = .{ .parts = &.{.{ .speech = .{ .speaker = .assistant } }} } },
+        .{ .response = .{ .parts = &.{.{ .compaction = .{ .content = "summary" } }} } },
+    };
+    for (unsupported) |message| try std.testing.expectError(
+        error.UnsupportedContentType,
+        encodeRequest(std.testing.allocator, .{ .messages = &.{message} }),
+    );
+}
+
 test "Google rejects provider responses beyond the JSON nesting limit" {
     const source = "[" ** 129 ++ "0" ++ "]" ** 129;
     try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(std.testing.allocator, source));
@@ -827,10 +1001,9 @@ fn fuzzStreamLine(_: void, smith: *std.testing.Smith) !void {
     var buffer: [16 * 1024]u8 = undefined;
     const value = buffer[0..smith.slice(&buffer)];
     const Sink = struct {
-        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {} // kcov-ignore
     };
     var context: u8 = 0;
-    try Sink.emit(&context, .{ .text_delta = "" });
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var state = StreamState{

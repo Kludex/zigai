@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Complete provider-neutral message vocabulary aligned with PydanticAI,
+  including structured instructions, part provenance, video, uploaded files,
+  cache points, rich tool outcomes, compaction, speech, native tools, tool
+  search, capability loading, and tool-availability changes, with explicit
+  rejection of provider-owned data that an adapter cannot replay losslessly.
 - Bounded fuzz targets and seed corpora for persisted state, schemas, provider
   decoders, cassette YAML, MCP framing, CLI manifests, and HTTP metadata.
 - Cross-platform Debug and ReleaseSafe stress suites for long and parallel tool

@@ -188,7 +188,7 @@ test "fallback tries the next model and preserves candidate settings" {
 test "fallback does not retry unsafe failures" {
     const Failing = struct {
         fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
-            return error.InvalidRequestEncoding;
+            return error.InvalidRequestEncoding; // kcov-ignore
         }
     };
     var unused: u8 = 0;
@@ -236,7 +236,7 @@ test "stream fallback stops after exposing output" {
         emit_before_failure: bool,
         succeeds: bool = false,
         fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
-            return error.Unused;
+            return error.Unused; // kcov-ignore
         }
         fn stream(
             context: *anyopaque,

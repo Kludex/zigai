@@ -34,6 +34,7 @@ cases relevant to the application, then propagate the remainder.
 | `ModelDoesNotSupportSystemMessages` | System prompts or instructions are unsupported. |
 | `ModelDoesNotSupportThinking` | Thinking content cannot be preserved. |
 | `ModelDoesNotSupportTools` | Local tools are unsupported. |
+| `ModelDoesNotSupportVideo` | Video was supplied to a model profile without video support. |
 | `ModelDoesNotSupportWebFetch` | Native web fetch is unsupported. |
 | `ModelDoesNotSupportWebSearch` | Native web search is unsupported. |
 | `ModelDoesNotSupportJsonObjectOutput` | JSON-object output is unsupported. |
@@ -111,7 +112,8 @@ All adapters use the stable `ProviderRequestError` categories.
 Adapters additionally expose `InvalidProviderResponse` for direct decoder
 calls and `InvalidRequestEncoding` for unrepresentable input. OpenAI adds
 `UnsupportedBuiltinTool` and `UnsupportedContentType`. Anthropic adds
-`UnsupportedContentType` and `UnsupportedOutputMode`.
+`UnsupportedContentType` and `UnsupportedOutputMode`. Google adds
+`UnsupportedContentType`.
 
 `ProviderErrorObserver` is infallible and synchronous. Its values are borrowed.
 Raw bodies are empty unless `ProviderErrorPolicy.capture_body` is enabled, and
