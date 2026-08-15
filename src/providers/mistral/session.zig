@@ -240,4 +240,89 @@ test "session rejects unsafe conversation identifiers" {
     try std.testing.expectError(error.InvalidConversationId, Session.init(provider, ""));
     try std.testing.expectError(error.InvalidConversationId, Session.init(provider, "../other"));
     try std.testing.expectError(error.InvalidConversationId, Session.init(provider, "a" ** 129));
+    const safe = try Session.init(provider, "safe");
+    try std.testing.expectError(error.UnexpectedRequest, safe.delete(std.testing.allocator));
+}
+
+test "session reports lifecycle status schema and identity failures" {
+    const State = struct {
+        status: u16 = 200,
+        body: []const u8 = "{\"conversation_id\":\"conv_errors\",\"outputs\":[],\"usage\":{}}",
+        saw_request_id: bool = false,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: transport.Request) !transport.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            for (request.headers) |header| {
+                if (std.ascii.eqlIgnoreCase(header.name, "x-client-request-id") and
+                    std.mem.eql(u8, header.value, "request-1")) self.saw_request_id = true;
+            }
+            return .{ .status = self.status, .body = try allocator.dupe(u8, self.body) };
+        }
+    };
+    var state: State = .{};
+    var provider = conversations.Provider.init("secret", .{ .context = &state, .sendFn = State.send });
+    const session = try Session.init(provider.provider(), "conv_errors");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    _ = try session.append(arena.allocator(), .{ .messages = &.{}, .request_id = "request-1" });
+    try std.testing.expect(state.saw_request_id);
+
+    state.body = "{\"conversation_id\":\"other\",\"outputs\":[],\"usage\":{}}";
+    try std.testing.expectError(
+        error.ProviderResponseDecodeError,
+        session.append(arena.allocator(), .{ .messages = &.{} }),
+    );
+    state.status = 500;
+    state.body = "{\"message\":\"failed\"}";
+    try std.testing.expectError(
+        error.ProviderServerError,
+        session.append(arena.allocator(), .{ .messages = &.{} }),
+    );
+    try std.testing.expectError(error.ProviderServerError, session.history(std.testing.allocator));
+    try std.testing.expectError(error.ProviderServerError, session.delete(std.testing.allocator));
+
+    state.status = 200;
+    state.body = "[]";
+    try std.testing.expectError(error.InvalidProviderResponse, session.history(std.testing.allocator));
+    state.body = "{\"conversation_id\":\"other\",\"entries\":[]}";
+    try std.testing.expectError(error.InvalidProviderResponse, session.history(std.testing.allocator));
+    state.body = "{\"conversation_id\":\"conv_errors\",\"entries\":[1]}";
+    try std.testing.expectError(error.InvalidProviderResponse, session.history(std.testing.allocator));
+}
+
+test "session history classifies every native entry family" {
+    const State = struct {
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, _: transport.Request) !transport.Response {
+            return .{
+                .status = 200,
+                .body = try allocator.dupe(
+                    u8,
+                    "{\"conversation_id\":\"conv_kinds\",\"entries\":[" ++
+                        "{\"type\":\"message.input\"},{\"type\":\"message.output\"}," ++
+                        "{\"type\":\"function.call\"},{\"type\":\"function.result\"}," ++
+                        "{\"type\":\"tool.execution\"},{\"type\":\"agent.handoff\"}]}",
+                ),
+            };
+        }
+    };
+    var marker: u8 = 0;
+    var provider = conversations.Provider.init("secret", .{ .context = &marker, .sendFn = State.send });
+    const session = try Session.init(provider.provider(), "conv_kinds");
+    var history = try session.history(std.testing.allocator);
+    defer history.deinit();
+    try std.testing.expectEqualSlices(EntryKind, &.{
+        .message_input,
+        .message_output,
+        .function_call,
+        .function_result,
+        .tool_execution,
+        .agent_handoff,
+    }, &.{
+        history.entries[0].kind,
+        history.entries[1].kind,
+        history.entries[2].kind,
+        history.entries[3].kind,
+        history.entries[4].kind,
+        history.entries[5].kind,
+    });
 }

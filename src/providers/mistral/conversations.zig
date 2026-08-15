@@ -1583,4 +1583,439 @@ test "native client streams text local calls and managed executions" {
     try std.testing.expectEqual(@as(usize, 5), capture.deltas);
     try std.testing.expectEqual(@as(usize, 4), capture.ends);
     try std.testing.expectEqual(@as(usize, 1), capture.usage_events);
+
+    try std.testing.expectError(
+        error.UnexpectedRequest,
+        client.model().request(arena.allocator(), .{ .messages = &.{} }),
+    );
+}
+
+test "native request preserves rich Conversations history and every supported control" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const details_value = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        "{\"type\":\"text\",\"text\":\"provider replay\"}",
+        .{},
+    );
+    const details = try model_types.ProviderDetails.fromValue(details_value);
+    const native_value = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        "{\"object\":\"entry\",\"type\":\"tool.execution\",\"id\":\"native_1\",\"name\":\"web_search\"}",
+        .{},
+    );
+    const native_details = try model_types.ProviderDetails.fromValue(native_value);
+
+    const request_parts = [_]model_types.RequestPart{
+        .{ .system_prompt_part = .{ .content = "System details." } },
+        .{ .user_prompt = .{ .text_content = .{ .content = "Text details." } } },
+        .{ .user_prompt = .{ .image = .{ .source = .{ .url = "https://example.test/image.png" }, .media_type = "image/png" } } },
+        .{ .user_prompt = .{ .document = .{
+            .source = .{ .bytes = "document" },
+            .media_type = "text/plain",
+            .filename = "notes.txt",
+        } } },
+        .{ .user_prompt_part = .{ .content = .{ .document = .{
+            .source = .{ .provider_file = .{ .id = "file_1", .provider = "mistral" } },
+            .media_type = "application/pdf",
+            .filename = "report.pdf",
+        } } } },
+        .{ .user_prompt = .{ .document = .{
+            .source = .{ .uploaded_file = .{
+                .id = "file_2",
+                .provider_name = "mistral",
+                .media_type = "application/pdf",
+            } },
+            .media_type = "application/pdf",
+            .filename = "upload.pdf",
+        } } },
+        .{ .user_prompt = .{ .uploaded_file = .{
+            .id = "file_3",
+            .provider_name = "mistral",
+            .media_type = "application/pdf",
+        } } },
+        .{ .user_prompt = .{ .cache_point = .{} } },
+        .{ .retry_prompt = "Retry compactly." },
+        .{ .retry_prompt_part = .{ .content = "Retry with details." } },
+        .{ .tool_return = .{ .call_id = "call_1", .name = "weather", .content = "sunny" } },
+        .{ .capability_load_return = .{ .call_id = "load_1", .instructions = "Use finance." } },
+        .{ .speech = .{ .speaker = .user, .transcript = "spoken request" } },
+    };
+    const response_parts = [_]model_types.ResponsePart{
+        .{ .text = "plain response" },
+        .{ .text_part = .{ .content = "replayed response", .provider = .{
+            .id = "message_1",
+            .provider_name = "mistral",
+            .provider_details = details,
+        } } },
+        .{ .text_part = .{ .content = "portable response" } },
+        .{ .tool_call = .{
+            .id = "call_2",
+            .name = "lookup",
+            .arguments_json = "{\"query\":\"zig\"}",
+            .provider = .{ .id = "entry_2", .provider_name = "mistral" },
+        } },
+        .{ .capability_load_call = .{ .call_id = "load_2", .capability_id = "search" } },
+        .{ .native_tool_call = .{
+            .id = "native_ignored",
+            .name = "web_search",
+            .arguments_json = "{}",
+            .provider = .{ .provider_name = "mistral" },
+        } },
+        .{ .native_tool_return = .{
+            .call_id = "native_1",
+            .name = "web_search",
+            .content = "result",
+            .provider = .{ .provider_name = "mistral", .provider_details = native_details },
+        } },
+        .{ .thinking = .{
+            .content = "reasoning",
+            .signature = "signature",
+            .provider = .{ .provider_name = "mistral" },
+        } },
+        .{ .thinking = .{
+            .content = "replayed reasoning",
+            .provider = .{ .provider_name = "mistral", .provider_details = details },
+        } },
+    };
+    const messages = [_]model_types.Message{
+        .{ .request = .{ .parts = &request_parts } },
+        .{ .response = .{ .parts = &response_parts } },
+    };
+    const tools = [_]model_types.ToolDefinition{.{
+        .name = "weather",
+        .description = "Weather lookup.",
+        .parameters_json_schema = "{\"type\":\"object\"}",
+        .return_json_schema = "{\"type\":\"string\"}",
+        .return_schema_visibility = .model_description,
+    }};
+    const managed = [_]ManagedTool{
+        .{ .web_search_premium = .{
+            .exclude = &.{"blocked.test"},
+            .include = &.{"allowed.test"},
+            .requires_confirmation = &.{"search"},
+        } },
+        .{ .image_generation = .{} },
+        .{ .document_library = .{ .library_ids = &.{ "lib_1", "lib_2" } } },
+        .{ .connector = .{ .connector_id = "github", .authorization = .{ .api_key = "api-secret" } } },
+        .{ .connector = .{ .connector_id = "slack", .authorization = .{ .oauth2_token = "oauth-secret" } } },
+    };
+    const request = model_types.ModelRequest{
+        .messages = &messages,
+        .instructions = &.{ "", "Run instructions." },
+        .tools = &tools,
+        .output = .{ .json_schema = .{ .name = "answer", .schema = "{\"type\":\"object\"}" } },
+        .settings = .{
+            .temperature = 0.3,
+            .max_tokens = 512,
+            .stop_sequences = &.{"STOP"},
+            .seed = 42,
+            .reasoning_effort = .high,
+            .top_p = 0.9,
+            .presence_penalty = 0.1,
+            .frequency_penalty = 0.2,
+            .tool_choice = .{ .tool = "weather" },
+        },
+    };
+    const body = try encodeRequest(std.testing.allocator, "mistral-large-latest", request, &managed);
+    defer std.testing.allocator.free(body);
+    try std.testing.expect(std.mem.indexOf(u8, body, "data:text/plain;base64,ZG9jdW1lbnQ=") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"document_name\":\"notes.txt\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"file_name\":\"report.pdf\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "Return JSON Schema") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"web_search_premium\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"image_generation\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"oauth2-token\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"requires_confirmation\":[\"search\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"max_tokens\":512") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"random_seed\":42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"reasoning_effort\":\"high\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"top_p\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"presence_penalty\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"frequency_penalty\":") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"json_schema\"") != null);
+
+    const stored = try encodeStoredRequest(std.testing.allocator, "mistral-large-latest", request, &managed);
+    defer std.testing.allocator.free(stored);
+    try std.testing.expect(std.mem.indexOf(u8, stored, "\"store\":true") != null);
+    const appended = try encodeAppendRequest(std.testing.allocator, .{ .messages = &.{messages[1]} });
+    defer std.testing.allocator.free(appended);
+    try std.testing.expect(std.mem.indexOf(u8, appended, "\"function.call\"") != null);
+}
+
+test "native request rejects unsupported Conversations combinations" {
+    const empty_request = model_types.ModelRequest{ .messages = &.{} };
+    try std.testing.expectError(
+        error.InvalidRequestEncoding,
+        encodeRequest(std.testing.allocator, "model", .{ .messages = &.{}, .settings = .{ .top_k = 1 } }, &.{}),
+    );
+    try std.testing.expectError(
+        error.InvalidRequestEncoding,
+        encodeRequest(std.testing.allocator, "model", .{ .messages = &.{}, .settings = .{ .reasoning_effort = .max } }, &.{}),
+    );
+    try std.testing.expectError(
+        error.InvalidRequestEncoding,
+        encodeAppendRequest(std.testing.allocator, .{ .messages = &.{}, .instructions = &.{"new"} }),
+    );
+    try std.testing.expectError(
+        error.UnsupportedManagedTool,
+        encodeRequest(std.testing.allocator, "model", .{ .messages = &.{}, .builtin_tools = &.{.{ .web_fetch = .{} }} }, &.{}),
+    );
+    try std.testing.expectError(
+        error.InvalidRequestEncoding,
+        encodeRequest(std.testing.allocator, "model", .{
+            .messages = &.{},
+            .builtin_tools = &.{ .{ .web_search = .{} }, .{ .web_search = .{} } },
+        }, &.{}),
+    );
+    try std.testing.expectError(
+        error.InvalidRequestEncoding,
+        encodeRequest(std.testing.allocator, "model", empty_request, &.{ .{ .web_search_premium = .{} }, .{ .web_search_premium = .{} } }),
+    );
+    try std.testing.expectError(
+        error.InvalidRequestEncoding,
+        encodeRequest(std.testing.allocator, "model", empty_request, &.{
+            .{ .connector = .{ .connector_id = "same" } },
+            .{ .connector = .{ .connector_id = "same" } },
+        }),
+    );
+    try std.testing.expectError(
+        error.InvalidRequestEncoding,
+        encodeRequest(std.testing.allocator, "model", .{
+            .messages = &.{},
+            .builtin_tools = &.{.{ .web_search = .{} }},
+        }, &.{.{ .web_search_premium = .{} }}),
+    );
+    const invalid_managed = [_]ManagedTool{
+        .{ .document_library = .{ .library_ids = &.{} } },
+        .{ .document_library = .{ .library_ids = &.{""} } },
+        .{ .connector = .{ .connector_id = "" } },
+        .{ .connector = .{ .connector_id = "connector", .authorization = .{ .api_key = "" } } },
+        .{ .image_generation = .{ .include = &.{} } },
+        .{ .image_generation = .{ .exclude = &.{""} } },
+        .{ .image_generation = .{ .requires_confirmation = &.{} } },
+    };
+    for (invalid_managed) |managed| try std.testing.expectError(
+        error.InvalidRequestEncoding,
+        encodeRequest(std.testing.allocator, "model", empty_request, &.{managed}),
+    );
+
+    const invalid_request_parts = [_]model_types.RequestPart{
+        .{ .tool_search_return = .{ .call_id = "search", .discovered_tools = &.{} } },
+        .{ .speech = .{ .speaker = .user } },
+        .{ .user_prompt = .{ .audio = .{ .source = .{ .bytes = "audio" }, .media_type = "audio/wav" } } },
+        .{ .user_prompt = .{ .image = .{
+            .source = .{ .url = "https://example.test/image.png" },
+            .media_type = "image/png",
+            .provider = .{ .id = "foreign" },
+        } } },
+        .{ .user_prompt = .{ .document = .{
+            .source = .{ .provider_file = .{ .id = "file", .provider = "openai" } },
+            .media_type = "application/pdf",
+        } } },
+        .{ .user_prompt = .{ .document = .{
+            .source = .{ .uploaded_file = .{ .id = "file", .provider_name = "openai" } },
+            .media_type = "application/pdf",
+        } } },
+    };
+    for (invalid_request_parts) |part| try std.testing.expectError(
+        error.UnsupportedContentType,
+        encodeRequest(std.testing.allocator, "model", .{
+            .messages = &.{.{ .request = .{ .parts = &.{part} } }},
+        }, &.{}),
+    );
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const details_value = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{}", .{});
+    const details = try model_types.ProviderDetails.fromValue(details_value);
+    const invalid_response_parts = [_]model_types.ResponsePart{
+        .{ .text_part = .{ .content = "text", .provider = .{ .id = "id", .provider_name = "openai", .provider_details = details } } },
+        .{ .text_part = .{ .content = "text", .provider = .{ .id = "id", .provider_name = "mistral" } } },
+        .{ .tool_call = .{ .id = "call", .name = "tool", .arguments_json = "{}", .thought_signature = "signature" } },
+        .{ .tool_call = .{
+            .id = "call",
+            .name = "tool",
+            .arguments_json = "{}",
+            .provider = .{ .provider_name = "openai" },
+        } },
+        .{ .native_tool_return = .{
+            .call_id = "call",
+            .name = "native",
+            .content = "result",
+            .provider = .{ .provider_name = "openai", .provider_details = details },
+        } },
+        .{ .native_tool_return = .{
+            .call_id = "call",
+            .name = "native",
+            .content = "result",
+            .provider = .{ .provider_name = "mistral" },
+        } },
+        .{ .thinking = .{ .content = "thought", .provider = .{ .provider_name = "openai" } } },
+        .{ .image = .{ .source = .{ .bytes = "image" }, .media_type = "image/png" } },
+    };
+    for (invalid_response_parts) |part| try std.testing.expectError(
+        error.UnsupportedContentType,
+        encodeRequest(std.testing.allocator, "model", .{
+            .messages = &.{.{ .response = .{ .parts = &.{part} } }},
+        }, &.{}),
+    );
+    try std.testing.expectError(
+        error.UnsupportedContentType,
+        encodeRequest(std.testing.allocator, "model", .{
+            .messages = &.{.{ .request = .{ .parts = &.{.{ .tool_return = .{
+                .call_id = "call",
+                .name = "tool",
+                .content = "result",
+                .files = &.{.{ .source = .{ .bytes = "file" }, .media_type = "text/plain" }},
+            } }} } }},
+        }, &.{}),
+    );
+}
+
+test "native response decodes rich and unknown Conversations entries" {
+    const body =
+        "{\"conversation_id\":\"conv_rich\",\"outputs\":[" ++
+        "{\"type\":\"function.call\",\"tool_call_id\":\"call_object\",\"name\":\"lookup\",\"arguments\":{\"q\":\"zig\"}}," ++
+        "{\"type\":\"message.output\",\"content\":[" ++
+        "{\"type\":\"thinking\",\"thinking\":[{\"type\":\"text\",\"text\":\"first \"},{\"type\":\"redacted\"},{\"type\":\"text\",\"text\":\"second\"}],\"signature\":\"sig\"}," ++
+        "{\"type\":\"image_url\",\"image_url\":\"https://example.test/image.png\"}," ++
+        "{\"type\":\"document_url\",\"document_url\":{\"url\":\"https://example.test/report.pdf\"},\"document_name\":\"report.pdf\"}," ++
+        "{\"type\":\"tool_file\",\"file_id\":\"file_1\",\"file_type\":\"application/pdf\",\"file_name\":\"file.pdf\"}," ++
+        "{\"type\":\"citation\",\"source\":\"docs\"}]}," ++
+        "{\"type\":\"agent.handoff\",\"id\":\"handoff_1\",\"name\":\"researcher\",\"info\":{\"status\":\"done\"}}," ++
+        "{\"type\":\"future.entry\",\"id\":\"future_1\"}]," ++
+        "\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":5,\"total_tokens\":9,\"connector_tokens\":2,\"connectors\":null}}";
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const response = try decodeResponse(arena.allocator(), body);
+    try std.testing.expectEqualStrings("{\"q\":\"zig\"}", response.parts[0].tool_call.arguments_json);
+    try std.testing.expectEqualStrings("first second", response.parts[1].thinking.content);
+    try std.testing.expectEqualStrings("https://example.test/image.png", response.parts[2].image.source.url);
+    try std.testing.expectEqualStrings("report.pdf", response.parts[3].document.filename.?);
+    try std.testing.expectEqualStrings("file_1", response.parts[4].binary.source.uploaded_file.id);
+    try std.testing.expectEqualStrings("agent.handoff", response.parts[6].native_tool_return.provider.provider_details.?.value.object.get("type").?.string);
+    try std.testing.expectEqualStrings("future.entry", response.parts[7].native_tool_return.name);
+    try std.testing.expectEqual(@as(?u64, 9), response.usage.detail("total_tokens"));
+    try std.testing.expectEqual(@as(?u64, 2), response.usage.detail("connector_tokens"));
+}
+
+test "native client covers stored starts and provider failures" {
+    const State = struct {
+        status: u16 = 200,
+        body: []const u8 = "{\"conversation_id\":\"conv_stored\",\"outputs\":[],\"usage\":{}}",
+        saw_request_id: bool = false,
+        saw_store: bool = false,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: transport.Request) !transport.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.saw_store = std.mem.indexOf(u8, request.body, "\"store\":true") != null;
+            for (request.headers) |header| {
+                if (std.ascii.eqlIgnoreCase(header.name, "x-client-request-id") and
+                    std.mem.eql(u8, header.value, "request-1")) self.saw_request_id = true;
+            }
+            return .{ .status = self.status, .body = try allocator.dupe(u8, self.body) };
+        }
+    };
+    var state: State = .{};
+    var provider = Provider.init("secret", .{ .context = &state, .sendFn = State.send });
+    var client = Client{ .model_name = "mistral-small-latest", .provider = provider.provider() };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const response = try client.start(arena.allocator(), .{ .messages = &.{}, .request_id = "request-1" });
+    try std.testing.expectEqualStrings("conv_stored", response.conversation_id.?);
+    try std.testing.expect(state.saw_request_id);
+    try std.testing.expect(state.saw_store);
+
+    state.status = 500;
+    state.body = "{\"message\":\"failed\"}";
+    try std.testing.expectError(
+        error.ProviderServerError,
+        client.model().request(arena.allocator(), .{ .messages = &.{}, .request_id = "request-1" }),
+    );
+}
+
+test "native stream rejects error responses protocol errors and incomplete streams" {
+    const State = struct {
+        mode: enum { status, protocol, incomplete, rich } = .status,
+        saw_request_id: bool = false,
+
+        fn send(_: *anyopaque, _: std.mem.Allocator, _: transport.Request) !transport.Response {
+            return error.UnexpectedRequest;
+        }
+
+        fn stream(context: *anyopaque, _: std.mem.Allocator, request: transport.Request, sink: transport.LineSink) !transport.StreamResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            for (request.headers) |header| {
+                if (std.ascii.eqlIgnoreCase(header.name, "x-client-request-id") and
+                    std.mem.eql(u8, header.value, "stream-1")) self.saw_request_id = true;
+            }
+            switch (self.mode) {
+                .status => {
+                    try sink.start(.{ .status = 400 });
+                    try sink.line("first error line");
+                    try sink.line("second error line");
+                    return .{ .status = 400 };
+                },
+                .protocol => {
+                    try sink.start(.{ .status = 200 });
+                    try sink.line("event: conversation.response.error");
+                    try sink.line("data: {}");
+                    return .{ .status = 200 };
+                },
+                .incomplete => {
+                    try sink.start(.{ .status = 200 });
+                    try sink.line("event: future.event");
+                    try sink.line("data: {}");
+                    try sink.line("ignored line");
+                    try sink.line("data: [DONE]");
+                    return .{ .status = 200 };
+                },
+                .rich => {
+                    try sink.start(.{ .status = 200 });
+                    try sink.line("data: {\"type\":\"conversation.response.started\",\"conversation_id\":\"conv_stream\"}");
+                    try sink.line("data: {\"type\":\"message.output.delta\",\"content\":{\"type\":\"image_url\",\"image_url\":\"https://example.test/image.png\"}}");
+                    try sink.line("data: {\"type\":\"function.call.delta\",\"output_index\":1,\"tool_call_id\":\"call_empty\",\"name\":\"empty\",\"arguments\":\"\"}");
+                    try sink.line("data: {\"type\":\"conversation.response.done\"}");
+                    return .{ .status = 200 };
+                },
+            }
+        }
+    };
+    var state: State = .{};
+    var provider = Provider.init("secret", .{
+        .context = &state,
+        .sendFn = State.send,
+        .streamLinesFn = State.stream,
+    });
+    var client = Client{ .model_name = "mistral-small-latest", .provider = provider.provider() };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const sink = model_types.ModelStreamSink{
+        .context = &state,
+        .eventFn = struct {
+            fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+        }.emit,
+    };
+    try std.testing.expectError(
+        error.ProviderRequestFailed,
+        client.model().stream(arena.allocator(), .{ .messages = &.{}, .request_id = "stream-1" }, sink),
+    );
+    try std.testing.expect(state.saw_request_id);
+    state.mode = .protocol;
+    try std.testing.expectError(
+        error.ProviderResponseDecodeError,
+        client.model().stream(arena.allocator(), .{ .messages = &.{} }, sink),
+    );
+    state.mode = .incomplete;
+    try std.testing.expectError(
+        error.ProviderResponseDecodeError,
+        client.model().stream(arena.allocator(), .{ .messages = &.{} }, sink),
+    );
+    state.mode = .rich;
+    const response = try client.model().stream(arena.allocator(), .{ .messages = &.{} }, sink);
+    try std.testing.expectEqualStrings("https://example.test/image.png", response.parts[0].image.source.url);
+    try std.testing.expectEqualStrings("{}", response.parts[1].tool_call.arguments_json);
 }
