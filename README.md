@@ -550,6 +550,9 @@ try mcp_client.updateTask(allocator, .{
     .input_responses_json = "{\"approval\":{\"action\":\"accept\"}}",
 });
 try mcp_client.cancelTask(allocator, "task-1");
+
+var terminal = try mcp_client.waitTask(allocator, "task-1", .{ .io = io });
+defer terminal.deinit();
 ```
 
 Task results own a single arena. Their tagged state exposes only the payload
@@ -557,7 +560,10 @@ valid for the current status. Set the Tasks extension in the client's typed
 capabilities before calling these methods. To receive push updates, pass
 `.task_ids = &.{"task-1"}` to `SubscriptionFilter`; each event can be decoded
 with `mcp.tasks.parseNotification`. ZigAI rejects updates for task IDs outside
-the acknowledged subscription.
+the acknowledged subscription. `waitTask` honors changing server poll
+intervals, bounds the number of requests, forwards each new task input through
+the client's `InputHandler` once, and signals cooperative cancellation when a
+local cancellation, deadline, or poll bound stops the wait.
 
 Extension settings stay as owned JSON:
 

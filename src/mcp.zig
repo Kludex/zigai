@@ -216,12 +216,16 @@ pub const Error = error{
     MissingMcpClient,
     /// A Tasks request was attempted without its per-request extension opt-in.
     MissingMcpClientCapability,
+    /// Polling a non-terminal task needs an I/O runtime for the next delay.
+    TaskPollingRequiresIo,
     /// Streamable HTTP did not provide the required SSE response stream.
     MissingMcpSseResponse,
     /// Elicitation exceeded the configured request/response round-trip limit.
     TooManyMcpRoundTrips,
     /// A paginated MCP collection exceeded the configured page limit.
     TooManyMcpPages,
+    /// Task polling exceeded its explicit request bound.
+    TooManyMcpTaskPolls,
     /// Discovery negotiated a protocol revision ZigAI does not support.
     UnsupportedMcpProtocolVersion,
 };
@@ -576,6 +580,18 @@ pub const RequestOptions = struct {
     metadata: RequestMetadata = .{},
 };
 
+/// Runtime policy for waiting until a task reaches a terminal state.
+pub const TaskWaitOptions = struct {
+    /// Runtime used for polling delays. `control.io` takes precedence.
+    io: ?std.Io = null,
+    poll: tasks.PollPolicy = .{},
+    control: model.RunControl = .{},
+    status_sink: ?tasks.StatusSink = null,
+    /// Signal cooperative cancellation when polling is cancelled, times out,
+    /// or exhausts its bound. Cancellation acknowledgement is best effort.
+    cancel_on_stop: bool = true,
+};
+
 /// Stateless MCP client with generic extension support and ZigAI toolset adaptation.
 pub const Client = struct {
     transport: Transport,
@@ -788,6 +804,76 @@ pub const Client = struct {
             .{ .routing_name = task_id },
         );
         allocator.free(result);
+    }
+
+    /// Polls a task to a terminal state, answering validated outstanding input
+    /// requests through the client's existing `input_handler` exactly once per
+    /// task-local request key.
+    pub fn waitTask(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        task_id: []const u8,
+        options: TaskWaitOptions,
+    ) !tasks.Owned {
+        if (task_id.len == 0) return error.InvalidTaskRequest;
+        if (options.poll.max_polls == 0) return error.TooManyMcpTaskPolls;
+        var answered: std.StringHashMapUnmanaged(void) = .{};
+        defer deinitAnsweredTaskInputs(allocator, &answered);
+
+        var poll_index: usize = 0;
+        while (poll_index < options.poll.max_polls) : (poll_index += 1) {
+            options.control.check() catch |failure|
+                return stopTaskWait(self, allocator, task_id, options.cancel_on_stop, failure);
+            var owned = try self.getTask(allocator, task_id);
+            var owned_live = true;
+            defer if (owned_live) owned.deinit();
+            const detailed = switch (owned.value) {
+                .detailed => |value| value,
+                else => unreachable,
+            };
+            if (options.status_sink) |sink| try sink.emit(detailed);
+            if (detailed.status().terminal()) {
+                owned_live = false;
+                return owned;
+            }
+
+            switch (detailed.state) {
+                .input_required => |requests| {
+                    if (try answerTaskInputRequests(
+                        allocator,
+                        requests,
+                        &answered,
+                        self.input_handler,
+                    )) |batch| {
+                        var responses = batch;
+                        defer responses.deinit(allocator);
+                        try self.updateTask(allocator, .{
+                            .task_id = task_id,
+                            .input_responses_json = responses.json,
+                        });
+                        for (responses.keys, 0..) |key, index| {
+                            try answered.put(allocator, key, {});
+                            responses.keys[index] = &.{};
+                        }
+                    }
+                },
+                else => {},
+            }
+
+            const delay_ms = options.poll.interval(detailed.metadata.poll_interval_ms);
+            owned.deinit();
+            owned_live = false;
+            if (poll_index + 1 >= options.poll.max_polls) break;
+            waitForTaskPoll(options, delay_ms) catch |failure|
+                return stopTaskWait(self, allocator, task_id, options.cancel_on_stop, failure);
+        }
+        return stopTaskWait(
+            self,
+            allocator,
+            task_id,
+            options.cancel_on_stop,
+            error.TooManyMcpTaskPolls,
+        );
     }
 
     fn requestOnce(
@@ -1611,6 +1697,109 @@ fn answerInputRequests(
     }
     params_value = .{ .object = params };
     return std.json.Stringify.valueAlloc(allocator, params_value, .{});
+}
+
+const TaskInputBatch = struct {
+    json: []u8,
+    keys: [][]u8,
+
+    fn deinit(self: *TaskInputBatch, allocator: std.mem.Allocator) void {
+        allocator.free(self.json);
+        for (self.keys) |key| if (key.len > 0) allocator.free(key);
+        allocator.free(self.keys);
+        self.* = undefined;
+    }
+};
+
+fn answerTaskInputRequests(
+    allocator: std.mem.Allocator,
+    requests: std.json.ObjectMap,
+    answered: *const std.StringHashMapUnmanaged(void),
+    maybe_handler: ?InputHandler,
+) !?TaskInputBatch {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const memory = arena.allocator();
+    var responses: std.json.ObjectMap = .{};
+    var keys: std.ArrayList([]u8) = .empty;
+    defer keys.deinit(allocator);
+    errdefer for (keys.items) |key| allocator.free(key);
+
+    var iterator = requests.iterator();
+    while (iterator.next()) |entry| {
+        if (answered.contains(entry.key_ptr.*)) continue;
+        const handler = maybe_handler orelse return error.InputRequired;
+        const input_request = try requiredObject(entry.value_ptr.*);
+        try validateInputRequest(input_request);
+        const input_method = try requiredString(input_request, "method");
+        const request_json = try std.json.Stringify.valueAlloc(allocator, entry.value_ptr.*, .{});
+        const response_json = handler.handle(allocator, .{
+            .key = entry.key_ptr.*,
+            .kind = try InputKind.fromMethod(input_method),
+            .request_json = request_json,
+        }) catch |failure| {
+            allocator.free(request_json);
+            return failure;
+        };
+        allocator.free(request_json);
+        const response = parseResponse(memory, response_json) catch |failure| {
+            allocator.free(response_json);
+            return failure;
+        };
+        allocator.free(response_json);
+        try validateInputResponse(input_method, response);
+        try responses.put(memory, entry.key_ptr.*, response);
+        const key = try allocator.dupe(u8, entry.key_ptr.*);
+        keys.append(allocator, key) catch |failure| {
+            allocator.free(key);
+            return failure;
+        };
+    }
+    if (responses.count() == 0) return null;
+    const json = try std.json.Stringify.valueAlloc(
+        allocator,
+        std.json.Value{ .object = responses },
+        .{},
+    );
+    errdefer allocator.free(json);
+    return .{
+        .json = json,
+        .keys = try keys.toOwnedSlice(allocator),
+    };
+}
+
+fn deinitAnsweredTaskInputs(
+    allocator: std.mem.Allocator,
+    answered: *std.StringHashMapUnmanaged(void),
+) void {
+    var iterator = answered.keyIterator();
+    while (iterator.next()) |key| allocator.free(key.*);
+    answered.deinit(allocator);
+}
+
+fn waitForTaskPoll(options: TaskWaitOptions, delay_ms: u64) !void {
+    if (delay_ms == 0) return;
+    const io = options.control.io orelse options.io orelse return error.TaskPollingRequiresIo;
+    return options.control.invoke(void, sleepForTaskPoll, .{ io, delay_ms });
+}
+
+fn sleepForTaskPoll(io: std.Io, delay_ms: u64) !void {
+    const maximum: u64 = @intCast(std.math.maxInt(i64));
+    return (std.Io.Timeout{ .duration = .{
+        .raw = .fromMilliseconds(@intCast(@min(delay_ms, maximum))),
+        .clock = .awake,
+    } }).sleep(io);
+}
+
+fn stopTaskWait(
+    client: *Client,
+    allocator: std.mem.Allocator,
+    task_id: []const u8,
+    cancel_on_stop: bool,
+    failure: anyerror,
+) anyerror {
+    if (cancel_on_stop) client.cancelTask(allocator, task_id) catch {};
+    return failure;
 }
 
 fn extractSseResponse(
@@ -4767,6 +4956,202 @@ test "task status subscriptions require the extension before transport I/O" {
     defer std.testing.allocator.free(result);
     try std.testing.expectEqual(@as(usize, 1), stub.calls);
     try Stub.event(&stub, "{}");
+}
+
+test "task waiting polls answers input once and returns terminal owned state" {
+    const State = struct {
+        calls: usize = 0,
+        gets: usize = 0,
+        updates: usize = 0,
+        inputs: usize = 0,
+        statuses: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            const parsed = try std.json.parseFromSlice(std.json.Value, allocator, request.message, .{});
+            defer parsed.deinit();
+            const root = try requiredObject(parsed.value);
+            const id = root.get("id").?;
+            const result_source = if (std.mem.eql(u8, request.method, tasks.methods.get)) get: {
+                self.gets += 1;
+                break :get switch (self.gets) {
+                    1 => "{\"resultType\":\"complete\",\"taskId\":\"task-1\",\"status\":\"working\",\"createdAt\":\"then\",\"lastUpdatedAt\":\"one\",\"ttlMs\":1000,\"pollIntervalMs\":0}",
+                    2, 3 => "{\"resultType\":\"complete\",\"taskId\":\"task-1\",\"status\":\"input_required\",\"createdAt\":\"then\",\"lastUpdatedAt\":\"two\",\"ttlMs\":1000,\"pollIntervalMs\":0,\"inputRequests\":{\"approval\":{\"method\":\"elicitation/create\",\"params\":{\"message\":\"Continue?\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{}}}}}}",
+                    else => "{\"resultType\":\"complete\",\"taskId\":\"task-1\",\"status\":\"completed\",\"createdAt\":\"then\",\"lastUpdatedAt\":\"done\",\"ttlMs\":1000,\"result\":{\"content\":[]}}",
+                };
+            } else update: {
+                try std.testing.expectEqualStrings(tasks.methods.update, request.method);
+                self.updates += 1;
+                try std.testing.expect(std.mem.indexOf(u8, request.message, "\"approval\":{\"action\":\"accept\"") != null);
+                break :update "{\"resultType\":\"complete\"}";
+            };
+            const result = try std.json.parseFromSlice(std.json.Value, allocator, result_source, .{});
+            defer result.deinit();
+            return std.json.Stringify.valueAlloc(allocator, .{
+                .jsonrpc = "2.0",
+                .id = id,
+                .result = result.value,
+            }, .{});
+        }
+
+        fn input(context: *anyopaque, allocator: std.mem.Allocator, request: InputRequest) ![]u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.inputs += 1;
+            try std.testing.expectEqualStrings("approval", request.key);
+            try std.testing.expectEqual(InputKind.elicitation, request.kind);
+            return allocator.dupe(u8, "{\"action\":\"accept\"}");
+        }
+
+        fn status(context: *anyopaque, task: tasks.DetailedTask) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.statuses += 1;
+            try std.testing.expectEqualStrings("task-1", task.metadata.task_id);
+        }
+    };
+    var state: State = .{};
+    var client = Client{
+        .transport = .{ .context = &state, .sendFn = State.send },
+        .capabilities_json = "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
+        .input_handler = .{ .context = &state, .handleFn = State.input },
+    };
+    var terminal = try client.waitTask(std.testing.allocator, "task-1", .{
+        .poll = .{ .default_interval_ms = 0, .minimum_interval_ms = 0, .max_polls = 5 },
+        .status_sink = .{ .context = &state, .emitFn = State.status },
+    });
+    defer terminal.deinit();
+    try std.testing.expectEqual(tasks.Status.completed, terminal.value.detailed.status());
+    try std.testing.expectEqual(@as(usize, 5), state.calls);
+    try std.testing.expectEqual(@as(usize, 4), state.gets);
+    try std.testing.expectEqual(@as(usize, 1), state.updates);
+    try std.testing.expectEqual(@as(usize, 1), state.inputs);
+    try std.testing.expectEqual(@as(usize, 4), state.statuses);
+
+    state.gets = 1;
+    client.input_handler = null;
+    try std.testing.expectError(
+        error.InputRequired,
+        client.waitTask(std.testing.allocator, "task-1", .{
+            .poll = .{ .default_interval_ms = 0, .max_polls = 1 },
+        }),
+    );
+}
+
+test "task waiting is bounded and cooperatively cancels on local stop" {
+    const State = struct {
+        calls: usize = 0,
+        cancels: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            const result = if (std.mem.eql(u8, request.method, tasks.methods.cancel)) cancel: {
+                self.cancels += 1;
+                break :cancel "{\"resultType\":\"complete\"}";
+            } else "{\"resultType\":\"complete\",\"taskId\":\"task-1\",\"status\":\"working\",\"createdAt\":\"then\",\"lastUpdatedAt\":\"now\",\"ttlMs\":1000,\"pollIntervalMs\":1}";
+            return std.fmt.allocPrint(
+                allocator,
+                "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{s}}}",
+                .{ self.calls, result },
+            );
+        }
+    };
+    var state: State = .{};
+    var client = Client{
+        .transport = .{ .context = &state, .sendFn = State.send },
+        .capabilities_json = "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
+    };
+    try std.testing.expectError(
+        error.TooManyMcpTaskPolls,
+        client.waitTask(std.testing.allocator, "task-1", .{
+            .poll = .{ .max_polls = 1 },
+        }),
+    );
+    try std.testing.expectEqual(@as(usize, 1), state.cancels);
+
+    try std.testing.expectError(
+        error.TaskPollingRequiresIo,
+        client.waitTask(std.testing.allocator, "task-1", .{
+            .poll = .{ .max_polls = 2 },
+        }),
+    );
+    try std.testing.expectEqual(@as(usize, 2), state.cancels);
+    try std.testing.expectError(
+        error.TooManyMcpTaskPolls,
+        client.waitTask(std.testing.allocator, "task-1", .{
+            .io = std.testing.io,
+            .poll = .{ .max_polls = 2 },
+        }),
+    );
+    try std.testing.expectEqual(@as(usize, 3), state.cancels);
+
+    var cancellation: model.CancellationToken = .{};
+    cancellation.cancel();
+    try std.testing.expectError(
+        error.Cancelled,
+        client.waitTask(std.testing.allocator, "task-1", .{
+            .control = .{ .cancellation = &cancellation },
+        }),
+    );
+    try std.testing.expectEqual(@as(usize, 4), state.cancels);
+    try std.testing.expectError(
+        error.TooManyMcpTaskPolls,
+        client.waitTask(std.testing.allocator, "task-1", .{
+            .poll = .{ .max_polls = 1 },
+            .cancel_on_stop = false,
+        }),
+    );
+    try std.testing.expectEqual(@as(usize, 4), state.cancels);
+    try std.testing.expectError(
+        error.TooManyMcpTaskPolls,
+        client.waitTask(std.testing.allocator, "task-1", .{
+            .poll = .{ .max_polls = 0 },
+        }),
+    );
+    try std.testing.expectError(
+        error.InvalidTaskRequest,
+        client.waitTask(std.testing.allocator, "", .{}),
+    );
+}
+
+test "task waiting releases every partial input and polling allocation" {
+    const Check = struct {
+        const State = struct { calls: usize = 0 };
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const state: *State = @ptrCast(@alignCast(context));
+            state.calls += 1;
+            const result = if (std.mem.eql(u8, request.method, tasks.methods.update))
+                "{\"resultType\":\"complete\"}"
+            else if (state.calls == 1)
+                "{\"resultType\":\"complete\",\"taskId\":\"task-1\",\"status\":\"input_required\",\"createdAt\":\"then\",\"lastUpdatedAt\":\"now\",\"ttlMs\":1000,\"pollIntervalMs\":0,\"inputRequests\":{\"approval\":{\"method\":\"elicitation/create\",\"params\":{\"message\":\"Continue?\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{}}}}}}"
+            else
+                "{\"resultType\":\"complete\",\"taskId\":\"task-1\",\"status\":\"completed\",\"createdAt\":\"then\",\"lastUpdatedAt\":\"done\",\"ttlMs\":1000,\"result\":{\"content\":[]}}";
+            return std.fmt.allocPrint(
+                allocator,
+                "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{s}}}",
+                .{ state.calls, result },
+            );
+        }
+
+        fn input(_: *anyopaque, allocator: std.mem.Allocator, _: InputRequest) ![]u8 {
+            return allocator.dupe(u8, "{\"action\":\"accept\"}");
+        }
+
+        fn run(allocator: std.mem.Allocator) !void {
+            var state: State = .{};
+            var client = Client{
+                .transport = .{ .context = &state, .sendFn = send },
+                .capabilities_json = "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
+                .input_handler = .{ .context = &state, .handleFn = input },
+            };
+            var task = try client.waitTask(allocator, "task-1", .{
+                .poll = .{ .default_interval_ms = 0, .minimum_interval_ms = 0, .max_polls = 2 },
+            });
+            defer task.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
 }
 
 test "tool-created tasks require the advertised client extension" {

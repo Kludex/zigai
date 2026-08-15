@@ -85,6 +85,30 @@ pub const DetailedTask = struct {
     }
 };
 
+/// Bounded client polling policy. The server's current suggestion is honored;
+/// `minimum_interval_ms` prevents an absent or overly aggressive suggestion
+/// from creating a hot loop.
+pub const PollPolicy = struct {
+    default_interval_ms: u64 = 1_000,
+    minimum_interval_ms: u64 = 10,
+    max_polls: usize = 256,
+
+    pub fn interval(self: PollPolicy, suggested_ms: ?u64) u64 {
+        return @max(suggested_ms orelse self.default_interval_ms, self.minimum_interval_ms);
+    }
+};
+
+/// Observes one validated task state. The value borrows the current `Owned`
+/// task and is valid only for the callback duration.
+pub const StatusSink = struct {
+    context: *anyopaque,
+    emitFn: *const fn (context: *anyopaque, task: DetailedTask) anyerror!void,
+
+    pub fn emit(self: StatusSink, task: DetailedTask) !void {
+        return self.emitFn(self.context, task);
+    }
+};
+
 pub const Value = union(enum) {
     created: CreatedTask,
     detailed: DetailedTask,
@@ -368,6 +392,34 @@ test "task requests serialize bounded parameters" {
         "{\"taskId\":\"task-1\",\"inputResponses\":{\"approval\":{\"action\":\"accept\"}}}",
         update,
     );
+}
+
+test "task polling policy bounds server intervals and status observers" {
+    const policy = PollPolicy{ .default_interval_ms = 50, .minimum_interval_ms = 10 };
+    try std.testing.expectEqual(@as(u64, 50), policy.interval(null));
+    try std.testing.expectEqual(@as(u64, 10), policy.interval(5));
+    try std.testing.expectEqual(@as(u64, 1_000), policy.interval(1_000));
+
+    const Observer = struct {
+        status: ?Status = null,
+        fn emit(context: *anyopaque, task: DetailedTask) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.status = task.status();
+        }
+    };
+    var observer: Observer = .{};
+    try (StatusSink{ .context = &observer, .emitFn = Observer.emit }).emit(.{
+        .metadata = .{
+            .task_id = "task-1",
+            .status_message = null,
+            .created_at = "then",
+            .last_updated_at = "now",
+            .ttl_ms = null,
+            .poll_interval_ms = null,
+        },
+        .state = .{ .working = {} },
+    });
+    try std.testing.expectEqual(Status.working, observer.status.?);
 }
 
 test "task requests reject empty identifiers and malformed responses" {

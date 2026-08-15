@@ -377,6 +377,14 @@ streams extend the typed subscription filter with explicit task IDs. Incoming
 one of those IDs; task subscriptions without the extension capability fail
 before application dispatch.
 
+`Client.waitTask` is the lifecycle boundary for polling. It caps both polling
+frequency and request count, observes every validated state, deduplicates input
+request keys across eventually consistent responses, and sends input through
+the same `InputHandler` trust boundary used by synchronous MRTR. Local
+cancellation, deadlines, and exhausted poll budgets trigger a best-effort
+`tasks/cancel`; terminal task states remain arena-owned and are returned to the
+caller.
+
 Multi round-trip requests replace server-initiated JSON-RPC calls. When a
 result requires sampling, roots, or elicitation, the configured `InputHandler`
 answers each item and the client retries with `inputResponses` and opaque

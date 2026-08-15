@@ -233,9 +233,12 @@ validation never invokes it.
 | `McpResponseIdMismatch` | A response ID does not match the request. |
 | `McpRpcError` | The peer returned a JSON-RPC error envelope. |
 | `MissingMcpClient` | An MCP toolset has no client. |
+| `MissingMcpClientCapability` | A Tasks operation was attempted without the extension capability. |
 | `MissingMcpSseResponse` | Streamable HTTP did not produce the required SSE stream. |
+| `TaskPollingRequiresIo` | A nonzero task polling delay has no I/O runtime. |
 | `TooManyMcpPages` | Tool discovery exceeded the configured page limit. |
 | `TooManyMcpRoundTrips` | Elicitation exceeded its round-trip limit. |
+| `TooManyMcpTaskPolls` | A task remained non-terminal after its bounded polling budget. |
 | `UnsupportedMcpProtocolVersion` | Discovery negotiated an unsupported revision. |
 
 ## Application errors
