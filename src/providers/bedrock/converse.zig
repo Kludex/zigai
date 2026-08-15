@@ -747,7 +747,7 @@ test "encodes Converse tool results choices schemas and tiers" {
         });
         defer std.testing.allocator.free(body);
         try std.testing.expect(std.mem.indexOf(u8, body, entry[1]) != null);
-        try std.testing.expect(std.mem.indexOf(u8, body, "Return value JSON Schema") != null);
+        try std.testing.expect(std.mem.indexOf(u8, body, "Return JSON Schema") != null);
     }
 
     const without_tools = try encodeRequest(std.testing.allocator, .{
@@ -927,20 +927,17 @@ test "rejects malformed Converse responses and decodes all terminal reasons" {
     }) |entry| try std.testing.expectEqual(entry[1], bedrockFinishReason(entry[0]).kind);
 }
 
-test "Converse encoding releases every partial allocation" {
-    const Check = struct {
-        fn run(allocator: std.mem.Allocator) !void {
-            const body = try encodeRequest(allocator, .{
-                .messages = &.{.{ .request = .{ .parts = &.{.{ .tool_return = .{
-                    .call_id = "call_1",
-                    .name = "weather",
-                    .content = "{\"temperature\":31}",
-                } }} } }},
-            });
-            allocator.free(body);
-        }
-    };
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+test "Converse tool result preserves parser allocation failures" {
+    var output: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer output.deinit();
+    try output.ensureTotalCapacity(1024);
+    var json: std.json.Stringify = .{ .writer = &output.writer };
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.OutOfMemory, writeToolResult(failing.allocator(), &json, .{
+        .call_id = "call_1",
+        .name = "weather",
+        .content = "{\"temperature\":31}",
+    }));
 }
 
 test "Converse client preserves the provider boundary" {

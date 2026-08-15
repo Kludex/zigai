@@ -32,6 +32,10 @@ pub const decodeResponse = converse.decodeResponse;
 pub const Error = converse.Error;
 pub const InitError = std.mem.Allocator.Error || error{InvalidBedrockRegion};
 
+test {
+    _ = converse;
+}
+
 /// Native Bedrock Runtime provider state. The generated regional base URL is
 /// rebound when `provider` is called, after this value reaches its stable
 /// address. Do not move the state while its borrowed interface is in use.
