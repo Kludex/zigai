@@ -32,7 +32,10 @@ pub const error_codes = struct {
 pub const methods = struct {
     pub const discover = "server/discover";
     pub const complete = "completion/complete";
+    pub const create_message = "sampling/createMessage";
+    pub const elicit = "elicitation/create";
     pub const get_prompt = "prompts/get";
+    pub const list_roots = "roots/list";
     pub const list_prompts = "prompts/list";
     pub const list_resources = "resources/list";
     pub const list_resource_templates = "resources/templates/list";
@@ -41,6 +44,13 @@ pub const methods = struct {
     pub const call_tool = "tools/call";
     pub const list_tools = "tools/list";
     pub const cancelled = "notifications/cancelled";
+    pub const logging_message = "notifications/message";
+    pub const progress = "notifications/progress";
+    pub const prompt_list_changed = "notifications/prompts/list_changed";
+    pub const resource_list_changed = "notifications/resources/list_changed";
+    pub const resource_updated = "notifications/resources/updated";
+    pub const subscriptions_acknowledged = "notifications/subscriptions/acknowledged";
+    pub const tool_list_changed = "notifications/tools/list_changed";
 };
 
 /// MCP protocol and transport failures defined by ZigAI.

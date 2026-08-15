@@ -96,6 +96,16 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_spec_cli_tests = b.addRunArtifact(spec_cli_tests);
+    const mcp_conformance_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/mcp_conformance.zig"),
+            .target = target,
+            .optimize = optimize,
+            .error_tracing = error_tracing,
+            .imports = &.{.{ .name = "zigai", .module = zigai }},
+        }),
+    });
+    const run_mcp_conformance_tests = b.addRunArtifact(mcp_conformance_tests);
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/fuzz.zig"),
@@ -125,6 +135,7 @@ pub fn build(b: *std.Build) void {
     fuzz_step.dependOn(&run_tests.step);
     fuzz_step.dependOn(&run_cli_common_tests.step);
     fuzz_step.dependOn(&run_spec_cli_tests.step);
+    fuzz_step.dependOn(&run_mcp_conformance_tests.step);
     fuzz_step.dependOn(&run_fuzz_tests.step);
     const test_step = b.step("test", "Run the complete test suite");
     test_step.dependOn(&run_tests.step);
@@ -133,6 +144,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_cassette_tests.step);
     test_step.dependOn(&run_cli_common_tests.step);
     test_step.dependOn(&run_spec_cli_tests.step);
+    test_step.dependOn(&run_mcp_conformance_tests.step);
     test_step.dependOn(&run_fuzz_tests.step);
 
     const check = b.step("check", "Compile all public packages");
@@ -142,6 +154,7 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&cassette_tests.step);
     check.dependOn(&cli_common_tests.step);
     check.dependOn(&spec_cli_tests.step);
+    check.dependOn(&mcp_conformance_tests.step);
     check.dependOn(&fuzz_tests.step);
 
     const openai_cli = addCli(b, target, optimize, zigai, "zigai-openai", "src/cli/openai.zig");
