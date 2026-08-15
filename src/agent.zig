@@ -4629,7 +4629,8 @@ test "tool policy failure and parallel retry branches are explicit" {
         &.{policy},
     ).failure);
 
-    try std.testing.expect(findResumeDecision(&.{}, "missing") == null);
+    const unmatched_decisions = [_]ResumeDecision{.{ .call_id = "other", .action = .deny }};
+    try std.testing.expect(findResumeDecision(&unmatched_decisions, "missing") == null);
     try std.testing.expect(findToolWork(&.{work}, "missing") == null);
 
     const Stub = struct {
@@ -4662,8 +4663,13 @@ test "tool policy failure and parallel retry branches are explicit" {
         },
     };
     var parallel_retries = ToolRetryTracker{ .allocator = allocator };
+    const parallel_agent = Agent{
+        .model = .{ .context = &tool_context, .profile = .{}, .requestFn = Stub.request },
+        .io = io,
+    };
+    try std.testing.expectError(error.UnusedModel, parallel_agent.model.request(allocator, .{ .messages = &.{} }));
     const batch = try executeToolCalls(
-        .{ .model = .{ .context = &tool_context, .profile = .{}, .requestFn = Stub.request }, .io = io },
+        parallel_agent,
         &.{ tool, other },
         allocator,
         &parallel_work,
