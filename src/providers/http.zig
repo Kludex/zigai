@@ -43,11 +43,22 @@ pub const Configured = struct {
     headers: []const transport.Header = &.{},
     request_policy: provider_types.RequestPolicy = .{},
     model_profiles: ?ModelProfiles = null,
+    operations: ?Operations = null,
 
     pub const ModelProfiles = struct {
         context: *anyopaque,
         lookupFn: ?*const fn (*anyopaque, []const u8) ?model.ModelProfile = null,
         overrideFn: ?*const fn (*anyopaque, []const u8, model.ModelProfile) model.ModelProfile = null,
+    };
+
+    /// Provider-specific non-inference operations. The authenticated HTTP
+    /// provider forwards these callbacks without exposing credentials to them.
+    pub const Operations = struct {
+        context: *anyopaque,
+        listModelsFn: ?*const fn (*anyopaque, std.mem.Allocator) anyerror!provider_types.OwnedModels = null,
+        uploadFileFn: ?*const fn (*anyopaque, std.mem.Allocator, provider_types.FileInput) anyerror!provider_types.OwnedFile = null,
+        getFileFn: ?*const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!provider_types.OwnedFile = null,
+        deleteFileFn: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
     };
 
     pub fn provider(self: *Configured) provider_types.Provider {
@@ -61,7 +72,51 @@ pub const Configured = struct {
             .modelProfileFn = if (self.model_profiles != null) modelProfile else null,
             .overrideProfileFn = if (self.model_profiles != null) overrideProfile else null,
             .observeErrorFn = observeError,
+            .listModelsFn = if (hasOperation(self, .list_models)) listModels else null,
+            .uploadFileFn = if (hasOperation(self, .upload_file)) uploadFile else null,
+            .getFileFn = if (hasOperation(self, .get_file)) getFile else null,
+            .deleteFileFn = if (hasOperation(self, .delete_file)) deleteFile else null,
         };
+    }
+
+    const Operation = enum { list_models, upload_file, get_file, delete_file };
+
+    fn hasOperation(self: *const Configured, operation: Operation) bool {
+        const operations = self.operations orelse return false;
+        return switch (operation) {
+            .list_models => operations.listModelsFn != null,
+            .upload_file => operations.uploadFileFn != null,
+            .get_file => operations.getFileFn != null,
+            .delete_file => operations.deleteFileFn != null,
+        };
+    }
+
+    fn listModels(context: *anyopaque, allocator: std.mem.Allocator) !provider_types.OwnedModels {
+        const self: *Configured = @ptrCast(@alignCast(context));
+        const operations = self.operations orelse return error.UnsupportedProviderOperation;
+        const list = operations.listModelsFn orelse return error.UnsupportedProviderOperation;
+        return list(operations.context, allocator);
+    }
+
+    fn uploadFile(context: *anyopaque, allocator: std.mem.Allocator, input: provider_types.FileInput) !provider_types.OwnedFile {
+        const self: *Configured = @ptrCast(@alignCast(context));
+        const operations = self.operations orelse return error.UnsupportedProviderOperation;
+        const upload = operations.uploadFileFn orelse return error.UnsupportedProviderOperation;
+        return upload(operations.context, allocator, input);
+    }
+
+    fn getFile(context: *anyopaque, allocator: std.mem.Allocator, id: []const u8) !provider_types.OwnedFile {
+        const self: *Configured = @ptrCast(@alignCast(context));
+        const operations = self.operations orelse return error.UnsupportedProviderOperation;
+        const get = operations.getFileFn orelse return error.UnsupportedProviderOperation;
+        return get(operations.context, allocator, id);
+    }
+
+    fn deleteFile(context: *anyopaque, id: []const u8) !void {
+        const self: *Configured = @ptrCast(@alignCast(context));
+        const operations = self.operations orelse return error.UnsupportedProviderOperation;
+        const delete = operations.deleteFileFn orelse return error.UnsupportedProviderOperation;
+        return delete(operations.context, id);
     }
 
     fn request(context: *anyopaque, allocator: std.mem.Allocator, value: provider_types.Request) !transport.Response {
@@ -256,6 +311,71 @@ test "configured HTTP provider owns authentication headers policy and streaming"
     try std.testing.expect(state.streamed);
     try std.testing.expectEqual(@as(usize, 1), sink.starts);
     try std.testing.expectEqual(@as(usize, 1), sink.lines);
+}
+
+test "configured HTTP provider forwards non-inference operations" {
+    const State = struct {
+        deleted: bool = false,
+
+        fn models(_: *anyopaque, allocator: std.mem.Allocator) !provider_types.OwnedModels {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            errdefer arena.deinit();
+            const items = try arena.allocator().alloc(provider_types.ModelDescriptor, 1);
+            items[0] = .{ .id = try arena.allocator().dupe(u8, "model") };
+            return .{ .arena = arena, .items = items };
+        }
+
+        fn file(_: *anyopaque, allocator: std.mem.Allocator, id: []const u8) !provider_types.OwnedFile {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            errdefer arena.deinit();
+            const owned_id = try arena.allocator().dupe(u8, id);
+            return .{ .arena = arena, .value = .{ .id = owned_id } };
+        }
+
+        fn upload(context: *anyopaque, allocator: std.mem.Allocator, input: provider_types.FileInput) !provider_types.OwnedFile {
+            try std.testing.expectEqualStrings("text/plain", input.media_type);
+            return file(context, allocator, input.filename);
+        }
+
+        fn delete(context: *anyopaque, id: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expectEqualStrings("file", id);
+            self.deleted = true;
+        }
+    };
+    var state: State = .{};
+    var configured = Configured{
+        .name = "example",
+        .base_url = "https://api.example.test/v1",
+        .transport = .{ .context = &state, .sendFn = undefined },
+        .operations = .{
+            .context = &state,
+            .listModelsFn = State.models,
+            .uploadFileFn = State.upload,
+            .getFileFn = State.file,
+            .deleteFileFn = State.delete,
+        },
+    };
+    const provider = configured.provider();
+    var models = try provider.listModels(std.testing.allocator);
+    defer models.deinit();
+    try std.testing.expectEqualStrings("model", models.items[0].id);
+    var uploaded = try provider.uploadFile(std.testing.allocator, .{
+        .filename = "file",
+        .media_type = "text/plain",
+        .bytes = "content",
+    });
+    defer uploaded.deinit();
+    try std.testing.expectEqualStrings("file", uploaded.value.id);
+    var fetched = try provider.getFile(std.testing.allocator, "file");
+    defer fetched.deinit();
+    try std.testing.expectEqualStrings("file", fetched.value.id);
+    try provider.deleteFile("file");
+    try std.testing.expect(state.deleted);
+
+    configured.operations = .{ .context = &state };
+    const unsupported = configured.provider();
+    try std.testing.expectError(error.UnsupportedProviderOperation, unsupported.listModels(std.testing.allocator));
 }
 
 test "configured HTTP provider profiles redact credentials and reject conflicts" {

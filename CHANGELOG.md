@@ -7,9 +7,9 @@
   capability overrides, with explicit arena ownership for returned data.
 - Add a reusable authenticated HTTP provider that owns credential rendering,
   configured headers, relative endpoint construction, streaming delegation,
-  and credential-safe provider error reporting. Reject malformed credentials,
-  header injection, ambiguous API roots, and duplicate header ownership before
-  transport I/O.
+  non-inference operation dispatch, and credential-safe provider error
+  reporting. Reject malformed credentials, header injection, ambiguous API
+  roots, and duplicate header ownership before transport I/O.
 - Split OpenAI provider configuration from the Responses API model adapter.
   `openai.Provider` now owns credentials, the API root, configured headers,
   request policy, transport, and profile overrides; `openai.Client` borrows its

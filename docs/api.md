@@ -142,6 +142,9 @@ request policy, and optional profile callbacks are borrowed. `provider()`
 returns another borrowed view; keep the `Configured` value at a stable address
 until every model and in-flight request using it has finished. Model adapters
 receive only relative endpoints and never receive the provider credential.
+Provider wrappers can attach discovery and file callbacks through
+`Configured.Operations`; those callbacks remain behind the same borrowed
+provider interface.
 
 OpenAI uses that split directly. Create a stable `openai.Provider`, then pass
 its borrowed interface to the Responses API client:
