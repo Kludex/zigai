@@ -530,7 +530,8 @@ MRTR input that was not advertised is rejected. `max_round_trips` and
 `max_pages` bound retries and tool discovery.
 
 The typed helpers cover tools, prompts, resources, completion, discovery, and
-subscriptions. Use `Client.request` for extensions such as Tasks:
+subscriptions; `SubscriptionFilter` selects list and resource updates without
+hand-written JSON. Use `Client.request` for extensions such as Tasks:
 
 ```zig
 const result_json = try mcp_client.request(

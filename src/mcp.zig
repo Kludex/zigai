@@ -23,6 +23,7 @@ pub const protocol_version = "2026-07-28";
 
 pub const ClientCapabilities = primitives.ClientCapabilities;
 pub const ServerCapabilities = primitives.ServerCapabilities;
+pub const SubscriptionFilter = primitives.SubscriptionFilter;
 
 /// Era detected by the compatibility probes defined in MCP 2026-07-28.
 pub const CompatibilityEra = enum { modern, legacy, indeterminate };
@@ -667,6 +668,19 @@ pub const Client = struct {
     }
 
     pub fn listen(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        filter: primitives.SubscriptionFilter,
+        events: EventSink,
+    ) ![]u8 {
+        const filter_json = try filter.stringifyAlloc(allocator);
+        defer allocator.free(filter_json);
+        return self.listenJson(allocator, filter_json, events);
+    }
+
+    /// Raw JSON escape hatch for subscription filters added by future MCP
+    /// revisions or extensions.
+    pub fn listenJson(
         self: *Client,
         allocator: std.mem.Allocator,
         filter_json: []const u8,
@@ -4811,7 +4825,7 @@ test "generic client helpers cover every core request shape" {
         ),
         try client.listen(
             std.testing.allocator,
-            "{\"toolsListChanged\":true}",
+            .{ .tools_list_changed = true },
             .{ .context = &stub, .eventFn = Stub.event },
         ),
     };

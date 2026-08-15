@@ -30,7 +30,7 @@ API.
 | Results | `complete` and `input_required`, every core nested result, cache metadata, content blocks, icons, and annotations |
 | MRTR | Elicitation schemas/results, roots, sampling messages/tools, declared client capabilities, and bounded retries |
 | Pagination | Cursor encoding for all list methods; tool discovery rejects cursor cycles and honors `max_pages` |
-| Subscriptions | Correlation IDs, acknowledgement-first ordering, requested filters, SSE, stdio, and cancellation |
+| Subscriptions | Typed filters, correlation IDs, acknowledgement-first ordering, requested updates, SSE, stdio, and cancellation |
 | HTTP | Routing headers, tool-argument headers, reserved MCP error status mappings, response limits, URL policy, OAuth discovery, bounded Bearer refresh/step-up, and server deployment guards |
 | Extensions | Mandatory prefixed identifiers, object settings, lossless unknown JSON, generic methods, and `extensionSettings` |
 | Compatibility | Modern/legacy classification for stdio and HTTP; actionable rejection of legacy `initialize` |

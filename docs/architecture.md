@@ -345,9 +345,10 @@ through the normal agent loop.
 The focused `mcp.primitives` module owns borrowed protocol value objects.
 `ClientCapabilities` and `ServerCapabilities` serialize standardized fields,
 validate object-valued experimental and extension settings, and enforce
-prefixed extension identifiers. They return one caller-owned JSON document;
-the existing raw capability fields remain the explicit forward-compatibility
-boundary for revisions ZigAI does not know yet.
+prefixed extension identifiers. `SubscriptionFilter` gives the long-lived
+listen request a typed selection of list and resource updates. These values
+return caller-owned JSON documents; explicit raw JSON entry points remain the
+forward-compatibility boundary for revisions ZigAI does not know yet.
 
 Multi round-trip requests replace server-initiated JSON-RPC calls. When a
 result requires sampling, roots, or elicitation, the configured `InputHandler`

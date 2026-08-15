@@ -131,6 +131,34 @@ pub const ServerCapabilities = struct {
     }
 };
 
+/// Server notifications selected for one `subscriptions/listen` request.
+pub const SubscriptionFilter = struct {
+    tools_list_changed: bool = false,
+    prompts_list_changed: bool = false,
+    resources_list_changed: bool = false,
+    resource_subscriptions: []const []const u8 = &.{},
+
+    /// Serializes the filter object expected under the request's
+    /// `notifications` field. The caller owns the returned JSON.
+    pub fn stringifyAlloc(self: SubscriptionFilter, allocator: std.mem.Allocator) ![]u8 {
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const memory = arena.allocator();
+        var object: std.json.ObjectMap = .{};
+        if (self.tools_list_changed) try object.put(memory, "toolsListChanged", .{ .bool = true });
+        if (self.prompts_list_changed) try object.put(memory, "promptsListChanged", .{ .bool = true });
+        if (self.resources_list_changed) try object.put(memory, "resourcesListChanged", .{ .bool = true });
+        if (self.resource_subscriptions.len > 0) {
+            var resources: std.json.Array = .init(memory);
+            for (self.resource_subscriptions) |uri| {
+                try resources.append(.{ .string = uri });
+            }
+            try object.put(memory, "resourceSubscriptions", .{ .array = resources });
+        }
+        return std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = object }, .{});
+    }
+};
+
 /// MCP extension identifiers use a reverse-DNS prefix and one slash.
 pub fn isExtensionIdentifier(value: []const u8) bool {
     const separator = std.mem.indexOfScalar(u8, value, '/') orelse return false;
@@ -245,6 +273,23 @@ test "typed MCP capability documents reject malformed open settings" {
     try std.testing.expect(!isExtensionIdentifier("com.example/-feature"));
 }
 
+test "typed MCP subscription filters serialize selected notifications" {
+    const source = try (SubscriptionFilter{
+        .tools_list_changed = true,
+        .resources_list_changed = true,
+        .resource_subscriptions = &.{ "file:///a", "https://example.com/resource" },
+    }).stringifyAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(source);
+    try std.testing.expectEqualStrings(
+        "{\"toolsListChanged\":true,\"resourcesListChanged\":true," ++
+            "\"resourceSubscriptions\":[\"file:///a\",\"https://example.com/resource\"]}",
+        source,
+    );
+    const empty = try (SubscriptionFilter{}).stringifyAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(empty);
+    try std.testing.expectEqualStrings("{}", empty);
+}
+
 test "typed MCP capability serialization releases every partial allocation" {
     const Check = struct {
         fn run(allocator: std.mem.Allocator) !void {
@@ -266,6 +311,13 @@ test "typed MCP capability serialization releases every partial allocation" {
                 .extensions_json = "{\"com.example/feature\":{}}",
             }).stringifyAlloc(allocator);
             defer allocator.free(server);
+            const filter = try (SubscriptionFilter{
+                .tools_list_changed = true,
+                .prompts_list_changed = true,
+                .resources_list_changed = true,
+                .resource_subscriptions = &.{ "file:///a", "file:///b" },
+            }).stringifyAlloc(allocator);
+            defer allocator.free(filter);
         }
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
