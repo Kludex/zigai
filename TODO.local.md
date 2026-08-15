@@ -93,9 +93,9 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   progress, cancellation, deprecated sampling/elicitation compatibility, and
   capability negotiation. Deliberately omit removed ping and legacy resource
   subscription RPCs.
-- [ ] Complete MCP task support, including SEP-1686 background tasks, polling,
-  result retrieval, cancellation, TTL, progress, input requests, and durable
-  resume across process restarts.
+- [ ] Complete the SEP-2663 MCP Tasks extension: server-directed task creation,
+  polling, input updates, cooperative cancellation, TTL, status subscriptions,
+  routing headers, and durable resume across process restarts.
 - [ ] Harden MCP transports. Add Streamable HTTP reconnection/resumption,
   session expiration, concurrent in-flight requests, bounded SSE buffering,
   stdio stderr policy, child shutdown escalation, backpressure, and exhaustive
