@@ -117,6 +117,26 @@ test "fuzz cassette YAML parser" {
     } });
 }
 
+fn fuzzAgentSpec(_: void, smith: *std.testing.Smith) !void {
+    var buffer: [max_input_bytes]u8 = undefined;
+    const source = input(smith, &buffer);
+    if (zigai.agent_spec.parseJson(std.testing.allocator, source)) |parsed_value| {
+        var parsed = parsed_value;
+        parsed.deinit();
+    } else |_| {}
+    if (zigai.agent_spec.parseYaml(std.testing.allocator, source)) |parsed_value| {
+        var parsed = parsed_value;
+        parsed.deinit();
+    } else |_| {}
+}
+
+test "fuzz JSON and YAML agent specification parsers" {
+    try std.testing.fuzz({}, fuzzAgentSpec, .{ .corpus = &.{
+        "\x38\x00\x00\x00{\"version\":1,\"provider\":{\"name\":\"openai\",\"model\":\"m\"}}",
+        "\x36\x00\x00\x00version: 1\nprovider: {name: openai, model: m}\n",
+    } });
+}
+
 const Handler = struct {
     fn handle(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8, _: []const u8) ![]u8 {
         return allocator.dupe(u8, "{}");

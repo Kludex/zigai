@@ -86,6 +86,16 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_cli_common_tests = b.addRunArtifact(cli_common_tests);
+    const spec_cli_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli/spec_common.zig"),
+            .target = target,
+            .optimize = optimize,
+            .error_tracing = error_tracing,
+            .imports = &.{.{ .name = "zigai", .module = zigai }},
+        }),
+    });
+    const run_spec_cli_tests = b.addRunArtifact(spec_cli_tests);
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/fuzz.zig"),
@@ -114,6 +124,7 @@ pub fn build(b: *std.Build) void {
     const fuzz_step = b.step("fuzz", "Run parser and protocol fuzz targets");
     fuzz_step.dependOn(&run_tests.step);
     fuzz_step.dependOn(&run_cli_common_tests.step);
+    fuzz_step.dependOn(&run_spec_cli_tests.step);
     fuzz_step.dependOn(&run_fuzz_tests.step);
     const test_step = b.step("test", "Run the complete test suite");
     test_step.dependOn(&run_tests.step);
@@ -121,6 +132,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_pydantic_ai_codec_tests.step);
     test_step.dependOn(&run_cassette_tests.step);
     test_step.dependOn(&run_cli_common_tests.step);
+    test_step.dependOn(&run_spec_cli_tests.step);
     test_step.dependOn(&run_fuzz_tests.step);
 
     const check = b.step("check", "Compile all public packages");
@@ -129,11 +141,13 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&pydantic_ai_codec_tests.step);
     check.dependOn(&cassette_tests.step);
     check.dependOn(&cli_common_tests.step);
+    check.dependOn(&spec_cli_tests.step);
     check.dependOn(&fuzz_tests.step);
 
     const openai_cli = addCli(b, target, optimize, zigai, "zigai-openai", "src/cli/openai.zig");
     const anthropic_cli = addCli(b, target, optimize, zigai, "zigai-anthropic", "src/cli/anthropic.zig");
     const google_cli = addCli(b, target, optimize, zigai, "zigai-google", "src/cli/google.zig");
+    const spec_cli = addCli(b, target, optimize, zigai, "zigai-agent-spec", "src/cli/spec.zig");
     const http_smoke = addCli(b, target, optimize, zigai, "zigai-http-smoke", "tests/http_transport_smoke.zig");
     const http_stress = addCli(b, target, optimize, zigai, "zigai-http-stress", "tests/http_stress.zig");
     const install_http_stress = b.addInstallArtifact(http_stress, .{});
@@ -142,9 +156,11 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(openai_cli);
     b.installArtifact(anthropic_cli);
     b.installArtifact(google_cli);
+    b.installArtifact(spec_cli);
     check.dependOn(&openai_cli.step);
     check.dependOn(&anthropic_cli.step);
     check.dependOn(&google_cli.step);
+    check.dependOn(&spec_cli.step);
     check.dependOn(&http_smoke.step);
     check.dependOn(&http_stress.step);
     check.dependOn(&stress_tests.step);

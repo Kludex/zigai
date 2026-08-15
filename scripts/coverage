@@ -45,15 +45,18 @@ compile_test coverage/bin/agent-tests --dep zigai -Mroot=tests/agent_loop.zig --
 compile_test coverage/bin/pydantic-ai-codec-tests --dep zigai -Mroot=tests/pydantic_ai_codec.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 compile_test coverage/bin/provider-tests --dep zigai --dep yaml -Mroot=tests/provider_cassettes.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 compile_test coverage/bin/cli-common-tests --dep zigai -Mroot=src/cli/common.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+compile_test coverage/bin/spec-cli-tests --dep zigai -Mroot=src/cli/spec_common.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 if [ -n "$coverage_target" ]; then
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/openai-cli --dep zigai -Mroot=src/cli/openai.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/anthropic-cli --dep zigai -Mroot=src/cli/anthropic.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/google-cli --dep zigai -Mroot=src/cli/google.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/spec-cli --dep zigai -Mroot=src/cli/spec.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/http-smoke --dep zigai -Mroot=tests/http_transport_smoke.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 else
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/openai-cli --dep zigai -Mroot=src/cli/openai.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/anthropic-cli --dep zigai -Mroot=src/cli/anthropic.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/google-cli --dep zigai -Mroot=src/cli/google.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/spec-cli --dep zigai -Mroot=src/cli/spec.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/http-smoke --dep zigai -Mroot=tests/http_transport_smoke.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 fi
 
@@ -69,6 +72,7 @@ run_kcov() {
             -e OPENAI_API_KEY -e OPENAI_BASE_URL \
             -e ANTHROPIC_API_KEY -e ANTHROPIC_BASE_URL \
             -e GEMINI_API_KEY -e GEMINI_BASE_URL \
+            -e ZIGAI_SPEC_MODEL -e ZIGAI_SPEC_API_KEY \
             -e ZIGAI_FIXTURE_BASE_URL \
             -v "$project_dir:$project_dir" -w "$project_dir" \
             "$kcov_image" "$kcov_bin" "$coverage_exclusions" "$@"
@@ -84,6 +88,7 @@ run_kcov --clean "$include_path" coverage/agent coverage/bin/agent-tests
 run_kcov --clean "$include_path" coverage/pydantic-ai-codec coverage/bin/pydantic-ai-codec-tests
 run_kcov --clean "$include_path" coverage/providers coverage/bin/provider-tests
 run_kcov --clean "$include_path" coverage/cli-common coverage/bin/cli-common-tests
+run_kcov --clean "$include_path" coverage/spec-cli-tests coverage/bin/spec-cli-tests
 
 fixture_bind=127.0.0.1
 fixture_host=127.0.0.1
@@ -116,6 +121,9 @@ GEMINI_API_KEY=test GEMINI_BASE_URL="http://$fixture_host:18765/google" \
     run_kcov "$include_path" coverage/google-cli coverage/bin/google-cli --stream --tools tests/cli_tools.json test
 ZIGAI_FIXTURE_BASE_URL="http://$fixture_host:18765" \
     run_kcov --clean "$include_path" coverage/http-smoke coverage/bin/http-smoke
+ZIGAI_SPEC_MODEL=gpt-5-mini ZIGAI_SPEC_API_KEY=test \
+    run_kcov --clean "$include_path" coverage/spec-cli coverage/bin/spec-cli validate tests/agent_spec.yaml \
+        --interpolate --allow-env ZIGAI_SPEC_MODEL --allow-env ZIGAI_SPEC_API_KEY --capability search
 
 # Accumulate CLI error paths in the same report.
 OPENAI_API_KEY=test run_kcov "$include_path" coverage/openai-cli coverage/bin/openai-cli >/dev/null 2>&1 || true
@@ -133,10 +141,20 @@ if (unset OPENAI_API_KEY; coverage/bin/openai-cli test >/dev/null 2>&1); then
     echo "OpenAI CLI unexpectedly accepted an unset API key" >&2
     exit 1
 fi
+run_kcov "$include_path" coverage/spec-cli coverage/bin/spec-cli >/dev/null 2>&1 || true
+if coverage/bin/spec-cli >/dev/null 2>&1; then
+    echo "agent spec CLI unexpectedly accepted missing arguments" >&2
+    exit 1
+fi
+run_kcov "$include_path" coverage/spec-cli coverage/bin/spec-cli validate README.md >/dev/null 2>&1 || true
+if coverage/bin/spec-cli validate README.md >/dev/null 2>&1; then
+    echo "agent spec CLI unexpectedly accepted an unsupported extension" >&2
+    exit 1
+fi
 
 run_kcov --merge coverage/merged \
-    coverage/unit coverage/agent coverage/pydantic-ai-codec coverage/providers coverage/cli-common \
-    coverage/openai-cli coverage/anthropic-cli coverage/google-cli coverage/http-smoke
+    coverage/unit coverage/agent coverage/pydantic-ai-codec coverage/providers coverage/cli-common coverage/spec-cli-tests \
+    coverage/openai-cli coverage/anthropic-cli coverage/google-cli coverage/spec-cli coverage/http-smoke
 
 report="$coverage_dir/merged/kcov-merged/coverage.json"
 for source in "$project_dir"/src/*.zig "$project_dir"/src/cli/*.zig "$project_dir"/src/codecs/pydantic_ai.zig "$project_dir"/src/models/*.zig "$project_dir"/src/providers/*.zig; do

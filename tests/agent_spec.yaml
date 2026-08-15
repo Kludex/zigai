@@ -1,0 +1,12 @@
+version: 1
+name: coverage
+provider:
+  name: openai
+  model: ${ZIGAI_SPEC_MODEL}
+  api_key:
+    env: ZIGAI_SPEC_API_KEY
+instructions:
+  - Keep responses concise.
+capabilities:
+  - id: search
+    loading: on_demand
