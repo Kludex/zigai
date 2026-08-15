@@ -44,6 +44,11 @@ const native_azure = NativeEntry{
     .model = "gpt-4o",
     .cassette = "cassettes/native/azure_responses_gpt_4o.yaml",
 };
+const native_mistral = NativeEntry{
+    .provider = "mistral",
+    .model = "mistral-small-latest",
+    .cassette = "cassettes/native/mistral_conversations_web_search.yaml",
+};
 const rich_openai = NativeEntry{
     .provider = "openai",
     .model = "gpt-5-nano",
@@ -107,6 +112,14 @@ pub fn main(init: std.process.Init) !void {
             requiredKey(init, zigai.providers.azure_openai.api_key_env),
             requiredKey(init, zigai.providers.azure_openai.endpoint_env),
             native_azure,
+        );
+    }
+    if (selectedNative(args, native_mistral)) {
+        try recordNativeMistral(
+            init,
+            http.transport(),
+            requiredKey(init, zigai.providers.mistral.api_key_env),
+            native_mistral,
         );
     }
     if (selectedRich(args, rich_openai)) {
@@ -515,6 +528,28 @@ fn recordNativeAzure(
     };
     try runScenario(init, client.model());
     try normalizeAzureUrl(init.gpa, &recording, base_url);
+    try writeNative(init, recording, entry);
+}
+
+fn recordNativeMistral(
+    init: std.process.Init,
+    transport: zigai.transport.Transport,
+    api_key: []const u8,
+    entry: NativeEntry,
+) !void {
+    var recording = cassettes.RecordingTransport.init(init.gpa, transport);
+    defer recording.deinit();
+    var provider = zigai.providers.mistral.ConversationsProvider.init(api_key, recording.transport());
+    var client = zigai.providers.mistral.ConversationsClient{
+        .model_name = entry.model,
+        .provider = provider.provider(),
+    };
+    try runNativeScenario(
+        init,
+        client.model(),
+        &.{.{ .web_search = .{} }},
+        native_google_prompt,
+    );
     try writeNative(init, recording, entry);
 }
 

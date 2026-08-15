@@ -163,6 +163,25 @@ test "real Azure Responses cassette replays a complete tool loop" {
     try replayMatrixScenario(client.model(), &cassette);
 }
 
+test "real Mistral Conversations cassette replays native web search" {
+    var cassette = try cassettes.ReplayTransport.init(
+        std.testing.allocator,
+        @embedFile("cassettes/native/mistral_conversations_web_search.yaml"),
+    );
+    defer cassette.deinit();
+    var provider_state = zigai.providers.mistral.ConversationsProvider.init("not-recorded", cassette.transport());
+    var client = zigai.providers.mistral.ConversationsClient{
+        .model_name = "mistral-small-latest",
+        .provider = provider_state.provider(),
+    };
+    try replayNativeScenario(
+        client.model(),
+        &cassette,
+        &.{.{ .web_search = .{} }},
+        native_google_prompt,
+    );
+}
+
 fn replayCompatibleProvider(
     comptime ProviderType: type,
     comptime ClientType: type,
