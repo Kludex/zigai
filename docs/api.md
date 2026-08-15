@@ -206,6 +206,23 @@ which require a chunk-stream transport rather than the line-stream interface.
 `bedrock.MantleProvider`, `bedrock.MantleClient`, and `bedrock.mantleApiBase`
 remain available for Bedrock's OpenAI-compatible Chat Completions endpoint.
 
+xAI uses a first-class Responses client and keeps compatibility explicit:
+
+```zig
+var provider = zigai.providers.xai.Provider.init(api_key, transport);
+var client = zigai.providers.xai.Client{
+    .model_name = "grok-4.6",
+    .provider = provider.provider(),
+};
+```
+
+The native client accepts typed web and X search configuration, provider-side
+code execution, collection search, and multiple remote MCP servers. Remote MCP
+servers are keyed by `server_label`; other provider-managed tools are
+singletons. Use `xai.ChatProvider` with `xai.ChatClient` only when an existing
+Chat Completions integration requires that compatibility protocol. xAI-only
+extension JSON uses the `.xai` tag and cannot cross into another adapter.
+
 OpenAI-compatible modules follow the same rule. Each named module exports a
 matching `Provider` and `Client` built from shared compile-time defaults. The
 provider owns the API root, provider identity, authentication style, headers,

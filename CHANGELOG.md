@@ -44,6 +44,11 @@
   retains ownership of its resource API root, `api-key` authentication, and
   deployment profiles; `ChatClient` and the legacy `Client` alias remain for
   Chat Completions deployments.
+- Add a first-class xAI Responses provider and client with a separate explicit
+  Chat Completions compatibility pair. The Responses dialect models filtered
+  web search, X search, code execution, collection search, and keyed remote MCP
+  servers as typed provider-managed tools, with bounded configuration checks
+  and an isolated `.xai` extension body.
 - Record and replay a redacted real Azure OpenAI `gpt-4o` Responses function
   tool loop, normalizing the resource endpoint and omitting authentication.
 - Record and replay a redacted real Claude Sonnet 4.6 Converse tool loop. The

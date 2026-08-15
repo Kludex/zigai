@@ -227,6 +227,38 @@ pub fn azureOpenAI(model_name: []const u8) ?model.ModelProfile {
     return null;
 }
 
+/// xAI language models served through the native Responses API.
+pub fn xAIResponses(model_name: []const u8) ?model.ModelProfile {
+    if (!startsWith(model_name, "grok") and !std.ascii.eqlIgnoreCase(model_name, "latest")) return null;
+    var profile = familyProfile(.grok, model_name);
+    profile.supports_json_schema_output = true;
+    profile.supports_json_object_output = true;
+    profile.supports_thinking = true;
+    profile.supports_truncation = true;
+    profile.extra_body_kind = .xai;
+    profile.reasoning_efforts = reasoningEfforts();
+    if (std.mem.indexOf(u8, model_name, "multi-agent") != null) profile.reasoning_efforts.insert(.xhigh);
+    profile.builtin_tools = model.ModelProfile.BuiltinToolSet.initMany(&.{
+        .web_search,
+        .x_search,
+        .code_execution,
+        .file_search,
+        .remote_mcp,
+    });
+    profile.content_types = model.ModelProfile.ContentTypeSet.initMany(&.{.image});
+    return profile;
+}
+
+/// xAI language models served through OpenAI-compatible Chat Completions.
+pub fn xAIChat(model_name: []const u8) ?model.ModelProfile {
+    var profile = xAIResponses(model_name) orelse return null;
+    profile.supports_truncation = false;
+    profile.supports_thinking = false;
+    profile.extra_body_kind = .openai_compatible;
+    profile.builtin_tools = model.ModelProfile.BuiltinToolSet.initEmpty();
+    return profile;
+}
+
 /// OpenAI model IDs exposed by Amazon Bedrock Mantle.
 pub fn bedrock(model_name: []const u8) ?model.ModelProfile {
     if (!startsWith(model_name, "openai.")) return null;
@@ -397,6 +429,12 @@ test "named compatible providers resolve known families and reject unknown ones"
     try std.testing.expect(!azureOpenAI("grok-4").?.supports_seed);
     try std.testing.expect(azureOpenAI("meta-llama").?.supports_tools);
     try std.testing.expect(azureOpenAI("unknown") == null);
+    try std.testing.expect(xAIResponses("grok-4.6").?.supportsBuiltinTool(.x_search));
+    try std.testing.expect(xAIResponses("grok-4.20-multi-agent").?.supportsReasoningEffort(.xhigh));
+    try std.testing.expectEqual(model.ExtraBodyKind.xai, xAIResponses("latest").?.extra_body_kind.?);
+    try std.testing.expectEqual(model.ExtraBodyKind.openai_compatible, xAIChat("grok-4.6").?.extra_body_kind.?);
+    try std.testing.expect(!xAIChat("grok-4.6").?.supportsBuiltinTool(.remote_mcp));
+    try std.testing.expect(xAIResponses("not-grok") == null);
 
     try std.testing.expect(bedrock("openai.gpt-oss-20b").?.supportsReasoningEffort(.medium));
     try std.testing.expect(bedrock("openai.gpt-5.4").?.supportsReasoningEffort(.high));

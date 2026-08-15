@@ -22,6 +22,10 @@ pub fn main() !void {
     _ = zigai.providers.azure_openai.Client;
     _ = zigai.providers.azure_openai.ChatClient;
     _ = zigai.providers.azure_openai.ResponsesClient;
+    _ = zigai.providers.xai.Provider;
+    _ = zigai.providers.xai.Client;
+    _ = zigai.providers.xai.ChatProvider;
+    _ = zigai.providers.xai.ChatClient;
     _ = zigai.AgentError;
     _ = zigai.RequestMessage;
     _ = zigai.ResponseMessage;

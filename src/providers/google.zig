@@ -20,6 +20,8 @@ pub const Error = model_types.ProviderRequestError || error{
     InvalidRequestEncoding,
     /// Provider-neutral rich content cannot be represented by Gemini.
     UnsupportedContentType,
+    /// A requested provider-managed tool has no Gemini representation.
+    UnsupportedBuiltinTool,
 };
 
 /// Google Generative Language provider state. Credentials and HTTP policy are
@@ -556,6 +558,7 @@ fn encodeRequestForProvider(allocator: std.mem.Allocator, provider_name: []const
             try json.objectField(switch (tool) {
                 .web_search => "googleSearch",
                 .web_fetch => "urlContext",
+                else => return error.UnsupportedBuiltinTool,
             });
             try json.beginObject();
             try json.endObject();

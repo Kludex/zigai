@@ -19,7 +19,7 @@ conversation.
 - One agent API across supported providers.
 - Buffered and streaming responses.
 - Tool calls, including parallel calls and typed Zig functions.
-- Provider-managed web search and fetch behind model capability checks.
+- Provider-managed search, fetch, code execution, file search, and remote MCP.
 - Images, audio, documents, binary data, and provider file references.
 - Static and per-step dynamic toolsets with namespaces and metadata.
 - Eager and on-demand capability bundles with dependencies and scoped composition.
@@ -181,6 +181,7 @@ authentication style, or model profile overrides.
 | `zigai.providers.google` | Gemini GenerateContent |
 | `zigai.providers.azure_openai` | Azure OpenAI v1 Responses and Chat Completions |
 | `zigai.providers.bedrock` | Amazon Bedrock Converse; Mantle Chat Completions |
+| `zigai.providers.xai` | xAI Responses; explicit Chat Completions compatibility |
 | `zigai.providers.cerebras` | Cerebras Inference |
 | `zigai.providers.cohere` | Cohere Compatibility API |
 | `zigai.providers.deepseek` | DeepSeek |

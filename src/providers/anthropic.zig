@@ -20,6 +20,8 @@ pub const Error = model_types.ProviderRequestError || error{
     InvalidRequestEncoding,
     /// A requested rich-content kind has no Anthropic representation.
     UnsupportedContentType,
+    /// A requested provider-managed tool has no Anthropic representation.
+    UnsupportedBuiltinTool,
     /// The requested structured-output mode has no Anthropic representation.
     UnsupportedOutputMode,
 };
@@ -844,6 +846,7 @@ fn encodeRequestForProvider(allocator: std.mem.Allocator, provider_name: []const
                     try json.objectField("name");
                     try json.write("web_fetch");
                 },
+                else => return error.UnsupportedBuiltinTool,
             }
             try json.endObject();
         }

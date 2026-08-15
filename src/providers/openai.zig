@@ -23,6 +23,12 @@ pub const Error = model_types.ProviderRequestError || error{
     UnsupportedContentType,
 };
 
+/// Provider extensions to the shared Responses API tool vocabulary.
+pub const Dialect = enum {
+    openai,
+    xai,
+};
+
 /// OpenAI provider state. Credentials and HTTP configuration remain here and
 /// are never exposed to `Client` or its wire encoder.
 pub const Provider = struct {
@@ -100,6 +106,8 @@ pub const Client = struct {
     model_name: []const u8,
     provider: provider_types.Provider,
     settings: model_types.ModelSettings = .{},
+    dialect: Dialect = .openai,
+    extra_body_kind: model_types.ExtraBodyKind = .openai,
     profile: model_types.ModelProfile = .{
         .supports_tools = true,
         .supports_parallel_tool_calls = true,
@@ -125,7 +133,7 @@ pub const Client = struct {
 
     pub fn model(self: *Client) model_types.Model {
         var resolved_profile = self.provider.modelProfile(self.model_name, self.profile);
-        resolved_profile.extra_body_kind = .openai;
+        resolved_profile.extra_body_kind = self.extra_body_kind;
         return .{
             .context = self,
             .profile = resolved_profile,
@@ -139,7 +147,14 @@ pub const Client = struct {
 
     fn request(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest) !model_types.ModelResponse {
         const self: *Client = @ptrCast(@alignCast(context));
-        const body = try encodeRequestForProvider(allocator, self.provider.name, self.model_name, value);
+        const body = try encodeRequestForProvider(
+            allocator,
+            self.provider.name,
+            self.model_name,
+            value,
+            self.dialect,
+            self.extra_body_kind,
+        );
         defer allocator.free(body);
         var headers: std.ArrayList(http.Header) = .empty;
         defer headers.deinit(allocator);
@@ -172,7 +187,14 @@ pub const Client = struct {
 
     fn stream(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest, sink: model_types.ModelStreamSink) !model_types.ModelResponse {
         const self: *Client = @ptrCast(@alignCast(context));
-        const body = try encodeStreamingRequestForProvider(allocator, self.provider.name, self.model_name, value);
+        const body = try encodeStreamingRequestForProvider(
+            allocator,
+            self.provider.name,
+            self.model_name,
+            value,
+            self.dialect,
+            self.extra_body_kind,
+        );
         defer allocator.free(body);
         var headers: std.ArrayList(http.Header) = .empty;
         defer headers.deinit(allocator);
@@ -314,11 +336,25 @@ test "OpenAI provider owns identity and model profile overrides" {
 }
 
 pub fn encodeStreamingRequest(allocator: std.mem.Allocator, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {
-    return encodeStreamingRequestForProvider(allocator, "openai", model_name, request);
+    return encodeStreamingRequestForProvider(allocator, "openai", model_name, request, .openai, .openai);
 }
 
-fn encodeStreamingRequestForProvider(allocator: std.mem.Allocator, provider_name: []const u8, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {
-    const buffered = try encodeRequestForProvider(allocator, provider_name, model_name, request);
+fn encodeStreamingRequestForProvider(
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    model_name: []const u8,
+    request: model_types.ModelRequest,
+    dialect: Dialect,
+    extra_body_kind: model_types.ExtraBodyKind,
+) ![]u8 {
+    const buffered = try encodeRequestForProvider(
+        allocator,
+        provider_name,
+        model_name,
+        request,
+        dialect,
+        extra_body_kind,
+    );
     defer allocator.free(buffered);
     if (buffered.len == 0 or buffered[buffered.len - 1] != '}') return error.InvalidRequestEncoding;
     return std.fmt.allocPrint(allocator, "{s},\"stream\":true}}", .{buffered[0 .. buffered.len - 1]});
@@ -478,10 +514,17 @@ const StreamState = struct {
 };
 
 pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {
-    return encodeRequestForProvider(allocator, "openai", model_name, request);
+    return encodeRequestForProvider(allocator, "openai", model_name, request, .openai, .openai);
 }
 
-fn encodeRequestForProvider(allocator: std.mem.Allocator, provider_name: []const u8, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {
+fn encodeRequestForProvider(
+    allocator: std.mem.Allocator,
+    provider_name: []const u8,
+    model_name: []const u8,
+    request: model_types.ModelRequest,
+    dialect: Dialect,
+    extra_body_kind: model_types.ExtraBodyKind,
+) ![]u8 {
     request.settings.validate() catch return error.InvalidRequestEncoding;
     try common.validateToolChoice(request.tools, request.builtin_tools.len, request.settings.tool_choice);
     var output: std.Io.Writer.Allocating = .init(allocator);
@@ -578,15 +621,7 @@ fn encodeRequestForProvider(allocator: std.mem.Allocator, provider_name: []const
     if (request.tools.len > 0 or request.builtin_tools.len > 0) {
         try json.objectField("tools");
         try json.beginArray();
-        for (request.builtin_tools) |tool| switch (tool) {
-            .web_search => {
-                try json.beginObject();
-                try json.objectField("type");
-                try json.write("web_search");
-                try json.endObject();
-            },
-            .web_fetch => return error.UnsupportedBuiltinTool,
-        };
+        for (request.builtin_tools) |tool| try writeBuiltinTool(&json, tool, dialect);
         for (request.tools) |tool| {
             try json.beginObject();
             try json.objectField("type");
@@ -669,7 +704,7 @@ fn encodeRequestForProvider(allocator: std.mem.Allocator, provider_name: []const
         allocator,
         &json,
         request.settings.extra_body,
-        .openai,
+        extra_body_kind,
         &.{
             "model",
             "instructions",
@@ -692,6 +727,184 @@ fn encodeRequestForProvider(allocator: std.mem.Allocator, provider_name: []const
     );
     try json.endObject();
     return output.toOwnedSlice();
+}
+
+fn writeBuiltinTool(json: *std.json.Stringify, tool: model_types.BuiltinTool, dialect: Dialect) !void {
+    if (dialect == .xai) try validateXaiBuiltinTool(tool);
+    switch (tool) {
+        .web_search => |search| {
+            if (dialect == .openai and (search.allowed_domains != null or search.excluded_domains != null or
+                search.enable_image_understanding != null or search.enable_image_search != null))
+                return error.UnsupportedBuiltinTool;
+            try json.beginObject();
+            try json.objectField("type");
+            try json.write("web_search");
+            if (search.allowed_domains != null or search.excluded_domains != null) {
+                try json.objectField("filters");
+                try json.beginObject();
+                if (search.allowed_domains) |domains| {
+                    try json.objectField("allowed_domains");
+                    try json.write(domains);
+                }
+                if (search.excluded_domains) |domains| {
+                    try json.objectField("excluded_domains");
+                    try json.write(domains);
+                }
+                try json.endObject();
+            }
+            if (search.enable_image_understanding) |enabled| {
+                try json.objectField("enable_image_understanding");
+                try json.write(enabled);
+            }
+            if (search.enable_image_search) |enabled| {
+                try json.objectField("enable_image_search");
+                try json.write(enabled);
+            }
+            try json.endObject();
+        },
+        .web_fetch => return error.UnsupportedBuiltinTool,
+        .x_search => |search| {
+            if (dialect != .xai) return error.UnsupportedBuiltinTool;
+            try json.beginObject();
+            try json.objectField("type");
+            try json.write("x_search");
+            if (search.allowed_x_handles) |handles| {
+                try json.objectField("allowed_x_handles");
+                try json.write(handles);
+            }
+            if (search.excluded_x_handles) |handles| {
+                try json.objectField("excluded_x_handles");
+                try json.write(handles);
+            }
+            if (search.from_date) |date| {
+                try json.objectField("from_date");
+                try json.write(date);
+            }
+            if (search.to_date) |date| {
+                try json.objectField("to_date");
+                try json.write(date);
+            }
+            if (search.enable_image_understanding) |enabled| {
+                try json.objectField("enable_image_understanding");
+                try json.write(enabled);
+            }
+            if (search.enable_video_understanding) |enabled| {
+                try json.objectField("enable_video_understanding");
+                try json.write(enabled);
+            }
+            try json.endObject();
+        },
+        .code_execution => {
+            if (dialect != .xai) return error.UnsupportedBuiltinTool;
+            try json.write(.{ .type = "code_interpreter" });
+        },
+        .file_search => |search| {
+            if (dialect != .xai) return error.UnsupportedBuiltinTool;
+            try json.beginObject();
+            try json.objectField("type");
+            try json.write("file_search");
+            try json.objectField("vector_store_ids");
+            try json.write(search.vector_store_ids);
+            if (search.max_num_results) |maximum| {
+                try json.objectField("max_num_results");
+                try json.write(maximum);
+            }
+            try json.endObject();
+        },
+        .remote_mcp => |server| {
+            if (dialect != .xai) return error.UnsupportedBuiltinTool;
+            try json.beginObject();
+            try json.objectField("type");
+            try json.write("mcp");
+            try json.objectField("server_url");
+            try json.write(server.server_url);
+            try json.objectField("server_label");
+            try json.write(server.server_label);
+            if (server.server_description) |description| {
+                try json.objectField("server_description");
+                try json.write(description);
+            }
+            if (server.allowed_tools) |allowed| {
+                try json.objectField("allowed_tools");
+                try json.write(allowed);
+            }
+            if (server.authorization) |authorization| {
+                try json.objectField("authorization");
+                try json.write(authorization);
+            }
+            if (server.headers) |headers| {
+                try json.objectField("headers");
+                try json.beginObject();
+                for (headers) |header| {
+                    try json.objectField(header.name);
+                    try json.write(header.value);
+                }
+                try json.endObject();
+            }
+            try json.endObject();
+        },
+    }
+}
+
+fn validateXaiBuiltinTool(tool: model_types.BuiltinTool) !void {
+    switch (tool) {
+        .web_search => |search| {
+            if (search.allowed_domains != null and search.excluded_domains != null)
+                return error.InvalidRequestEncoding;
+            try validateNames(search.allowed_domains, 5);
+            try validateNames(search.excluded_domains, 5);
+        },
+        .web_fetch => {},
+        .x_search => |search| {
+            if (search.allowed_x_handles != null and search.excluded_x_handles != null)
+                return error.InvalidRequestEncoding;
+            try validateNames(search.allowed_x_handles, 20);
+            try validateNames(search.excluded_x_handles, 20);
+            if (search.from_date) |date| if (!validDate(date)) return error.InvalidRequestEncoding;
+            if (search.to_date) |date| if (!validDate(date)) return error.InvalidRequestEncoding;
+            if (search.from_date != null and search.to_date != null and
+                std.mem.order(u8, search.from_date.?, search.to_date.?) == .gt)
+                return error.InvalidRequestEncoding;
+        },
+        .code_execution => {},
+        .file_search => |search| {
+            try validateNames(search.vector_store_ids, std.math.maxInt(usize));
+            if (search.vector_store_ids.len == 0 or search.max_num_results == 0)
+                return error.InvalidRequestEncoding;
+        },
+        .remote_mcp => |server| {
+            if (!std.mem.startsWith(u8, server.server_url, "https://") or server.server_label.len == 0)
+                return error.InvalidRequestEncoding;
+            try validateNames(server.allowed_tools, std.math.maxInt(usize));
+            if (server.authorization) |authorization| if (authorization.len == 0)
+                return error.InvalidRequestEncoding;
+            if (server.headers) |headers| for (headers, 0..) |header, index| {
+                if (header.name.len == 0 or header.value.len == 0 or
+                    std.mem.indexOfAny(u8, header.name, "\r\n") != null or
+                    std.mem.indexOfAny(u8, header.value, "\r\n") != null)
+                    return error.InvalidRequestEncoding;
+                for (headers[index + 1 ..]) |other| if (std.ascii.eqlIgnoreCase(header.name, other.name))
+                    return error.InvalidRequestEncoding;
+            };
+        },
+    }
+}
+
+fn validateNames(values: ?[]const []const u8, maximum: usize) !void {
+    const names = values orelse return;
+    if (names.len > maximum) return error.InvalidRequestEncoding;
+    for (names) |name| if (name.len == 0) return error.InvalidRequestEncoding;
+}
+
+fn validDate(value: []const u8) bool {
+    if (value.len != "YYYY-MM-DD".len or value[4] != '-' or value[7] != '-') return false;
+    for (value, 0..) |byte, index| {
+        if (index == 4 or index == 7) continue;
+        if (!std.ascii.isDigit(byte)) return false;
+    }
+    const month = std.fmt.parseInt(u8, value[5..7], 10) catch return false;
+    const day = std.fmt.parseInt(u8, value[8..10], 10) catch return false;
+    return month >= 1 and month <= 12 and day >= 1 and day <= 31;
 }
 
 fn writeToolChoice(json: *std.json.Stringify, choice: model_types.ToolChoice) !void {
@@ -1393,7 +1606,14 @@ test "OpenAI encodes detailed message forms and rejects lossy forms" {
         .id = "gateway-file",
         .provider_name = "gateway",
     } } }} } }};
-    const gateway_body = try encodeRequestForProvider(std.testing.allocator, "gateway", "gpt-test", .{ .messages = &gateway_messages });
+    const gateway_body = try encodeRequestForProvider(
+        std.testing.allocator,
+        "gateway",
+        "gpt-test",
+        .{ .messages = &gateway_messages },
+        .openai,
+        .openai,
+    );
     defer std.testing.allocator.free(gateway_body);
     try std.testing.expect(std.mem.indexOf(u8, gateway_body, "gateway-file") != null);
 

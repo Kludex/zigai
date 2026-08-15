@@ -479,6 +479,10 @@ pub const ContentType = enum {
 pub const BuiltinToolKind = enum {
     web_search,
     web_fetch,
+    x_search,
+    code_execution,
+    file_search,
+    remote_mcp,
 };
 
 /// A provider-managed tool. The provider executes it inside the model request;
@@ -486,12 +490,52 @@ pub const BuiltinToolKind = enum {
 pub const BuiltinTool = union(BuiltinToolKind) {
     web_search: WebSearch,
     web_fetch: WebFetch,
+    x_search: XSearch,
+    code_execution: CodeExecution,
+    file_search: FileSearch,
+    remote_mcp: RemoteMcp,
 
-    pub const WebSearch = struct {};
+    pub const WebSearch = struct {
+        allowed_domains: ?[]const []const u8 = null,
+        excluded_domains: ?[]const []const u8 = null,
+        enable_image_understanding: ?bool = null,
+        enable_image_search: ?bool = null,
+    };
     pub const WebFetch = struct {};
+    pub const XSearch = struct {
+        allowed_x_handles: ?[]const []const u8 = null,
+        excluded_x_handles: ?[]const []const u8 = null,
+        from_date: ?[]const u8 = null,
+        to_date: ?[]const u8 = null,
+        enable_image_understanding: ?bool = null,
+        enable_video_understanding: ?bool = null,
+    };
+    pub const CodeExecution = struct {};
+    pub const FileSearch = struct {
+        vector_store_ids: []const []const u8,
+        max_num_results: ?u32 = null,
+    };
+    pub const RemoteMcp = struct {
+        server_url: []const u8,
+        server_label: []const u8,
+        server_description: ?[]const u8 = null,
+        allowed_tools: ?[]const []const u8 = null,
+        authorization: ?[]const u8 = null,
+        headers: ?[]const RequestHeader = null,
+    };
 
     pub fn kind(self: BuiltinTool) BuiltinToolKind {
         return std.meta.activeTag(self);
+    }
+
+    /// Whether two declarations would create the same provider-visible tool.
+    /// Remote MCP servers are keyed by label; all other built-ins are singletons.
+    pub fn conflictsWith(self: BuiltinTool, other: BuiltinTool) bool {
+        if (self.kind() != other.kind()) return false;
+        return switch (self) {
+            .remote_mcp => |server| std.mem.eql(u8, server.server_label, other.remote_mcp.server_label),
+            else => true,
+        };
     }
 };
 

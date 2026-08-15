@@ -54,6 +54,7 @@ pub const RequestHeader = struct {
 /// Provider adapter expected to consume an extension body.
 pub const ExtraBodyKind = enum {
     openai,
+    xai,
     openai_compatible,
     anthropic,
     bedrock,
@@ -65,6 +66,7 @@ pub const ExtraBodyKind = enum {
 /// adapter after model selection or fallback.
 pub const ProviderExtraBody = union(ExtraBodyKind) {
     openai: []const u8,
+    xai: []const u8,
     openai_compatible: []const u8,
     anthropic: []const u8,
     bedrock: []const u8,

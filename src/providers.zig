@@ -28,6 +28,7 @@ pub const openrouter = @import("providers/openrouter.zig");
 pub const ovhcloud = @import("providers/ovhcloud.zig");
 pub const pydantic_gateway = @import("providers/pydantic_gateway.zig");
 pub const together = @import("providers/together.zig");
+pub const xai = @import("providers/xai.zig");
 
 const TestTransport = struct {
     calls: usize = 0,
@@ -59,6 +60,7 @@ test {
     _ = ovhcloud;
     _ = pydantic_gateway;
     _ = together;
+    _ = xai;
 }
 
 fn namedCompatibleProfile(comptime ProviderType: type, comptime ClientType: type, model_name: []const u8) model.ModelProfile {
@@ -85,6 +87,7 @@ test "named compatible clients use their provider model profiles" {
     try std.testing.expect(namedCompatibleProfile(ovhcloud.Provider, ovhcloud.Client, "qwen-3").supports_tools);
     try std.testing.expect(namedCompatibleProfile(pydantic_gateway.Provider, pydantic_gateway.Client, "openai:gpt-4o").supports_json_object_output);
     try std.testing.expect(namedCompatibleProfile(together.Provider, together.Client, "openai/gpt-oss-20b").supportsReasoningEffort(.low));
+    try std.testing.expect(namedCompatibleProfile(xai.ChatProvider, xai.ChatClient, "grok-4.6").supports_tools);
 
     const unknown = namedCompatibleProfile(groq.Provider, groq.Client, "future-model");
     try std.testing.expect(!unknown.supports_tools);

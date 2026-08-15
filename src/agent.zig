@@ -41,7 +41,7 @@ const AgentError = error{
     ContextToolsTooLarge,
     /// Two locally available tools have the same provider-visible name.
     DuplicateToolName,
-    /// Two provider-managed tools have the same kind.
+    /// Two provider-managed tools have the same provider-visible identity.
     DuplicateBuiltinTool,
     /// Two named capabilities in the composed scopes have the same ID.
     DuplicateCapabilityId,
@@ -91,6 +91,14 @@ const AgentError = error{
     ModelDoesNotSupportWebFetch,
     /// The selected model profile does not support native web search.
     ModelDoesNotSupportWebSearch,
+    /// The selected model profile does not support native X search.
+    ModelDoesNotSupportXSearch,
+    /// The selected model profile does not support provider-managed code execution.
+    ModelDoesNotSupportCodeExecution,
+    /// The selected model profile does not support provider-managed file search.
+    ModelDoesNotSupportFileSearch,
+    /// The selected model profile does not support provider-managed remote MCP.
+    ModelDoesNotSupportRemoteMcp,
     /// JSON-object output was requested from an unsupported model profile.
     ModelDoesNotSupportJsonObjectOutput,
     /// JSON Schema output was requested from an unsupported model profile.
@@ -4924,12 +4932,16 @@ fn ensureBuiltinToolsSupported(
     for (tools, 0..) |tool, index| {
         const kind = tool.kind();
         for (tools[index + 1 ..]) |other| {
-            if (kind == other.kind()) return Agent.Error.DuplicateBuiltinTool;
+            if (tool.conflictsWith(other)) return Agent.Error.DuplicateBuiltinTool;
         }
         if (profile.supportsBuiltinTool(kind)) continue;
         return switch (kind) {
             .web_search => Agent.Error.ModelDoesNotSupportWebSearch,
             .web_fetch => Agent.Error.ModelDoesNotSupportWebFetch,
+            .x_search => Agent.Error.ModelDoesNotSupportXSearch,
+            .code_execution => Agent.Error.ModelDoesNotSupportCodeExecution,
+            .file_search => Agent.Error.ModelDoesNotSupportFileSearch,
+            .remote_mcp => Agent.Error.ModelDoesNotSupportRemoteMcp,
         };
     }
 }
@@ -5770,6 +5782,41 @@ test "agent private helpers cover ownership settings retries and rich content" {
     try std.testing.expectError(
         Agent.Error.ModelDoesNotSupportWebSearch,
         ensureBuiltinToolsSupported(.{}, &.{.{ .web_search = .{} }}),
+    );
+    try std.testing.expectError(
+        Agent.Error.ModelDoesNotSupportWebFetch,
+        ensureBuiltinToolsSupported(.{}, &.{.{ .web_fetch = .{} }}),
+    );
+    try std.testing.expectError(
+        Agent.Error.ModelDoesNotSupportXSearch,
+        ensureBuiltinToolsSupported(.{}, &.{.{ .x_search = .{} }}),
+    );
+    try std.testing.expectError(
+        Agent.Error.ModelDoesNotSupportCodeExecution,
+        ensureBuiltinToolsSupported(.{}, &.{.{ .code_execution = .{} }}),
+    );
+    try std.testing.expectError(
+        Agent.Error.ModelDoesNotSupportFileSearch,
+        ensureBuiltinToolsSupported(.{}, &.{.{ .file_search = .{ .vector_store_ids = &.{"collection"} } }}),
+    );
+    try std.testing.expectError(
+        Agent.Error.ModelDoesNotSupportRemoteMcp,
+        ensureBuiltinToolsSupported(.{}, &.{.{ .remote_mcp = .{ .server_url = "https://example.test", .server_label = "one" } }}),
+    );
+    try ensureBuiltinToolsSupported(.{
+        .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{.remote_mcp}),
+    }, &.{
+        .{ .remote_mcp = .{ .server_url = "https://one.example", .server_label = "one" } },
+        .{ .remote_mcp = .{ .server_url = "https://two.example", .server_label = "two" } },
+    });
+    try std.testing.expectError(
+        Agent.Error.DuplicateBuiltinTool,
+        ensureBuiltinToolsSupported(.{
+            .builtin_tools = model_types.ModelProfile.BuiltinToolSet.initMany(&.{.remote_mcp}),
+        }, &.{
+            .{ .remote_mcp = .{ .server_url = "https://one.example", .server_label = "same" } },
+            .{ .remote_mcp = .{ .server_url = "https://two.example", .server_label = "same" } },
+        }),
     );
     const content = model_types.Content{ .source = .{ .bytes = "x" }, .media_type = "application/octet-stream" };
     try ensurePromptPartsSupported(selected_model, .{}, &.{

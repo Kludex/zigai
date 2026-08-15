@@ -39,6 +39,10 @@ cases relevant to the application, then propagate the remainder.
 | `ModelDoesNotSupportVideo` | Video was supplied to a model profile without video support. |
 | `ModelDoesNotSupportWebFetch` | Native web fetch is unsupported. |
 | `ModelDoesNotSupportWebSearch` | Native web search is unsupported. |
+| `ModelDoesNotSupportXSearch` | Native X search is unsupported. |
+| `ModelDoesNotSupportCodeExecution` | Provider-managed code execution is unsupported. |
+| `ModelDoesNotSupportFileSearch` | Provider-managed file search is unsupported. |
+| `ModelDoesNotSupportRemoteMcp` | Provider-managed remote MCP is unsupported. |
 | `ModelDoesNotSupportJsonObjectOutput` | JSON-object output is unsupported. |
 | `ModelDoesNotSupportJsonSchemaOutput` | JSON Schema output is unsupported. |
 | `ModelDoesNotSupportMaxTokens` | The model rejects `max_tokens`. |
@@ -77,7 +81,7 @@ cases relevant to the application, then propagate the remainder.
 | Error | Meaning |
 | --- | --- |
 | `DuplicateToolName` | Two local tools have the same provider-visible name. |
-| `DuplicateBuiltinTool` | A provider-managed tool kind was registered twice. |
+| `DuplicateBuiltinTool` | A provider-managed tool identity was registered twice. |
 | `DuplicateCapabilityId` | Two composed capability scopes declare the same stable ID. |
 | `InvalidCapability` | A capability ID, metadata list, dependency, conflict, limit, or active-state declaration is invalid. |
 | `MissingCapabilityDependency` | A dependency ID is absent from the composed capability registry. |
