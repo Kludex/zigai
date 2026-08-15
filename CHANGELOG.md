@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add bounded, arena-owned task result parsing and typed request builders for
+  the current `io.modelcontextprotocol/tasks` extension (SEP-2663).
 - Start the clean MCP primitives layer with typed, borrowed client and server
   capability documents, validated experimental/extension objects, prefixed
   extension identifiers, typed subscription filters and notifications,

@@ -541,13 +541,24 @@ standardized parameters. Cancellation accepts the protocol's integer-or-string
 logging opt-in. Use `Client.request` for extensions such as Tasks:
 
 ```zig
+const params_json = try (zigai.mcp.tasks.Request{
+    .task_id = "task-1",
+}).stringifyAlloc(allocator);
+defer allocator.free(params_json);
+
 const result_json = try mcp_client.request(
     allocator,
     "tasks/get",
-    "{\"taskId\":\"task-1\"}",
+    params_json,
 );
 defer allocator.free(result_json);
+
+var task = try zigai.mcp.tasks.parseDetailed(allocator, result_json, true);
+defer task.deinit();
 ```
+
+Task results own a single arena. Their tagged state exposes only the payload
+valid for the current status.
 
 Extension settings stay as owned JSON:
 

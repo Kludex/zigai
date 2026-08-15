@@ -363,6 +363,11 @@ path. `RequestOptions.metadata` owns typed progress-token and log-level fields;
 the latter is the deprecated per-request replacement for the removed
 `logging/setLevel` RPC.
 
+The Tasks extension lives in `mcp/tasks.zig`, outside core transport dispatch.
+Its request builders borrow application data, while parsed task results own a
+single arena. A tagged state union enforces the payload required by each task
+status, so completed, failed, and input-required states cannot be confused.
+
 Multi round-trip requests replace server-initiated JSON-RPC calls. When a
 result requires sampling, roots, or elicitation, the configured `InputHandler`
 answers each item and the client retries with `inputResponses` and opaque

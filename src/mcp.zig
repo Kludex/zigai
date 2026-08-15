@@ -16,7 +16,13 @@ const json_limits = @import("json.zig");
 pub const auth = @import("mcp/auth.zig");
 /// Typed capability value objects for the MCP wire protocol.
 pub const primitives = @import("mcp/primitives.zig");
+/// Typed contracts for the `io.modelcontextprotocol/tasks` extension.
+pub const tasks = @import("mcp/tasks.zig");
 const security = @import("security.zig");
+
+test {
+    _ = tasks;
+}
 
 /// Latest stable MCP protocol revision supported by ZigAI.
 pub const protocol_version = "2026-07-28";
