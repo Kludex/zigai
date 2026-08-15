@@ -6018,7 +6018,7 @@ fn checkCapabilityLoadAllocationFailure(gpa: std.mem.Allocator) !void {
 
 test "capability load is atomic across instruction and allocation failures" {
     var unused: u8 = 0;
-    const capabilities = [_]ScopedCapability{.{
+    const capabilities = [_]ScopedCapability{.{ // kcov-ignore: comptime-only test fixture declaration
         .capability = .{
             .id = "deferred",
             .loading = .on_demand,
