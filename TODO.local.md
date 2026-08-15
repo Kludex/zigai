@@ -72,7 +72,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add first-class tool hooks and policy. Cover prepare/call/return hooks,
   argument and result validators, dynamic approval based on context/history,
   retries per tool, sequential-only tools, and provider-visible return schemas.
-- [ ] Add on-demand capabilities and capability discovery/loading with names,
+- [x] Add on-demand capabilities and capability discovery/loading with names,
   metadata, dependency declarations, conflict diagnostics, unload policy, and
   deterministic composition across agent, run, and nested/subagent scopes.
 - [ ] Add agent specifications in JSON/YAML with strict schema validation,
