@@ -905,6 +905,7 @@ fn fuzzStreamLine(_: void, smith: *std.testing.Smith) !void {
         fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
     };
     var context: u8 = 0;
+    try Sink.emit(&context, .{ .text_delta = "" });
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var state = StreamState{

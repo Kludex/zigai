@@ -20,4 +20,4 @@ case "$iterations" in
 esac
 
 cd "$project_dir"
-ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build test --fuzz="$iterations" -Derror-tracing=false
+ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build -j1 test --fuzz="$iterations" -Derror-tracing=false
