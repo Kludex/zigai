@@ -983,6 +983,15 @@ test "deployment policy validates TLS browser origins and request hosts" {
         .scopes = &.{"tools:read"},
     };
     try policy.validate();
+    switch (try policy.authorizer.authorize(.{
+        .token = "token",
+        .resource = policy.resource,
+        .method = "tools/list",
+        .params_json = "{}",
+    })) {
+        .authorized => {},
+        else => return error.TestUnexpectedResult,
+    }
     try std.testing.expectError(
         error.InvalidProtectedResourceMetadata,
         (ServerPolicy{
