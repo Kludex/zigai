@@ -57,8 +57,9 @@ pub const Configured = struct {
         context: *anyopaque,
         listModelsFn: ?*const fn (*anyopaque, std.mem.Allocator) anyerror!provider_types.OwnedModels = null,
         uploadFileFn: ?*const fn (*anyopaque, std.mem.Allocator, provider_types.FileInput) anyerror!provider_types.OwnedFile = null,
-        getFileFn: ?*const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!provider_types.OwnedFile = null,
-        deleteFileFn: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
+        inspectFileFn: ?*const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!provider_types.OwnedFile = null,
+        downloadFileFn: ?*const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!provider_types.OwnedFileDownload = null,
+        deleteFileFn: ?*const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!void = null,
     };
 
     pub fn provider(self: *Configured) provider_types.Provider {
@@ -74,19 +75,21 @@ pub const Configured = struct {
             .observeErrorFn = observeError,
             .listModelsFn = if (hasOperation(self, .list_models)) listModels else null,
             .uploadFileFn = if (hasOperation(self, .upload_file)) uploadFile else null,
-            .getFileFn = if (hasOperation(self, .get_file)) getFile else null,
+            .inspectFileFn = if (hasOperation(self, .inspect_file)) inspectFile else null,
+            .downloadFileFn = if (hasOperation(self, .download_file)) downloadFile else null,
             .deleteFileFn = if (hasOperation(self, .delete_file)) deleteFile else null,
         };
     }
 
-    const Operation = enum { list_models, upload_file, get_file, delete_file };
+    const Operation = enum { list_models, upload_file, inspect_file, download_file, delete_file };
 
     fn hasOperation(self: *const Configured, operation: Operation) bool {
         const operations = self.operations orelse return false;
         return switch (operation) {
             .list_models => operations.listModelsFn != null,
             .upload_file => operations.uploadFileFn != null,
-            .get_file => operations.getFileFn != null,
+            .inspect_file => operations.inspectFileFn != null,
+            .download_file => operations.downloadFileFn != null,
             .delete_file => operations.deleteFileFn != null,
         };
     }
@@ -105,18 +108,25 @@ pub const Configured = struct {
         return upload(operations.context, allocator, input);
     }
 
-    fn getFile(context: *anyopaque, allocator: std.mem.Allocator, id: []const u8) !provider_types.OwnedFile {
+    fn inspectFile(context: *anyopaque, allocator: std.mem.Allocator, id: []const u8) !provider_types.OwnedFile {
         const self: *Configured = @ptrCast(@alignCast(context));
         const operations = self.operations orelse return error.UnsupportedProviderOperation;
-        const get = operations.getFileFn orelse return error.UnsupportedProviderOperation;
-        return get(operations.context, allocator, id);
+        const inspect = operations.inspectFileFn orelse return error.UnsupportedProviderOperation;
+        return inspect(operations.context, allocator, id);
     }
 
-    fn deleteFile(context: *anyopaque, id: []const u8) !void {
+    fn downloadFile(context: *anyopaque, allocator: std.mem.Allocator, id: []const u8) !provider_types.OwnedFileDownload {
+        const self: *Configured = @ptrCast(@alignCast(context));
+        const operations = self.operations orelse return error.UnsupportedProviderOperation;
+        const download = operations.downloadFileFn orelse return error.UnsupportedProviderOperation;
+        return download(operations.context, allocator, id);
+    }
+
+    fn deleteFile(context: *anyopaque, allocator: std.mem.Allocator, id: []const u8) !void {
         const self: *Configured = @ptrCast(@alignCast(context));
         const operations = self.operations orelse return error.UnsupportedProviderOperation;
         const delete = operations.deleteFileFn orelse return error.UnsupportedProviderOperation;
-        return delete(operations.context, id);
+        return delete(operations.context, allocator, id);
     }
 
     fn request(context: *anyopaque, allocator: std.mem.Allocator, value: provider_types.Request) !transport.Response {
@@ -342,12 +352,32 @@ test "configured HTTP provider forwards non-inference operations" {
             result.deinit();
         }
 
+        fn download(_: *anyopaque, allocator: std.mem.Allocator, id: []const u8) !provider_types.OwnedFileDownload {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            errdefer arena.deinit();
+            const memory = arena.allocator();
+            const owned_id = try memory.dupe(u8, id);
+            const bytes = try memory.dupe(u8, "content");
+            return .{
+                .arena = arena,
+                .value = .{
+                    .descriptor = .{ .id = owned_id, .provider_name = "example" },
+                    .bytes = bytes,
+                },
+            };
+        }
+
+        fn checkDownloadAllocation(allocator: std.mem.Allocator) !void {
+            var result = try download(undefined, allocator, "file");
+            result.deinit();
+        }
+
         fn upload(context: *anyopaque, allocator: std.mem.Allocator, input: provider_types.FileInput) !provider_types.OwnedFile {
             try std.testing.expectEqualStrings("text/plain", input.media_type);
             return file(context, allocator, input.filename);
         }
 
-        fn delete(context: *anyopaque, id: []const u8) !void {
+        fn delete(context: *anyopaque, _: std.mem.Allocator, id: []const u8) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
             try std.testing.expectEqualStrings("file", id);
             self.deleted = true;
@@ -362,7 +392,8 @@ test "configured HTTP provider forwards non-inference operations" {
             .context = &state,
             .listModelsFn = State.models,
             .uploadFileFn = State.upload,
-            .getFileFn = State.file,
+            .inspectFileFn = State.file,
+            .downloadFileFn = State.download,
             .deleteFileFn = State.delete,
         },
     };
@@ -377,10 +408,14 @@ test "configured HTTP provider forwards non-inference operations" {
     });
     defer uploaded.deinit();
     try std.testing.expectEqualStrings("file", uploaded.value.id);
-    var fetched = try provider.getFile(std.testing.allocator, "file");
+    const file = uploaded.value.uploadedFile();
+    var fetched = try provider.inspectFile(std.testing.allocator, file);
     defer fetched.deinit();
     try std.testing.expectEqualStrings("file", fetched.value.id);
-    try provider.deleteFile("file");
+    var downloaded = try provider.downloadFile(std.testing.allocator, file);
+    defer downloaded.deinit();
+    try std.testing.expectEqualStrings("content", downloaded.value.bytes);
+    try provider.deleteFile(std.testing.allocator, file);
     try std.testing.expect(state.deleted);
 
     configured.operations = .{ .context = &state };
@@ -388,6 +423,7 @@ test "configured HTTP provider forwards non-inference operations" {
     try std.testing.expectError(error.UnsupportedProviderOperation, unsupported.listModels(std.testing.allocator));
     try std.testing.checkAllAllocationFailures(std.testing.allocator, State.checkModelsAllocation, .{});
     try std.testing.checkAllAllocationFailures(std.testing.allocator, State.checkFileAllocation, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, State.checkDownloadAllocation, .{});
 }
 
 test "configured HTTP provider profiles redact credentials and reject conflicts" {

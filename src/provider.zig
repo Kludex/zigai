@@ -11,6 +11,7 @@ const transport = @import("transport.zig");
 
 pub const Error = error{
     InvalidProviderPolicy,
+    InvalidProviderFileReference,
     InvalidProviderFileOwner,
     UnsupportedProviderOperation,
 };
@@ -103,6 +104,23 @@ pub const OwnedFile = struct {
     }
 };
 
+pub const FileDownload = struct {
+    descriptor: FileDescriptor,
+    bytes: []const u8,
+};
+
+/// Arena-owned downloaded file. Both metadata and bytes remain valid until
+/// `deinit` is called.
+pub const OwnedFileDownload = struct {
+    arena: std.heap.ArenaAllocator,
+    value: FileDownload,
+
+    pub fn deinit(self: *OwnedFileDownload) void {
+        self.arena.deinit();
+        self.* = undefined;
+    }
+};
+
 /// Borrowed provider interface. Concrete providers retain all state and must
 /// outlive every `Provider`, `Model`, and in-flight operation built from it.
 pub const Provider = struct {
@@ -119,8 +137,9 @@ pub const Provider = struct {
     observeErrorFn: ?*const fn (*anyopaque, std.mem.Allocator, u16, []const u8, transport.ResponseMetadata, ?model.ProviderErrorObserver, model.ProviderErrorPolicy) void = null,
     listModelsFn: ?*const fn (*anyopaque, std.mem.Allocator) anyerror!OwnedModels = null,
     uploadFileFn: ?*const fn (*anyopaque, std.mem.Allocator, FileInput) anyerror!OwnedFile = null,
-    getFileFn: ?*const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!OwnedFile = null,
-    deleteFileFn: ?*const fn (*anyopaque, []const u8) anyerror!void = null,
+    inspectFileFn: ?*const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!OwnedFile = null,
+    downloadFileFn: ?*const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!OwnedFileDownload = null,
+    deleteFileFn: ?*const fn (*anyopaque, std.mem.Allocator, []const u8) anyerror!void = null,
 
     pub fn validate(self: Provider) !void {
         if (self.name.len == 0 or self.base_url.len == 0) return error.InvalidProviderPolicy;
@@ -171,29 +190,56 @@ pub const Provider = struct {
     }
 
     pub fn listModels(self: Provider, allocator: std.mem.Allocator) !OwnedModels {
+        try self.validate();
         const list = self.listModelsFn orelse return error.UnsupportedProviderOperation;
         return list(self.context, allocator);
     }
 
     pub fn uploadFile(self: Provider, allocator: std.mem.Allocator, input: FileInput) !OwnedFile {
+        try self.validate();
         const upload = self.uploadFileFn orelse return error.UnsupportedProviderOperation;
         var result = try upload(self.context, allocator, input);
         errdefer result.deinit();
-        if (!std.mem.eql(u8, result.value.provider_name, self.name)) return error.InvalidProviderFileOwner;
+        try self.validateFileDescriptor(result.value, null);
         return result;
     }
 
-    pub fn getFile(self: Provider, allocator: std.mem.Allocator, id: []const u8) !OwnedFile {
-        const get = self.getFileFn orelse return error.UnsupportedProviderOperation;
-        var result = try get(self.context, allocator, id);
+    pub fn inspectFile(self: Provider, allocator: std.mem.Allocator, file: model.UploadedFile) !OwnedFile {
+        try self.validate();
+        try self.validateFileReference(file);
+        const inspect = self.inspectFileFn orelse return error.UnsupportedProviderOperation;
+        var result = try inspect(self.context, allocator, file.id);
         errdefer result.deinit();
-        if (!std.mem.eql(u8, result.value.provider_name, self.name)) return error.InvalidProviderFileOwner;
+        try self.validateFileDescriptor(result.value, file.id);
         return result;
     }
 
-    pub fn deleteFile(self: Provider, id: []const u8) !void {
+    pub fn downloadFile(self: Provider, allocator: std.mem.Allocator, file: model.UploadedFile) !OwnedFileDownload {
+        try self.validate();
+        try self.validateFileReference(file);
+        const download = self.downloadFileFn orelse return error.UnsupportedProviderOperation;
+        var result = try download(self.context, allocator, file.id);
+        errdefer result.deinit();
+        try self.validateFileDescriptor(result.value.descriptor, file.id);
+        return result;
+    }
+
+    pub fn deleteFile(self: Provider, allocator: std.mem.Allocator, file: model.UploadedFile) !void {
+        try self.validate();
+        try self.validateFileReference(file);
         const delete = self.deleteFileFn orelse return error.UnsupportedProviderOperation;
-        return delete(self.context, id);
+        return delete(self.context, allocator, file.id);
+    }
+
+    fn validateFileReference(self: Provider, file: model.UploadedFile) !void {
+        if (!std.mem.eql(u8, file.provider_name, self.name)) return error.InvalidProviderFileOwner;
+        if (file.id.len == 0) return error.InvalidProviderFileReference;
+    }
+
+    fn validateFileDescriptor(self: Provider, descriptor: FileDescriptor, expected_id: ?[]const u8) !void {
+        if (!std.mem.eql(u8, descriptor.provider_name, self.name)) return error.InvalidProviderFileOwner;
+        if (descriptor.id.len == 0) return error.InvalidProviderFileReference;
+        if (expected_id) |id| if (!std.mem.eql(u8, descriptor.id, id)) return error.InvalidProviderFileReference;
     }
 };
 
@@ -258,12 +304,36 @@ test "provider owns policy profiles and optional operations" {
             result.deinit();
         }
 
+        fn download(_: *anyopaque, allocator: std.mem.Allocator, id: []const u8) !OwnedFileDownload {
+            var arena = std.heap.ArenaAllocator.init(allocator);
+            errdefer arena.deinit();
+            const memory = arena.allocator();
+            const owned_id = try memory.dupe(u8, id);
+            const bytes = try memory.dupe(u8, "downloaded");
+            return .{
+                .arena = arena,
+                .value = .{
+                    .descriptor = .{
+                        .id = owned_id,
+                        .provider_name = "openai",
+                        .media_type = "text/plain",
+                    },
+                    .bytes = bytes,
+                },
+            };
+        }
+
+        fn checkDownloadAllocation(allocator: std.mem.Allocator) !void {
+            var result = try download(undefined, allocator, "file-1");
+            result.deinit();
+        }
+
         fn upload(context: *anyopaque, allocator: std.mem.Allocator, input: FileInput) !OwnedFile {
             try std.testing.expectEqualStrings("text/plain", input.media_type);
             return file(context, allocator, input.filename);
         }
 
-        fn delete(context: *anyopaque, id: []const u8) !void {
+        fn delete(context: *anyopaque, _: std.mem.Allocator, id: []const u8) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
             try std.testing.expectEqualStrings("file-1", id);
             self.deleted = true;
@@ -298,7 +368,8 @@ test "provider owns policy profiles and optional operations" {
         .observeErrorFn = State.observe,
         .listModelsFn = State.models,
         .uploadFileFn = State.upload,
-        .getFileFn = State.file,
+        .inspectFileFn = State.file,
+        .downloadFileFn = State.download,
         .deleteFileFn = State.delete,
     };
     const response = try provider.request(std.testing.allocator, .{ .method = .POST, .endpoint = "/responses", .timeout_ms = 100 });
@@ -336,13 +407,18 @@ test "provider owns policy profiles and optional operations" {
     defer uploaded.deinit();
     try std.testing.expectEqualStrings("file-1", uploaded.value.id);
     try std.testing.expectEqualStrings("openai", uploaded.value.uploadedFile().provider_name);
-    var fetched = try provider.getFile(std.testing.allocator, "file-1");
+    const file = uploaded.value.uploadedFile();
+    var fetched = try provider.inspectFile(std.testing.allocator, file);
     defer fetched.deinit();
     try std.testing.expectEqualStrings("file-1", fetched.value.id);
-    try provider.deleteFile("file-1");
+    var downloaded = try provider.downloadFile(std.testing.allocator, file);
+    defer downloaded.deinit();
+    try std.testing.expectEqualStrings("downloaded", downloaded.value.bytes);
+    try provider.deleteFile(std.testing.allocator, file);
     try std.testing.expect(state.deleted);
     try std.testing.checkAllAllocationFailures(std.testing.allocator, State.checkModelsAllocation, .{});
     try std.testing.checkAllAllocationFailures(std.testing.allocator, State.checkFileAllocation, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, State.checkDownloadAllocation, .{});
 }
 
 test "provider rejects invalid policy and absent optional operations" {
@@ -376,8 +452,10 @@ test "provider rejects invalid policy and absent optional operations" {
     try std.testing.expectError(error.UnsupportedProviderOperation, provider.streamLines(std.testing.allocator, .{ .method = .GET, .endpoint = "/" }, undefined));
     try std.testing.expectError(error.UnsupportedProviderOperation, provider.listModels(std.testing.allocator));
     try std.testing.expectError(error.UnsupportedProviderOperation, provider.uploadFile(std.testing.allocator, .{ .filename = "x", .media_type = "text/plain", .bytes = "" }));
-    try std.testing.expectError(error.UnsupportedProviderOperation, provider.getFile(std.testing.allocator, "x"));
-    try std.testing.expectError(error.UnsupportedProviderOperation, provider.deleteFile("x"));
+    const unsupported_file = model.UploadedFile{ .id = "x", .provider_name = "test" };
+    try std.testing.expectError(error.UnsupportedProviderOperation, provider.inspectFile(std.testing.allocator, unsupported_file));
+    try std.testing.expectError(error.UnsupportedProviderOperation, provider.downloadFile(std.testing.allocator, unsupported_file));
+    try std.testing.expectError(error.UnsupportedProviderOperation, provider.deleteFile(std.testing.allocator, unsupported_file));
 
     const WrongOwner = struct {
         fn file(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8) !OwnedFile {
@@ -389,6 +467,20 @@ test "provider rejects invalid policy and absent optional operations" {
         fn upload(context: *anyopaque, allocator: std.mem.Allocator, _: FileInput) !OwnedFile {
             return file(context, allocator, "file");
         }
+
+        fn download(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8) !OwnedFileDownload {
+            return .{
+                .arena = .init(allocator),
+                .value = .{
+                    .descriptor = .{ .id = "file", .provider_name = "other" },
+                    .bytes = "",
+                },
+            };
+        }
+
+        fn delete(_: *anyopaque, _: std.mem.Allocator, _: []const u8) !void {
+            return error.UnexpectedRequest;
+        }
     };
     const wrong_owner = Provider{
         .context = &state,
@@ -396,12 +488,62 @@ test "provider rejects invalid policy and absent optional operations" {
         .base_url = "https://example.com",
         .requestFn = Stub.request,
         .uploadFileFn = WrongOwner.upload,
-        .getFileFn = WrongOwner.file,
+        .inspectFileFn = WrongOwner.file,
+        .downloadFileFn = WrongOwner.download,
+        .deleteFileFn = WrongOwner.delete,
     };
     try std.testing.expectError(error.InvalidProviderFileOwner, wrong_owner.uploadFile(std.testing.allocator, .{
         .filename = "file",
         .media_type = "text/plain",
         .bytes = "",
     }));
-    try std.testing.expectError(error.InvalidProviderFileOwner, wrong_owner.getFile(std.testing.allocator, "file"));
+    const owned = model.UploadedFile{ .id = "file", .provider_name = "test" };
+    try std.testing.expectError(error.InvalidProviderFileOwner, wrong_owner.inspectFile(std.testing.allocator, owned));
+    try std.testing.expectError(error.InvalidProviderFileOwner, wrong_owner.downloadFile(std.testing.allocator, owned));
+    try std.testing.expectError(error.InvalidProviderFileOwner, wrong_owner.inspectFile(std.testing.allocator, .{ .id = "file", .provider_name = "other" }));
+    try std.testing.expectError(error.InvalidProviderFileReference, wrong_owner.inspectFile(std.testing.allocator, .{ .id = "", .provider_name = "test" }));
+    try std.testing.expectError(error.InvalidProviderFileOwner, wrong_owner.deleteFile(std.testing.allocator, .{ .id = "file", .provider_name = "other" }));
+    try std.testing.expectError(error.InvalidProviderFileReference, wrong_owner.deleteFile(std.testing.allocator, .{ .id = "", .provider_name = "test" }));
+
+    const WrongReference = struct {
+        fn file(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8) !OwnedFile {
+            return .{
+                .arena = .init(allocator),
+                .value = .{ .id = "different", .provider_name = "test" },
+            };
+        }
+
+        fn upload(_: *anyopaque, allocator: std.mem.Allocator, _: FileInput) !OwnedFile {
+            return .{
+                .arena = .init(allocator),
+                .value = .{ .id = "", .provider_name = "test" },
+            };
+        }
+
+        fn download(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8) !OwnedFileDownload {
+            return .{
+                .arena = .init(allocator),
+                .value = .{
+                    .descriptor = .{ .id = "different", .provider_name = "test" },
+                    .bytes = "",
+                },
+            };
+        }
+    };
+    const wrong_reference = Provider{
+        .context = &state,
+        .name = "test",
+        .base_url = "https://example.com",
+        .requestFn = Stub.request,
+        .uploadFileFn = WrongReference.upload,
+        .inspectFileFn = WrongReference.file,
+        .downloadFileFn = WrongReference.download,
+    };
+    try std.testing.expectError(error.InvalidProviderFileReference, wrong_reference.uploadFile(std.testing.allocator, .{
+        .filename = "file",
+        .media_type = "text/plain",
+        .bytes = "",
+    }));
+    try std.testing.expectError(error.InvalidProviderFileReference, wrong_reference.inspectFile(std.testing.allocator, owned));
+    try std.testing.expectError(error.InvalidProviderFileReference, wrong_reference.downloadFile(std.testing.allocator, owned));
 }

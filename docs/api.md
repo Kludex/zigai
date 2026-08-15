@@ -187,9 +187,18 @@ and total models for paginated APIs. Model adapters are not involved in
 discovery.
 
 Provider file descriptors always include `provider_name`. Their
-`uploadedFile()` view can be passed directly as provider-owned rich content;
-upload and inspect operations reject a descriptor whose owner differs from the
-provider that returned it. File results own an arena and require `deinit`.
+`uploadedFile()` view is the handle accepted by `inspectFile`, `downloadFile`,
+and `deleteFile`, and it can also be passed directly as provider-owned rich
+content. The provider validates that handle before dispatch, so a foreign or
+empty ID never reaches provider code. Upload, inspection, and download results
+are validated again before they are returned.
+
+`uploadFile` and `inspectFile` return `OwnedProviderFile`. `downloadFile`
+returns `OwnedProviderFileDownload`, which owns both its descriptor and bytes.
+Call `deinit` on either result after use. Providers that cannot safely download
+content leave that operation unsupported; applications receive
+`UnsupportedProviderOperation` instead of a synthetic URL or a second
+unauthenticated fetch.
 
 `agent_spec.Owned` owns parsed configuration in an arena. It is data-only and
 does not read secrets or construct clients. `validateResolution` uses

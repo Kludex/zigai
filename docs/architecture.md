@@ -366,8 +366,11 @@ borrowed. Concrete provider state must outlive every model and in-flight
 operation that references it. Unsupported optional operations return one
 stable error rather than relying on null callback checks in application code.
 File records carry the provider identity and expose a zero-allocation
-`UploadedFile` view. The provider boundary rejects mismatched ownership before
-an application can reuse a returned file reference.
+`UploadedFile` view. Inspect, download, and delete accept only that
+owner-qualified handle. The provider boundary rejects foreign or empty handles
+before dispatch and rejects mismatched result descriptors before an application
+can reuse them. Metadata inspection and content download are distinct
+operations; downloaded bytes and their descriptor share one arena lifetime.
 
 ## MCP toolsets
 

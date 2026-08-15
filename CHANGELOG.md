@@ -33,8 +33,8 @@
   normalized for client construction, and raw provider metadata is preserved.
 - Establish the concrete file-lifecycle foundation with authenticated `DELETE`
   transport support, provider-qualified file descriptors, reusable
-  `UploadedFile` views, and fail-closed owner validation on upload and inspect
-  results.
+  `UploadedFile` handles, distinct inspect and download operations, arena-owned
+  downloaded bytes, and fail-closed owner validation before and after dispatch.
 - Pin the official MCP `2026-07-28` conformance framework and TypeScript and
   Python reference servers in a validated test-only interoperability matrix.
 - Add a test-only Cassetter-style YAML format that replays ordered MCP
