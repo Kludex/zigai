@@ -786,6 +786,15 @@ test "run control drains cancellation and supports cooperative fallback" {
             token.cancel();
         }
 
+        fn cancelAfterPollingStarts(io: std.Io, token: *CancellationToken) !void {
+            const delay: std.Io.Timeout = .{ .duration = .{
+                .raw = .fromMilliseconds(500),
+                .clock = .awake,
+            } };
+            try delay.sleep(io);
+            token.cancel();
+        }
+
         fn cancelCooperatively(token: *CancellationToken) !u8 {
             token.cancel();
             return 1;
@@ -813,7 +822,7 @@ test "run control drains cancellation and supports cooperative fallback" {
     try std.testing.expect(!state.active.load(.seq_cst));
 
     var polling_token: CancellationToken = .{};
-    var polling_canceller = try cancel_runtime.io().concurrent(State.cancelAfter, .{ cancel_runtime.io(), &polling_token });
+    var polling_canceller = try cancel_runtime.io().concurrent(State.cancelAfterPollingStarts, .{ cancel_runtime.io(), &polling_token });
     try RunControl.waitForCancellation(io, &polling_token);
     try polling_canceller.await(cancel_runtime.io());
 
