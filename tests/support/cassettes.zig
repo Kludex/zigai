@@ -344,6 +344,29 @@ test "cassette YAML round trips long opaque JSON strings" {
     try std.testing.expectEqualStrings(body, parsed.value.interactions[0].request.body);
 }
 
+test "cassette YAML preserves retry metadata and provider request IDs" {
+    const yaml = try format.stringify(std.testing.allocator, .{
+        .version = 1,
+        .interactions = &.{.{
+            .request = .{ .method = .POST, .url = "https://example.test", .body = "{}" },
+            .response = .{ .status = 429, .body = "{}", .metadata = .{
+                .retry_after_seconds = 3,
+                .rate_limit_remaining_requests = 0,
+                .rate_limit_remaining_tokens = 12,
+                .provider_request_id = http.MetadataText.init("req_123"),
+            } },
+        }},
+    });
+    defer std.testing.allocator.free(yaml);
+    var parsed = try format.parse(std.testing.allocator, yaml);
+    defer parsed.deinit();
+    const metadata = &parsed.value.interactions[0].response.metadata;
+    try std.testing.expectEqual(@as(?u64, 3), metadata.retry_after_seconds);
+    try std.testing.expectEqual(@as(?u64, 0), metadata.rate_limit_remaining_requests);
+    try std.testing.expectEqual(@as(?u64, 12), metadata.rate_limit_remaining_tokens);
+    try std.testing.expectEqualStrings("req_123", metadata.requestId().?);
+}
+
 test "cassette streaming replay and recording preserve lines" {
     const cassette =
         \\version: 1

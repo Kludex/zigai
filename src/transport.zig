@@ -54,6 +54,33 @@ pub const ResponseMetadata = struct {
     retry_after_seconds: ?u64 = null,
     rate_limit_remaining_requests: ?u64 = null,
     rate_limit_remaining_tokens: ?u64 = null,
+    /// Bounded copy of the provider's response correlation ID.
+    provider_request_id: ?MetadataText = null,
+
+    pub fn requestId(self: *const ResponseMetadata) ?[]const u8 {
+        if (self.provider_request_id) |*value| return value.slice();
+        return null;
+    }
+};
+
+/// Inline response metadata that remains valid after the HTTP request closes.
+pub const MetadataText = struct {
+    pub const max_bytes = 256;
+
+    bytes: [max_bytes]u8 = [_]u8{0} ** max_bytes,
+    length: u16 = 0,
+
+    pub fn init(value: []const u8) ?MetadataText {
+        if (value.len == 0 or value.len > max_bytes) return null;
+        var result: MetadataText = .{};
+        @memcpy(result.bytes[0..value.len], value);
+        result.length = @intCast(value.len);
+        return result;
+    }
+
+    pub fn slice(self: *const MetadataText) []const u8 {
+        return self.bytes[0..self.length];
+    }
 };
 
 pub const Transport = struct {
@@ -319,11 +346,19 @@ fn freeSendResult(allocator: std.mem.Allocator, result: anyerror!Response) void 
 
 fn responseMetadata(head: std.http.Client.Response.Head) ResponseMetadata {
     var metadata: ResponseMetadata = .{};
+    var retry_after: ?[]const u8 = null;
+    var response_date: ?[]const u8 = null;
     var iterator = head.iterateHeaders();
     while (iterator.next()) |header| {
         if (std.ascii.eqlIgnoreCase(header.name, "retry-after")) {
-            const value = std.fmt.parseInt(u64, header.value, 10) catch continue;
-            metadata.retry_after_seconds = value;
+            retry_after = header.value;
+        } else if (std.ascii.eqlIgnoreCase(header.name, "date")) {
+            response_date = header.value;
+        } else if (std.ascii.eqlIgnoreCase(header.name, "x-request-id") or
+            std.ascii.eqlIgnoreCase(header.name, "request-id") or
+            std.ascii.eqlIgnoreCase(header.name, "x-goog-request-id"))
+        {
+            metadata.provider_request_id = MetadataText.init(header.value);
         } else if (std.ascii.eqlIgnoreCase(header.name, "x-ratelimit-remaining-requests") or
             std.ascii.eqlIgnoreCase(header.name, "anthropic-ratelimit-requests-remaining"))
         {
@@ -336,7 +371,46 @@ fn responseMetadata(head: std.http.Client.Response.Head) ResponseMetadata {
             metadata.rate_limit_remaining_tokens = value;
         }
     }
+    if (retry_after) |value| metadata.retry_after_seconds = parseRetryAfter(value, response_date);
     return metadata;
+}
+
+fn parseRetryAfter(value: []const u8, response_date: ?[]const u8) ?u64 {
+    if (std.fmt.parseInt(u64, value, 10)) |seconds| return seconds else |_| {}
+    const retry_timestamp = parseHttpDate(value) orelse return null;
+    const response_timestamp = parseHttpDate(response_date orelse return null) orelse return null;
+    return retry_timestamp -| response_timestamp;
+}
+
+fn parseHttpDate(value: []const u8) ?u64 {
+    if (value.len != 29 or value[3] != ',' or value[4] != ' ' or value[7] != ' ' or
+        value[11] != ' ' or value[16] != ' ' or value[19] != ':' or value[22] != ':' or
+        value[25] != ' ' or !std.mem.eql(u8, value[26..], "GMT")) return null;
+    const day = std.fmt.parseInt(u8, value[5..7], 10) catch return null;
+    const year = std.fmt.parseInt(u16, value[12..16], 10) catch return null;
+    const hour = std.fmt.parseInt(u8, value[17..19], 10) catch return null;
+    const minute = std.fmt.parseInt(u8, value[20..22], 10) catch return null;
+    const second = std.fmt.parseInt(u8, value[23..25], 10) catch return null;
+    const month = parseHttpMonth(value[8..11]) orelse return null;
+    if (year < std.time.epoch.epoch_year or day == 0 or
+        day > std.time.epoch.getDaysInMonth(year, month) or hour > 23 or minute > 59 or second > 59) return null;
+
+    var days: u64 = 0;
+    var current_year: u16 = std.time.epoch.epoch_year;
+    while (current_year < year) : (current_year += 1) days += std.time.epoch.getDaysInYear(current_year);
+    var current_month: std.time.epoch.Month = .jan;
+    while (current_month != month) {
+        days += std.time.epoch.getDaysInMonth(year, current_month);
+        current_month = @enumFromInt(@intFromEnum(current_month) + 1);
+    }
+    days += day - 1;
+    return days * std.time.epoch.secs_per_day + @as(u64, hour) * 3600 + @as(u64, minute) * 60 + second;
+}
+
+fn parseHttpMonth(value: []const u8) ?std.time.epoch.Month {
+    const names = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+    for (names, 1..) |name, number| if (std.mem.eql(u8, value, name)) return @enumFromInt(number);
+    return null;
 }
 
 fn decompressionBuffer(allocator: std.mem.Allocator, encoding: std.http.ContentEncoding) ![]u8 {
@@ -401,6 +475,7 @@ test "response metadata parses retry and provider rate-limit headers" {
     const head = try std.http.Client.Response.Head.parse(
         "HTTP/1.1 429 Too Many Requests\r\n" ++
             "retry-after: 3\r\n" ++
+            "x-request-id: req_123\r\n" ++
             "x-ratelimit-remaining-requests: 0\r\n" ++
             "anthropic-ratelimit-tokens-remaining: 12\r\n" ++
             "x-ignored: not-a-number\r\n\r\n",
@@ -409,6 +484,26 @@ test "response metadata parses retry and provider rate-limit headers" {
     try std.testing.expectEqual(@as(?u64, 3), metadata.retry_after_seconds);
     try std.testing.expectEqual(@as(?u64, 0), metadata.rate_limit_remaining_requests);
     try std.testing.expectEqual(@as(?u64, 12), metadata.rate_limit_remaining_tokens);
+    try std.testing.expectEqualStrings("req_123", metadata.requestId().?);
+}
+
+test "response metadata parses HTTP-date retry delays and bounds request IDs" {
+    const head = try std.http.Client.Response.Head.parse(
+        "HTTP/1.1 503 Service Unavailable\r\n" ++
+            "date: Wed, 21 Oct 2015 07:28:00 GMT\r\n" ++
+            "retry-after: Wed, 21 Oct 2015 07:28:03 GMT\r\n\r\n",
+    );
+    try std.testing.expectEqual(@as(?u64, 3), responseMetadata(head).retry_after_seconds);
+    try std.testing.expectEqual(@as(?u64, 0), parseRetryAfter(
+        "Wed, 21 Oct 2015 07:27:59 GMT",
+        "Wed, 21 Oct 2015 07:28:00 GMT",
+    ));
+    try std.testing.expect(parseRetryAfter("not-a-date", null) == null);
+    try std.testing.expect(parseHttpDate("Wed, 31 Feb 2015 07:28:00 GMT") == null);
+    try std.testing.expect(parseHttpDate("Wed, 21 Oct 1969 07:28:00 GMT") == null);
+    try std.testing.expect(parseHttpDate("Wed, 21 Xxx 2015 07:28:00 GMT") == null);
+    try std.testing.expect(MetadataText.init("") == null);
+    try std.testing.expect(MetadataText.init(&([_]u8{'x'} ** (MetadataText.max_bytes + 1))) == null);
 }
 
 test "decompression buffers cover every supported encoding" {

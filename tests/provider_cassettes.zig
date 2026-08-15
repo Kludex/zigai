@@ -666,11 +666,11 @@ test "streaming clients reject malformed events and Anthropic accepts empty tool
     var compatible = zigai.openai_compatible.Client{ .model_name = "test", .api_key = "test", .transport = transport, .base_url = "https://compatible.test/v1" };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    try std.testing.expectError(error.InvalidProviderResponse, openai.model().stream(arena.allocator(), .{ .messages = &.{} }, sink));
-    try std.testing.expectError(error.InvalidProviderResponse, anthropic.model().stream(arena.allocator(), .{ .messages = &.{} }, sink));
+    try std.testing.expectError(error.ProviderResponseDecodeError, openai.model().stream(arena.allocator(), .{ .messages = &.{} }, sink));
+    try std.testing.expectError(error.ProviderResponseDecodeError, anthropic.model().stream(arena.allocator(), .{ .messages = &.{} }, sink));
     state.mode = .empty_tool;
     const response = try anthropic.model().stream(arena.allocator(), .{ .messages = &.{} }, sink);
     try std.testing.expectEqualStrings("{}", response.parts[0].tool_call.arguments_json);
     state.mode = .invalid_compatible_tool;
-    try std.testing.expectError(error.InvalidProviderResponse, compatible.model().stream(arena.allocator(), .{ .messages = &.{} }, sink));
+    try std.testing.expectError(error.ProviderResponseDecodeError, compatible.model().stream(arena.allocator(), .{ .messages = &.{} }, sink));
 }

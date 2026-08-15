@@ -2440,6 +2440,79 @@ test "agent honors retry policy and the global request limit" {
     try std.testing.expectEqual(@as(usize, 1), request_limited.attempts);
 }
 
+test "agent keeps correlation and idempotency stable across one logical retry" {
+    const State = struct {
+        attempts: usize = 0,
+        key: [32]u8 = undefined,
+        saw_correlation: bool = false,
+        saw_same_key: bool = false,
+
+        fn request(context: *anyopaque, _: std.mem.Allocator, request_value: zigai.ModelRequest) !zigai.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.attempts += 1;
+            self.saw_correlation = std.mem.eql(u8, request_value.request_id orelse "", "run-123");
+            const key = request_value.idempotency_key orelse return error.MissingIdempotencyKey;
+            try std.testing.expectEqual(@as(usize, 32), key.len);
+            if (self.attempts == 1) {
+                @memcpy(&self.key, key);
+                return error.ProviderConnectionError;
+            }
+            self.saw_same_key = std.mem.eql(u8, &self.key, key);
+            return .{ .parts = &.{.{ .text = "done" }} };
+        }
+    };
+    var state: State = .{};
+    const retrying_model = zigai.Model{
+        .context = &state,
+        .profile = .{ .supports_idempotency_key = true },
+        .requestFn = State.request,
+    };
+    var result = try (zigai.Agent{ .model = retrying_model, .io = std.testing.io }).runWithOptions(
+        std.testing.allocator,
+        "retry",
+        .{ .request_id = "run-123" },
+    );
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), state.attempts);
+    try std.testing.expect(state.saw_correlation);
+    try std.testing.expect(state.saw_same_key);
+
+    state = .{};
+    try std.testing.expectError(zigai.Agent.Error.RetryIdempotencyRequiresIo, (zigai.Agent{
+        .model = retrying_model,
+    }).run(std.testing.allocator, "retry"));
+    try std.testing.expectEqual(@as(usize, 0), state.attempts);
+}
+
+test "agent stops before a server-directed delay exceeds the retry budget" {
+    const State = struct {
+        attempts: usize = 0,
+
+        fn request(context: *anyopaque, _: std.mem.Allocator, request_value: zigai.ModelRequest) !zigai.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.attempts += 1;
+            request_value.error_observer.?.observe(.{
+                .provider = "test",
+                .status = 503,
+                .message = "unavailable",
+                .body = "{}",
+                .retry_after_seconds = 2,
+            });
+            return error.ProviderServerError;
+        }
+    };
+    var state: State = .{};
+    try std.testing.expectError(error.ProviderServerError, (zigai.Agent{
+        .model = .{ .context = &state, .profile = .{}, .requestFn = State.request },
+        .io = std.testing.io,
+        .retry_policy = .{
+            .backoff = .{ .maximum_delay_ms = 2_000 },
+            .max_total_delay_ms = 1_999,
+        },
+    }).run(std.testing.allocator, "retry"));
+    try std.testing.expectEqual(@as(usize, 1), state.attempts);
+}
+
 test "agent provides optional built-in backoff and requires an IO implementation" {
     const parts = [_]zigai.model.Part{.{ .text = "done" }};
     var missing_io = FlakyModel{
@@ -2632,6 +2705,7 @@ test "retry hooks receive captured provider response metadata" {
                 .retry_after_seconds = 3,
                 .rate_limit_remaining_requests = 0,
                 .rate_limit_remaining_tokens = 12,
+                .request_id = "req_123",
             });
             return error.ProviderRateLimited;
         }
@@ -2641,6 +2715,8 @@ test "retry hooks receive captured provider response metadata" {
             try std.testing.expectEqual(@as(?u64, 3), event.retry_after_seconds);
             try std.testing.expectEqual(@as(?u64, 0), event.rate_limit_remaining_requests);
             try std.testing.expectEqual(@as(?u64, 12), event.rate_limit_remaining_tokens);
+            try std.testing.expectEqualStrings("req_123", event.provider_request_id.?);
+            try std.testing.expectEqual(@as(u64, 0), event.total_delay_ms);
         }
     };
     var state: State = .{};

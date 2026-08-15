@@ -56,23 +56,27 @@ pub const Client = struct {
         defer allocator.free(url);
         const authorization = try std.fmt.allocPrint(allocator, "Bearer {s}", .{self.api_key});
         defer allocator.free(authorization);
-        const response = try self.transport.send(allocator, .{
+        var headers: std.ArrayList(http.Header) = .empty;
+        defer headers.deinit(allocator);
+        try headers.appendSlice(allocator, &.{
+            .{ .name = "content-type", .value = "application/json" },
+            .{ .name = "authorization", .value = authorization, .sensitive = true },
+        });
+        if (value.request_id) |request_id| try headers.append(allocator, .{ .name = "x-client-request-id", .value = request_id });
+        const response = self.transport.send(allocator, .{
             .method = .POST,
             .url = url,
-            .headers = &.{
-                .{ .name = "content-type", .value = "application/json" },
-                .{ .name = "authorization", .value = authorization, .sensitive = true },
-            },
+            .headers = headers.items,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
-        });
+        }) catch |failure| return common.transportError(failure);
         defer allocator.free(response.body);
         if (response.status < 200 or response.status >= 300) {
             common.notifyProviderError(allocator, value.error_observer, "openai", response.status, response.body, response.metadata);
             return common.statusError(response.status);
         }
-        return decodeResponse(allocator, response.body);
+        return decodeResponse(allocator, response.body) catch |failure| return common.responseDecodeError(failure);
     }
 
     fn stream(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest, sink: model_types.ModelStreamSink) !model_types.ModelResponse {
@@ -83,21 +87,25 @@ pub const Client = struct {
         defer allocator.free(url);
         const authorization = try std.fmt.allocPrint(allocator, "Bearer {s}", .{self.api_key});
         defer allocator.free(authorization);
+        var headers: std.ArrayList(http.Header) = .empty;
+        defer headers.deinit(allocator);
+        try headers.appendSlice(allocator, &.{
+            .{ .name = "content-type", .value = "application/json" },
+            .{ .name = "authorization", .value = authorization, .sensitive = true },
+        });
+        if (value.request_id) |request_id| try headers.append(allocator, .{ .name = "x-client-request-id", .value = request_id });
         var state = StreamState{ .allocator = allocator, .sink = sink };
         defer state.text.deinit(allocator);
         defer state.parts.deinit(allocator);
         defer state.error_body.deinit(allocator);
-        const response = try self.transport.streamLines(allocator, .{
+        const response = self.transport.streamLines(allocator, .{
             .method = .POST,
             .url = url,
-            .headers = &.{
-                .{ .name = "content-type", .value = "application/json" },
-                .{ .name = "authorization", .value = authorization, .sensitive = true },
-            },
+            .headers = headers.items,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
-        }, state.lineSink());
+        }, state.lineSink()) catch |failure| return common.transportError(failure);
         if (response.status < 200 or response.status >= 300) {
             common.notifyProviderError(allocator, value.error_observer, "openai", response.status, state.error_body.items, response.metadata);
             return common.statusError(response.status);
@@ -597,6 +605,49 @@ test "encodes both Responses API structured output modes" {
     try std.testing.expect(std.mem.indexOf(u8, json_schema, "\"temperature\":0.2") != null);
     try std.testing.expect(std.mem.indexOf(u8, json_schema, "\"max_output_tokens\":512") != null);
     try std.testing.expect(std.mem.indexOf(u8, json_schema, "\"reasoning\":{\"effort\":\"high\"}") != null);
+}
+
+test "client forwards OpenAI request correlation IDs" {
+    const State = struct {
+        buffered: bool = false,
+        streaming: bool = false,
+
+        fn hasCorrelation(request: http.Request) bool {
+            for (request.headers) |header| if (std.ascii.eqlIgnoreCase(header.name, "x-client-request-id") and
+                std.mem.eql(u8, header.value, "run-123")) return true;
+            return false;
+        }
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request_value: http.Request) !http.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.buffered = hasCorrelation(request_value);
+            return .{ .status = 200, .body = try allocator.dupe(u8, "{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}]}") };
+        }
+
+        fn stream(context: *anyopaque, _: std.mem.Allocator, request_value: http.Request, _: http.LineSink) !http.StreamResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.streaming = hasCorrelation(request_value);
+            return error.ConnectionResetByPeer;
+        }
+    };
+    var state: State = .{};
+    var client = Client{
+        .model_name = "gpt-test",
+        .api_key = "secret",
+        .transport = .{ .context = &state, .sendFn = State.send, .streamLinesFn = State.stream },
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    _ = try client.model().request(arena.allocator(), .{ .messages = &.{}, .request_id = "run-123" });
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+    };
+    try std.testing.expectError(error.ProviderConnectionError, client.model().stream(arena.allocator(), .{
+        .messages = &.{},
+        .request_id = "run-123",
+    }, .{ .context = &state, .eventFn = Sink.emit }));
+    try std.testing.expect(state.buffered);
+    try std.testing.expect(state.streaming);
 }
 
 test "encodes OpenAI web search and rejects standalone web fetch" {

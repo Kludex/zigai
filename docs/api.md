@@ -156,6 +156,28 @@ A paused run ends its invocation. `resumeRunWithOptions` starts a new monotonic
 budget because a process-local monotonic timestamp cannot be serialized safely
 across restarts.
 
+## Retry policy
+
+Retry decisions classify rate limits, server errors, request timeouts,
+connection failures, and provider-response decoding independently. Optional
+exponential backoff uses full jitter from the application's `Io`, honors
+numeric and HTTP-date `Retry-After`, and remains interruptible. The policy's
+`max_total_delay_ms` bounds cumulative backoff across the run. A fallible
+before-retry hook observes the planned and cumulative delay, rate-limit values,
+and the bounded provider request ID.
+
+The HTTP transport copies provider request IDs into bounded inline storage.
+Provider error observers and retry hooks receive borrowed views; copy a value
+to retain it. `ProviderConnectionError` and `ProviderResponseDecodeError` are
+stable retry categories.
+
+`RunOptions.request_id` supplies provider-facing correlation. OpenAI and
+OpenAI-compatible adapters send it as `x-client-request-id`. Generation APIs
+do not share a portable idempotency header, so official adapters do not claim
+one. A compatible gateway may configure `Client.idempotency_header`; its model
+profile then requests a generated key that remains stable across one logical
+request's retries. This requires `Agent.io`.
+
 ## Tool execution limits
 
 `Agent.tool_limits` applies `zigai.ToolLimits` to local calls. The defaults are

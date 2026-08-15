@@ -10,6 +10,9 @@
   timeout, result, follow-up, and cooperative cancellation policies.
 - One monotonic run deadline across requests, retries, streaming, callbacks,
   local and MCP tools, and deferred resume, with losing tasks drained.
+- Full-jitter retry backoff, cumulative delay budgets, HTTP-date
+  `Retry-After`, bounded provider request IDs, stable connection/decode
+  categories, request correlation, and opt-in compatible-provider idempotency.
 
 ## 0.1.0 — 2026-08-14
 

@@ -9,6 +9,42 @@ pub fn statusError(status: u16) model_types.ProviderRequestError {
     return error.ProviderRequestFailed;
 }
 
+/// Maps transport implementation details to stable retry categories while
+/// preserving failures that callers must handle directly.
+pub fn transportError(failure: anyerror) anyerror {
+    return switch (failure) {
+        error.OutOfMemory,
+        error.RequestCancelled,
+        error.RequestTimedOut,
+        error.ResponseTooLarge,
+        error.StreamLineTooLarge,
+        error.StreamingNotSupported,
+        error.UnsupportedCompressionMethod,
+        => failure,
+        error.InvalidProviderResponse => error.ProviderResponseDecodeError,
+        error.BrokenPipe,
+        error.ConnectionClosed,
+        error.ConnectionRefused,
+        error.ConnectionResetByPeer,
+        error.ConnectionTimedOut,
+        error.HostUnreachable,
+        error.NameServerFailure,
+        error.NetworkDown,
+        error.NetworkUnreachable,
+        error.NoAddressReturned,
+        error.Timeout,
+        => error.ProviderConnectionError,
+        else => failure,
+    };
+}
+
+pub fn responseDecodeError(failure: anyerror) anyerror {
+    return switch (failure) {
+        error.OutOfMemory => failure,
+        else => error.ProviderResponseDecodeError,
+    };
+}
+
 pub fn notifyProviderError(
     allocator: std.mem.Allocator,
     observer: ?model_types.ProviderErrorObserver,
@@ -54,6 +90,7 @@ pub fn notifyProviderError(
         .code = code orelse parsed.value.@"error".type orelse parsed.value.@"error".status,
         .message = parsed.value.@"error".message orelse body,
         .body = body,
+        .request_id = metadata.requestId(),
         .retry_after_seconds = metadata.retry_after_seconds,
         .rate_limit_remaining_requests = metadata.rate_limit_remaining_requests,
         .rate_limit_remaining_tokens = metadata.rate_limit_remaining_tokens,
@@ -72,6 +109,7 @@ fn observeRawProviderError(
         .status = status,
         .message = body,
         .body = body,
+        .request_id = metadata.requestId(),
         .retry_after_seconds = metadata.retry_after_seconds,
         .rate_limit_remaining_requests = metadata.rate_limit_remaining_requests,
         .rate_limit_remaining_tokens = metadata.rate_limit_remaining_tokens,
@@ -158,6 +196,21 @@ test "HTTP statuses map to stable provider errors" {
     try std.testing.expectEqual(error.ProviderRequestFailed, statusError(400));
 }
 
+test "transport and decode failures map to stable retry categories" {
+    try std.testing.expectEqual(error.ProviderConnectionError, transportError(error.ConnectionResetByPeer));
+    try std.testing.expectEqual(error.ApplicationSinkFailed, transportError(error.ApplicationSinkFailed));
+    try std.testing.expectEqual(error.ProviderResponseDecodeError, transportError(error.InvalidProviderResponse));
+    try std.testing.expectEqual(error.RequestTimedOut, transportError(error.RequestTimedOut));
+    try std.testing.expectEqual(error.RequestCancelled, transportError(error.RequestCancelled));
+    try std.testing.expectEqual(error.ResponseTooLarge, transportError(error.ResponseTooLarge));
+    try std.testing.expectEqual(error.StreamLineTooLarge, transportError(error.StreamLineTooLarge));
+    try std.testing.expectEqual(error.StreamingNotSupported, transportError(error.StreamingNotSupported));
+    try std.testing.expectEqual(error.UnsupportedCompressionMethod, transportError(error.UnsupportedCompressionMethod));
+    try std.testing.expectEqual(error.OutOfMemory, transportError(error.OutOfMemory));
+    try std.testing.expectEqual(error.ProviderResponseDecodeError, responseDecodeError(error.InvalidProviderResponse));
+    try std.testing.expectEqual(error.OutOfMemory, responseDecodeError(error.OutOfMemory));
+}
+
 test "provider error observer receives parsed and fallback details" {
     const Capture = struct {
         calls: usize = 0,
@@ -165,6 +218,7 @@ test "provider error observer receives parsed and fallback details" {
         saw_code: bool = false,
         saw_message: bool = false,
         saw_metadata: bool = false,
+        saw_request_id: bool = false,
 
         fn observe(context: *anyopaque, value: model_types.ProviderError) void {
             const self: *@This() = @ptrCast(@alignCast(context));
@@ -172,7 +226,9 @@ test "provider error observer receives parsed and fallback details" {
             self.status = value.status;
             self.saw_code = value.code != null and std.mem.eql(u8, value.code.?, "rate_limit");
             self.saw_message = std.mem.eql(u8, value.message, "slow down");
-            self.saw_metadata = value.retry_after_seconds == 3 and value.rate_limit_remaining_requests == 0 and value.rate_limit_remaining_tokens == 12;
+            self.saw_metadata = value.retry_after_seconds == 3 and value.rate_limit_remaining_requests == 0 and
+                value.rate_limit_remaining_tokens == 12;
+            self.saw_request_id = std.mem.eql(u8, value.request_id orelse "", "req_test");
         }
     };
     var capture: Capture = .{};
@@ -183,13 +239,19 @@ test "provider error observer receives parsed and fallback details" {
         "test",
         429,
         "{\"error\":{\"type\":\"rate_limit\",\"message\":\"slow down\"}}",
-        .{ .retry_after_seconds = 3, .rate_limit_remaining_requests = 0, .rate_limit_remaining_tokens = 12 },
+        .{
+            .retry_after_seconds = 3,
+            .rate_limit_remaining_requests = 0,
+            .rate_limit_remaining_tokens = 12,
+            .provider_request_id = http.MetadataText.init("req_test"),
+        },
     );
     try std.testing.expectEqual(@as(usize, 1), capture.calls);
     try std.testing.expectEqual(@as(u16, 429), capture.status);
     try std.testing.expect(capture.saw_code);
     try std.testing.expect(capture.saw_message);
     try std.testing.expect(capture.saw_metadata);
+    try std.testing.expect(capture.saw_request_id);
 
     notifyProviderError(std.testing.allocator, observer, "test", 500, "not-json", .{});
     try std.testing.expectEqual(@as(usize, 2), capture.calls);

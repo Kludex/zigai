@@ -171,14 +171,23 @@ HTTP transport to interrupt DNS, connect, write, read, and streaming work.
 Cancellation uses the same task-draining path. A resumed approval is a new
 invocation and receives a fresh monotonic budget.
 
-Retry decisions include request timeouts. Optional exponential backoff uses
-the application's `Io`, honors numeric `Retry-After`, and remains interruptible;
-a fallible before-retry hook observes each planned delay and provider metadata.
+Retry policy lives in the agent, while transport metadata stays factual and
+provider-neutral. Rate limits, server errors, timeouts, connections, and decode
+failures are independently classifiable. Optional exponential backoff uses
+full jitter, preserves server-directed `Retry-After`, shares the run's
+cancellation boundary, and consumes a cumulative delay budget.
 
-The HTTP transport parses allocation-free response metadata for numeric
-`Retry-After` and provider remaining-request/token headers. Provider error
-observers and retry hooks receive those values without exposing transport
-header storage or changing stable error categories.
+The HTTP transport accepts numeric and IMF-fixdate `Retry-After`, using the
+response `Date` header to avoid wall-clock skew. Rate-limit counts remain plain
+integers. Provider request IDs are copied into 256-byte inline storage before
+the HTTP request closes, then exposed as borrowed views to observers and hooks.
+Provider adapters normalize connection and response-decoding failures without
+turning cancellation, allocation, or response-size failures into retries.
+
+Idempotency is capability-driven because generation APIs do not share a safe
+header. OpenAI-compatible gateways may name an idempotency header. The agent
+then generates one random key per logical model request and reuses it only for
+that request's retry attempts.
 
 The same transport bounds untrusted response allocation after content
 decompression. Buffered bodies use `Limits.max_response_body_bytes`; streamed

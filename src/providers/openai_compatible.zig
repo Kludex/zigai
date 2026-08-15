@@ -78,15 +78,19 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
         profile: model_types.ModelProfile = defaults.profile,
         authentication: Authentication = defaults.authentication,
         headers: []const http.Header = &.{},
+        /// Optional gateway-specific header used to deduplicate retries.
+        idempotency_header: ?[]const u8 = null,
         include_stream_usage: bool = defaults.include_stream_usage,
         settings: model_types.ModelSettings = .{},
 
         const Self = @This();
 
         pub fn model(self: *Self) model_types.Model {
+            var model_profile = self.profile;
+            model_profile.supports_idempotency_key = self.idempotency_header != null;
             return .{
                 .context = self,
-                .profile = self.profile,
+                .profile = model_profile,
                 .provider_name = self.provider_name,
                 .model_name = self.model_name,
                 .settings = self.settings,
@@ -118,14 +122,17 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
                 .{ .name = self.authentication.header, .value = authentication, .sensitive = true },
             });
             try headers.appendSlice(allocator, self.headers);
-            const response = try self.transport.send(allocator, .{
+            if (value.request_id) |request_id| try headers.append(allocator, .{ .name = "x-client-request-id", .value = request_id });
+            if (self.idempotency_header) |name| if (value.idempotency_key) |key|
+                try headers.append(allocator, .{ .name = name, .value = key });
+            const response = self.transport.send(allocator, .{
                 .method = .POST,
                 .url = url,
                 .headers = headers.items,
                 .body = body,
                 .timeout_ms = value.timeout_ms,
                 .cancellation = value.cancellation,
-            });
+            }) catch |failure| return common.transportError(failure);
             defer allocator.free(response.body);
             if (response.status < 200 or response.status >= 300) {
                 common.notifyProviderError(
@@ -138,7 +145,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
                 );
                 return common.statusError(response.status);
             }
-            return decodeResponse(allocator, response.body);
+            return decodeResponse(allocator, response.body) catch |failure| return common.responseDecodeError(failure);
         }
 
         fn stream(
@@ -165,16 +172,19 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
                 .{ .name = self.authentication.header, .value = authentication, .sensitive = true },
             });
             try headers.appendSlice(allocator, self.headers);
+            if (value.request_id) |request_id| try headers.append(allocator, .{ .name = "x-client-request-id", .value = request_id });
+            if (self.idempotency_header) |name| if (value.idempotency_key) |key|
+                try headers.append(allocator, .{ .name = name, .value = key });
             var state = StreamState{ .allocator = allocator, .sink = sink };
             defer state.deinit();
-            const response = try self.transport.streamLines(allocator, .{
+            const response = self.transport.streamLines(allocator, .{
                 .method = .POST,
                 .url = url,
                 .headers = headers.items,
                 .body = body,
                 .timeout_ms = value.timeout_ms,
                 .cancellation = value.cancellation,
-            }, state.lineSink());
+            }, state.lineSink()) catch |failure| return common.transportError(failure);
             if (response.status < 200 or response.status >= 300) {
                 common.notifyProviderError(
                     allocator,
@@ -697,6 +707,63 @@ test "stream request usage collection is configurable" {
     const without_usage = try encodeStreamingRequest(std.testing.allocator, "model", .{ .messages = &.{} }, false);
     defer std.testing.allocator.free(without_usage);
     try std.testing.expect(std.mem.indexOf(u8, without_usage, "stream_options") == null);
+}
+
+test "compatible clients forward correlation and configured idempotency headers" {
+    const State = struct {
+        buffered: bool = false,
+        streaming: bool = false,
+
+        fn hasHeaders(request: http.Request) bool {
+            var correlation = false;
+            var idempotency = false;
+            for (request.headers) |header| {
+                if (std.ascii.eqlIgnoreCase(header.name, "x-client-request-id"))
+                    correlation = std.mem.eql(u8, header.value, "run-123");
+                if (std.ascii.eqlIgnoreCase(header.name, "x-idempotency-key"))
+                    idempotency = std.mem.eql(u8, header.value, "attempt-123");
+            }
+            return correlation and idempotency;
+        }
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request_value: http.Request) !http.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.buffered = hasHeaders(request_value);
+            return .{ .status = 200, .body = try allocator.dupe(u8, "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}") };
+        }
+
+        fn stream(context: *anyopaque, _: std.mem.Allocator, request_value: http.Request, _: http.LineSink) !http.StreamResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.streaming = hasHeaders(request_value);
+            return error.ConnectionResetByPeer;
+        }
+    };
+    var state: State = .{};
+    var client = Client{
+        .model_name = "model",
+        .api_key = "secret",
+        .transport = .{ .context = &state, .sendFn = State.send, .streamLinesFn = State.stream },
+        .idempotency_header = "x-idempotency-key",
+    };
+    try std.testing.expect(client.model().profile.supports_idempotency_key);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const request_value = model_types.ModelRequest{
+        .messages = &.{},
+        .request_id = "run-123",
+        .idempotency_key = "attempt-123",
+    };
+    _ = try client.model().request(arena.allocator(), request_value);
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+    };
+    try std.testing.expectError(error.ProviderConnectionError, client.model().stream(
+        arena.allocator(),
+        request_value,
+        .{ .context = &state, .eventFn = Sink.emit },
+    ));
+    try std.testing.expect(state.buffered);
+    try std.testing.expect(state.streaming);
 }
 
 test "decodes Chat Completions text, tools, usage, and finish reason" {

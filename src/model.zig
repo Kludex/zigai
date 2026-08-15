@@ -131,11 +131,12 @@ pub const RunControl = struct {
     }
 
     fn waitForCancellation(io: std.Io, token: *const CancellationToken) !void {
-        while (!token.isCancelled()) {
+        while (true) {
             try (std.Io.Timeout{ .duration = .{
                 .raw = .fromMilliseconds(5),
                 .clock = .awake,
             } }).sleep(io);
+            if (token.isCancelled()) return;
         }
     }
 };
@@ -477,6 +478,8 @@ pub const ModelProfile = struct {
     supports_max_tokens: bool = true,
     supports_stop_sequences: bool = false,
     supports_seed: bool = false,
+    /// The adapter can attach a caller-supplied key to retry attempts.
+    supports_idempotency_key: bool = false,
     reasoning_efforts: ReasoningEffortSet = ReasoningEffortSet.initEmpty(),
     builtin_tools: BuiltinToolSet = BuiltinToolSet.initEmpty(),
     content_types: ContentTypeSet = ContentTypeSet.initEmpty(),
@@ -587,6 +590,8 @@ pub const FinishReason = struct {
 /// Stable error categories emitted by provider adapters. Agents can make retry
 /// decisions from these without depending on a provider's private error JSON.
 pub const ProviderRequestError = error{
+    ProviderConnectionError,
+    ProviderResponseDecodeError,
     ProviderRateLimited,
     ProviderServerError,
     ProviderRequestFailed,
@@ -598,6 +603,8 @@ pub const ProviderError = struct {
     code: ?[]const u8 = null,
     message: []const u8,
     body: []const u8,
+    /// Borrowed provider correlation ID, when supplied in response headers.
+    request_id: ?[]const u8 = null,
     retry_after_seconds: ?u64 = null,
     rate_limit_remaining_requests: ?u64 = null,
     rate_limit_remaining_tokens: ?u64 = null,
@@ -624,6 +631,10 @@ pub const ModelRequest = struct {
     builtin_tools: []const BuiltinTool = &.{},
     output: OutputFormat = .text,
     error_observer: ?ProviderErrorObserver = null,
+    /// Caller correlation ID. Supporting providers forward it unchanged.
+    request_id: ?[]const u8 = null,
+    /// Stable across retries of this logical request. Ignored unless supported.
+    idempotency_key: ?[]const u8 = null,
     timeout_ms: ?u64 = null,
     cancellation: ?*const CancellationToken = null,
     settings: ModelSettings = .{},
@@ -786,15 +797,6 @@ test "run control drains cancellation and supports cooperative fallback" {
             token.cancel();
         }
 
-        fn cancelAfterPollingStarts(io: std.Io, token: *CancellationToken) !void {
-            const delay: std.Io.Timeout = .{ .duration = .{
-                .raw = .fromMilliseconds(500),
-                .clock = .awake,
-            } };
-            try delay.sleep(io);
-            token.cancel();
-        }
-
         fn cancelCooperatively(token: *CancellationToken) !u8 {
             token.cancel();
             return 1;
@@ -822,7 +824,7 @@ test "run control drains cancellation and supports cooperative fallback" {
     try std.testing.expect(!state.active.load(.seq_cst));
 
     var polling_token: CancellationToken = .{};
-    var polling_canceller = try cancel_runtime.io().concurrent(State.cancelAfterPollingStarts, .{ cancel_runtime.io(), &polling_token });
+    var polling_canceller = try cancel_runtime.io().concurrent(State.cancelAfter, .{ cancel_runtime.io(), &polling_token });
     try RunControl.waitForCancellation(io, &polling_token);
     try polling_canceller.await(cancel_runtime.io());
 

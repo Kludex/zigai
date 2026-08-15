@@ -547,12 +547,20 @@ The same loop supports:
 
 - cancellation with drained in-flight work;
 - one run deadline plus optional per-request ceilings;
-- bounded retries and exponential backoff;
-- `Retry-After` and rate-limit metadata;
+- bounded retries with full-jitter exponential backoff;
+- numeric or HTTP-date `Retry-After`, rate limits, and provider request IDs;
 - request and token budgets.
 
 A stream is never retried after it exposes visible output. This prevents
 duplicated text and repeated tool actions.
+
+`Agent.retry_policy` classifies rate limits, server errors, timeouts,
+connections, and malformed provider responses separately. Its cumulative
+delay budget defaults to 30 seconds. Backoff is optional and requires `io`;
+server-directed delays are not jittered. `RunOptions.request_id` is forwarded
+by OpenAI-style providers for tracing. OpenAI-compatible gateways can name an
+`idempotency_header`; ZigAI then generates one key per logical request and
+reuses it for that request's retries.
 
 HTTP response allocations are bounded after decompression. The defaults accept
 up to 16 MiB for a buffered body and 1 MiB for one streaming line. Use tighter

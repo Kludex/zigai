@@ -7,6 +7,7 @@ const reflect = @import("reflect.zig");
 const history = @import("history.zig");
 const telemetry_types = @import("telemetry.zig");
 const json_limits = @import("json.zig");
+const transport = @import("transport.zig");
 
 const Message = model_types.Message;
 const PromptPart = model_types.PromptPart;
@@ -63,6 +64,7 @@ const AgentError = error{
     InvalidToolFollowUpMessage,
     UnknownTool,
     RetryBackoffRequiresIo,
+    RetryIdempotencyRequiresIo,
     RunControlRequiresIo,
     RunControlConcurrencyUnavailable,
     RunTimedOut,
@@ -88,6 +90,10 @@ const AgentRetryPolicy = struct {
     retry_rate_limits: bool = true,
     retry_server_errors: bool = true,
     retry_timeouts: bool = true,
+    retry_connection_errors: bool = true,
+    retry_decode_errors: bool = true,
+    /// Maximum cumulative backoff delay across one complete agent run.
+    max_total_delay_ms: ?u64 = 30_000,
     backoff: ?AgentBackoff = null,
     before_retry: ?RetryHook = null,
 };
@@ -101,7 +107,10 @@ pub const RetryEvent = struct {
     retry_after_seconds: ?u64 = null,
     rate_limit_remaining_requests: ?u64 = null,
     rate_limit_remaining_tokens: ?u64 = null,
+    /// Borrowed provider response ID. Copy it in the hook to retain it.
+    provider_request_id: ?[]const u8 = null,
     delay_ms: u64 = 0,
+    total_delay_ms: u64 = 0,
 };
 
 pub const RetryHook = struct {
@@ -204,6 +213,8 @@ pub const RunOptions = struct {
     model_settings: model_types.ModelSettings = .{},
     /// Extra provider-facing history processors applied after agent processors.
     history_processors: []const history.Processor = &.{},
+    /// Provider-facing correlation ID for every model request in this run.
+    request_id: ?[]const u8 = null,
     /// Tightens `Agent.run_timeout_ms` for this invocation.
     timeout_ms: ?u64 = null,
 };
@@ -1003,6 +1014,7 @@ pub const Agent = struct {
         var model_requests: usize = if (resume_state) |state| state.model_requests else 0;
         var output_retries: usize = if (resume_state) |state| state.output_retries else 0;
         var total_tool_calls: usize = if (resume_state) |state| state.total_tool_calls else 0;
+        var total_retry_delay_ms: u64 = 0;
         var resume_pending = resume_state != null;
         while (true) {
             const available_tools = try prepareTools(memory, self.tools, self.toolsets, .{
@@ -1060,6 +1072,11 @@ pub const Agent = struct {
                 history_context,
                 request_messages,
             );
+            var idempotency_key_storage: [32]u8 = undefined;
+            const idempotency_key = if (self.model.profile.supports_idempotency_key and self.retry_policy.max_retries > 0)
+                generateIdempotencyKey(self.io orelse return Error.RetryIdempotencyRequiresIo, &idempotency_key_storage)
+            else
+                null;
             var retries: usize = 0;
             const response = request: while (true) {
                 try control.check();
@@ -1081,6 +1098,8 @@ pub const Agent = struct {
                     .builtin_tools = self.builtin_tools,
                     .output = self.output,
                     .error_observer = provider_errors.observer(),
+                    .request_id = options.request_id,
+                    .idempotency_key = idempotency_key,
                     .timeout_ms = try control.timeoutMilliseconds(self.request_timeout_ms),
                     .cancellation = self.cancellation,
                     .settings = resolved_settings,
@@ -1102,8 +1121,22 @@ pub const Agent = struct {
                         requestModel,
                         .{ self.model, memory, model_request },
                     )) catch |err| {
-                    const will_retry = !stream_emitted and retries < self.retry_policy.max_retries and
+                    const retry_candidate = !stream_emitted and retries < self.retry_policy.max_retries and
                         shouldRetry(err, self.retry_policy);
+                    const delay_ms = if (retry_candidate) if (self.retry_policy.backoff) |backoff|
+                        backoffDelayMilliseconds(
+                            self.io orelse return Error.RetryBackoffRequiresIo,
+                            backoff,
+                            retries + 1,
+                            provider_errors.retry_after_seconds,
+                        )
+                    else
+                        0 else 0;
+                    const within_budget = if (self.retry_policy.max_total_delay_ms) |maximum|
+                        delay_ms <= maximum -| total_retry_delay_ms
+                    else
+                        true;
+                    const will_retry = retry_candidate and within_budget;
                     try emitLifecycle(hooks, .{ .model_request_error = .{
                         .number = model_requests,
                         .failure = err,
@@ -1112,10 +1145,7 @@ pub const Agent = struct {
                     if (err == error.RequestCancelled) return Error.Cancelled;
                     if (will_retry) {
                         retries += 1;
-                        const delay_ms = if (self.retry_policy.backoff) |backoff|
-                            backoffDelayMilliseconds(backoff, retries, provider_errors.retry_after_seconds)
-                        else
-                            0;
+                        total_retry_delay_ms += delay_ms;
                         if (self.retry_policy.before_retry) |hook| {
                             const retry_event = RetryEvent{
                                 .failure = err,
@@ -1124,7 +1154,9 @@ pub const Agent = struct {
                                 .retry_after_seconds = provider_errors.retry_after_seconds,
                                 .rate_limit_remaining_requests = provider_errors.rate_limit_remaining_requests,
                                 .rate_limit_remaining_tokens = provider_errors.rate_limit_remaining_tokens,
+                                .provider_request_id = provider_errors.requestId(),
                                 .delay_ms = delay_ms,
+                                .total_delay_ms = total_retry_delay_ms,
                             };
                             try control.invoke(void, invokeRetryHook, .{ hook, retry_event });
                         }
@@ -2138,11 +2170,13 @@ const ProviderErrorCapture = struct {
     retry_after_seconds: ?u64 = null,
     rate_limit_remaining_requests: ?u64 = null,
     rate_limit_remaining_tokens: ?u64 = null,
+    provider_request_id: ?transport.MetadataText = null,
 
     fn reset(self: *ProviderErrorCapture) void {
         self.retry_after_seconds = null;
         self.rate_limit_remaining_requests = null;
         self.rate_limit_remaining_tokens = null;
+        self.provider_request_id = null;
     }
 
     fn observer(self: *ProviderErrorCapture) model_types.ProviderErrorObserver {
@@ -2154,7 +2188,13 @@ const ProviderErrorCapture = struct {
         self.retry_after_seconds = value.retry_after_seconds;
         self.rate_limit_remaining_requests = value.rate_limit_remaining_requests;
         self.rate_limit_remaining_tokens = value.rate_limit_remaining_tokens;
+        self.provider_request_id = if (value.request_id) |request_id| transport.MetadataText.init(request_id) else null;
         if (self.target) |target| target.observe(value);
+    }
+
+    fn requestId(self: *const ProviderErrorCapture) ?[]const u8 {
+        if (self.provider_request_id) |*value| return value.slice();
+        return null;
     }
 };
 
@@ -2184,6 +2224,8 @@ fn requireModelSettings(profile: model_types.ModelProfile, settings: model_types
 
 fn shouldRetry(err: anyerror, policy: Agent.RetryPolicy) bool {
     return switch (err) {
+        error.ProviderConnectionError => policy.retry_connection_errors,
+        error.ProviderResponseDecodeError => policy.retry_decode_errors,
         error.ProviderRateLimited => policy.retry_rate_limits,
         error.ProviderServerError => policy.retry_server_errors,
         error.RequestTimedOut => policy.retry_timeouts,
@@ -2191,7 +2233,7 @@ fn shouldRetry(err: anyerror, policy: Agent.RetryPolicy) bool {
     };
 }
 
-fn backoffDelayMilliseconds(backoff: Agent.Backoff, retry_number: usize, retry_after_seconds: ?u64) u64 {
+fn backoffDelayMilliseconds(io: std.Io, backoff: Agent.Backoff, retry_number: usize, retry_after_seconds: ?u64) u64 {
     if (backoff.respect_retry_after) if (retry_after_seconds) |seconds| {
         return @min(std.math.mul(u64, seconds, 1000) catch std.math.maxInt(u64), backoff.maximum_delay_ms);
     };
@@ -2200,7 +2242,15 @@ fn backoffDelayMilliseconds(backoff: Agent.Backoff, retry_number: usize, retry_a
     while (exponent > 0 and delay < backoff.maximum_delay_ms) : (exponent -= 1) {
         delay = @min(std.math.mul(u64, delay, 2) catch std.math.maxInt(u64), backoff.maximum_delay_ms);
     }
-    return delay;
+    var random_source = std.Random.IoSource{ .io = io };
+    return random_source.interface().uintAtMost(u64, delay);
+}
+
+fn generateIdempotencyKey(io: std.Io, output: *[32]u8) []const u8 {
+    var random: [16]u8 = undefined;
+    io.random(&random);
+    output.* = std.fmt.bytesToHex(random, .lower);
+    return output;
 }
 
 fn sleepBackoff(io: std.Io, delay_ms: u64, control: model_types.RunControl) !void {
@@ -2789,6 +2839,8 @@ test "capability requirement accepts and rejects" {
 
 test "retry classification follows policy" {
     const defaults: Agent.RetryPolicy = .{};
+    try std.testing.expect(shouldRetry(error.ProviderConnectionError, defaults));
+    try std.testing.expect(shouldRetry(error.ProviderResponseDecodeError, defaults));
     try std.testing.expect(shouldRetry(error.ProviderRateLimited, defaults));
     try std.testing.expect(shouldRetry(error.ProviderServerError, defaults));
     try std.testing.expect(shouldRetry(error.RequestTimedOut, defaults));
@@ -2796,20 +2848,24 @@ test "retry classification follows policy" {
     try std.testing.expect(!shouldRetry(error.ProviderRateLimited, .{ .retry_rate_limits = false }));
     try std.testing.expect(!shouldRetry(error.ProviderServerError, .{ .retry_server_errors = false }));
     try std.testing.expect(!shouldRetry(error.RequestTimedOut, .{ .retry_timeouts = false }));
+    try std.testing.expect(!shouldRetry(error.ProviderConnectionError, .{ .retry_connection_errors = false }));
+    try std.testing.expect(!shouldRetry(error.ProviderResponseDecodeError, .{ .retry_decode_errors = false }));
 }
 
-test "backoff is exponential, capped, and honors Retry-After" {
+test "backoff applies full jitter, caps growth, and honors Retry-After" {
     const policy: Agent.Backoff = .{ .initial_delay_ms = 100, .maximum_delay_ms = 350 };
-    try std.testing.expectEqual(@as(u64, 100), backoffDelayMilliseconds(policy, 1, null));
-    try std.testing.expectEqual(@as(u64, 200), backoffDelayMilliseconds(policy, 2, null));
-    try std.testing.expectEqual(@as(u64, 350), backoffDelayMilliseconds(policy, 4, null));
-    try std.testing.expectEqual(@as(u64, 350), backoffDelayMilliseconds(policy, 1, 2));
-    try std.testing.expectEqual(@as(u64, 100), backoffDelayMilliseconds(.{
+    try std.testing.expect(backoffDelayMilliseconds(std.testing.io, policy, 1, null) <= 100);
+    try std.testing.expect(backoffDelayMilliseconds(std.testing.io, policy, 2, null) <= 200);
+    try std.testing.expect(backoffDelayMilliseconds(std.testing.io, policy, 4, null) <= 350);
+    try std.testing.expectEqual(@as(u64, 350), backoffDelayMilliseconds(std.testing.io, policy, 1, 2));
+    try std.testing.expect(backoffDelayMilliseconds(std.testing.io, .{
         .initial_delay_ms = 100,
         .maximum_delay_ms = 350,
         .respect_retry_after = false,
-    }, 1, 2));
-    try std.testing.expectEqual(@as(u64, 350), backoffDelayMilliseconds(policy, 1, std.math.maxInt(u64)));
+    }, 1, 2) <= 100);
+    try std.testing.expectEqual(@as(u64, 350), backoffDelayMilliseconds(std.testing.io, policy, 1, std.math.maxInt(u64)));
+    var idempotency_key: [32]u8 = undefined;
+    try std.testing.expectEqual(@as(usize, 32), generateIdempotencyKey(std.testing.io, &idempotency_key).len);
     try std.testing.expectEqual(Agent.Error.Cancelled, normalizeBackoffSleepError(error.Canceled));
 }
 

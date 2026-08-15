@@ -129,7 +129,16 @@ fn parseMetadata(node: *const yaml.Node) !http.ResponseMetadata {
         .retry_after_seconds = try optionalHeaderInteger(headers, "retry-after"),
         .rate_limit_remaining_requests = try optionalHeaderInteger(headers, "x-ratelimit-remaining-requests"),
         .rate_limit_remaining_tokens = try optionalHeaderInteger(headers, "x-ratelimit-remaining-tokens"),
+        .provider_request_id = try optionalHeaderText(headers, "x-request-id"),
     };
+}
+
+fn optionalHeaderText(headers: yaml.MappingNode, name: []const u8) !?http.MetadataText {
+    const node = field(headers, name) orelse return null;
+    const values = try requireSequence(node);
+    if (values.items.len != 1) return error.InvalidCassette;
+    const value = try requireScalar(values.items[0]);
+    return http.MetadataText.init(value) orelse error.InvalidCassette;
 }
 
 fn optionalHeaderInteger(headers: yaml.MappingNode, name: []const u8) !?u64 {
@@ -146,7 +155,8 @@ fn optionalHeaderInteger(headers: yaml.MappingNode, name: []const u8) !?u64 {
 fn writeMetadata(writer: *std.Io.Writer, metadata: http.ResponseMetadata) !void {
     if (metadata.retry_after_seconds == null and
         metadata.rate_limit_remaining_requests == null and
-        metadata.rate_limit_remaining_tokens == null)
+        metadata.rate_limit_remaining_tokens == null and
+        metadata.provider_request_id == null)
     {
         return writer.writeAll("    headers: {}\n");
     }
@@ -154,6 +164,11 @@ fn writeMetadata(writer: *std.Io.Writer, metadata: http.ResponseMetadata) !void 
     try writeHeader(writer, "retry-after", metadata.retry_after_seconds);
     try writeHeader(writer, "x-ratelimit-remaining-requests", metadata.rate_limit_remaining_requests);
     try writeHeader(writer, "x-ratelimit-remaining-tokens", metadata.rate_limit_remaining_tokens);
+    if (metadata.requestId()) |request_id| {
+        try writer.writeAll("      x-request-id:\n      - ");
+        try writeQuoted(writer, request_id);
+        try writer.writeByte('\n');
+    }
 }
 
 fn writeHeader(writer: *std.Io.Writer, name: []const u8, value: ?u64) !void {

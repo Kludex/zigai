@@ -74,20 +74,20 @@ pub const Client = struct {
             .{ .name = "anthropic-version", .value = api_version },
             .{ .name = "anthropic-beta", .value = "files-api-2025-04-14" },
         };
-        const response = try self.transport.send(allocator, .{
+        const response = self.transport.send(allocator, .{
             .method = .POST,
             .url = url,
             .headers = if (hasProviderFiles(value.messages)) &file_headers else &stable_headers,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
-        });
+        }) catch |failure| return common.transportError(failure);
         defer allocator.free(response.body);
         if (response.status < 200 or response.status >= 300) {
             common.notifyProviderError(allocator, value.error_observer, "anthropic", response.status, response.body, response.metadata);
             return common.statusError(response.status);
         }
-        return decodeResponse(allocator, response.body);
+        return decodeResponse(allocator, response.body) catch |failure| return common.responseDecodeError(failure);
     }
 
     fn stream(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest, sink: model_types.ModelStreamSink) !model_types.ModelResponse {
@@ -109,14 +109,14 @@ pub const Client = struct {
         };
         var state = StreamState{ .allocator = allocator, .sink = sink };
         defer state.deinit();
-        const response = try self.transport.streamLines(allocator, .{
+        const response = self.transport.streamLines(allocator, .{
             .method = .POST,
             .url = url,
             .headers = if (hasProviderFiles(value.messages)) &file_headers else &stable_headers,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
-        }, state.lineSink());
+        }, state.lineSink()) catch |failure| return common.transportError(failure);
         if (response.status < 200 or response.status >= 300) {
             common.notifyProviderError(allocator, value.error_observer, "anthropic", response.status, state.error_body.items, response.metadata);
             return common.statusError(response.status);

@@ -59,7 +59,7 @@ pub const Client = struct {
         defer allocator.free(body);
         const url = try std.fmt.allocPrint(allocator, "{s}/models/{s}:generateContent", .{ self.base_url, self.model_name });
         defer allocator.free(url);
-        const response = try self.transport.send(allocator, .{
+        const response = self.transport.send(allocator, .{
             .method = .POST,
             .url = url,
             .headers = &.{
@@ -69,13 +69,13 @@ pub const Client = struct {
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
-        });
+        }) catch |failure| return common.transportError(failure);
         defer allocator.free(response.body);
         if (response.status < 200 or response.status >= 300) {
             common.notifyProviderError(allocator, value.error_observer, "google", response.status, response.body, response.metadata);
             return common.statusError(response.status);
         }
-        return decodeResponse(allocator, response.body);
+        return decodeResponse(allocator, response.body) catch |failure| return common.responseDecodeError(failure);
     }
 
     fn stream(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest, sink: model_types.ModelStreamSink) !model_types.ModelResponse {
@@ -87,7 +87,7 @@ pub const Client = struct {
         var state = StreamState{ .allocator = allocator, .sink = sink };
         defer state.parts.deinit(allocator);
         defer state.error_body.deinit(allocator);
-        const response = try self.transport.streamLines(allocator, .{
+        const response = self.transport.streamLines(allocator, .{
             .method = .POST,
             .url = url,
             .headers = &.{
@@ -97,7 +97,7 @@ pub const Client = struct {
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
-        }, state.lineSink());
+        }, state.lineSink()) catch |failure| return common.transportError(failure);
         if (response.status < 200 or response.status >= 300) {
             common.notifyProviderError(allocator, value.error_observer, "google", response.status, state.error_body.items, response.metadata);
             return common.statusError(response.status);
