@@ -342,6 +342,13 @@ extension methods and unknown fields. The toolset adapter follows list cursors,
 preserves schemas, mirrors `x-mcp-header` arguments, and renders tool content
 through the normal agent loop.
 
+The focused `mcp.primitives` module owns borrowed protocol value objects.
+`ClientCapabilities` and `ServerCapabilities` serialize standardized fields,
+validate object-valued experimental and extension settings, and enforce
+prefixed extension identifiers. They return one caller-owned JSON document;
+the existing raw capability fields remain the explicit forward-compatibility
+boundary for revisions ZigAI does not know yet.
+
 Multi round-trip requests replace server-initiated JSON-RPC calls. When a
 result requires sampling, roots, or elicitation, the configured `InputHandler`
 answers each item and the client retries with `inputResponses` and opaque

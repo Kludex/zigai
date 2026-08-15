@@ -510,10 +510,24 @@ discovery, every core request, pagination, SSE subscriptions, cancellation,
 and multi-round-trip sampling, roots, and elicitation through an `InputHandler`.
 Tool arguments marked with `x-mcp-header` are mirrored for Streamable HTTP.
 
-Optional client behavior must be advertised on every request. Configure
-`capabilities_json` before installing an `InputHandler`; MRTR input that was
-not advertised is rejected. `max_round_trips` and `max_pages` bound retries
-and tool discovery.
+Optional client behavior must be advertised on every request. Build the
+standard fields with `ClientCapabilities`; the returned JSON is owned by the
+caller and stays borrowed by the client:
+
+```zig
+const capabilities_json = try (zigai.mcp.ClientCapabilities{
+    .roots = true,
+    .sampling = .{ .context = true, .tools = true },
+    .elicitation = .{ .form = true },
+}).stringifyAlloc(allocator);
+defer allocator.free(capabilities_json);
+
+mcp_client.capabilities_json = capabilities_json;
+```
+
+The raw `capabilities_json` field remains the forward-compatible escape hatch.
+MRTR input that was not advertised is rejected. `max_round_trips` and
+`max_pages` bound retries and tool discovery.
 
 The typed helpers cover tools, prompts, resources, completion, discovery, and
 subscriptions. Use `Client.request` for extensions such as Tasks:

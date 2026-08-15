@@ -14,10 +14,15 @@ const json_limits = @import("json.zig");
 
 /// OAuth 2.1 and deployment-security contracts for Streamable HTTP.
 pub const auth = @import("mcp/auth.zig");
+/// Typed capability value objects for the MCP wire protocol.
+pub const primitives = @import("mcp/primitives.zig");
 const security = @import("security.zig");
 
 /// Latest stable MCP protocol revision supported by ZigAI.
 pub const protocol_version = "2026-07-28";
+
+pub const ClientCapabilities = primitives.ClientCapabilities;
+pub const ServerCapabilities = primitives.ServerCapabilities;
 
 /// Era detected by the compatibility probes defined in MCP 2026-07-28.
 pub const CompatibilityEra = enum { modern, legacy, indeterminate };
@@ -130,6 +135,10 @@ pub fn extensionSettings(
 
 /// MCP protocol and transport failures defined by ZigAI.
 pub const Error = error{
+    /// A typed capability document contains malformed open JSON settings.
+    InvalidCapabilities,
+    /// An extension capability lacks a valid reverse-DNS prefix.
+    InvalidExtensionIdentifier,
     /// An OAuth token, response, or metadata document names another issuer.
     InvalidAuthorizationIssuer,
     /// OAuth/OIDC discovery metadata is malformed or unsafe.
@@ -2105,7 +2114,7 @@ fn capabilityObject(value: std.json.Value, comptime invalid_error: anytype) !std
 }
 
 fn validPrefixedMetaKey(key: []const u8) bool {
-    return validMetaKey(key, true);
+    return primitives.isExtensionIdentifier(key);
 }
 
 fn validMetaKey(key: []const u8, require_prefix: bool) bool {
