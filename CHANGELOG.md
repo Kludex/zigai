@@ -32,6 +32,16 @@
   unknown fallback, application lookups take precedence over built-ins, and
   application overrides run last so unsupported tools, settings, and content
   fail before transport.
+- Add a native Amazon Bedrock Runtime provider and buffered Converse adapter.
+  It supports regional bearer authentication, encoded model identifiers,
+  instructions and text history, function-tool loops, JSON Schema output for
+  recognized models, common inference settings, service tiers, tagged Bedrock
+  extensions, reasoning replay, normalized finish reasons, and cache-aware
+  usage. Mantle remains an explicitly named OpenAI-compatible adapter; binary
+  ConverseStream support remains separate from line-oriented streaming.
+- Record and replay a redacted real Claude Sonnet 4.6 Converse tool loop. The
+  recorder strips authentication, normalizes the AWS region, and verifies both
+  the tool request and final response through a real `Agent`.
 - Add bounded, arena-owned model discovery for OpenAI, Anthropic, Google, and
   every OpenAI-compatible provider through the provider operations interface.
   Paginated APIs have explicit page and model limits, identifiers are

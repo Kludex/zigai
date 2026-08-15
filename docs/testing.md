@@ -52,9 +52,10 @@ from each first-party provider. The matrix spans multiple model generations and
 size tiers. It is defined once in
 `tests/support/model_matrix.zig` and drives both recording and replay.
 
-`tests/cassettes/native/` contains real provider-managed web-tool recordings:
-OpenAI web search, Anthropic web search plus fetch, and Google Search plus URL
-Context. These recordings verify the native request shapes and responses.
+`tests/cassettes/native/` contains real provider-native recordings: OpenAI web
+search, Anthropic web search plus fetch, Google Search plus URL Context, and a
+complete Amazon Bedrock Converse function-tool loop. These recordings verify
+the native request shapes and responses.
 
 `tests/cassettes/rich/` contains one real inline-image exchange for each
 first-party provider.
@@ -77,6 +78,7 @@ zig build record-cassettes -- anthropic
 zig build record-cassettes -- gemini-3.5-flash
 zig build record-cassettes -- native-tools
 zig build record-cassettes -- native-google
+zig build record-cassettes -- native-bedrock
 zig build record-cassettes -- rich-content
 zig build record-cassettes -- rich-anthropic
 zig build record-cassettes -- files
@@ -84,8 +86,10 @@ zig build record-cassettes -- files-google
 ```
 
 The recorder accepts `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and either
-`GOOGLE_API_KEY` or `GEMINI_API_KEY`. It replaces each cassette atomically only
-after a successful agent tool loop. Authentication headers are never copied.
+`GOOGLE_API_KEY` or `GEMINI_API_KEY`. Native Bedrock recording additionally
+uses `AWS_BEARER_TOKEN_BEDROCK` and `AWS_DEFAULT_REGION`. It replaces each
+cassette atomically only after a successful agent tool loop. Authentication
+headers are never copied, and the Bedrock recorder replaces the real region.
 
 The files follow Cassetter v1 YAML. JSON bodies are nested YAML values, streamed
 responses use literal text blocks, and binary bodies are explicit. Headers are

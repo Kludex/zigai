@@ -180,7 +180,7 @@ authentication style, or model profile overrides.
 | `zigai.providers.anthropic` | Anthropic Messages |
 | `zigai.providers.google` | Gemini GenerateContent |
 | `zigai.providers.azure_openai` | Azure OpenAI v1 |
-| `zigai.providers.bedrock` | Amazon Bedrock (Mantle compatibility adapter) |
+| `zigai.providers.bedrock` | Amazon Bedrock Converse; Mantle Chat Completions |
 | `zigai.providers.cerebras` | Cerebras Inference |
 | `zigai.providers.cohere` | Cohere Compatibility API |
 | `zigai.providers.deepseek` | DeepSeek |
@@ -226,6 +226,10 @@ var client = zigai.providers.azure_openai.Client{
     .provider = azure_provider.provider(),
 };
 ```
+
+Bedrock's primary `Provider` and `Client` use the native Converse API. Construct
+the provider with an API key and region; use `MantleProvider`, `MantleClient`,
+and `mantleApiBase` only for the OpenAI-compatible Mantle endpoint.
 
 Every first-party and OpenAI-compatible provider can discover the models
 visible to the configured credential:

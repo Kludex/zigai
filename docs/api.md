@@ -174,6 +174,38 @@ Google uses `zigai.providers.google.Provider`; it owns `x-goog-api-key` and
 keeps the stable `gcp.gen_ai` provider identity. Its client builds model-bound
 GenerateContent endpoints and encodes Gemini request and response bodies.
 
+Amazon Bedrock uses a native regional provider and a separate Converse wire
+adapter:
+
+```zig
+var provider = try zigai.providers.bedrock.Provider.init(
+    api_key,
+    "eu-west-1",
+    transport,
+);
+var client = zigai.providers.bedrock.Client{
+    .model_name = "eu.anthropic.claude-sonnet-4-6",
+    .provider = provider.provider(),
+};
+```
+
+The provider borrows the API key and transport. Its generated regional URL is
+bound only when `provider()` is called, so keep the concrete provider at a
+stable address until the client and every request are finished. It authenticates
+with the Bedrock bearer token, while the client owns model-path encoding and
+Converse JSON.
+
+Converse supports instructions, system and text history, function tools and
+results, structured output on recognized model profiles, common inference
+settings, tagged Bedrock extensions, service tiers, reasoning replay, normalized
+finish reasons, and cache-aware usage. Unknown model families use a fail-closed
+client profile unless the application supplies a profile lookup or override.
+The adapter is buffered: `ConverseStream` uses binary AWS EventStream frames,
+which require a chunk-stream transport rather than the line-stream interface.
+
+`bedrock.MantleProvider`, `bedrock.MantleClient`, and `bedrock.mantleApiBase`
+remain available for Bedrock's OpenAI-compatible Chat Completions endpoint.
+
 OpenAI-compatible modules follow the same rule. Each named module exports a
 matching `Provider` and `Client` built from shared compile-time defaults. The
 provider owns the API root, provider identity, authentication style, headers,
