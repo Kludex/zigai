@@ -38,7 +38,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add fuzz targets for every parser and wire state machine: history,
   deferred state, JSON Schema, provider buffered/streaming decoders, cassette
   YAML, MCP JSON-RPC/SSE/stdio, CLI manifests, and HTTP metadata parsing.
-- [ ] Add soak, stress, and allocation-failure suites. Exercise long tool loops,
+- [x] Add soak, stress, and allocation-failure suites. Exercise long tool loops,
   parallel tools, cancellation races, reconnects, large histories, partial
   streams, allocator failures, and repeated init/deinit under Debug and
   ReleaseSafe on Linux and macOS.
