@@ -1,0 +1,78 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/upload/v1beta/files"
+    headers: {}
+    body:
+      type: json
+      content:
+        file:
+          display_name: "zigai-cassette.txt"
+  response:
+    status: 200
+    headers:
+      x-goog-upload-url:
+      - "https://generativelanguage.googleapis.com/upload/v1beta/files/REDACTED"
+    body:
+      type: none
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/upload/v1beta/files/REDACTED"
+    headers: {}
+    body:
+      type: text
+      content: "[REDACTED FILE CONTENT]"
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        file:
+          name: "files/d483ziqrucvc"
+          displayName: "zigai-cassette.txt"
+          mimeType: "text/plain"
+          sizeBytes: "29"
+          createTime: "2026-08-15T19:21:17.883730Z"
+          updateTime: "2026-08-15T19:21:17.883730Z"
+          expirationTime: "2026-08-17T19:21:17.249997630Z"
+          sha256Hash: "MmNhMWY1ZGY1Mzc2YjllNzBiMDY2M2I2ZjY3ZWQ4NzAwMDc0Mzg1NWQ1YzQ2YTcyNmFlNjY3NGVlNzBmMGE0NQ=="
+          uri: "https://generativelanguage.googleapis.com/v1beta/files/d483ziqrucvc"
+          state: "ACTIVE"
+          source: "UPLOADED"
+- request:
+    method: GET
+    uri: "https://generativelanguage.googleapis.com/v1beta/files/d483ziqrucvc"
+    headers: {}
+    body:
+      type: none
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        name: "files/d483ziqrucvc"
+        displayName: "zigai-cassette.txt"
+        mimeType: "text/plain"
+        sizeBytes: "29"
+        createTime: "2026-08-15T19:21:17.883730Z"
+        updateTime: "2026-08-15T19:21:17.883730Z"
+        expirationTime: "2026-08-17T19:21:17.249997630Z"
+        sha256Hash: "MmNhMWY1ZGY1Mzc2YjllNzBiMDY2M2I2ZjY3ZWQ4NzAwMDc0Mzg1NWQ1YzQ2YTcyNmFlNjY3NGVlNzBmMGE0NQ=="
+        uri: "https://generativelanguage.googleapis.com/v1beta/files/d483ziqrucvc"
+        state: "ACTIVE"
+        source: "UPLOADED"
+- request:
+    method: DELETE
+    uri: "https://generativelanguage.googleapis.com/v1beta/files/d483ziqrucvc"
+    headers: {}
+    body:
+      type: none
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content: {}

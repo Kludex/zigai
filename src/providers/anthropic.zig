@@ -292,6 +292,7 @@ test "Anthropic provider owns the complete beta file lifecycle" {
     });
     defer uploaded.deinit();
     try std.testing.expectEqualStrings("text/plain", uploaded.value.media_type.?);
+    try std.testing.expectEqual(@as(?bool, true), uploaded.value.downloadable);
     const file = uploaded.value.uploadedFile();
     var inspected = try provider.inspectFile(std.testing.allocator, file);
     defer inspected.deinit();

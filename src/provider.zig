@@ -109,6 +109,8 @@ pub const FileDescriptor = struct {
     media_type: ?[]const u8 = null,
     purpose: ?[]const u8 = null,
     size_bytes: ?u64 = null,
+    /// Whether the provider permits retrieving this file's bytes.
+    downloadable: ?bool = null,
     metadata_json: ?[]const u8 = null,
 
     /// Views this provider-owned record as reusable rich-content input.

@@ -84,7 +84,7 @@ pub const MultipartFileFilter = struct {
 
     fn apply(context: *const anyopaque, allocator: std.mem.Allocator, body: []const u8) ![]u8 {
         const self: *const MultipartFileFilter = @ptrCast(@alignCast(context));
-        if (!std.mem.startsWith(u8, body, "--")) return error.InvalidMultipartCassetteBody;
+        if (!std.mem.startsWith(u8, body, "--")) return allocator.dupe(u8, body);
         const boundary_end = std.mem.indexOf(u8, body, "\r\n") orelse return error.InvalidMultipartCassetteBody;
         const boundary = body[2..boundary_end];
         if (boundary.len == 0) return error.InvalidMultipartCassetteBody;
@@ -107,6 +107,25 @@ pub const MultipartFileFilter = struct {
         defer normalized.deinit();
         try replaceAll(&normalized.writer, redacted, "\r\n", "\n");
         return normalized.toOwnedSlice();
+    }
+};
+
+/// Preserves empty and JSON request bodies while replacing opaque payloads.
+/// This matches two-phase APIs that send JSON metadata before raw file bytes.
+pub const NonJsonBodyFilter = struct {
+    replacement: []const u8 = "[REDACTED FILE CONTENT]",
+
+    pub fn bodyFilter(self: *const NonJsonBodyFilter) BodyFilter {
+        return .{ .context = self, .filterFn = apply };
+    }
+
+    fn apply(context: *const anyopaque, allocator: std.mem.Allocator, body: []const u8) ![]u8 {
+        const self: *const NonJsonBodyFilter = @ptrCast(@alignCast(context));
+        if (body.len == 0) return allocator.dupe(u8, body);
+        var parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch
+            return allocator.dupe(u8, self.replacement);
+        defer parsed.deinit();
+        return allocator.dupe(u8, body);
     }
 };
 
@@ -794,6 +813,16 @@ test "recorder and replay share safe file request normalization" {
     const unchanged_url = try PrefixRedactionFilter.apply(&url_filter, std.testing.allocator, "https://example.test/other");
     defer std.testing.allocator.free(unchanged_url);
     try std.testing.expectEqualStrings("https://example.test/other", unchanged_url);
+    const non_json_filter = NonJsonBodyFilter{};
+    const retained_json = try NonJsonBodyFilter.apply(&non_json_filter, std.testing.allocator, "{\"name\":\"note.txt\"}");
+    defer std.testing.allocator.free(retained_json);
+    try std.testing.expectEqualStrings("{\"name\":\"note.txt\"}", retained_json);
+    const retained_empty = try NonJsonBodyFilter.apply(&non_json_filter, std.testing.allocator, "");
+    defer std.testing.allocator.free(retained_empty);
+    try std.testing.expectEqualStrings("", retained_empty);
+    const redacted_bytes = try NonJsonBodyFilter.apply(&non_json_filter, std.testing.allocator, "private bytes");
+    defer std.testing.allocator.free(redacted_bytes);
+    try std.testing.expectEqualStrings("[REDACTED FILE CONTENT]", redacted_bytes);
 }
 
 test "JSON field filters remove volatile fields recursively" {

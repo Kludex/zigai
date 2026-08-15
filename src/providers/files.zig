@@ -344,6 +344,13 @@ fn parseDescriptor(
         null;
     const size_bytes = common.optionalObjectInteger(object, if (api == .openai) "bytes" else "size_bytes") catch |failure|
         return common.responseDecodeError(failure);
+    const downloadable = if (api == .anthropic)
+        if (object.get("downloadable")) |value| switch (value) {
+            .bool => |flag| flag,
+            else => return error.ProviderResponseDecodeError,
+        } else null
+    else
+        null;
     const owner = try memory.dupe(u8, provider_name);
     const metadata = try std.json.Stringify.valueAlloc(memory, root, .{});
     return .{
@@ -355,6 +362,7 @@ fn parseDescriptor(
             .media_type = media_type,
             .purpose = purpose,
             .size_bytes = size_bytes,
+            .downloadable = downloadable,
             .metadata_json = metadata,
         },
     };
@@ -577,6 +585,10 @@ test "file response decoders reject invalid descriptor shapes" {
     try std.testing.expectError(
         error.ProviderResponseDecodeError,
         parseDescriptor(std.testing.allocator, "{\"id\":\"file_1\",\"bytes\":\"two\"}", "openai", .openai),
+    );
+    try std.testing.expectError(
+        error.ProviderResponseDecodeError,
+        parseDescriptor(std.testing.allocator, "{\"id\":\"file_1\",\"downloadable\":\"no\"}", "anthropic", .anthropic),
     );
     try std.testing.expectError(
         error.ProviderResponseDecodeError,

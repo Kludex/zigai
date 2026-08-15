@@ -59,6 +59,11 @@ Context. These recordings verify the native request shapes and responses.
 `tests/cassettes/rich/` contains one real inline-image exchange for each
 first-party provider.
 
+`tests/cassettes/files/` contains a real lifecycle for each first-party
+provider. OpenAI covers a downloadable fine-tuning input; Anthropic records the
+safe upload, inspect, reuse, and delete path for a non-downloadable uploaded
+file; Google covers resumable upload, inspect, reuse, and delete.
+
 Record the complete matrix with real credentials:
 
 ```console
@@ -74,6 +79,8 @@ zig build record-cassettes -- native-tools
 zig build record-cassettes -- native-google
 zig build record-cassettes -- rich-content
 zig build record-cassettes -- rich-anthropic
+zig build record-cassettes -- files
+zig build record-cassettes -- files-google
 ```
 
 The recorder accepts `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and either

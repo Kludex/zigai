@@ -1,0 +1,95 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.openai.com/v1/files"
+    headers: {}
+    body:
+      type: text
+      content: |+
+        --zigai-redacted-boundary
+        Content-Disposition: form-data; name="purpose"
+
+        fine-tune
+        --zigai-redacted-boundary
+        Content-Disposition: form-data; name="file"; filename="zigai-cassette.jsonl"
+        Content-Type: text/plain
+
+        [REDACTED FILE CONTENT]
+        --zigai-redacted-boundary--
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "req_3e13675ae4ad4fb4b926fd1336f79008"
+    body:
+      type: json
+      content:
+        object: "file"
+        id: "file-8HAB4rERZoAN2nHKwhESrq"
+        purpose: "fine-tune"
+        filename: "zigai-cassette.jsonl"
+        bytes: 85
+        created_at: 1786821430
+        expires_at: null
+        status: "processed"
+        status_details: null
+- request:
+    method: GET
+    uri: "https://api.openai.com/v1/files/file-8HAB4rERZoAN2nHKwhESrq"
+    headers: {}
+    body:
+      type: none
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "req_e0fcd19d34124230b1b1261201afe437"
+    body:
+      type: json
+      content:
+        object: "file"
+        id: "file-8HAB4rERZoAN2nHKwhESrq"
+        purpose: "fine-tune"
+        filename: "zigai-cassette.jsonl"
+        bytes: 85
+        created_at: 1786821430
+        expires_at: null
+        status: "processed"
+        status_details: null
+- request:
+    method: GET
+    uri: "https://api.openai.com/v1/files/file-8HAB4rERZoAN2nHKwhESrq/content"
+    headers: {}
+    body:
+      type: none
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "req_792006894fac43b7ac9328af54355a7d"
+    body:
+      type: json
+      content:
+        messages:
+          - role: "user"
+            content: "Hi"
+          - role: "assistant"
+            content: "Hello"
+- request:
+    method: DELETE
+    uri: "https://api.openai.com/v1/files/file-8HAB4rERZoAN2nHKwhESrq"
+    headers: {}
+    body:
+      type: none
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "req_ef6a5655e6834ed39306c9ef703c570b"
+    body:
+      type: json
+      content:
+        object: "file"
+        deleted: true
+        id: "file-8HAB4rERZoAN2nHKwhESrq"

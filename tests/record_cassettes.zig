@@ -90,6 +90,15 @@ pub fn main(init: std.process.Init) !void {
     if (selectedRich(args, rich_google)) {
         try recordRichGoogle(init, http.transport(), google_key, rich_google);
     }
+    if (selectedFiles(args, "openai")) {
+        try recordOpenAIFileLifecycle(init, http.transport(), openai_key);
+    }
+    if (selectedFiles(args, "anthropic")) {
+        try recordAnthropicFileLifecycle(init, http.transport(), anthropic_key);
+    }
+    if (selectedFiles(args, "google")) {
+        try recordGoogleFileLifecycle(init, http.transport(), google_key);
+    }
 }
 
 fn recordCompatible(
@@ -226,6 +235,21 @@ fn selectedRich(args: []const []const u8, entry: NativeEntry) bool {
     return false;
 }
 
+fn selectedFiles(args: []const []const u8, provider: []const u8) bool {
+    if (args.len <= 1) return true;
+    for (args[1..]) |argument| {
+        if (std.mem.eql(u8, argument, "files") or
+            std.mem.eql(u8, argument, provider) or
+            (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, argument, "files-openai")) or
+            (std.mem.eql(u8, provider, "anthropic") and std.mem.eql(u8, argument, "files-anthropic")) or
+            (std.mem.eql(u8, provider, "google") and std.mem.eql(u8, argument, "files-google")))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 fn recordOpenAI(
     init: std.process.Init,
     transport: zigai.transport.Transport,
@@ -276,6 +300,92 @@ fn recordGoogle(
     };
     try runScenario(init, client.model());
     try write(init, recording, entry, "google");
+}
+
+fn recordOpenAIFileLifecycle(
+    init: std.process.Init,
+    transport: zigai.transport.Transport,
+    api_key: []const u8,
+) !void {
+    const multipart = cassettes.MultipartFileFilter{};
+    var recording = cassettes.RecordingTransport.initWithOptions(init.gpa, transport, .{
+        .request_filters = .{ .body = multipart.bodyFilter() },
+    });
+    defer recording.deinit();
+    var concrete = zigai.openai.Provider.init(api_key, recording.transport());
+    try runFileLifecycle(init, concrete.provider(), true, "fine-tune");
+    try writeFileLifecycle(init, recording, "openai");
+}
+
+fn recordAnthropicFileLifecycle(
+    init: std.process.Init,
+    transport: zigai.transport.Transport,
+    api_key: []const u8,
+) !void {
+    const multipart = cassettes.MultipartFileFilter{};
+    var recording = cassettes.RecordingTransport.initWithOptions(init.gpa, transport, .{
+        .request_filters = .{ .body = multipart.bodyFilter() },
+    });
+    defer recording.deinit();
+    var concrete = zigai.anthropic.Provider.init(api_key, recording.transport());
+    try runFileLifecycle(init, concrete.provider(), false, null);
+    try writeFileLifecycle(init, recording, "anthropic");
+}
+
+fn recordGoogleFileLifecycle(
+    init: std.process.Init,
+    transport: zigai.transport.Transport,
+    api_key: []const u8,
+) !void {
+    const session_url = "https://generativelanguage.googleapis.com/upload/v1beta/files/REDACTED";
+    const url_filter = cassettes.PrefixRedactionFilter{
+        .prefix = "https://generativelanguage.googleapis.com/upload/v1beta/files?",
+        .replacement = session_url,
+    };
+    const body_filter = cassettes.NonJsonBodyFilter{};
+    const response_headers = cassettes.ResponseHeaderRules{ .rules = &.{.{
+        .name = "x-goog-upload-url",
+        .replacement = session_url,
+    }} };
+    var recording = cassettes.RecordingTransport.initWithOptions(init.gpa, transport, .{
+        .request_filters = .{
+            .url = url_filter.bodyFilter(),
+            .body = body_filter.bodyFilter(),
+        },
+        .response_header_filter = response_headers.filter(),
+    });
+    defer recording.deinit();
+    var concrete = zigai.google.Provider.init(api_key, recording.transport());
+    try runFileLifecycle(init, concrete.provider(), false, null);
+    try writeFileLifecycle(init, recording, "google");
+}
+
+fn runFileLifecycle(init: std.process.Init, provider: zigai.Provider, download: bool, purpose: ?[]const u8) !void {
+    const fine_tune_body = "{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"},{\"role\":\"assistant\",\"content\":\"Hello\"}]}\n";
+    const filename = if (purpose != null and std.mem.eql(u8, purpose.?, "fine-tune")) "zigai-cassette.jsonl" else "zigai-cassette.txt";
+    const bytes = if (purpose != null and std.mem.eql(u8, purpose.?, "fine-tune")) fine_tune_body else "ZigAI file cassette fixture.\n";
+    var uploaded = try provider.uploadFile(init.gpa, .{
+        .filename = filename,
+        .media_type = "text/plain",
+        .bytes = bytes,
+        .purpose = purpose,
+    });
+    defer uploaded.deinit();
+    const file = uploaded.value.uploadedFile();
+    var delete_pending = true;
+    defer if (delete_pending) provider.deleteFile(init.gpa, file) catch |failure| {
+        std.log.err("failed to clean up temporary {s} file {s}: {s}", .{ provider.name, file.id, @errorName(failure) });
+    };
+    var inspected = try provider.inspectFile(init.gpa, file);
+    defer inspected.deinit();
+    if (download) {
+        try (std.Io.Timeout{ .duration = .{ .raw = .fromSeconds(2), .clock = .awake } }).sleep(init.io);
+        var downloaded = try provider.downloadFile(init.gpa, file);
+        defer downloaded.deinit();
+        if (!std.mem.eql(u8, downloaded.value.bytes, bytes)) return error.UnexpectedModelBehavior;
+    }
+    try provider.deleteFile(init.gpa, file);
+    delete_pending = false;
 }
 
 fn recordNativeOpenAI(
@@ -501,4 +611,15 @@ fn writeRich(
     defer init.gpa.free(path);
     try recording.writeCassetteAtomic(init.gpa, init.io, .cwd(), path);
     std.log.info("recorded {s} {s} rich content -> {s}", .{ entry.provider, entry.model, path });
+}
+
+fn writeFileLifecycle(
+    init: std.process.Init,
+    recording: cassettes.RecordingTransport,
+    provider: []const u8,
+) !void {
+    const path = try std.fmt.allocPrint(init.gpa, "tests/cassettes/files/{s}.yaml", .{provider});
+    defer init.gpa.free(path);
+    try recording.writeCassetteAtomic(init.gpa, init.io, .cwd(), path);
+    std.log.info("recorded {s} file lifecycle -> {s}", .{ provider, path });
 }

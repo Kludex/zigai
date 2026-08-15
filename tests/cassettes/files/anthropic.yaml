@@ -1,0 +1,67 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.anthropic.com/v1/files"
+    headers: {}
+    body:
+      type: text
+      content: |+
+        --zigai-redacted-boundary
+        Content-Disposition: form-data; name="file"; filename="zigai-cassette.txt"
+        Content-Type: text/plain
+
+        [REDACTED FILE CONTENT]
+        --zigai-redacted-boundary--
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "req_011Ce55MiWn82WnGhPsZ5k9n"
+    body:
+      type: json
+      content:
+        type: "file"
+        id: "file_011Ce55MkGCG7JC89iFZ3FYi"
+        size_bytes: 29
+        created_at: "2026-08-15T19:20:29.074000Z"
+        filename: "zigai-cassette.txt"
+        mime_type: "text/plain"
+        downloadable: false
+- request:
+    method: GET
+    uri: "https://api.anthropic.com/v1/files/file_011Ce55MkGCG7JC89iFZ3FYi"
+    headers: {}
+    body:
+      type: none
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "req_011Ce55MnHzCs6sZBeGLpjYo"
+    body:
+      type: json
+      content:
+        type: "file"
+        id: "file_011Ce55MkGCG7JC89iFZ3FYi"
+        size_bytes: 29
+        created_at: "2026-08-15T19:20:29.074000Z"
+        filename: "zigai-cassette.txt"
+        mime_type: "text/plain"
+        downloadable: false
+- request:
+    method: DELETE
+    uri: "https://api.anthropic.com/v1/files/file_011Ce55MkGCG7JC89iFZ3FYi"
+    headers: {}
+    body:
+      type: none
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "req_011Ce55MpEKTgUxqfTEzz3Jm"
+    body:
+      type: json
+      content:
+        id: "file_011Ce55MkGCG7JC89iFZ3FYi"
+        type: "file_deleted"

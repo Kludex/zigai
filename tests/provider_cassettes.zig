@@ -814,3 +814,96 @@ test "streaming clients reject malformed events and Anthropic accepts empty tool
     state.mode = .invalid_compatible_tool;
     try std.testing.expectError(error.ProviderResponseDecodeError, compatible.model().stream(arena.allocator(), .{ .messages = &.{} }, sink));
 }
+test "real provider file cassettes replay each safe lifecycle" {
+    const multipart = cassettes.MultipartFileFilter{};
+    const fine_tune_body = "{\"messages\":[{\"role\":\"user\",\"content\":\"Hi\"},{\"role\":\"assistant\",\"content\":\"Hello\"}]}\n";
+    {
+        var replay = try cassettes.ReplayTransport.initWithRequestFilters(
+            std.testing.allocator,
+            @embedFile("cassettes/files/openai.yaml"),
+            .{ .body = multipart.bodyFilter() },
+        );
+        defer replay.deinit();
+        var concrete = zigai.openai.Provider.init("fixture", replay.transport());
+        const provider = concrete.provider();
+        var uploaded = try provider.uploadFile(std.testing.allocator, .{
+            .filename = "zigai-cassette.jsonl",
+            .media_type = "text/plain",
+            .bytes = fine_tune_body,
+            .purpose = "fine-tune",
+        });
+        defer uploaded.deinit();
+        const file = uploaded.value.uploadedFile();
+        var inspected = try provider.inspectFile(std.testing.allocator, file);
+        defer inspected.deinit();
+        var downloaded = try provider.downloadFile(std.testing.allocator, file);
+        defer downloaded.deinit();
+        try std.testing.expect(downloaded.value.bytes.len > 0);
+        try provider.deleteFile(std.testing.allocator, file);
+        try std.testing.expectEqual(@as(usize, 0), replay.remaining());
+    }
+    {
+        var replay = try cassettes.ReplayTransport.initWithRequestFilters(
+            std.testing.allocator,
+            @embedFile("cassettes/files/anthropic.yaml"),
+            .{ .body = multipart.bodyFilter() },
+        );
+        defer replay.deinit();
+        var concrete = zigai.anthropic.Provider.init("fixture", replay.transport());
+        const provider = concrete.provider();
+        var uploaded = try provider.uploadFile(std.testing.allocator, .{
+            .filename = "zigai-cassette.txt",
+            .media_type = "text/plain",
+            .bytes = "fixture",
+        });
+        defer uploaded.deinit();
+        try std.testing.expectEqual(@as(?bool, false), uploaded.value.downloadable);
+        try std.testing.expect(std.mem.indexOf(u8, uploaded.value.metadata_json.?, "\"downloadable\":false") != null);
+        const file = uploaded.value.uploadedFile();
+        var inspected = try provider.inspectFile(std.testing.allocator, file);
+        defer inspected.deinit();
+        try provider.deleteFile(std.testing.allocator, file);
+        try std.testing.expectEqual(@as(usize, 0), replay.remaining());
+    }
+    {
+        const session_url = "https://generativelanguage.googleapis.com/upload/v1beta/files/REDACTED";
+        const url_filter = cassettes.PrefixRedactionFilter{
+            .prefix = "https://generativelanguage.googleapis.com/upload/v1beta/files?",
+            .replacement = session_url,
+        };
+        const body_filter = cassettes.NonJsonBodyFilter{};
+        var replay = try cassettes.ReplayTransport.initWithRequestFilters(
+            std.testing.allocator,
+            @embedFile("cassettes/files/google.yaml"),
+            .{ .url = url_filter.bodyFilter(), .body = body_filter.bodyFilter() },
+        );
+        defer replay.deinit();
+        var concrete = zigai.google.Provider.init("fixture", replay.transport());
+        const provider = concrete.provider();
+        var uploaded = try provider.uploadFile(std.testing.allocator, .{
+            .filename = "zigai-cassette.txt",
+            .media_type = "text/plain",
+            .bytes = "fixture",
+        });
+        defer uploaded.deinit();
+        const file = uploaded.value.uploadedFile();
+        var inspected = try provider.inspectFile(std.testing.allocator, file);
+        defer inspected.deinit();
+        try provider.deleteFile(std.testing.allocator, file);
+        try std.testing.expectEqual(@as(usize, 0), replay.remaining());
+    }
+}
+
+test "real file cassettes contain only deterministic redacted upload data" {
+    const openai = @embedFile("cassettes/files/openai.yaml");
+    const anthropic = @embedFile("cassettes/files/anthropic.yaml");
+    const google = @embedFile("cassettes/files/google.yaml");
+    for ([_][]const u8{ openai, anthropic, google }) |cassette| {
+        try std.testing.expect(std.mem.indexOf(u8, cassette, "[REDACTED FILE CONTENT]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, cassette, "ZigAI file cassette fixture") == null);
+        try std.testing.expect(std.mem.indexOf(u8, cassette, "api-key") == null);
+        try std.testing.expect(std.mem.indexOf(u8, cassette, "Bearer ") == null);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, google, "files/REDACTED") != null);
+    try std.testing.expect(std.mem.indexOf(u8, google, "upload_id=") == null);
+}

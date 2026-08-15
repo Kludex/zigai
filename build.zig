@@ -253,7 +253,7 @@ pub fn build(b: *std.Build) void {
     });
     const run_recorder = b.addRunArtifact(recorder);
     if (b.args) |args| run_recorder.addArgs(args);
-    const record_cassettes = b.step("record-cassettes", "Record real-provider model cassettes");
+    const record_cassettes = b.step("record-cassettes", "Record real-provider cassettes");
     record_cassettes.dependOn(&run_recorder.step);
 }
 
