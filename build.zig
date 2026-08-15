@@ -126,6 +126,20 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| run_mcp_interop.addArgs(args);
     const mcp_interop_step = b.step("mcp-interop", "Record an official MCP reference-server transcript");
     mcp_interop_step.dependOn(&run_mcp_interop.step);
+    const mcp_upstream = b.addExecutable(.{
+        .name = "zigai-mcp-upstream",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/mcp_upstream.zig"),
+            .target = target,
+            .optimize = optimize,
+            .error_tracing = error_tracing,
+            .imports = &.{.{ .name = "yaml", .module = yaml }},
+        }),
+    });
+    const run_mcp_upstream = b.addRunArtifact(mcp_upstream);
+    if (b.args) |args| run_mcp_upstream.addArgs(args);
+    const mcp_upstream_step = b.step("mcp-upstream", "Print one pinned official MCP server revision");
+    mcp_upstream_step.dependOn(&run_mcp_upstream.step);
     const fuzz_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("tests/fuzz.zig"),
@@ -176,6 +190,7 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&spec_cli_tests.step);
     check.dependOn(&mcp_conformance_tests.step);
     check.dependOn(&mcp_interop.step);
+    check.dependOn(&mcp_upstream.step);
     check.dependOn(&fuzz_tests.step);
 
     const openai_cli = addCli(b, target, optimize, zigai, "zigai-openai", "src/cli/openai.zig");

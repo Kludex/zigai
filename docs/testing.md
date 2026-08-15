@@ -132,6 +132,13 @@ and HTTP. The Python everything-server recording adds a second official SDK
 and a much broader schema surface. Ordinary CI replays all three without a
 network connection or upstream toolchain.
 
+`./scripts/mcp-interop typescript <checkout>` and
+`./scripts/mcp-interop python <checkout>` verify that a prepared checkout is at
+the manifest pin, exercise its live server, and compare fresh transcripts with
+the committed fixtures. `.github/workflows/mcp-interop.yml` runs those checks
+only through `workflow_dispatch`; normal CI remains deterministic and
+network-free beyond dependency installation.
+
 ## Fuzzing
 
 ZigAI fuzzes every untrusted parser family: history and deferred state, JSON

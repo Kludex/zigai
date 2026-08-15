@@ -1,0 +1,53 @@
+name: MCP interoperability
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  typescript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+      - id: upstream
+        run: echo "revision=$(zig build mcp-upstream -- typescript-todos)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          repository: modelcontextprotocol/typescript-sdk
+          ref: ${{ steps.upstream.outputs.revision }}
+          path: .interop/typescript-sdk
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5.0.0
+        with:
+          version: 10.26.1
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: .interop/typescript-sdk/pnpm-lock.yaml
+      - name: Build reference SDK
+        working-directory: .interop/typescript-sdk
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build:all
+      - run: ./scripts/mcp-interop typescript .interop/typescript-sdk
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+      - id: upstream
+        run: echo "revision=$(zig build mcp-upstream -- python-everything)" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.0
+        with:
+          repository: modelcontextprotocol/python-sdk
+          ref: ${{ steps.upstream.outputs.revision }}
+          path: .interop/python-sdk
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      - name: Install reference SDK
+        working-directory: .interop/python-sdk
+        run: uv sync --frozen --package mcp-everything-server
+      - run: ./scripts/mcp-interop python .interop/python-sdk

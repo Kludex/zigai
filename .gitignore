@@ -6,6 +6,7 @@ tests/consumers/**/.zig-cache/
 tests/consumers/**/zig-out/
 tests/consumers/**/zig-pkg/
 /coverage/
+/.interop/
 __pycache__/
 *.py[cod]
 .DS_Store

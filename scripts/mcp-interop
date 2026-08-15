@@ -1,0 +1,99 @@
+#!/bin/sh
+set -eu
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+kind=${1:-}
+sdk_root=${2:-}
+if [ -z "$kind" ] || [ -z "$sdk_root" ] || [ ! -d "$sdk_root/.git" ]; then
+    echo "usage: ./scripts/mcp-interop <typescript|python> <sdk-checkout>" >&2
+    exit 2
+fi
+
+temporary=$(mktemp -d "${TMPDIR:-/tmp}/zigai-mcp-interop.XXXXXX")
+server_pid=
+cleanup() {
+    if [ -n "$server_pid" ]; then
+        kill "$server_pid" 2>/dev/null || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
+    rm -rf -- "$temporary"
+}
+trap cleanup EXIT INT TERM
+
+record() {
+    ZIG_GLOBAL_CACHE_DIR="${ZIG_GLOBAL_CACHE_DIR:-/tmp/zigai-global-cache}" \
+        zig build mcp-interop -- "$@"
+}
+
+assert_revision() {
+    server=$1
+    expected=$(ZIG_GLOBAL_CACHE_DIR="${ZIG_GLOBAL_CACHE_DIR:-/tmp/zigai-global-cache}" zig build mcp-upstream -- "$server")
+    actual=$(git -C "$sdk_root" rev-parse HEAD)
+    if [ "$actual" != "$expected" ]; then
+        echo "$server checkout is $actual; expected $expected" >&2
+        exit 1
+    fi
+    revision=$expected
+}
+
+wait_for_http() {
+    endpoint=$1
+    attempt=0
+    while [ "$attempt" -lt 60 ]; do
+        if curl -sS -o /dev/null -X POST -H 'content-type: application/json' --data '{}' "$endpoint" 2>/dev/null; then
+            return
+        fi
+        if ! kill -0 "$server_pid" 2>/dev/null; then
+            cat "$temporary/server.log" >&2
+            exit 1
+        fi
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+    cat "$temporary/server.log" >&2
+    echo "reference server did not become ready: $endpoint" >&2
+    exit 1
+}
+
+assert_fixture() {
+    recorded=$1
+    committed=$2
+    if ! cmp -s "$recorded" "$committed"; then
+        diff -u "$committed" "$recorded" || true
+        echo "live MCP transcript drifted from $committed" >&2
+        exit 1
+    fi
+}
+
+cd "$project_dir"
+case "$kind" in
+    typescript)
+        assert_revision typescript-todos
+        record stdio typescript-todos "$revision" "$temporary/typescript-stdio.yaml" \
+            "$sdk_root/node_modules/.bin/tsx" "$sdk_root/examples/todos-server/server.ts"
+        assert_fixture "$temporary/typescript-stdio.yaml" tests/mcp/cassettes/typescript-todos-stdio.yaml
+        (
+            cd "$sdk_root"
+            exec pnpm --filter @mcp-examples/todos-server start:http -- --port 18766
+        ) >"$temporary/server.log" 2>&1 &
+        server_pid=$!
+        wait_for_http http://127.0.0.1:18766/mcp
+        record http typescript-todos "$revision" "$temporary/typescript-http.yaml" http://127.0.0.1:18766/mcp
+        assert_fixture "$temporary/typescript-http.yaml" tests/mcp/cassettes/typescript-todos-http.yaml
+        ;;
+    python)
+        assert_revision python-everything
+        (
+            cd "$sdk_root"
+            exec uv run -m mcp_everything_server --port 18767 --log-level WARNING
+        ) >"$temporary/server.log" 2>&1 &
+        server_pid=$!
+        wait_for_http http://127.0.0.1:18767/mcp
+        record http python-everything "$revision" "$temporary/python-http.yaml" http://127.0.0.1:18767/mcp
+        assert_fixture "$temporary/python-http.yaml" tests/mcp/cassettes/python-everything-http.yaml
+        ;;
+    *)
+        echo "unknown MCP interoperability target: $kind" >&2
+        exit 2
+        ;;
+esac

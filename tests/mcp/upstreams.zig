@@ -60,6 +60,11 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Owned {
     return .{ .document = document };
 }
 
+pub fn findServer(manifest: *const Manifest, id: []const u8) ?*const Server {
+    for (manifest.servers) |*server| if (std.mem.eql(u8, server.id, id)) return server;
+    return null;
+}
+
 fn validate(manifest: Manifest) !void {
     if (manifest.version != 1) return error.UnsupportedManifestVersion;
     if (!std.mem.eql(u8, manifest.protocol_version, "2026-07-28")) return error.UnsupportedProtocolVersion;
@@ -112,6 +117,11 @@ test "official MCP upstream manifest is pinned and covers both transports" {
     };
     try std.testing.expect(has_stdio);
     try std.testing.expect(has_http);
+    try std.testing.expectEqualStrings(
+        "27a94b5d1c952480747568c0e04fe647efbe99f4",
+        findServer(manifest.value(), "typescript-todos").?.revision,
+    );
+    try std.testing.expect(findServer(manifest.value(), "missing") == null);
 }
 
 test "official MCP upstream manifest rejects moving and malformed references" {

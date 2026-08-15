@@ -9,6 +9,8 @@
   production library.
 - Add atomic live transcript recording and deterministic stdio/HTTP replays
   captured from pinned official TypeScript and Python MCP reference servers.
+- Add a manually dispatched, immutable-action MCP interoperability workflow
+  that rebuilds pinned official SDKs and fails on live transcript drift.
 - Allow bounded concurrent MCP Streamable HTTP requests with configurable
   in-flight backpressure and request-local authorization retries.
 - Add a standalone bounded SSE parser with standard multi-line data framing
