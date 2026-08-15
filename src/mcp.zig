@@ -825,6 +825,8 @@ fn executeTool(context: *anyopaque, allocator: std.mem.Allocator, arguments_json
 /// HTTP metadata supplied by an MCP server host for header validation.
 pub const HttpMetadata = struct {
     headers: []const http.Header,
+    /// Whether the host received this request over authenticated TLS.
+    is_tls: bool = true,
 };
 
 /// Application handler for all core and extension MCP methods.
@@ -861,9 +863,16 @@ pub const ToolSchemaProvider = struct {
 pub const ServerResponse = struct {
     status: u16,
     body: ?[]u8,
+    /// HTTP headers the host must copy to its response before deinitializing.
+    headers: []const http.Header = &.{},
+    owns_headers: bool = false,
 
     pub fn deinit(self: ServerResponse, allocator: std.mem.Allocator) void {
         if (self.body) |body| allocator.free(body);
+        if (self.owns_headers) {
+            for (self.headers) |header| allocator.free(header.value);
+            allocator.free(self.headers);
+        }
     }
 };
 
@@ -878,6 +887,10 @@ pub const Server = struct {
     discovery_ttl_ms: u64 = 60_000,
     discovery_cache_scope: []const u8 = "public",
     tool_schemas: ?ToolSchemaProvider = null,
+    /// Browser-origin, Host, and TLS checks for Streamable HTTP deployments.
+    deployment: ?auth.DeploymentPolicy = null,
+    /// Optional OAuth resource-server policy. It is not applied to stdio.
+    authorization: ?auth.ServerPolicy = null,
 
     /// Validates and dispatches one JSON-RPC message.
     pub fn handle(
@@ -886,6 +899,16 @@ pub const Server = struct {
         message_json: []const u8,
         metadata: ?HttpMetadata,
     ) !ServerResponse {
+        if (self.deployment) |deployment| {
+            try deployment.validate();
+            const http_metadata = metadata orelse return .{ .status = 403, .body = null };
+            const origin = uniqueHeader(http_metadata.headers, "origin") catch
+                return .{ .status = 403, .body = null };
+            const host = uniqueHeader(http_metadata.headers, "host") catch
+                return .{ .status = 403, .body = null };
+            deployment.validateRequest(http_metadata.is_tls, origin, host) catch
+                return .{ .status = 403, .body = null };
+        }
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const root = json_limits.parseLeaky(
@@ -964,6 +987,42 @@ pub const Server = struct {
             validateNotificationMethodParams(method, params, error.InvalidMcpMessage) catch
                 return .{ .status = 202, .body = null };
         }
+        const params_json = try std.json.Stringify.valueAlloc(allocator, params_value, .{});
+        defer allocator.free(params_json);
+
+        if (self.authorization) |authorization| {
+            try authorization.validate();
+            const http_metadata = metadata orelse
+                return self.authorizationResponse(allocator, 401, authorization, authorization.scopes);
+            const authorization_header = uniqueHeader(http_metadata.headers, "authorization") catch
+                return self.authorizationResponse(allocator, 401, authorization, authorization.scopes);
+            const token = if (authorization_header) |value|
+                auth.parseBearerAuthorization(value) catch
+                    return self.authorizationResponse(allocator, 401, authorization, authorization.scopes)
+            else
+                return self.authorizationResponse(allocator, 401, authorization, authorization.scopes);
+            const decision = try authorization.authorizer.authorize(.{
+                .token = token,
+                .resource = authorization.resource,
+                .method = method,
+                .params_json = params_json,
+            });
+            switch (decision) {
+                .authorized => {},
+                .unauthorized => return self.authorizationResponse(
+                    allocator,
+                    401,
+                    authorization,
+                    authorization.scopes,
+                ),
+                .insufficient_scope => |denial| return self.authorizationResponse(
+                    allocator,
+                    403,
+                    authorization,
+                    denial.required_scopes,
+                ),
+            }
+        }
         if (metadata) |http_metadata| {
             if (!validateStandardHeaders(http_metadata.headers, method, params)) {
                 if (is_notification) return .{ .status = 400, .body = null };
@@ -1002,8 +1061,6 @@ pub const Server = struct {
             }
         }
 
-        const params_json = try std.json.Stringify.valueAlloc(allocator, params_value, .{});
-        defer allocator.free(params_json);
         if (is_notification) {
             const ignored = self.handler.handle(allocator, method, params_json) catch return .{ .status = 202, .body = null };
             allocator.free(ignored);
@@ -1163,6 +1220,35 @@ pub const Server = struct {
             .@"error" = .{ .code = code, .message = message },
         }, .{});
         return .{ .status = status, .body = body };
+    }
+
+    fn authorizationResponse(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        status: u16,
+        policy: auth.ServerPolicy,
+        scopes: []const []const u8,
+    ) !ServerResponse {
+        _ = self;
+        const scope = try std.mem.join(allocator, " ", scopes);
+        defer allocator.free(scope);
+        const challenge = if (status == 403)
+            try std.fmt.allocPrint(
+                allocator,
+                "Bearer error=\"insufficient_scope\", scope=\"{s}\", resource_metadata=\"{s}\"",
+                .{ scope, policy.resource_metadata_url },
+            )
+        else
+            try std.fmt.allocPrint(
+                allocator,
+                "Bearer scope=\"{s}\", resource_metadata=\"{s}\"",
+                .{ scope, policy.resource_metadata_url },
+            );
+        errdefer allocator.free(challenge);
+        const headers = try allocator.alloc(http.Header, 1);
+        errdefer allocator.free(headers);
+        headers[0] = .{ .name = "www-authenticate", .value = challenge };
+        return .{ .status = status, .body = null, .headers = headers, .owns_headers = true };
     }
 };
 
@@ -2645,6 +2731,16 @@ fn findHeader(headers: []const http.Header, name: []const u8) ?[]const u8 {
     return null;
 }
 
+fn uniqueHeader(headers: []const http.Header, name: []const u8) !?[]const u8 {
+    var found: ?[]const u8 = null;
+    for (headers) |header| {
+        if (!std.ascii.eqlIgnoreCase(header.name, name)) continue;
+        if (found != null) return error.DuplicateHttpHeader;
+        found = header.value;
+    }
+    return found;
+}
+
 fn findHttpHeader(headers: []const http.Header, name: []const u8) ?http.Header {
     for (headers) |header| if (std.ascii.eqlIgnoreCase(header.name, name)) return header;
     return null;
@@ -3417,6 +3513,115 @@ test "server rejects invalid JSON-RPC request identifiers" {
     defer response.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 400), response.status);
     try std.testing.expect(std.mem.indexOf(u8, response.body.?, "Invalid request ID") != null);
+}
+
+test "server enforces TLS Origin Host and bearer audience before dispatch" {
+    const State = struct {
+        handler_calls: usize = 0,
+        authorization_calls: usize = 0,
+
+        fn handle(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            method: []const u8,
+            _: []const u8,
+        ) ![]u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.handler_calls += 1;
+            try std.testing.expectEqualStrings("extension/secure", method);
+            return allocator.dupe(u8, "{}");
+        }
+
+        fn authorize(context: *anyopaque, request: auth.ValidationRequest) !auth.Decision {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.authorization_calls += 1;
+            try std.testing.expectEqualStrings("https://mcp.example.com/mcp", request.resource);
+            try std.testing.expectEqualStrings("extension/secure", request.method);
+            try std.testing.expect(std.mem.indexOf(u8, request.params_json, request.token) == null);
+            if (std.mem.eql(u8, request.token, "expired")) {
+                return .{ .unauthorized = .{ .description = "must not expose expired" } };
+            }
+            if (std.mem.eql(u8, request.token, "limited")) {
+                return .{ .insufficient_scope = .{
+                    .required_scopes = &.{ "tools:read", "tools:call" },
+                    .description = "must not expose limited",
+                } };
+            }
+            return .authorized;
+        }
+    };
+    var state: State = .{};
+    var server = Server{
+        .handler = .{ .context = &state, .handleFn = State.handle },
+        .deployment = .{
+            .allowed_origins = &.{"https://app.example.com"},
+            .expected_host = "mcp.example.com",
+        },
+        .authorization = .{
+            .resource = "https://mcp.example.com/mcp",
+            .resource_metadata_url = "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
+            .authorizer = .{ .context = &state, .authorizeFn = State.authorize },
+            .scopes = &.{"tools:read"},
+        },
+    };
+    const request = try buildRequest(
+        std.testing.allocator,
+        1,
+        "extension/secure",
+        "{}",
+        "client",
+        "1",
+        "{}",
+    );
+    defer std.testing.allocator.free(request);
+
+    const base_headers = [_]http.Header{
+        .{ .name = "mcp-protocol-version", .value = protocol_version },
+        .{ .name = "mcp-method", .value = "extension/secure" },
+        .{ .name = "host", .value = "mcp.example.com" },
+        .{ .name = "origin", .value = "https://app.example.com" },
+    };
+    const missing = try server.handle(std.testing.allocator, request, .{ .headers = &base_headers });
+    defer missing.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 401), missing.status);
+    try std.testing.expectEqual(@as(usize, 1), missing.headers.len);
+    try std.testing.expect(std.mem.indexOf(u8, missing.headers[0].value, "resource_metadata=") != null);
+    try std.testing.expectEqual(@as(usize, 0), state.authorization_calls);
+
+    const expired_headers = base_headers ++ [_]http.Header{.{ .name = "authorization", .value = "Bearer expired" }};
+    const expired = try server.handle(std.testing.allocator, request, .{ .headers = &expired_headers });
+    defer expired.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 401), expired.status);
+    try std.testing.expect(std.mem.indexOf(u8, expired.headers[0].value, "expired") == null);
+
+    const limited_headers = base_headers ++ [_]http.Header{.{ .name = "authorization", .value = "Bearer limited" }};
+    const limited = try server.handle(std.testing.allocator, request, .{ .headers = &limited_headers });
+    defer limited.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 403), limited.status);
+    try std.testing.expect(std.mem.indexOf(u8, limited.headers[0].value, "insufficient_scope") != null);
+    try std.testing.expect(std.mem.indexOf(u8, limited.headers[0].value, "tools:read tools:call") != null);
+    try std.testing.expect(std.mem.indexOf(u8, limited.headers[0].value, "limited") == null);
+
+    const valid_headers = base_headers ++ [_]http.Header{.{ .name = "authorization", .value = "Bearer valid" }};
+    const accepted = try server.handle(std.testing.allocator, request, .{ .headers = &valid_headers });
+    defer accepted.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 200), accepted.status);
+    try std.testing.expectEqual(@as(usize, 1), state.handler_calls);
+    try std.testing.expectEqual(@as(usize, 3), state.authorization_calls);
+
+    const bad_origin_headers = [_]http.Header{
+        .{ .name = "origin", .value = "https://evil.example.com" },
+        .{ .name = "host", .value = "mcp.example.com" },
+    };
+    const bad_origin = try server.handle(std.testing.allocator, request, .{ .headers = &bad_origin_headers });
+    defer bad_origin.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 403), bad_origin.status);
+    const cleartext = try server.handle(std.testing.allocator, request, .{
+        .headers = &base_headers,
+        .is_tls = false,
+    });
+    defer cleartext.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 403), cleartext.status);
 }
 
 test "core request params cover every standardized method shape" {

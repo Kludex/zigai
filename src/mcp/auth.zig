@@ -14,8 +14,46 @@ pub const Error = error{
     MissingAuthorizationIssuer,
     InvalidBearerToken,
     InvalidOrigin,
+    InvalidRequestHost,
+    InsecureHttpTransport,
     InvalidProtectedResourceMetadata,
     InvalidResourceUri,
+};
+
+/// HTTP deployment checks performed before parsing or dispatching JSON-RPC.
+pub const DeploymentPolicy = struct {
+    /// Exact serialized origins accepted when an Origin header is present.
+    allowed_origins: []const []const u8 = &.{},
+    /// Optional exact Host header, including a non-default port when used.
+    expected_host: ?[]const u8 = null,
+    /// Explicit local-development opt-in. Production MCP endpoints use TLS.
+    allow_cleartext: bool = false,
+
+    pub fn validate(self: DeploymentPolicy) !void {
+        for (self.allowed_origins) |origin| try validateOrigin(origin);
+        if (self.expected_host) |host| try validateHost(host);
+    }
+
+    /// Missing Origin is valid for non-browser clients; a present value must
+    /// match the explicit allowlist exactly.
+    pub fn validateRequest(
+        self: DeploymentPolicy,
+        is_tls: bool,
+        origin: ?[]const u8,
+        host: ?[]const u8,
+    ) Error!void {
+        if (!is_tls and !self.allow_cleartext) return error.InsecureHttpTransport;
+        if (origin) |value| {
+            try validateOrigin(value);
+            for (self.allowed_origins) |allowed| {
+                if (std.mem.eql(u8, allowed, value)) break;
+            } else return error.InvalidOrigin;
+        }
+        if (self.expected_host) |expected| {
+            const actual = host orelse return error.InvalidRequestHost;
+            if (!std.ascii.eqlIgnoreCase(expected, actual)) return error.InvalidRequestHost;
+        }
+    }
 };
 
 pub const ChallengeError = enum {
@@ -185,27 +223,13 @@ pub const ServerPolicy = struct {
     resource: []const u8,
     resource_metadata_url: []const u8,
     authorizer: Authorizer,
-    /// Exact serialized origins accepted when an Origin header is present.
-    allowed_origins: []const []const u8 = &.{},
     /// Required scopes advertised by an initial 401 challenge.
     scopes: []const []const u8 = &.{},
 
     pub fn validate(self: ServerPolicy) !void {
         try validateCanonicalResource(self.resource, .{});
         try validateCanonicalResource(self.resource_metadata_url, .{});
-        for (self.allowed_origins) |origin| try validateOrigin(origin);
         for (self.scopes) |scope| try validateScope(scope);
-    }
-
-    /// Missing Origin is valid for non-browser clients; a present value must
-    /// match the explicit allowlist exactly.
-    pub fn permitsOrigin(self: ServerPolicy, origin: ?[]const u8) bool {
-        const value = origin orelse return true;
-        if (validateOrigin(value)) |_| {} else |_| return false;
-        for (self.allowed_origins) |allowed| {
-            if (std.mem.eql(u8, allowed, value)) return true;
-        }
-        return false;
     }
 };
 
@@ -316,6 +340,20 @@ pub fn parseBearerChallengeAlloc(
     return result;
 }
 
+/// Returns the borrowed token from one strict Authorization header.
+pub fn parseBearerAuthorization(value: []const u8) Error![]const u8 {
+    const separator = std.mem.findScalar(u8, value, ' ') orelse return error.InvalidBearerToken;
+    if (!std.ascii.eqlIgnoreCase(value[0..separator], "Bearer")) return error.InvalidBearerToken;
+    const token = value[separator + 1 ..];
+    if (token.len == 0) return error.InvalidBearerToken;
+    for (token) |byte| {
+        if (!std.ascii.isAlphanumeric(byte) and std.mem.findScalar(u8, "-._~+/=", byte) == null) {
+            return error.InvalidBearerToken;
+        }
+    }
+    return token;
+}
+
 fn appendScope(allocator: std.mem.Allocator, scopes: *std.ArrayList([]u8), scope: []const u8) !void {
     try validateScope(scope);
     for (scopes.items) |existing| if (std.mem.eql(u8, existing, scope)) return;
@@ -395,6 +433,14 @@ fn validateOrigin(value: []const u8) Error!void {
     if (host.bytes.len == 0) return error.InvalidOrigin;
 }
 
+fn validateHost(value: []const u8) Error!void {
+    if (value.len == 0 or containsInvalidHeaderByte(value) or std.mem.findScalar(u8, value, '/') != null or
+        std.mem.findScalar(u8, value, '@') != null)
+    {
+        return error.InvalidRequestHost;
+    }
+}
+
 fn validateScope(scope: []const u8) Error!void {
     if (scope.len == 0) return error.InvalidProtectedResourceMetadata;
     for (scope) |byte| {
@@ -470,26 +516,43 @@ test "protected resource metadata validates and serializes" {
     );
 }
 
-test "server policy validates exact browser origins" {
+test "deployment policy validates TLS browser origins and request hosts" {
     const Callbacks = struct {
         fn authorize(_: *anyopaque, _: ValidationRequest) !Decision {
             return .authorized;
         }
     };
     var unused: u8 = 0;
+    const deployment = DeploymentPolicy{
+        .allowed_origins = &.{"https://app.example.com"},
+        .expected_host = "mcp.example.com",
+    };
+    try deployment.validate();
+    try deployment.validateRequest(true, null, "mcp.example.com");
+    try deployment.validateRequest(true, "https://app.example.com", "MCP.EXAMPLE.COM");
+    try std.testing.expectError(
+        error.InvalidOrigin,
+        deployment.validateRequest(true, "https://evil.example.com", "mcp.example.com"),
+    );
+    try std.testing.expectError(
+        error.InsecureHttpTransport,
+        deployment.validateRequest(false, null, "mcp.example.com"),
+    );
+    try std.testing.expectError(
+        error.InvalidRequestHost,
+        deployment.validateRequest(true, null, null),
+    );
+    try (DeploymentPolicy{ .allow_cleartext = true }).validateRequest(false, null, null);
+    try std.testing.expectError(error.InvalidOrigin, validateOrigin("https://app.example.com/path"));
+    try std.testing.expectError(error.InvalidRequestHost, validateHost("mcp.example.com/path"));
+
     const policy = ServerPolicy{
         .resource = "https://mcp.example.com/mcp",
         .resource_metadata_url = "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
         .authorizer = .{ .context = &unused, .authorizeFn = Callbacks.authorize },
-        .allowed_origins = &.{"https://app.example.com"},
         .scopes = &.{"tools:read"},
     };
     try policy.validate();
-    try std.testing.expect(policy.permitsOrigin(null));
-    try std.testing.expect(policy.permitsOrigin("https://app.example.com"));
-    try std.testing.expect(!policy.permitsOrigin("https://evil.example.com"));
-    try std.testing.expect(!policy.permitsOrigin("null"));
-    try std.testing.expectError(error.InvalidOrigin, validateOrigin("https://app.example.com/path"));
 }
 
 test "authorization response issuer and scope union follow exact rules" {
@@ -543,4 +606,12 @@ test "Bearer challenges parse bounded refresh and scope fields" {
         error.InvalidBearerChallenge,
         parseBearerChallengeAlloc(std.testing.allocator, "Bearer error=\"invalid_token\", error=other"),
     );
+}
+
+test "Bearer authorization headers reject alternate channels and unsafe values" {
+    try std.testing.expectEqualStrings("abc-._~+/=", try parseBearerAuthorization("Bearer abc-._~+/="));
+    try std.testing.expectEqualStrings("token", try parseBearerAuthorization("bearer token"));
+    try std.testing.expectError(error.InvalidBearerToken, parseBearerAuthorization("Basic token"));
+    try std.testing.expectError(error.InvalidBearerToken, parseBearerAuthorization("Bearer "));
+    try std.testing.expectError(error.InvalidBearerToken, parseBearerAuthorization("Bearer two tokens"));
 }
