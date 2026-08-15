@@ -55,7 +55,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Replace raw provider-details JSON strings with an owned structured value
   or a validated raw-JSON type that cannot serialize malformed data; preserve
   unknown fields without making providers depend on application metadata.
-- [ ] Add part-oriented streaming events. Expose start/delta/end/final events,
+- [x] Add part-oriented streaming events. Expose start/delta/end/final events,
   thinking/media/native-tool deltas, deferred/enqueued events, stable part
   indexes, and validated structured-output snapshots without duplicate finals.
 - [ ] Add pending message injection during a run with deterministic ordering,
