@@ -10,9 +10,11 @@ const security = @import("security.zig");
 const transport = @import("transport.zig");
 
 pub const Error = error{
+    InvalidProviderFileInput,
     InvalidProviderPolicy,
     InvalidProviderFileReference,
     InvalidProviderFileOwner,
+    ProviderFileTooLarge,
     UnsupportedProviderOperation,
 };
 
@@ -74,6 +76,31 @@ pub const FileInput = struct {
     purpose: ?[]const u8 = null,
 };
 
+pub const FileLimits = struct {
+    max_upload_bytes: usize = 512 * 1024 * 1024,
+    max_filename_bytes: usize = 1024,
+    max_media_type_bytes: usize = 255,
+    max_purpose_bytes: usize = 128,
+
+    pub fn validate(self: FileLimits) !void {
+        if (self.max_upload_bytes == 0 or self.max_filename_bytes == 0 or
+            self.max_media_type_bytes == 0 or self.max_purpose_bytes == 0)
+            return error.InvalidProviderPolicy;
+    }
+
+    pub fn validateInput(self: FileLimits, input: FileInput) !void {
+        if (input.bytes.len > self.max_upload_bytes) return error.ProviderFileTooLarge;
+        try validateText(input.filename, self.max_filename_bytes);
+        try validateText(input.media_type, self.max_media_type_bytes);
+        if (input.purpose) |purpose| try validateText(purpose, self.max_purpose_bytes);
+    }
+
+    fn validateText(value: []const u8, maximum: usize) !void {
+        if (value.len == 0 or value.len > maximum or std.mem.indexOfAny(u8, value, "\r\n\x00") != null)
+            return error.InvalidProviderFileInput;
+    }
+};
+
 pub const FileDescriptor = struct {
     id: []const u8,
     provider_name: []const u8,
@@ -130,6 +157,7 @@ pub const Provider = struct {
     /// Borrowed API root used for diagnostics and policy validation.
     base_url: []const u8,
     request_policy: RequestPolicy = .{},
+    file_limits: FileLimits = .{},
     requestFn: *const fn (*anyopaque, std.mem.Allocator, Request) anyerror!transport.Response,
     streamLinesFn: ?*const fn (*anyopaque, std.mem.Allocator, Request, transport.LineSink) anyerror!transport.StreamResponse = null,
     modelProfileFn: ?*const fn (*anyopaque, []const u8) ?model.ModelProfile = null,
@@ -144,6 +172,7 @@ pub const Provider = struct {
     pub fn validate(self: Provider) !void {
         if (self.name.len == 0 or self.base_url.len == 0) return error.InvalidProviderPolicy;
         try self.request_policy.validate(self.base_url);
+        try self.file_limits.validate();
     }
 
     pub fn request(self: Provider, allocator: std.mem.Allocator, value: Request) !transport.Response {
@@ -197,6 +226,7 @@ pub const Provider = struct {
 
     pub fn uploadFile(self: Provider, allocator: std.mem.Allocator, input: FileInput) !OwnedFile {
         try self.validate();
+        try self.file_limits.validateInput(input);
         const upload = self.uploadFileFn orelse return error.UnsupportedProviderOperation;
         var result = try upload(self.context, allocator, input);
         errdefer result.deinit();
@@ -330,6 +360,7 @@ test "provider owns policy profiles and optional operations" {
 
         fn upload(context: *anyopaque, allocator: std.mem.Allocator, input: FileInput) !OwnedFile {
             try std.testing.expectEqualStrings("text/plain", input.media_type);
+            try std.testing.expectEqualStrings("user_data", input.purpose.?);
             return file(context, allocator, .{ .id = input.filename, .provider_name = "openai" });
         }
 
@@ -403,7 +434,12 @@ test "provider owns policy profiles and optional operations" {
     var models = try provider.listModels(std.testing.allocator);
     defer models.deinit();
     try std.testing.expectEqualStrings("known", models.items[0].id);
-    var uploaded = try provider.uploadFile(std.testing.allocator, .{ .filename = "file-1", .media_type = "text/plain", .bytes = "hi" });
+    var uploaded = try provider.uploadFile(std.testing.allocator, .{
+        .filename = "file-1",
+        .media_type = "text/plain",
+        .bytes = "hi",
+        .purpose = "user_data",
+    });
     defer uploaded.deinit();
     try std.testing.expectEqualStrings("file-1", uploaded.value.id);
     try std.testing.expectEqualStrings("openai", uploaded.value.uploadedFile().provider_name);
@@ -438,6 +474,14 @@ test "provider rejects invalid policy and absent optional operations" {
         .requestFn = Stub.request,
     };
     try std.testing.expectError(error.InvalidProviderPolicy, zero_timeout.validate());
+    const zero_file_limit = Provider{
+        .context = &state,
+        .name = "test",
+        .base_url = "https://example.com",
+        .file_limits = .{ .max_upload_bytes = 0 },
+        .requestFn = Stub.request,
+    };
+    try std.testing.expectError(error.InvalidProviderPolicy, zero_file_limit.validate());
     const provider = Provider{ .context = &state, .name = "test", .base_url = "https://example.com", .requestFn = Stub.request };
     try std.testing.expectEqual(@as(?u64, 10), (RequestPolicy{}).timeoutMilliseconds(10));
     try std.testing.expectEqual(@as(?u64, 50), (RequestPolicy{ .default_timeout_ms = 50 }).timeoutMilliseconds(null));
@@ -546,4 +590,34 @@ test "provider rejects invalid policy and absent optional operations" {
     }));
     try std.testing.expectError(error.InvalidProviderFileReference, wrong_reference.inspectFile(std.testing.allocator, owned));
     try std.testing.expectError(error.InvalidProviderFileReference, wrong_reference.downloadFile(std.testing.allocator, owned));
+
+    const bounded_upload = Provider{
+        .context = &state,
+        .name = "test",
+        .base_url = "https://example.com",
+        .file_limits = .{ .max_upload_bytes = 1, .max_filename_bytes = 4, .max_media_type_bytes = 10, .max_purpose_bytes = 3 },
+        .requestFn = Stub.request,
+        .uploadFileFn = WrongReference.upload,
+    };
+    try std.testing.expectError(error.ProviderFileTooLarge, bounded_upload.uploadFile(std.testing.allocator, .{
+        .filename = "file",
+        .media_type = "text/plain",
+        .bytes = "xx",
+    }));
+    try std.testing.expectError(error.InvalidProviderFileInput, bounded_upload.uploadFile(std.testing.allocator, .{
+        .filename = "",
+        .media_type = "text/plain",
+        .bytes = "",
+    }));
+    try std.testing.expectError(error.InvalidProviderFileInput, bounded_upload.uploadFile(std.testing.allocator, .{
+        .filename = "file",
+        .media_type = "text\nplain",
+        .bytes = "",
+    }));
+    try std.testing.expectError(error.InvalidProviderFileInput, bounded_upload.uploadFile(std.testing.allocator, .{
+        .filename = "file",
+        .media_type = "text/plain",
+        .bytes = "",
+        .purpose = "long",
+    }));
 }

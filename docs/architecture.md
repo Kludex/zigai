@@ -371,6 +371,10 @@ owner-qualified handle. The provider boundary rejects foreign or empty handles
 before dispatch and rejects mismatched result descriptors before an application
 can reuse them. Metadata inspection and content download are distinct
 operations; downloaded bytes and their descriptor share one arena lifetime.
+The shared provider-files layer owns collision-safe multipart framing, path
+segment encoding, bounded JSON metadata parsing, and deletion acknowledgement
+validation. Provider modules select their own headers and field mapping rather
+than pretending every compatible endpoint has the same file contract.
 
 ## MCP toolsets
 

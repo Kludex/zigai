@@ -42,6 +42,7 @@ pub const Configured = struct {
     credential: Credential = .none,
     headers: []const transport.Header = &.{},
     request_policy: provider_types.RequestPolicy = .{},
+    file_limits: provider_types.FileLimits = .{},
     model_profiles: ?ModelProfiles = null,
     operations: ?Operations = null,
 
@@ -68,6 +69,7 @@ pub const Configured = struct {
             .name = self.name,
             .base_url = self.base_url,
             .request_policy = self.request_policy,
+            .file_limits = self.file_limits,
             .requestFn = request,
             .streamLinesFn = streamLines,
             .modelProfileFn = if (self.model_profiles != null) modelProfile else null,

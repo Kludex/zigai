@@ -96,6 +96,7 @@ pub const ProviderRequestPolicy = provider.RequestPolicy;
 pub const ProviderModelDescriptor = provider.ModelDescriptor;
 pub const OwnedProviderModels = provider.OwnedModels;
 pub const ProviderFileInput = provider.FileInput;
+pub const ProviderFileLimits = provider.FileLimits;
 pub const ProviderFileDescriptor = provider.FileDescriptor;
 pub const OwnedProviderFile = provider.OwnedFile;
 pub const ProviderFileDownload = provider.FileDownload;

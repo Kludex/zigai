@@ -5,6 +5,7 @@ const model_types = @import("../model.zig");
 const provider_types = @import("../provider.zig");
 const http_provider = @import("http.zig");
 const operations = @import("operations.zig");
+const files = @import("files.zig");
 const http = @import("../transport.zig");
 const common = @import("common.zig");
 const json_limits = @import("../json.zig");
@@ -33,6 +34,7 @@ pub const Provider = struct {
         base_url: []const u8 = api_base,
         headers: []const http.Header = &.{},
         request_policy: provider_types.RequestPolicy = .{},
+        file_limits: provider_types.FileLimits = .{},
         model_profiles: ?http_provider.Configured.ModelProfiles = null,
         discovery_limits: operations.DiscoveryLimits = .{},
     };
@@ -50,6 +52,7 @@ pub const Provider = struct {
                 .credential = .{ .header = .{ .name = "x-api-key", .value = api_key } },
                 .headers = options.headers,
                 .request_policy = options.request_policy,
+                .file_limits = options.file_limits,
                 .model_profiles = options.model_profiles,
             },
             .discovery_limits = options.discovery_limits,
@@ -60,6 +63,10 @@ pub const Provider = struct {
         self.http.operations = .{
             .context = self,
             .listModelsFn = listModels,
+            .uploadFileFn = uploadFile,
+            .inspectFileFn = inspectFile,
+            .downloadFileFn = downloadFile,
+            .deleteFileFn = deleteFile,
         };
         return self.http.provider();
     }
@@ -67,6 +74,26 @@ pub const Provider = struct {
     fn listModels(context: *anyopaque, allocator: std.mem.Allocator) !provider_types.OwnedModels {
         const self: *Provider = @ptrCast(@alignCast(context));
         return operations.listAnthropicModels(&self.http, allocator, self.discovery_limits);
+    }
+
+    fn uploadFile(context: *anyopaque, allocator: std.mem.Allocator, input: provider_types.FileInput) !provider_types.OwnedFile {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        return files.upload(&self.http, allocator, input, .anthropic);
+    }
+
+    fn inspectFile(context: *anyopaque, allocator: std.mem.Allocator, file: model_types.UploadedFile) !provider_types.OwnedFile {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        return files.inspect(&self.http, allocator, file, .anthropic);
+    }
+
+    fn downloadFile(context: *anyopaque, allocator: std.mem.Allocator, file: model_types.UploadedFile) !provider_types.OwnedFileDownload {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        return files.download(&self.http, allocator, file, .anthropic);
+    }
+
+    fn deleteFile(context: *anyopaque, allocator: std.mem.Allocator, file: model_types.UploadedFile) !void {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        return files.delete(&self.http, allocator, file, .anthropic);
     }
 };
 
@@ -209,6 +236,80 @@ pub const Client = struct {
         };
     }
 };
+
+test "Anthropic provider owns the complete beta file lifecycle" {
+    const State = struct {
+        step: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request_value: http.Request) !http.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try expectHeader(request_value.headers, "x-api-key", "secret");
+            try expectHeader(request_value.headers, "anthropic-version", api_version);
+            try expectHeader(request_value.headers, "anthropic-beta", "files-api-2025-04-14");
+            const body = switch (self.step) {
+                0 => blk: {
+                    try std.testing.expectEqual(http.Method.POST, request_value.method);
+                    try std.testing.expectEqualStrings("https://api.anthropic.com/v1/files", request_value.url);
+                    try std.testing.expect(std.mem.indexOf(u8, request_value.body, "name=\"purpose\"") == null);
+                    break :blk "{\"id\":\"file_1\",\"type\":\"file\",\"filename\":\"note.txt\",\"mime_type\":\"text/plain\",\"size_bytes\":2,\"downloadable\":true}";
+                },
+                1 => blk: {
+                    try std.testing.expectEqual(http.Method.GET, request_value.method);
+                    try std.testing.expectEqualStrings("https://api.anthropic.com/v1/files/file_1", request_value.url);
+                    break :blk "{\"id\":\"file_1\",\"type\":\"file\",\"filename\":\"note.txt\",\"mime_type\":\"text/plain\",\"size_bytes\":2,\"downloadable\":true}";
+                },
+                2 => blk: {
+                    try std.testing.expectEqual(http.Method.GET, request_value.method);
+                    try std.testing.expectEqualStrings("https://api.anthropic.com/v1/files/file_1/content", request_value.url);
+                    break :blk "hi";
+                },
+                3 => blk: {
+                    try std.testing.expectEqual(http.Method.DELETE, request_value.method);
+                    try std.testing.expectEqualStrings("https://api.anthropic.com/v1/files/file_1", request_value.url);
+                    break :blk "{\"id\":\"file_1\",\"type\":\"file_deleted\"}";
+                },
+                else => return error.UnexpectedRequest,
+            };
+            self.step += 1;
+            return .{ .status = 200, .body = try allocator.dupe(u8, body) };
+        }
+
+        fn expectHeader(headers: []const http.Header, name: []const u8, value: []const u8) !void {
+            for (headers) |header| if (std.ascii.eqlIgnoreCase(header.name, name)) {
+                try std.testing.expectEqualStrings(value, header.value);
+                return;
+            };
+            return error.TestUnexpectedResult;
+        }
+    };
+    var state: State = .{};
+    var concrete = Provider.init("secret", .{ .context = &state, .sendFn = State.send });
+    const provider = concrete.provider();
+    var uploaded = try provider.uploadFile(std.testing.allocator, .{
+        .filename = "note.txt",
+        .media_type = "text/plain",
+        .bytes = "hi",
+    });
+    defer uploaded.deinit();
+    try std.testing.expectEqualStrings("text/plain", uploaded.value.media_type.?);
+    const file = uploaded.value.uploadedFile();
+    var inspected = try provider.inspectFile(std.testing.allocator, file);
+    defer inspected.deinit();
+    try std.testing.expectEqual(@as(?u64, 2), inspected.value.size_bytes);
+    var downloaded = try provider.downloadFile(std.testing.allocator, file);
+    defer downloaded.deinit();
+    try std.testing.expectEqualStrings("text/plain", downloaded.value.descriptor.media_type.?);
+    try std.testing.expectEqualStrings("hi", downloaded.value.bytes);
+    try provider.deleteFile(std.testing.allocator, file);
+    try std.testing.expectEqual(@as(usize, 4), state.step);
+
+    try std.testing.expectError(error.InvalidProviderFileInput, provider.uploadFile(std.testing.allocator, .{
+        .filename = "note.txt",
+        .media_type = "text/plain",
+        .bytes = "hi",
+        .purpose = "user_data",
+    }));
+}
 
 test "Anthropic provider owns identity and model profile overrides" {
     const Profiles = struct {

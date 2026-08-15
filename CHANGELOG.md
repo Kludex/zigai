@@ -36,6 +36,11 @@
   transport support, provider-qualified file descriptors, reusable
   `UploadedFile` handles, distinct inspect and download operations, arena-owned
   downloaded bytes, and fail-closed owner validation before and after dispatch.
+- Implement authenticated OpenAI and Anthropic file upload, metadata
+  inspection, download, and acknowledged deletion in a shared provider-files
+  layer. Add collision-safe multipart framing, encoded resource paths,
+  provider-specific purpose and beta-header behavior, configurable upload
+  limits, bounded response parsing, and exhaustive allocation-failure tests.
 - Pin the official MCP `2026-07-28` conformance framework and TypeScript and
   Python reference servers in a validated test-only interoperability matrix.
 - Add a test-only Cassetter-style YAML format that replays ordered MCP

@@ -107,6 +107,7 @@ pub fn ProviderWithDefaults(comptime defaults: ClientDefaults) type {
             authentication: Authentication = defaults.authentication,
             headers: []const http.Header = &.{},
             request_policy: provider_types.RequestPolicy = .{},
+            file_limits: provider_types.FileLimits = .{},
             model_profiles: ?http_provider.Configured.ModelProfiles = null,
             discovery_limits: operations.DiscoveryLimits = .{},
         };
@@ -128,6 +129,7 @@ pub fn ProviderWithDefaults(comptime defaults: ClientDefaults) type {
                     } },
                     .headers = options.headers,
                     .request_policy = options.request_policy,
+                    .file_limits = options.file_limits,
                     .model_profiles = options.model_profiles,
                 },
                 .discovery_limits = options.discovery_limits,

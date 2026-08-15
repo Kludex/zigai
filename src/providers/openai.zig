@@ -5,6 +5,7 @@ const model_types = @import("../model.zig");
 const provider_types = @import("../provider.zig");
 const http_provider = @import("http.zig");
 const operations = @import("operations.zig");
+const files = @import("files.zig");
 const http = @import("../transport.zig");
 const common = @import("common.zig");
 const json_limits = @import("../json.zig");
@@ -32,6 +33,7 @@ pub const Provider = struct {
         base_url: []const u8 = api_base,
         headers: []const http.Header = &.{},
         request_policy: provider_types.RequestPolicy = .{},
+        file_limits: provider_types.FileLimits = .{},
         model_profiles: ?http_provider.Configured.ModelProfiles = null,
         discovery_limits: operations.DiscoveryLimits = .{},
     };
@@ -49,6 +51,7 @@ pub const Provider = struct {
                 .credential = .{ .bearer = api_key },
                 .headers = options.headers,
                 .request_policy = options.request_policy,
+                .file_limits = options.file_limits,
                 .model_profiles = options.model_profiles,
             },
             .discovery_limits = options.discovery_limits,
@@ -59,6 +62,10 @@ pub const Provider = struct {
         self.http.operations = .{
             .context = self,
             .listModelsFn = listModels,
+            .uploadFileFn = uploadFile,
+            .inspectFileFn = inspectFile,
+            .downloadFileFn = downloadFile,
+            .deleteFileFn = deleteFile,
         };
         return self.http.provider();
     }
@@ -66,6 +73,26 @@ pub const Provider = struct {
     fn listModels(context: *anyopaque, allocator: std.mem.Allocator) !provider_types.OwnedModels {
         const self: *Provider = @ptrCast(@alignCast(context));
         return operations.listOpenAIModels(&self.http, allocator, self.discovery_limits);
+    }
+
+    fn uploadFile(context: *anyopaque, allocator: std.mem.Allocator, input: provider_types.FileInput) !provider_types.OwnedFile {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        return files.upload(&self.http, allocator, input, .openai);
+    }
+
+    fn inspectFile(context: *anyopaque, allocator: std.mem.Allocator, file: model_types.UploadedFile) !provider_types.OwnedFile {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        return files.inspect(&self.http, allocator, file, .openai);
+    }
+
+    fn downloadFile(context: *anyopaque, allocator: std.mem.Allocator, file: model_types.UploadedFile) !provider_types.OwnedFileDownload {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        return files.download(&self.http, allocator, file, .openai);
+    }
+
+    fn deleteFile(context: *anyopaque, allocator: std.mem.Allocator, file: model_types.UploadedFile) !void {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        return files.delete(&self.http, allocator, file, .openai);
     }
 };
 
@@ -181,6 +208,79 @@ pub const Client = struct {
         };
     }
 };
+
+test "OpenAI provider owns the complete file lifecycle" {
+    const State = struct {
+        step: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request_value: http.Request) !http.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try expectHeader(request_value.headers, "authorization", "Bearer secret");
+            const body = switch (self.step) {
+                0 => blk: {
+                    try std.testing.expectEqual(http.Method.POST, request_value.method);
+                    try std.testing.expectEqualStrings("https://api.openai.com/v1/files", request_value.url);
+                    try expectHeaderPrefix(request_value.headers, "content-type", "multipart/form-data; boundary=zigai-");
+                    try std.testing.expect(std.mem.indexOf(u8, request_value.body, "name=\"purpose\"\r\n\r\nuser_data") != null);
+                    break :blk "{\"id\":\"file/1\",\"filename\":\"note.txt\",\"purpose\":\"user_data\",\"bytes\":2}";
+                },
+                1 => blk: {
+                    try std.testing.expectEqual(http.Method.GET, request_value.method);
+                    try std.testing.expectEqualStrings("https://api.openai.com/v1/files/file%2F1", request_value.url);
+                    break :blk "{\"id\":\"file/1\",\"filename\":\"note.txt\",\"purpose\":\"user_data\",\"bytes\":2}";
+                },
+                2 => blk: {
+                    try std.testing.expectEqual(http.Method.GET, request_value.method);
+                    try std.testing.expectEqualStrings("https://api.openai.com/v1/files/file%2F1/content", request_value.url);
+                    break :blk "hi";
+                },
+                3 => blk: {
+                    try std.testing.expectEqual(http.Method.DELETE, request_value.method);
+                    try std.testing.expectEqualStrings("https://api.openai.com/v1/files/file%2F1", request_value.url);
+                    break :blk "{\"id\":\"file/1\",\"deleted\":true}";
+                },
+                else => return error.UnexpectedRequest,
+            };
+            self.step += 1;
+            return .{ .status = 200, .body = try allocator.dupe(u8, body) };
+        }
+
+        fn expectHeader(headers: []const http.Header, name: []const u8, value: []const u8) !void {
+            for (headers) |header| if (std.ascii.eqlIgnoreCase(header.name, name)) {
+                try std.testing.expectEqualStrings(value, header.value);
+                return;
+            };
+            return error.TestUnexpectedResult;
+        }
+
+        fn expectHeaderPrefix(headers: []const http.Header, name: []const u8, prefix: []const u8) !void {
+            for (headers) |header| if (std.ascii.eqlIgnoreCase(header.name, name)) {
+                try std.testing.expect(std.mem.startsWith(u8, header.value, prefix));
+                return;
+            };
+            return error.TestUnexpectedResult;
+        }
+    };
+    var state: State = .{};
+    var concrete = Provider.init("secret", .{ .context = &state, .sendFn = State.send });
+    const provider = concrete.provider();
+    var uploaded = try provider.uploadFile(std.testing.allocator, .{
+        .filename = "note.txt",
+        .media_type = "text/plain",
+        .bytes = "hi",
+    });
+    defer uploaded.deinit();
+    try std.testing.expectEqual(@as(?u64, 2), uploaded.value.size_bytes);
+    const file = uploaded.value.uploadedFile();
+    var inspected = try provider.inspectFile(std.testing.allocator, file);
+    defer inspected.deinit();
+    try std.testing.expectEqualStrings("user_data", inspected.value.purpose.?);
+    var downloaded = try provider.downloadFile(std.testing.allocator, file);
+    defer downloaded.deinit();
+    try std.testing.expectEqualStrings("hi", downloaded.value.bytes);
+    try provider.deleteFile(std.testing.allocator, file);
+    try std.testing.expectEqual(@as(usize, 4), state.step);
+}
 
 test "OpenAI provider owns identity and model profile overrides" {
     const Profiles = struct {

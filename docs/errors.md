@@ -173,6 +173,8 @@ Provider construction and optional operations use these boundary errors:
 | --- | --- | --- |
 | `provider` | `InvalidProviderPolicy` | Identity, API root, timeout, or URL policy is invalid. |
 | `provider` | `UnsupportedProviderOperation` | The provider does not implement the requested discovery or file operation. |
+| `provider` | `InvalidProviderFileInput` | Upload metadata is empty, oversized, unsafe for multipart framing, or unsupported by the provider. |
+| `provider` | `ProviderFileTooLarge` | Upload bytes exceed the configured provider file limit. |
 | `provider` | `InvalidProviderFileOwner` | A file handle or returned descriptor belongs to another provider. |
 | `provider` | `InvalidProviderFileReference` | A file handle is empty, or an operation returned metadata for another file ID. |
 | `providers.http` | `InvalidProviderCredential` | A credential is empty or unsafe for an HTTP header. |

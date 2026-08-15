@@ -200,6 +200,13 @@ content leave that operation unsupported; applications receive
 `UnsupportedProviderOperation` instead of a synthetic URL or a second
 unauthenticated fetch.
 
+OpenAI and Anthropic implement the complete lifecycle. OpenAI uses `user_data`
+when `ProviderFileInput.purpose` is null; Anthropic rejects a purpose because
+its Files API has no corresponding field. Anthropic requests always carry the
+Files API beta header, and both providers percent-encode file IDs before using
+them in paths. `ProviderFileLimits` bounds upload bytes and multipart metadata
+before transport I/O and is configurable through provider options.
+
 `agent_spec.Owned` owns parsed configuration in an arena. It is data-only and
 does not read secrets or construct clients. `validateResolution` uses
 application-supplied provider and capability catalogs without building a
