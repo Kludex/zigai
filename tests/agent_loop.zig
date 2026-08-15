@@ -1890,10 +1890,20 @@ test "tool isolation cancels in-flight work and requires IO for timeouts" {
     };
     const Cancel = struct {
         fn after(io: std.Io, token: *zigai.CancellationToken, state: *State) !void {
-            while (!state.active.load(.seq_cst)) try (std.Io.Timeout{ .duration = .{
-                .raw = .fromMilliseconds(1),
+            const start_deadline = std.Io.Clock.Timestamp.fromNow(io, .{
+                .raw = .fromSeconds(5),
                 .clock = .awake,
-            } }).sleep(io);
+            });
+            while (!state.active.load(.seq_cst)) {
+                if (std.Io.Clock.Timestamp.now(io, .awake).durationTo(start_deadline).raw.nanoseconds <= 0) {
+                    token.cancel();
+                    return error.ToolDidNotStart;
+                }
+                try (std.Io.Timeout{ .duration = .{
+                    .raw = .fromMilliseconds(1),
+                    .clock = .awake,
+                } }).sleep(io);
+            }
             token.cancel();
         }
     };
@@ -2624,11 +2634,11 @@ test "one run deadline bounds model and tool work without late writes" {
         fn request(context: *anyopaque, _: std.mem.Allocator, model_request: zigai.ModelRequest) !zigai.ModelResponse {
             const self: *@This() = @ptrCast(@alignCast(context));
             const timeout_ms = model_request.timeout_ms orelse return error.MissingRunTimeout;
-            self.saw_bounded_timeout.store(timeout_ms > 0 and timeout_ms <= 5, .seq_cst);
+            self.saw_bounded_timeout.store(timeout_ms > 0 and timeout_ms <= 100, .seq_cst);
             self.active.store(true, .seq_cst);
             defer self.active.store(false, .seq_cst);
             try (std.Io.Timeout{ .duration = .{
-                .raw = .fromMilliseconds(100),
+                .raw = .fromSeconds(10),
                 .clock = .awake,
             } }).sleep(self.io);
             return .{ .parts = &.{.{ .text = "late" }} };
@@ -2640,8 +2650,8 @@ test "one run deadline bounds model and tool work without late writes" {
     try std.testing.expectError(zigai.Agent.Error.RunTimedOut, (zigai.Agent{
         .model = .{ .context = &blocking_model, .profile = .{}, .requestFn = BlockingModel.request },
         .io = threaded.io(),
-        .run_timeout_ms = 10,
-    }).runWithOptions(std.testing.allocator, "wait", .{ .timeout_ms = 5 }));
+        .run_timeout_ms = 200,
+    }).runWithOptions(std.testing.allocator, "wait", .{ .timeout_ms = 100 }));
     try std.testing.expect(blocking_model.saw_bounded_timeout.load(.seq_cst));
     try std.testing.expect(!blocking_model.active.load(.seq_cst));
 }

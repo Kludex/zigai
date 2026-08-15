@@ -751,9 +751,9 @@ test "run control shares one deadline and drains interrupted work" {
     defer threaded.deinit();
     const io = threaded.io();
     var state: State = .{};
-    const control = try RunControl.init(io, null, 2);
+    const control = try RunControl.init(io, null, 100);
     const first_remaining = (try control.remainingMilliseconds()).?;
-    try std.testing.expect(first_remaining > 0 and first_remaining <= 2);
+    try std.testing.expect(first_remaining > 0 and first_remaining <= 100);
     try std.testing.expectEqual(@as(?u64, 1), try control.timeoutMilliseconds(1));
     try std.testing.expectError(error.RunTimedOut, control.invoke(u8, State.slow, .{ &state, io }));
     try std.testing.expect(!state.active.load(.seq_cst));
@@ -774,10 +774,20 @@ test "run control drains cancellation and supports cooperative fallback" {
         }
 
         fn cancelAfter(io: std.Io, token: *CancellationToken, state: *@This()) !void {
-            while (!state.active.load(.seq_cst)) try (std.Io.Timeout{ .duration = .{
-                .raw = .fromMilliseconds(1),
+            const start_deadline = std.Io.Clock.Timestamp.fromNow(io, .{
+                .raw = .fromSeconds(5),
                 .clock = .awake,
-            } }).sleep(io);
+            });
+            while (!state.active.load(.seq_cst)) {
+                if (std.Io.Clock.Timestamp.now(io, .awake).durationTo(start_deadline).raw.nanoseconds <= 0) {
+                    token.cancel();
+                    return error.OperationDidNotStart;
+                }
+                try (std.Io.Timeout{ .duration = .{
+                    .raw = .fromMilliseconds(1),
+                    .clock = .awake,
+                } }).sleep(io);
+            }
             try (std.Io.Timeout{ .duration = .{
                 .raw = .fromMilliseconds(10),
                 .clock = .awake,
