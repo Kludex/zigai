@@ -235,6 +235,61 @@ pub fn bedrock(model_name: []const u8) ?model.ModelProfile {
     return familyProfile(.openai, family_name);
 }
 
+/// Model families exposed through the native Amazon Bedrock Converse API.
+/// Converse normalizes a deliberately smaller setting surface than Chat
+/// Completions; model-specific extensions belong in the Bedrock extra body.
+pub fn bedrockConverse(model_name: []const u8) ?model.ModelProfile {
+    const family: Family = if (std.mem.indexOf(u8, model_name, "anthropic.") != null)
+        .anthropic
+    else if (std.mem.indexOf(u8, model_name, "amazon.") != null)
+        .amazon
+    else if (std.mem.indexOf(u8, model_name, "cohere.") != null)
+        .cohere
+    else if (std.mem.indexOf(u8, model_name, "deepseek.") != null)
+        .deepseek
+    else if (std.mem.indexOf(u8, model_name, "meta.") != null or
+        std.mem.indexOf(u8, model_name, "meta-llama.") != null)
+        .meta
+    else if (std.mem.indexOf(u8, model_name, "mistral.") != null or
+        std.mem.indexOf(u8, model_name, "mistralai.") != null)
+        .mistral
+    else
+        return null;
+    var profile = familyProfile(family, model_name);
+    profile.supports_json_schema_output = false;
+    profile.supports_json_object_output = false;
+    profile.supports_streaming = false;
+    profile.supports_seed = false;
+    profile.supports_top_k = false;
+    profile.supports_presence_penalty = false;
+    profile.supports_frequency_penalty = false;
+    profile.supports_logprobs = false;
+    profile.supports_parallel_tool_call_setting = false;
+    profile.supports_thinking_budget = false;
+    profile.supports_request_headers = true;
+    profile.extra_body_kind = .bedrock;
+    profile.reasoning_efforts = model.ModelProfile.ReasoningEffortSet.initEmpty();
+    profile.service_tiers = model.ModelProfile.ServiceTierSet.initMany(&.{ .auto, .default });
+    profile.content_types = model.ModelProfile.ContentTypeSet.initEmpty();
+    if (family == .anthropic and (std.mem.indexOf(u8, model_name, "claude-sonnet-4-5") != null or
+        std.mem.indexOf(u8, model_name, "claude-sonnet-4-6") != null or
+        std.mem.indexOf(u8, model_name, "claude-haiku-4-5") != null or
+        std.mem.indexOf(u8, model_name, "claude-opus-4-5") != null or
+        std.mem.indexOf(u8, model_name, "claude-opus-4-6") != null))
+    {
+        profile.supports_json_schema_output = true;
+    }
+    if (family == .anthropic and std.mem.indexOf(u8, model_name, "claude-sonnet-4-6") != null) {
+        profile.service_tiers.insert(.priority);
+    }
+    if (family == .meta or family == .mistral or family == .deepseek) {
+        profile.supports_tools = false;
+        profile.supports_parallel_tool_calls = false;
+        profile.supports_tool_choice = false;
+    }
+    return profile;
+}
+
 pub fn cerebras(model_name: []const u8) ?model.ModelProfile {
     const family: Family = if (startsWith(model_name, "llama"))
         .meta
@@ -346,6 +401,13 @@ test "named compatible providers resolve known families and reject unknown ones"
     try std.testing.expect(bedrock("openai.gpt-oss-20b").?.supportsReasoningEffort(.medium));
     try std.testing.expect(bedrock("openai.gpt-5.4").?.supportsReasoningEffort(.high));
     try std.testing.expect(bedrock("anthropic.claude") == null);
+    try std.testing.expect(bedrockConverse("us.anthropic.claude-sonnet-4-6").?.supports_tools);
+    try std.testing.expect(!bedrockConverse("amazon.nova-pro-v1:0").?.supports_json_schema_output);
+    try std.testing.expect(bedrockConverse("global.anthropic.claude-opus-4-6").?.supports_json_schema_output);
+    try std.testing.expect(bedrockConverse("us.anthropic.claude-sonnet-4-6").?.supportsServiceTier(.priority));
+    try std.testing.expect(!bedrockConverse("meta.llama3-3-70b-instruct-v1:0").?.supports_streaming);
+    try std.testing.expect(!bedrockConverse("meta.llama3-3-70b-instruct-v1:0").?.supports_tools);
+    try std.testing.expect(bedrockConverse("unknown.model") == null);
 
     try std.testing.expect(!cerebras("gpt-oss-120b").?.supports_parallel_tool_call_setting);
     try std.testing.expect(cerebras("llama-3.3").?.supports_tools);

@@ -56,6 +56,7 @@ pub const ExtraBodyKind = enum {
     openai,
     openai_compatible,
     anthropic,
+    bedrock,
     google,
 };
 
@@ -66,6 +67,7 @@ pub const ProviderExtraBody = union(ExtraBodyKind) {
     openai: []const u8,
     openai_compatible: []const u8,
     anthropic: []const u8,
+    bedrock: []const u8,
     google: []const u8,
 
     pub fn kind(self: ProviderExtraBody) ExtraBodyKind {
