@@ -8,7 +8,9 @@ const json_limits = @import("json.zig");
 /// Evaluation failures defined by ZigAI. Agent, evaluator callback, and
 /// allocation errors are intentionally allowed to propagate alongside these.
 pub const Error = error{
+    /// An evaluator requiring an expected value received a case without one.
     MissingExpectedOutput,
+    /// A model grader returned an invalid typed grade.
     InvalidModelGrade,
 };
 

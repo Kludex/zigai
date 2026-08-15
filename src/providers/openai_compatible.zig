@@ -9,7 +9,9 @@ const json_limits = @import("../json.zig");
 pub const api_base = "https://api.openai.com/v1";
 
 pub const Error = model_types.ProviderRequestError || error{
+    /// A successful payload does not match OpenAI Chat Completions.
     InvalidProviderResponse,
+    /// Provider-neutral input cannot be encoded as Chat Completions.
     InvalidRequestEncoding,
 };
 

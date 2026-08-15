@@ -8,7 +8,9 @@ const model = @import("model.zig");
 const json_limits = @import("json.zig");
 
 pub const Error = error{
+    /// History JSON or a provider-facing message sequence is invalid.
     InvalidHistory,
+    /// The serialized history version is not supported.
     UnsupportedVersion,
 };
 

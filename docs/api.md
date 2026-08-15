@@ -1,5 +1,9 @@
 # Public API and ownership
 
+Named framework failures are listed in the [error reference](errors.md).
+Application callback, allocator, runtime, and custom transport errors propagate
+alongside those named errors without wrapping.
+
 ZigAI's supported API starts at `@import("zigai")`. Prefer its short aliases
 for agent and model types, and use the named modules for larger subsystems:
 

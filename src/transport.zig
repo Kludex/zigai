@@ -6,11 +6,15 @@ const model_types = @import("model.zig");
 pub const Error = error{
     /// The decompressed buffered response exceeded the configured byte limit.
     ResponseTooLarge,
+    /// Cancellation won the race with an in-flight transport request.
     RequestCancelled,
+    /// The complete transport operation exceeded its request timeout.
     RequestTimedOut,
     /// One decompressed streaming line exceeded the configured byte limit.
     StreamLineTooLarge,
+    /// A transport does not implement line-oriented streaming.
     StreamingNotSupported,
+    /// The response selected a content encoding ZigAI cannot decompress.
     UnsupportedCompressionMethod,
 };
 

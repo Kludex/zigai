@@ -17,63 +17,121 @@ const ResponsePart = model_types.ResponsePart;
 const Part = ResponsePart;
 
 const AgentError = error{
+    /// The run's cooperative cancellation token was signalled.
     Cancelled,
+    /// The provider reported that content filtering ended generation.
     ContentFiltered,
+    /// Provider-facing media exceeds `ContextBudget.max_media_bytes`.
     ContextMediaTooLarge,
+    /// Provider-facing prompt text exceeds `ContextBudget.max_prompt_bytes`.
     ContextPromptTooLarge,
+    /// Provider-facing schemas exceed `ContextBudget.max_schema_bytes`.
     ContextSchemaTooLarge,
+    /// Aggregate context measurement overflowed `u64`.
     ContextSizeOverflow,
+    /// Estimated input exceeds the effective token capacity.
     ContextTokenLimitExceeded,
+    /// Provider-facing tools exceed `ContextBudget.max_tool_bytes`.
     ContextToolsTooLarge,
+    /// Two locally available tools have the same provider-visible name.
     DuplicateToolName,
+    /// Two provider-managed tools have the same kind.
     DuplicateBuiltinTool,
+    /// A successful model response contained no usable parts.
     EmptyModelResponse,
+    /// Generation ended with an unfinished provider tool call.
     IncompleteToolCall,
+    /// Reported cumulative input usage exceeded its run limit.
     InputTokenLimitExceeded,
+    /// Typed output could not be decoded after validation.
     InvalidTypedOutput,
+    /// The run attempted more model requests than allowed.
     MaxModelRequestsExceeded,
+    /// The run attempted more local tool calls than allowed.
     MaxToolCallsExceeded,
+    /// The selected model profile does not accept audio content.
     ModelDoesNotSupportAudio,
+    /// The selected model profile does not accept generic binary content.
     ModelDoesNotSupportBinaryContent,
+    /// The selected model profile does not accept documents.
     ModelDoesNotSupportDocuments,
+    /// The selected model profile does not accept images.
     ModelDoesNotSupportImages,
+    /// The selected model profile cannot encode system messages or instructions.
     ModelDoesNotSupportSystemMessages,
+    /// The selected model profile cannot preserve thinking content.
     ModelDoesNotSupportThinking,
+    /// Local tools were supplied to a model profile without tool support.
     ModelDoesNotSupportTools,
+    /// The selected model profile does not support native web fetch.
     ModelDoesNotSupportWebFetch,
+    /// The selected model profile does not support native web search.
     ModelDoesNotSupportWebSearch,
+    /// JSON-object output was requested from an unsupported model profile.
     ModelDoesNotSupportJsonObjectOutput,
+    /// JSON Schema output was requested from an unsupported model profile.
     ModelDoesNotSupportJsonSchemaOutput,
+    /// `max_tokens` was set for a model profile that rejects it.
     ModelDoesNotSupportMaxTokens,
+    /// The requested reasoning effort is absent from the model profile.
     ModelDoesNotSupportReasoningEffort,
+    /// `seed` was set for a model profile that rejects it.
     ModelDoesNotSupportSeed,
+    /// Stop sequences were set for a model profile that rejects them.
     ModelDoesNotSupportStopSequences,
+    /// Streaming was requested from a model profile without streaming support.
     ModelDoesNotSupportStreaming,
+    /// `temperature` was set for a model profile that rejects it.
     ModelDoesNotSupportTemperature,
+    /// Generation stopped for length before producing a complete result.
     ModelOutputTruncated,
+    /// Reported cumulative output usage exceeded its run limit.
     OutputTokenLimitExceeded,
+    /// A model emitted parallel calls while parallel execution was disabled.
     ParallelToolCallsNotSupported,
+    /// Parallel tool execution was required without an `Io` runtime.
     ParallelToolCallsRequireIo,
+    /// A provider-managed file belongs to a different provider.
     ProviderFileProviderMismatch,
+    /// Reported cumulative input plus output usage exceeded its run limit.
     TotalTokenLimitExceeded,
+    /// The runtime could not schedule all required controlled tool tasks.
     ToolConcurrencyUnavailable,
+    /// A tool returned too many or too-large follow-up messages.
     ToolFollowUpOverflow,
+    /// A configured tool isolation control requires an `Io` runtime.
     ToolIsolationRequiresIo,
+    /// More tool calls were waiting than the configured queue permits.
     ToolQueueOverflow,
+    /// A tool result exceeded its encoded byte limit.
     ToolResultTooLarge,
+    /// A local tool exceeded its execution timeout.
     ToolTimedOut,
+    /// A normal run encountered a tool requiring approval or external execution.
     ToolCallRequiresDeferredRun,
+    /// A resumed approval call has no matching decision.
     MissingDeferredToolDecision,
+    /// A resume decision does not match any paused tool call.
     UnexpectedDeferredToolDecision,
+    /// An external deferred tool resumed without a supplied result.
     DeferredToolRequiresResult,
+    /// Serialized paused or resume state is malformed or incompatible.
     InvalidDeferredState,
+    /// A follow-up message contains a part invalid for its request role.
     InvalidContentRole,
+    /// A tool follow-up message violates provider request invariants.
     InvalidToolFollowUpMessage,
+    /// The model requested a tool that is not currently available.
     UnknownTool,
+    /// Retry backoff was configured without an `Io` runtime.
     RetryBackoffRequiresIo,
+    /// Idempotent retry keys were required without an `Io` entropy source.
     RetryIdempotencyRequiresIo,
+    /// A deadline was configured without an `Io` runtime.
     RunControlRequiresIo,
+    /// The runtime could not schedule a run operation and its control watchers.
     RunControlConcurrencyUnavailable,
+    /// The invocation's absolute monotonic deadline elapsed.
     RunTimedOut,
 };
 

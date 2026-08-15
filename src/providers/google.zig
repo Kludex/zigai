@@ -9,7 +9,9 @@ const json_limits = @import("../json.zig");
 pub const api_base = "https://generativelanguage.googleapis.com/v1beta";
 
 pub const Error = model_types.ProviderRequestError || error{
+    /// A successful Gemini payload does not match GenerateContent.
     InvalidProviderResponse,
+    /// Provider-neutral input cannot be encoded as a valid Gemini request.
     InvalidRequestEncoding,
 };
 

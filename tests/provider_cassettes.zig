@@ -636,6 +636,44 @@ test "agent provider error bodies are hidden by default and bounded when enabled
     try std.testing.expect(captured.truncated);
 }
 
+test "provider streaming preserves application callback errors" {
+    const Stub = struct {
+        fn send(_: *anyopaque, _: std.mem.Allocator, _: zigai.transport.Request) !zigai.transport.Response {
+            return error.Unused;
+        }
+
+        fn stream(
+            _: *anyopaque,
+            _: std.mem.Allocator,
+            _: zigai.transport.Request,
+            sink: zigai.transport.LineSink,
+        ) !zigai.transport.StreamResponse {
+            const response = zigai.transport.StreamResponse{ .status = 200 };
+            try sink.start(response);
+            try sink.line("data: {\"type\":\"response.output_text.delta\",\"delta\":\"x\"}");
+            return response;
+        }
+    };
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: zigai.ModelStreamEvent) !void {
+            return error.ApplicationSinkFailed;
+        }
+    };
+    var unused: u8 = 0;
+    var client = zigai.openai.Client{
+        .model_name = "gpt-test",
+        .api_key = "test",
+        .transport = .{ .context = &unused, .sendFn = Stub.send, .streamLinesFn = Stub.stream },
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.ApplicationSinkFailed, client.model().stream(
+        arena.allocator(),
+        .{ .messages = &.{} },
+        .{ .context = &unused, .eventFn = Sink.emit },
+    ));
+}
+
 test "Anthropic, Google, and OpenAI-compatible clients classify server failures" {
     const Stub = struct {
         fn send(_: *anyopaque, allocator: std.mem.Allocator, request: zigai.transport.Request) !zigai.transport.Response {

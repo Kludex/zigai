@@ -44,21 +44,37 @@ pub const methods = struct {
 
 /// MCP protocol and transport failures defined by ZigAI.
 pub const Error = error{
+    /// A stdio transport was configured without a program command.
     EmptyCommand,
+    /// An MCP header value does not match its schema annotation.
     HeaderMismatch,
+    /// A server requested elicitation input but no handler supplied it.
     InputRequired,
+    /// Tool header annotations are malformed or use unsupported schema shapes.
     InvalidMcpHeaderAnnotation,
+    /// A received JSON-RPC message is malformed or exceeds structural rules.
     InvalidMcpMessage,
+    /// A response result does not match the expected MCP method shape.
     InvalidMcpResponse,
+    /// Tool arguments are not one valid bounded JSON object.
     InvalidMcpToolArguments,
+    /// Streamable HTTP returned a non-success transport response.
     McpHttpRequestFailed,
+    /// An MCP request, response, or event exceeded its configured byte limit.
     McpMessageTooLarge,
+    /// A stdio MCP child closed before returning the matching response.
     McpProcessClosed,
+    /// A JSON-RPC response ID differs from the outstanding request ID.
     McpResponseIdMismatch,
+    /// The peer returned a JSON-RPC error envelope.
     McpRpcError,
+    /// An MCP-backed toolset was used without its client.
     MissingMcpClient,
+    /// Streamable HTTP did not provide the required SSE response stream.
     MissingMcpSseResponse,
+    /// Elicitation exceeded the configured request/response round-trip limit.
     TooManyMcpRoundTrips,
+    /// Discovery negotiated a protocol revision ZigAI does not support.
     UnsupportedMcpProtocolVersion,
 };
 

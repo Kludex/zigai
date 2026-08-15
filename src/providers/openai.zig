@@ -9,9 +9,13 @@ const json_limits = @import("../json.zig");
 pub const api_base = "https://api.openai.com/v1";
 
 pub const Error = model_types.ProviderRequestError || error{
+    /// A successful OpenAI payload does not match the Responses API contract.
     InvalidProviderResponse,
+    /// Provider-neutral input cannot be encoded as a valid OpenAI request.
     InvalidRequestEncoding,
+    /// A requested provider-managed tool has no OpenAI representation.
     UnsupportedBuiltinTool,
+    /// A requested rich-content kind has no OpenAI representation.
     UnsupportedContentType,
 };
 

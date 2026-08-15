@@ -17,6 +17,8 @@
   tokens, with output reservation and controlled history compaction hooks.
 - Provider error bodies hidden by default with explicit bounded capture,
   independently capped messages and codes, and end-to-end policy propagation.
+- Documented stable error taxonomy across agents, providers, transports, data
+  boundaries, and MCP, while preserving application callback errors unchanged.
 
 ## 0.1.0 — 2026-08-14
 

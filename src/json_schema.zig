@@ -5,8 +5,11 @@ const model_types = @import("model.zig");
 const json_limits = @import("json.zig");
 
 pub const Error = error{
+    /// Structured model output is not one valid JSON value.
     InvalidJsonOutput,
+    /// The configured output schema is not valid JSON Schema input.
     InvalidJsonSchema,
+    /// Valid JSON output does not satisfy the configured schema.
     OutputSchemaValidationFailed,
 };
 

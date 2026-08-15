@@ -249,7 +249,7 @@ The original top-level imports and standalone `zopenai`, `zanthropic`,
 with the unified `zigai` import.
 
 See [Architecture](docs/architecture.md) for the provider contract and direct
-loop design.
+loop design, and [Error reference](docs/errors.md) for every stable named error.
 
 ## Model routing
 

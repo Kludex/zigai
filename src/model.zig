@@ -591,10 +591,15 @@ pub const FinishReason = struct {
 /// Stable error categories emitted by provider adapters. Agents can make retry
 /// decisions from these without depending on a provider's private error JSON.
 pub const ProviderRequestError = error{
+    /// A known DNS, connect, socket, or connection-lifetime failure occurred.
     ProviderConnectionError,
+    /// The provider returned a success payload that its adapter could not decode.
     ProviderResponseDecodeError,
+    /// The provider rejected the request for rate limiting.
     ProviderRateLimited,
+    /// The provider returned a retryable 5xx response.
     ProviderServerError,
+    /// The provider returned another non-success HTTP response.
     ProviderRequestFailed,
 };
 

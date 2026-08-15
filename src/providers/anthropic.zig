@@ -10,9 +10,13 @@ pub const api_base = "https://api.anthropic.com/v1";
 pub const api_version = "2023-06-01";
 
 pub const Error = model_types.ProviderRequestError || error{
+    /// A successful Anthropic payload does not match the Messages API contract.
     InvalidProviderResponse,
+    /// Provider-neutral input cannot be encoded as a valid Anthropic request.
     InvalidRequestEncoding,
+    /// A requested rich-content kind has no Anthropic representation.
     UnsupportedContentType,
+    /// The requested structured-output mode has no Anthropic representation.
     UnsupportedOutputMode,
 };
 
