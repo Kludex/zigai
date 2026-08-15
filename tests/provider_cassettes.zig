@@ -88,10 +88,10 @@ test "real Google model cassettes replay complete tool loops" {
     inline for (model_matrix.google) |entry| {
         var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
         defer cassette.deinit();
+        var provider_state = zigai.google.Provider.init("not-recorded", cassette.transport());
         var client = zigai.google.Client{
             .model_name = entry.model,
-            .api_key = "not-recorded",
-            .transport = cassette.transport(),
+            .provider = provider_state.provider(),
         };
         try replayMatrixScenario(client.model(), &cassette);
     }
@@ -165,10 +165,10 @@ test "real Anthropic cassette replays native web search and fetch" {
 test "real Google cassette replays native web search and fetch" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/native/google_web_search_fetch.yaml"));
     defer cassette.deinit();
+    var provider_state = zigai.google.Provider.init("not-recorded", cassette.transport());
     var client = zigai.google.Client{
         .model_name = "gemini-3.5-flash",
-        .api_key = "not-recorded",
-        .transport = cassette.transport(),
+        .provider = provider_state.provider(),
     };
     try replayNativeScenario(
         client.model(),
@@ -204,10 +204,10 @@ test "real Anthropic cassette replays image input" {
 test "real Google cassette replays image input" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/rich/google_image.yaml"));
     defer cassette.deinit();
+    var provider_state = zigai.google.Provider.init("not-recorded", cassette.transport());
     var client = zigai.google.Client{
         .model_name = "gemini-3.5-flash",
-        .api_key = "not-recorded",
-        .transport = cassette.transport(),
+        .provider = provider_state.provider(),
     };
     try replayRichScenario(client.model(), &cassette);
 }
@@ -317,11 +317,12 @@ test "Anthropic cassette covers the complete agent tool loop" {
 test "Google cassette covers the complete agent tool loop" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/google_tool_loop.yaml"));
     defer cassette.deinit();
+    var provider_state = zigai.google.Provider.initWithOptions("not-recorded", cassette.transport(), .{
+        .base_url = "https://google.test/v1beta",
+    });
     var client = zigai.google.Client{
         .model_name = "gemini-test",
-        .api_key = "not-recorded",
-        .transport = cassette.transport(),
-        .base_url = "https://google.test/v1beta",
+        .provider = provider_state.provider(),
     };
     var calls: u8 = 0;
     const tool = weatherTool(&calls);
@@ -480,11 +481,12 @@ test "Anthropic streaming cassette covers fragmented tools and text" {
 test "Google streaming cassette covers chunked text and the tool loop" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/google_stream_tool_loop.yaml"));
     defer cassette.deinit();
+    var provider_state = zigai.google.Provider.initWithOptions("not-recorded", cassette.transport(), .{
+        .base_url = "https://google.test/v1beta",
+    });
     var client = zigai.google.Client{
         .model_name = "gemini-test",
-        .api_key = "not-recorded",
-        .transport = cassette.transport(),
-        .base_url = "https://google.test/v1beta",
+        .provider = provider_state.provider(),
     };
     var calls: u8 = 0;
     const tool = weatherTool(&calls);
@@ -723,7 +725,8 @@ test "Anthropic, Google, and OpenAI-compatible clients classify server failures"
     const transport = zigai.transport.Transport{ .context = &unused, .sendFn = Stub.send };
     var anthropic_provider = zigai.anthropic.Provider.init("test", transport);
     var anthropic = zigai.anthropic.Client{ .model_name = "claude-test", .provider = anthropic_provider.provider() };
-    var google = zigai.google.Client{ .model_name = "gemini-test", .api_key = "test", .transport = transport };
+    var google_provider = zigai.google.Provider.init("test", transport);
+    var google = zigai.google.Client{ .model_name = "gemini-test", .provider = google_provider.provider() };
     var compatible = zigai.openai_compatible.Client{ .model_name = "compat-test", .api_key = "test", .transport = transport, .base_url = "https://compatible.test/v1" };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -753,7 +756,8 @@ test "all streaming clients classify multiline server failures" {
     var openai = zigai.openai.Client{ .model_name = "test", .provider = openai_provider.provider() };
     var anthropic_provider = zigai.anthropic.Provider.init("test", transport);
     var anthropic = zigai.anthropic.Client{ .model_name = "test", .provider = anthropic_provider.provider() };
-    var google = zigai.google.Client{ .model_name = "test", .api_key = "test", .transport = transport };
+    var google_provider = zigai.google.Provider.init("test", transport);
+    var google = zigai.google.Client{ .model_name = "test", .provider = google_provider.provider() };
     var compatible = zigai.openai_compatible.Client{ .model_name = "test", .api_key = "test", .transport = transport, .base_url = "https://compatible.test/v1" };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

@@ -2,6 +2,8 @@
 
 const std = @import("std");
 const model_types = @import("../model.zig");
+const provider_types = @import("../provider.zig");
+const http_provider = @import("http.zig");
 const http = @import("../transport.zig");
 const common = @import("common.zig");
 const json_limits = @import("../json.zig");
@@ -17,11 +19,42 @@ pub const Error = model_types.ProviderRequestError || error{
     UnsupportedContentType,
 };
 
+/// Google Generative Language provider state. Credentials and HTTP policy are
+/// separate from the GenerateContent wire adapter.
+pub const Provider = struct {
+    http: http_provider.Configured,
+
+    pub const Options = struct {
+        base_url: []const u8 = api_base,
+        headers: []const http.Header = &.{},
+        request_policy: provider_types.RequestPolicy = .{},
+        model_profiles: ?http_provider.Configured.ModelProfiles = null,
+    };
+
+    pub fn init(api_key: []const u8, transport: http.Transport) Provider {
+        return initWithOptions(api_key, transport, .{});
+    }
+
+    pub fn initWithOptions(api_key: []const u8, transport: http.Transport, options: Options) Provider {
+        return .{ .http = .{
+            .name = "gcp.gen_ai",
+            .base_url = options.base_url,
+            .transport = transport,
+            .credential = .{ .header = .{ .name = "x-goog-api-key", .value = api_key } },
+            .headers = options.headers,
+            .request_policy = options.request_policy,
+            .model_profiles = options.model_profiles,
+        } };
+    }
+
+    pub fn provider(self: *Provider) provider_types.Provider {
+        return self.http.provider();
+    }
+};
+
 pub const Client = struct {
     model_name: []const u8,
-    api_key: []const u8,
-    transport: http.Transport,
-    base_url: []const u8 = api_base,
+    provider: provider_types.Provider,
     settings: model_types.ModelSettings = .{},
     profile: model_types.ModelProfile = .{
         .supports_tools = true,
@@ -58,8 +91,8 @@ pub const Client = struct {
     pub fn model(self: *Client) model_types.Model {
         return .{
             .context = self,
-            .profile = self.profile, // kcov-ignore
-            .provider_name = "gcp.gen_ai",
+            .profile = self.provider.modelProfile(self.model_name, self.profile),
+            .provider_name = self.provider.name,
             .model_name = self.model_name,
             .settings = self.settings,
             .requestFn = request,
@@ -69,37 +102,32 @@ pub const Client = struct {
 
     fn request(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest) !model_types.ModelResponse {
         const self: *Client = @ptrCast(@alignCast(context));
-        const body = try encodeRequest(allocator, value);
+        const body = try encodeRequestForProvider(allocator, self.provider.name, value);
         defer allocator.free(body);
-        const url = try std.fmt.allocPrint(allocator, "{s}/models/{s}:generateContent", .{ self.base_url, self.model_name });
-        defer allocator.free(url);
-        try value.url_policy.validate(url);
+        const endpoint = try std.fmt.allocPrint(allocator, "/models/{s}:generateContent", .{self.model_name});
+        defer allocator.free(endpoint);
         var headers: std.ArrayList(http.Header) = .empty;
         defer headers.deinit(allocator);
-        try headers.appendSlice(allocator, &.{
-            .{ .name = "content-type", .value = "application/json" },
-            .{ .name = "x-goog-api-key", .value = self.api_key, .sensitive = true },
-        });
+        try headers.append(allocator, .{ .name = "content-type", .value = "application/json" });
         try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
-        const response = self.transport.send(allocator, .{
+        const response = self.provider.request(allocator, .{
             .method = .POST,
-            .url = url,
+            .endpoint = endpoint,
             .headers = headers.items,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
+            .url_policy = value.url_policy,
         }) catch |failure| return common.transportError(failure);
         defer allocator.free(response.body);
         if (response.status < 200 or response.status >= 300) {
-            common.notifyProviderError(
+            self.provider.observeError(
                 allocator,
-                value.error_observer,
-                "google",
                 response.status,
                 response.body,
                 response.metadata,
+                value.error_observer,
                 value.error_policy,
-                &.{self.api_key},
             );
             return common.statusError(response.status);
         }
@@ -108,39 +136,34 @@ pub const Client = struct {
 
     fn stream(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest, sink: model_types.ModelStreamSink) !model_types.ModelResponse {
         const self: *Client = @ptrCast(@alignCast(context));
-        const body = try encodeRequest(allocator, value);
+        const body = try encodeRequestForProvider(allocator, self.provider.name, value);
         defer allocator.free(body);
-        const url = try std.fmt.allocPrint(allocator, "{s}/models/{s}:streamGenerateContent?alt=sse", .{ self.base_url, self.model_name });
-        defer allocator.free(url);
-        try value.url_policy.validate(url);
+        const endpoint = try std.fmt.allocPrint(allocator, "/models/{s}:streamGenerateContent?alt=sse", .{self.model_name});
+        defer allocator.free(endpoint);
         var headers: std.ArrayList(http.Header) = .empty;
         defer headers.deinit(allocator);
-        try headers.appendSlice(allocator, &.{
-            .{ .name = "content-type", .value = "application/json" },
-            .{ .name = "x-goog-api-key", .value = self.api_key, .sensitive = true },
-        });
+        try headers.append(allocator, .{ .name = "content-type", .value = "application/json" });
         try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
         var state = StreamState{ .allocator = allocator, .sink = sink };
         defer state.parts.deinit(allocator);
         defer state.error_body.deinit(allocator);
-        const response = self.transport.streamLines(allocator, .{
+        const response = self.provider.streamLines(allocator, .{
             .method = .POST,
-            .url = url,
+            .endpoint = endpoint,
             .headers = headers.items,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
+            .url_policy = value.url_policy,
         }, state.lineSink()) catch |failure| return common.transportError(failure);
         if (response.status < 200 or response.status >= 300) {
-            common.notifyProviderError(
+            self.provider.observeError(
                 allocator,
-                value.error_observer,
-                "google",
                 response.status,
                 state.error_body.items,
                 response.metadata,
+                value.error_observer,
                 value.error_policy,
-                &.{self.api_key},
             );
             return common.statusError(response.status);
         }
@@ -151,6 +174,25 @@ pub const Client = struct {
         };
     }
 };
+
+test "Google provider owns identity and model profile overrides" {
+    const Profiles = struct {
+        fn override(_: *anyopaque, _: []const u8, profile: model_types.ModelProfile) model_types.ModelProfile {
+            var overridden = profile;
+            overridden.supports_tools = false;
+            return overridden;
+        }
+    };
+    var marker: u8 = 0;
+    var provider_state = Provider.initWithOptions("secret", .{ .context = &marker, .sendFn = undefined }, .{
+        .model_profiles = .{ .context = &marker, .overrideFn = Profiles.override },
+    });
+    var client = Client{ .model_name = "gemini-test", .provider = provider_state.provider() };
+    const model = client.model();
+    try std.testing.expectEqualStrings("gcp.gen_ai", model.provider_name.?);
+    try std.testing.expect(!model.profile.supports_tools);
+    try std.testing.expect(model.profile.supports_streaming);
+}
 
 const StreamState = struct {
     allocator: std.mem.Allocator,
@@ -196,6 +238,10 @@ const StreamState = struct {
 };
 
 pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelRequest) ![]u8 {
+    return encodeRequestForProvider(allocator, "gcp.gen_ai", request);
+}
+
+fn encodeRequestForProvider(allocator: std.mem.Allocator, provider_name: []const u8, request: model_types.ModelRequest) ![]u8 {
     request.settings.validate() catch return error.InvalidRequestEncoding;
     try common.validateToolChoice(request.tools, request.builtin_tools.len, request.settings.tool_choice);
     var output: std.Io.Writer.Allocating = .init(allocator);
@@ -249,24 +295,24 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
                 .user_prompt => |content| switch (content) {
                     .text => |text| try writeTextPart(&json, text),
                     .text_content => |text| try writeTextPart(&json, text.content),
-                    .image => |value| try writeRichContent(allocator, &json, value),
-                    .audio => |value| try writeRichContent(allocator, &json, value),
-                    .video => |value| try writeRichContent(allocator, &json, value),
-                    .document => |value| try writeRichContent(allocator, &json, value),
-                    .binary => |value| try writeRichContent(allocator, &json, value),
+                    .image => |value| try writeRichContent(allocator, &json, provider_name, value),
+                    .audio => |value| try writeRichContent(allocator, &json, provider_name, value),
+                    .video => |value| try writeRichContent(allocator, &json, provider_name, value),
+                    .document => |value| try writeRichContent(allocator, &json, provider_name, value),
+                    .binary => |value| try writeRichContent(allocator, &json, provider_name, value),
                     .cache_point => {},
-                    .uploaded_file => |file| try writeRichContent(allocator, &json, file.asContent()),
+                    .uploaded_file => |file| try writeRichContent(allocator, &json, provider_name, file.asContent()),
                 },
                 .user_prompt_part => |prompt| switch (prompt.content) {
                     .text => |text| try writeTextPart(&json, text),
                     .text_content => |text| try writeTextPart(&json, text.content),
-                    .image => |value| try writeRichContent(allocator, &json, value),
-                    .audio => |value| try writeRichContent(allocator, &json, value),
-                    .video => |value| try writeRichContent(allocator, &json, value),
-                    .document => |value| try writeRichContent(allocator, &json, value),
-                    .binary => |value| try writeRichContent(allocator, &json, value),
+                    .image => |value| try writeRichContent(allocator, &json, provider_name, value),
+                    .audio => |value| try writeRichContent(allocator, &json, provider_name, value),
+                    .video => |value| try writeRichContent(allocator, &json, provider_name, value),
+                    .document => |value| try writeRichContent(allocator, &json, provider_name, value),
+                    .binary => |value| try writeRichContent(allocator, &json, provider_name, value),
                     .cache_point => {},
-                    .uploaded_file => |file| try writeRichContent(allocator, &json, file.asContent()),
+                    .uploaded_file => |file| try writeRichContent(allocator, &json, provider_name, file.asContent()),
                 },
                 .tool_return => |result| try writeToolReturn(allocator, &json, result),
                 .speech => |speech| {
@@ -285,11 +331,11 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
                     try ensureProviderPartReplayable(text.provider);
                     try writeTextPart(&json, text.content);
                 },
-                .image => |content| try writeRichContent(allocator, &json, content),
-                .audio => |content| try writeRichContent(allocator, &json, content),
-                .video => |content| try writeRichContent(allocator, &json, content),
-                .document => |content| try writeRichContent(allocator, &json, content),
-                .binary => |content| try writeRichContent(allocator, &json, content),
+                .image => |content| try writeRichContent(allocator, &json, provider_name, content),
+                .audio => |content| try writeRichContent(allocator, &json, provider_name, content),
+                .video => |content| try writeRichContent(allocator, &json, provider_name, content),
+                .document => |content| try writeRichContent(allocator, &json, provider_name, content),
+                .binary => |content| try writeRichContent(allocator, &json, provider_name, content),
                 .thinking => |thinking| {
                     try ensureProviderPartReplayable(thinking.provider);
                     try json.beginObject();
@@ -537,14 +583,15 @@ fn writeTextPart(json: *std.json.Stringify, text: []const u8) !void {
 fn writeRichContent(
     allocator: std.mem.Allocator,
     json: *std.json.Stringify,
+    provider_name: []const u8,
     content: model_types.Content,
 ) !void {
     try ensureProviderPartReplayable(content.provider);
     switch (content.source) {
         .provider_file => |file| if (file.provider) |owner| {
-            if (!std.mem.eql(u8, owner, "gcp.gen_ai")) return error.UnsupportedContentType;
+            if (!std.mem.eql(u8, owner, provider_name)) return error.UnsupportedContentType;
         },
-        .uploaded_file => |file| if (!std.mem.eql(u8, file.provider_name, "gcp.gen_ai"))
+        .uploaded_file => |file| if (!std.mem.eql(u8, file.provider_name, provider_name))
             return error.UnsupportedContentType,
         else => {},
     }
@@ -1053,11 +1100,11 @@ test "Google clients forward validated request settings headers" {
         }
     };
     var state: State = .{};
+    var provider_state = Provider.init("secret", .{ .context = &state, .sendFn = State.send, .streamLinesFn = State.stream });
     try std.testing.expect(!State.hasFeature(.{ .method = .POST, .url = "https://example.test" }));
     var client = Client{
         .model_name = "gemini-test",
-        .api_key = "secret",
-        .transport = .{ .context = &state, .sendFn = State.send, .streamLinesFn = State.stream },
+        .provider = provider_state.provider(),
     };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1210,10 +1257,11 @@ test "rejects malformed Gemini responses" {
 }
 
 test "Google encodes detailed multimodal forms and rejects local protocol parts" {
+    var marker: u8 = 0;
+    var provider_state = Provider.init("secret", .{ .context = &marker, .sendFn = undefined });
     var client = Client{
         .model_name = "gemini-test",
-        .api_key = "secret",
-        .transport = undefined,
+        .provider = provider_state.provider(),
     };
     const exposed_model = client.model();
     try std.testing.expectEqualStrings("gcp.gen_ai", exposed_model.provider_name.?);
@@ -1289,6 +1337,13 @@ test "Google encodes detailed multimodal forms and rejects local protocol parts"
     try std.testing.expect(std.mem.indexOf(u8, body, "said") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "load_capability") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "weather") != null);
+    const gateway_messages = [_]model_types.Message{.{ .request = .{ .parts = &.{.{ .user_prompt = .{ .uploaded_file = .{
+        .id = "gateway-file",
+        .provider_name = "gateway",
+    } } }} } }};
+    const gateway_body = try encodeRequestForProvider(std.testing.allocator, "gateway", .{ .messages = &gateway_messages });
+    defer std.testing.allocator.free(gateway_body);
+    try std.testing.expect(std.mem.indexOf(u8, gateway_body, "gateway-file") != null);
 
     const unsupported = [_]model_types.Message{
         .{ .request = .{ .parts = &.{.{ .speech = .{ .speaker = .user } }} } },

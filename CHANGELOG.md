@@ -18,6 +18,10 @@
   `anthropic.Provider` owns the API key header and shared HTTP policy, while
   `anthropic.Client` owns the Messages version, conditional Files API beta,
   model limits, and request/response encoding.
+- Split Google Generative Language provider configuration from the Gemini
+  GenerateContent adapter. `google.Provider` owns the API key header and HTTP
+  policy while preserving the established `gcp.gen_ai` history and file-owner
+  identity.
 - Pin the official MCP `2026-07-28` conformance framework and TypeScript and
   Python reference servers in a validated test-only interoperability matrix.
 - Add a test-only Cassetter-style YAML format that replays ordered MCP

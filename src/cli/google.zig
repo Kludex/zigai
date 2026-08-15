@@ -10,11 +10,13 @@ pub fn main(init: std.process.Init) !void {
         .url_policy = url_policy,
     });
     defer http.deinit();
+    var provider = zigai.google.Provider.initWithOptions(input.api_key, http.transport(), .{
+        .base_url = base_url,
+        .request_policy = .{ .url_policy = url_policy },
+    });
     var client = zigai.google.Client{
         .model_name = init.environ_map.get("GEMINI_MODEL") orelse "gemini-2.5-flash-lite",
-        .api_key = input.api_key,
-        .transport = http.transport(),
-        .base_url = base_url,
+        .provider = provider.provider(),
     };
     var loaded_tools = try common.LoadedTools.load(init.gpa, init.io, input.tools_path);
     defer loaded_tools.deinit();

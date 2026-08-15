@@ -268,10 +268,10 @@ fn recordGoogle(
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
+    var provider = zigai.google.Provider.init(api_key, recording.transport());
     var client = zigai.google.Client{
         .model_name = entry.model,
-        .api_key = api_key,
-        .transport = recording.transport(),
+        .provider = provider.provider(),
     };
     try runScenario(init, client.model());
     try write(init, recording, entry, "google");
@@ -323,10 +323,10 @@ fn recordNativeGoogle(
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
+    var provider = zigai.google.Provider.init(api_key, recording.transport());
     var client = zigai.google.Client{
         .model_name = entry.model,
-        .api_key = api_key,
-        .transport = recording.transport(),
+        .provider = provider.provider(),
     };
     try runNativeScenario(init, client.model(), &.{
         .{ .web_search = .{} },
@@ -378,10 +378,10 @@ fn recordRichGoogle(
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
+    var provider = zigai.google.Provider.init(api_key, recording.transport());
     var client = zigai.google.Client{
         .model_name = entry.model,
-        .api_key = api_key,
-        .transport = recording.transport(),
+        .provider = provider.provider(),
     };
     try runRichScenario(init, client.model());
     try writeRich(init, recording, entry);

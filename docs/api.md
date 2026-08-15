@@ -162,6 +162,10 @@ Anthropic follows the same construction pattern with
 `zigai.providers.anthropic.Provider`. Its provider owns the `x-api-key` header;
 the client retains `max_tokens` and the Messages API wire behavior.
 
+Google uses `zigai.providers.google.Provider`; it owns `x-goog-api-key` and
+keeps the stable `gcp.gen_ai` provider identity. Its client builds model-bound
+GenerateContent endpoints and encodes Gemini request and response bodies.
+
 `agent_spec.Owned` owns parsed configuration in an arena. It is data-only and
 does not read secrets or construct clients. `validateResolution` uses
 application-supplied provider and capability catalogs without building a

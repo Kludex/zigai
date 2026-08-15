@@ -169,10 +169,10 @@ state for every request. `zigai.providers.http.Configured` supplies the shared
 HTTP implementation, including credential-safe error reporting. Discovery and
 file results are explicitly arena-owned.
 
-OpenAI and Anthropic make the split explicit: keep their `Provider` at a stable
-address, then give `provider.provider()` to the corresponding `Client`. Use
-`Provider.initWithOptions` for custom API roots, headers, request policy, or
-model profile overrides.
+OpenAI, Anthropic, and Google make the split explicit: keep their `Provider` at
+a stable address, then give `provider.provider()` to the corresponding
+`Client`. Use `Provider.initWithOptions` for custom API roots, headers, request
+policy, or model profile overrides.
 
 | Provider | API |
 | --- | --- |
