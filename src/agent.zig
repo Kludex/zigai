@@ -2763,17 +2763,15 @@ test "tool control drains work at deadlines and cancellation" {
             return allocator.dupe(u8, "ok");
         }
     };
-    const succeeded = executeToolControlled(io, .{
+    var success_runtime = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer success_runtime.deinit();
+    const success_io = success_runtime.io();
+    const succeeded = executeToolControlled(success_io, .{
         .definition = .{ .name = "fast", .description = "", .parameters_json_schema = "{}" },
         .context = &state,
         .executeFn = Fast.execute,
-    }, .{}, std.testing.allocator, .{
-        .io = io,
-        .deadline = std.Io.Clock.Timestamp.fromNow(io, .{
-            .raw = .fromSeconds(10),
-            .clock = .awake,
-        }),
-    }, "{}");
+    }, .{ .timeout_ms = 10_000 }, std.testing.allocator, .{ .io = success_io }, "{}");
+    try std.testing.expect(succeeded == .success);
     defer std.testing.allocator.free(succeeded.success.content);
     try std.testing.expectEqualStrings("ok", succeeded.success.content);
 }
