@@ -173,7 +173,7 @@ pub const RequestId = union(enum) {
     integer: i64,
     string: []const u8,
 
-    fn jsonValue(self: RequestId) std.json.Value {
+    pub fn jsonValue(self: RequestId) std.json.Value {
         return switch (self) {
             .integer => |value| .{ .integer = value },
             .string => |value| .{ .string = value },
@@ -380,6 +380,13 @@ pub const LoggingLevel = enum {
     critical,
     alert,
     emergency,
+};
+
+/// Optional metadata attached to one stateless MCP request.
+pub const RequestMetadata = struct {
+    progress_token: ?RequestId = null,
+    /// Deprecated protocol logging opt-in retained by MCP 2026-07-28.
+    log_level: ?LoggingLevel = null,
 };
 
 pub const CancelledNotification = struct {

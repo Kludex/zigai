@@ -31,6 +31,7 @@ pub const LoggingLevel = primitives.LoggingLevel;
 pub const Notification = primitives.Notification;
 pub const PromptRequest = primitives.PromptRequest;
 pub const RequestId = primitives.RequestId;
+pub const RequestMetadata = primitives.RequestMetadata;
 pub const ServerCapabilities = primitives.ServerCapabilities;
 pub const SubscriptionFilter = primitives.SubscriptionFilter;
 
@@ -564,6 +565,7 @@ pub const RequestOptions = struct {
     routing_name: ?[]const u8 = null,
     headers: []const http.Header = &.{},
     events: ?EventSink = null,
+    metadata: RequestMetadata = .{},
 };
 
 /// Stateless MCP client with generic extension support and ZigAI toolset adaptation.
@@ -748,7 +750,7 @@ pub const Client = struct {
         options: RequestOptions,
     ) ![]u8 {
         const id = self.next_id.fetchAdd(1, .monotonic);
-        const message = try buildRequest(
+        const message = try buildRequestWithMetadata(
             allocator,
             id,
             method,
@@ -756,6 +758,7 @@ pub const Client = struct {
             self.name,
             self.version,
             self.capabilities_json,
+            options.metadata,
         );
         defer allocator.free(message);
         const body = try self.transport.send(allocator, .{
@@ -1346,6 +1349,28 @@ fn buildRequest(
     client_version: []const u8,
     capabilities_json: []const u8,
 ) ![]u8 {
+    return buildRequestWithMetadata(
+        allocator,
+        id,
+        method,
+        params_json,
+        client_name,
+        client_version,
+        capabilities_json,
+        .{},
+    );
+}
+
+fn buildRequestWithMetadata(
+    allocator: std.mem.Allocator,
+    id: u64,
+    method: []const u8,
+    params_json: []const u8,
+    client_name: []const u8,
+    client_version: []const u8,
+    capabilities_json: []const u8,
+    request_metadata: RequestMetadata,
+) ![]u8 {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     var params_value = try json_limits.parseLeaky(
@@ -1378,6 +1403,10 @@ fn buildRequest(
     try meta.put(memory, "io.modelcontextprotocol/protocolVersion", .{ .string = protocol_version });
     try meta.put(memory, "io.modelcontextprotocol/clientInfo", .{ .object = client_info });
     try meta.put(memory, "io.modelcontextprotocol/clientCapabilities", capabilities);
+    if (request_metadata.progress_token) |token| try meta.put(memory, "progressToken", token.jsonValue());
+    if (request_metadata.log_level) |level| {
+        try meta.put(memory, "io.modelcontextprotocol/logLevel", .{ .string = @tagName(level) });
+    }
     try validateRequestMeta(meta, error.InvalidMcpMessage);
     try params.put(memory, "_meta", .{ .object = meta });
     params_value = .{ .object = params };
@@ -3583,6 +3612,40 @@ test "request result and notification metadata follow common MCP rules" {
             try requiredObject(try parseResponse(arena.allocator(), "{\"_meta\":{\"bad key\":1}}")),
             error.InvalidMcpMessage,
         ),
+    );
+}
+
+test "typed request options encode progress and logging metadata" {
+    const source = try buildRequestWithMetadata(
+        std.testing.allocator,
+        1,
+        "extension/work",
+        "{}",
+        "client",
+        "1",
+        "{}",
+        .{
+            .progress_token = .{ .string = "progress-1" },
+            .log_level = .warning,
+        },
+    );
+    defer std.testing.allocator.free(source);
+    var parsed = try json_limits.parse(
+        std.json.Value,
+        std.testing.allocator,
+        source,
+        json_limits.defaults.mcp_message,
+        .{},
+        error.InvalidMcpMessage,
+    );
+    defer parsed.deinit();
+    const root = try requiredObject(parsed.value);
+    const params = try requiredObject(root.get("params").?);
+    const meta = try requiredObject(params.get("_meta").?);
+    try std.testing.expectEqualStrings("progress-1", try requiredString(meta, "progressToken"));
+    try std.testing.expectEqualStrings(
+        "warning",
+        try requiredString(meta, "io.modelcontextprotocol/logLevel"),
     );
 }
 

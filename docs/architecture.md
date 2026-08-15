@@ -359,7 +359,9 @@ makes prompt names distinct from resource URI templates. Explicitly named
 `getPromptJson` and `completeJson` methods retain the open wire escape hatch.
 Client cancellation uses the same integer-or-string `RequestId` as notification
 and subscription correlation and is encoded through the typed notification
-path.
+path. `RequestOptions.metadata` owns typed progress-token and log-level fields;
+the latter is the deprecated per-request replacement for the removed
+`logging/setLevel` RPC.
 
 Multi round-trip requests replace server-initiated JSON-RPC calls. When a
 result requires sampling, roots, or elicitation, the configured `InputHandler`

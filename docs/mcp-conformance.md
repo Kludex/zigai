@@ -49,6 +49,14 @@ official era probes for applications that want to build a dual-era adapter.
 They return `modern`, `legacy`, or `indeterminate`; they do not mutate client
 state or initiate fallback.
 
+The current [authoritative schema](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/schema/2026-07-28/schema.ts)
+removes `ping`, `logging/setLevel`, and `resources/subscribe`/`unsubscribe`.
+ZigAI therefore does not expose those RPCs in the modern method inventory.
+Typed `RequestOptions.metadata.log_level` implements the per-request logging
+opt-in, and `SubscriptionFilter` plus `subscriptions/listen` implement resource
+and list updates. Roots, Sampling, and Logging remain deprecated compatibility
+capabilities exactly where the schema retains them.
+
 ## Limits and ownership
 
 - Returned request, discovery, result, and extension-setting JSON is owned by

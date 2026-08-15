@@ -537,7 +537,8 @@ The typed helpers cover tools, prompts, resources, completion, discovery, and
 subscriptions; `SubscriptionFilter` selects list and resource updates without
 hand-written JSON, while `PromptRequest` and `CompletionRequest` model their
 standardized parameters. Cancellation accepts the protocol's integer-or-string
-`RequestId`. Use `Client.request` for extensions such as Tasks:
+`RequestId`; `RequestOptions.metadata` adds a progress token and per-request
+logging opt-in. Use `Client.request` for extensions such as Tasks:
 
 ```zig
 const result_json = try mcp_client.request(
