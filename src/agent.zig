@@ -2241,7 +2241,6 @@ fn executeResumedToolCalls(
             };
             try emitLifecycle(hooks, .{ .tool_validation_end = .{ .call = call, .tool = tool } });
 
-            const decision = findResumeDecision(decisions, call.id);
             switch (saved.execution) {
                 .immediate => {
                     try emitLifecycle(hooks, .{ .tool_execution_start = .{ .call = call, .tool = tool } });
@@ -2279,7 +2278,7 @@ fn executeResumedToolCalls(
                     try follow_up_messages.appendSlice(allocator, processed.follow_up_messages);
                 },
                 .requires_approval => {
-                    const approved = decision orelse return Agent.Error.MissingDeferredToolDecision;
+                    const approved = try requireResumeDecision(decisions, call.id);
                     switch (approved.action) {
                         .approve => {
                             try emitLifecycle(hooks, .{ .tool_execution_start = .{ .call = call, .tool = tool } });
@@ -2331,7 +2330,7 @@ fn executeResumedToolCalls(
                     }
                 },
                 .external => {
-                    const supplied = decision orelse return Agent.Error.MissingDeferredToolDecision;
+                    const supplied = try requireResumeDecision(decisions, call.id);
                     switch (supplied.action) {
                         .approve => return Agent.Error.DeferredToolRequiresResult,
                         .deny => results[result_index] = .{ .tool_return = .{
@@ -2391,11 +2390,11 @@ fn findSavedToolCall(
     return null;
 }
 
-fn findResumeDecision(decisions: []const ResumeDecision, call_id: []const u8) ?ResumeDecision {
+fn requireResumeDecision(decisions: []const ResumeDecision, call_id: []const u8) Agent.Error!ResumeDecision {
     for (decisions) |decision| {
         if (std.mem.eql(u8, decision.call_id, call_id)) return decision;
     }
-    return null;
+    return Agent.Error.MissingDeferredToolDecision;
 }
 
 fn withTypedOutput(agent: Agent, comptime Output: type) Agent {
@@ -4629,8 +4628,6 @@ test "tool policy failure and parallel retry branches are explicit" {
         &.{policy},
     ).failure);
 
-    const unmatched_decisions = [_]ResumeDecision{.{ .call_id = "other", .action = .deny }};
-    try std.testing.expect(findResumeDecision(&unmatched_decisions, "missing") == null);
     try std.testing.expect(findToolWork(&.{work}, "missing") == null);
 
     const Stub = struct {
