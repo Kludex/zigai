@@ -203,11 +203,21 @@ test "provider owns policy profiles and optional operations" {
             return .{ .arena = arena, .items = items };
         }
 
+        fn checkModelsAllocation(allocator: std.mem.Allocator) !void {
+            var result = try models(undefined, allocator);
+            result.deinit();
+        }
+
         fn file(_: *anyopaque, allocator: std.mem.Allocator, id: []const u8) !OwnedFile {
             var arena = std.heap.ArenaAllocator.init(allocator);
             errdefer arena.deinit();
             const owned_id = try arena.allocator().dupe(u8, id);
             return .{ .arena = arena, .value = .{ .id = owned_id } };
+        }
+
+        fn checkFileAllocation(allocator: std.mem.Allocator) !void {
+            var result = try file(undefined, allocator, "file-1");
+            result.deinit();
         }
 
         fn upload(context: *anyopaque, allocator: std.mem.Allocator, input: FileInput) !OwnedFile {
@@ -281,6 +291,8 @@ test "provider owns policy profiles and optional operations" {
     try std.testing.expectEqualStrings("file-1", fetched.value.id);
     try provider.deleteFile("file-1");
     try std.testing.expect(state.deleted);
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, State.checkModelsAllocation, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, State.checkFileAllocation, .{});
 }
 
 test "provider rejects invalid policy and absent optional operations" {
@@ -309,6 +321,7 @@ test "provider rejects invalid policy and absent optional operations" {
         .endpoint = "/",
         .url_policy = .{ .allowed_hosts = &.{"elsewhere.example"} },
     }));
+    try std.testing.expectError(error.UnexpectedRequest, provider.request(std.testing.allocator, .{ .method = .GET, .endpoint = "/" }));
     try std.testing.expectError(error.UnsupportedProviderOperation, provider.streamLines(std.testing.allocator, .{ .method = .GET, .endpoint = "/" }, undefined));
     try std.testing.expectError(error.UnsupportedProviderOperation, provider.listModels(std.testing.allocator));
     try std.testing.expectError(error.UnsupportedProviderOperation, provider.uploadFile(std.testing.allocator, .{ .filename = "x", .media_type = "text/plain", .bytes = "" }));
