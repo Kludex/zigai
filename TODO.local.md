@@ -116,7 +116,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [ ] Add native adapters where compatibility APIs lose features: Bedrock
   Converse, Azure Responses, xAI, Mistral, Cohere, OpenRouter, and Google Cloud;
   add Ollama, Crusoe, Snowflake Cortex, Z.AI, and custom-provider examples.
-- [ ] Add provider file lifecycle APIs: upload, inspect, reuse, download where
+- [x] Add provider file lifecycle APIs: upload, inspect, reuse, download where
   safe, and delete, with provider ownership checks and cassette redaction.
 - [ ] Add model discovery and explicit model-ID resolution with aliases,
   deprecation metadata, context/output limits, capability profiles, and a
