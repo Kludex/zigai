@@ -69,7 +69,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Complete output modes. Support prompted/native/tool structured output,
   output unions, output functions, full supported JSON Schema validation,
   partial structured streaming, validator hooks, and configurable end strategy.
-- [ ] Add first-class tool hooks and policy. Cover prepare/call/return hooks,
+- [x] Add first-class tool hooks and policy. Cover prepare/call/return hooks,
   argument and result validators, dynamic approval based on context/history,
   retries per tool, sequential-only tools, and provider-visible return schemas.
 - [ ] Add on-demand capabilities and capability discovery/loading with names,
