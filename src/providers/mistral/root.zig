@@ -5,6 +5,7 @@
 //! and persistent sessions have a different wire contract.
 
 pub const chat = @import("chat.zig");
+pub const conversations = @import("conversations.zig");
 
 pub const api_base = chat.api_base;
 pub const api_key_env = chat.api_key_env;
@@ -19,6 +20,16 @@ pub const Provider = ChatProvider;
 /// Backwards-compatible alias for `ChatClient`.
 pub const Client = ChatClient;
 
+/// Native Mistral Conversations provider.
+pub const ConversationsProvider = conversations.Provider;
+/// Stateless native Mistral Conversations model adapter.
+pub const ConversationsClient = conversations.Client;
+pub const ConversationsError = conversations.Error;
+pub const ManagedTool = conversations.ManagedTool;
+pub const ToolConfiguration = conversations.ToolConfiguration;
+pub const ConnectorAuthorization = conversations.ConnectorAuthorization;
+
 test {
     _ = chat;
+    _ = conversations;
 }

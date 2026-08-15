@@ -59,6 +59,7 @@ pub const ExtraBodyKind = enum {
     anthropic,
     bedrock,
     google,
+    mistral,
 };
 
 /// A bounded JSON object for fields unavailable in the portable settings API.
@@ -71,6 +72,7 @@ pub const ProviderExtraBody = union(ExtraBodyKind) {
     anthropic: []const u8,
     bedrock: []const u8,
     google: []const u8,
+    mistral: []const u8,
 
     pub fn kind(self: ProviderExtraBody) ExtraBodyKind {
         return std.meta.activeTag(self);

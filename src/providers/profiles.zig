@@ -390,6 +390,30 @@ pub fn mistral(model_name: []const u8) ?model.ModelProfile {
     return familyProfile(.mistral, model_name);
 }
 
+/// Mistral language models served through the native Conversations API.
+pub fn mistralConversations(model_name: []const u8) ?model.ModelProfile {
+    var profile = mistral(model_name) orelse return null;
+    profile.supports_parallel_tool_calls = false;
+    profile.supports_streaming = false;
+    profile.supports_logprobs = false;
+    profile.supports_parallel_tool_call_setting = false;
+    profile.supports_top_k = false;
+    profile.supports_thinking_budget = false;
+    profile.supports_truncation = false;
+    profile.supports_request_headers = true;
+    profile.extra_body_kind = .mistral;
+    profile.reasoning_efforts = model.ModelProfile.ReasoningEffortSet.initMany(&.{
+        .none,
+        .minimal,
+        .low,
+        .medium,
+        .high,
+        .xhigh,
+    });
+    profile.builtin_tools = model.ModelProfile.BuiltinToolSet.initMany(&.{ .web_search, .code_execution });
+    return profile;
+}
+
 pub fn openRouter(model_name: []const u8) ?model.ModelProfile {
     return routedProfile(model_name, '/');
 }
