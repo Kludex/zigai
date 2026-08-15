@@ -36,6 +36,7 @@ Use these namespaces for the rest of the API:
 | Namespace | Purpose |
 | --- | --- |
 | `zigai.messages` | Provider-neutral request/response messages and parts |
+| `zigai.security` | Outbound URL validation and diagnostic redaction |
 | `zigai.providers` | Native and named OpenAI-compatible provider clients |
 | `zigai.models` | Fallback and application-selected model routing |
 | `zigai.history` | Version-2 history serialization, version-1 migration, and processors |
@@ -99,6 +100,18 @@ The public named error categories are:
 `transport.Error.ResponseTooLarge` and `transport.Error.StreamLineTooLarge`
 are stable policy failures. They apply to decompressed bytes, so compression
 cannot bypass the configured allocation boundary.
+
+## Security policy
+
+`zigai.UrlPolicy` is HTTPS-only and public-network-only by default. Agents apply
+it to provider endpoints and rich-content URLs. MCP Streamable HTTP and the
+standard HTTP transport enforce it independently, so direct and custom-model
+use keeps the same boundary.
+
+`HttpTransport.initWithOptions` configures URL, redirect, and response-size
+policy together. Redirects are never followed; the explicit choices are reject
+or return the 3xx response. See [Security](security.md) for local development,
+allowlists, DNS limitations, credential redaction, and trust boundaries.
 
 ## JSON limits
 

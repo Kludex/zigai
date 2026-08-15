@@ -109,7 +109,22 @@ unchanged.
 Provider failures keep two layers separate. Stable error categories drive agent
 retry policy, while an optional synchronous observer receives the provider
 name, HTTP status, parsed code/message, and raw body. The view is borrowed;
-applications copy only the detail they need to retain.
+applications copy only the detail they need to retain. Raw bodies are bounded
+and opt-in; configured provider credentials are always suppressed.
+
+## Security boundary
+
+One allocation-free `UrlPolicy` is enforced at the agent, provider, MCP, and
+standard transport layers. This deliberate overlap keeps a custom transport or
+direct model call from silently bypassing policy. Provider-managed file guards
+are checked before requests, and HTTP redirects are never followed.
+
+Transport callbacks are trusted application code and receive raw headers so
+they can send requests. Observer and telemetry surfaces do not receive those
+headers. Conventional secret names are recognized even without an explicit
+sensitive flag, and diagnostic consumers use the redacted header view.
+
+The full trust model is documented in [Security](security.md).
 
 ## Agent loop
 

@@ -666,6 +666,20 @@ is a small callback interface for application-specific deterministic checks.
 `ModelGrader` wraps another agent, requests a typed pass/score/reason result,
 and validates that its score is between zero and one.
 
+## Security
+
+Hosted endpoints use HTTPS-only URL validation by default. Local names,
+non-public literal IPs, embedded URL credentials, and redirects are rejected
+unless the application opts in. The same policy covers provider endpoints,
+MCP Streamable HTTP, and rich-content URLs.
+
+Authentication headers are marked and recognized as sensitive. Telemetry does
+not receive them, and provider error observers suppress configured API keys
+even when bounded raw-body capture is enabled.
+
+Read [Security](docs/security.md) for URL allowlists, local development,
+custom-transport responsibilities, and the complete trust-boundary table.
+
 ## Testing
 
 Run the local quality gates with:
@@ -694,6 +708,7 @@ Read [Testing](docs/testing.md) for coverage and cassette details.
 
 - [Architecture](docs/architecture.md)
 - [Public API and ownership](docs/api.md)
+- [Security](docs/security.md)
 - [Release notes](CHANGELOG.md)
 - [Testing](docs/testing.md)
 - [Releasing](docs/releasing.md)

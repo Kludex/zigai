@@ -2444,6 +2444,67 @@ test "OpenTelemetry records runs requests tools retries tokens cost and latency"
     try std.testing.expect(!capture.saw_prompt);
 }
 
+test "provider credentials reach only the trusted transport" {
+    const secret = "provider-secret";
+    const TransportState = struct {
+        saw_secret: bool = false,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: zigai.transport.Request) !zigai.transport.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            for (request.headers) |header| {
+                if (!std.ascii.eqlIgnoreCase(header.name, "authorization")) continue;
+                self.saw_secret = std.mem.eql(u8, header.value, "Bearer " ++ secret) and
+                    header.isSensitive() and std.mem.eql(u8, header.redactedValue(), "[REDACTED]");
+            }
+            return .{
+                .status = 200,
+                .body = try allocator.dupe(
+                    u8,
+                    "{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"safe\"}]}]}",
+                ),
+            };
+        }
+    };
+    const Capture = struct {
+        spans: usize = 0,
+
+        fn checkAttributes(attributes: []const zigai.telemetry.Attribute) !void {
+            for (attributes) |attribute| switch (attribute.value) {
+                .string => |value| try std.testing.expect(std.mem.indexOf(u8, value, secret) == null),
+                else => {},
+            };
+        }
+
+        fn span(context: *anyopaque, value: zigai.TelemetrySpan) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.spans += 1;
+            try checkAttributes(value.attributes);
+        }
+
+        fn metric(_: *anyopaque, value: zigai.TelemetryMetric) !void {
+            try checkAttributes(value.attributes);
+        }
+    };
+    var transport_state: TransportState = .{};
+    var capture: Capture = .{};
+    var client = zigai.providers.openai.Client{
+        .model_name = "gpt-test",
+        .api_key = secret,
+        .transport = .{ .context = &transport_state, .sendFn = TransportState.send },
+    };
+    var result = try (zigai.Agent{
+        .model = client.model(),
+        .telemetry = .{
+            .io = std.testing.io,
+            .exporter = .{ .context = &capture, .spanFn = Capture.span, .metricFn = Capture.metric },
+        },
+    }).run(std.testing.allocator, "hello");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("safe", result.output);
+    try std.testing.expect(transport_state.saw_secret);
+    try std.testing.expect(capture.spans > 0);
+}
+
 const FlakyModel = struct {
     failures_remaining: usize,
     failure: anyerror,

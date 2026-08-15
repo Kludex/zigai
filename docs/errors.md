@@ -85,6 +85,17 @@ cases relevant to the application, then propagate the remainder.
 | `RetryBackoffRequiresIo` | Retry sleep was configured without `Io`. |
 | `RetryIdempotencyRequiresIo` | Idempotent retry keys need an `Io` entropy source. |
 
+### Security policy
+
+| Error | Meaning |
+| --- | --- |
+| `InvalidUrl` | An outbound or provider-fetched value is not a valid absolute URL. |
+| `UrlMissingHost` | The URL has no network host. |
+| `UrlSchemeNotAllowed` | The URL is not HTTPS and HTTP was not enabled. |
+| `UrlCredentialsForbidden` | The URL embeds a username or password. |
+| `LocalNetworkUrlForbidden` | The URL uses a local name or non-public literal IP. |
+| `UrlHostNotAllowed` | The URL host is absent from an explicit allowlist. |
+
 ## Provider errors
 
 All adapters use the stable `ProviderRequestError` categories.
@@ -104,7 +115,8 @@ calls and `InvalidRequestEncoding` for unrepresentable input. OpenAI adds
 
 `ProviderErrorObserver` is infallible and synchronous. Its values are borrowed.
 Raw bodies are empty unless `ProviderErrorPolicy.capture_body` is enabled, and
-even then they cannot exceed `max_body_bytes`.
+even then they cannot exceed `max_body_bytes`. Configured API keys are always
+suppressed; `sensitive_data_redacted` reports when this changed visible detail.
 
 ## Transport and data errors
 
@@ -116,6 +128,7 @@ even then they cannot exceed `max_body_bytes`.
 | `transport` | `RequestTimedOut` | The transport deadline elapsed. |
 | `transport` | `StreamingNotSupported` | The transport has no line-streaming implementation. |
 | `transport` | `UnsupportedCompressionMethod` | The response encoding cannot be decompressed. |
+| `transport` | `RedirectRejected` | A 3xx response was rejected without following its target. |
 | `json` | `DocumentTooLarge` | Encoded JSON exceeds its boundary limit. |
 | `json` | `ValueTooLarge` | One decoded string or encoded number is too large. |
 | `json` | `NestingTooDeep` | JSON nesting exceeds policy. |
