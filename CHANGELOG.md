@@ -4,6 +4,9 @@
 
 - Bounded fuzz targets and seed corpora for persisted state, schemas, provider
   decoders, cassette YAML, MCP framing, CLI manifests, and HTTP metadata.
+- Cross-platform Debug and ReleaseSafe stress suites for long and parallel tool
+  runs, cancellation, reconnects, large histories, partial streams, allocation
+  failures, and repeated client lifecycles.
 - Separate provider-neutral conversation types into the public `messages`
   module while preserving the existing root and `model` aliases.
 - Allocation-free outbound URL policy with HTTPS-by-default validation,

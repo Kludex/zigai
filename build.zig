@@ -88,6 +88,18 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
+    const stress_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/stress.zig"),
+            .target = target,
+            .optimize = optimize,
+            .error_tracing = error_tracing,
+            .imports = &.{.{ .name = "zigai", .module = zigai }},
+        }),
+    });
+    const run_stress_tests = b.addRunArtifact(stress_tests);
+    const stress_step = b.step("stress", "Run bounded stress and allocation-failure scenarios");
+    stress_step.dependOn(&run_stress_tests.step);
     const fuzz_step = b.step("fuzz", "Run parser and protocol fuzz targets");
     fuzz_step.dependOn(&run_tests.step);
     fuzz_step.dependOn(&run_cli_common_tests.step);
@@ -110,6 +122,10 @@ pub fn build(b: *std.Build) void {
     const anthropic_cli = addCli(b, target, optimize, zigai, "zigai-anthropic", "src/cli/anthropic.zig");
     const google_cli = addCli(b, target, optimize, zigai, "zigai-google", "src/cli/google.zig");
     const http_smoke = addCli(b, target, optimize, zigai, "zigai-http-smoke", "tests/http_transport_smoke.zig");
+    const http_stress = addCli(b, target, optimize, zigai, "zigai-http-stress", "tests/http_stress.zig");
+    const install_http_stress = b.addInstallArtifact(http_stress, .{});
+    const stress_http_step = b.step("stress-http", "Build the real-socket reconnect stress executable");
+    stress_http_step.dependOn(&install_http_stress.step);
     b.installArtifact(openai_cli);
     b.installArtifact(anthropic_cli);
     b.installArtifact(google_cli);
@@ -117,6 +133,8 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&anthropic_cli.step);
     check.dependOn(&google_cli.step);
     check.dependOn(&http_smoke.step);
+    check.dependOn(&http_stress.step);
+    check.dependOn(&stress_tests.step);
 
     const examples = b.step("examples", "Compile runnable provider examples");
     inline for (.{ "openai", "anthropic", "google" }) |provider| {

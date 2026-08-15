@@ -8,6 +8,8 @@ import time
 
 
 class Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.0"
+
     def do_GET(self) -> None:
         if self.path == "/redirect":
             self.send_response(302)

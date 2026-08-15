@@ -1,0 +1,24 @@
+#!/bin/sh
+set -eu
+
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cache_dir="${ZIGAI_GLOBAL_CACHE_DIR:-$project_dir/.zig-global-cache}"
+requested_mode="${1:-all}"
+
+case "$requested_mode" in
+    Debug|ReleaseSafe) modes="$requested_mode" ;;
+    all) modes="Debug ReleaseSafe" ;;
+    *) echo "usage: ./scripts/stress [Debug|ReleaseSafe]" >&2; exit 2 ;;
+esac
+
+cd "$project_dir"
+python3 tests/fake_provider_server.py &
+server_pid=$!
+trap 'kill "$server_pid" 2>/dev/null || true' EXIT INT TERM
+sleep 1
+
+for mode in $modes; do
+    ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build stress -Doptimize="$mode"
+    ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build stress-http -Doptimize="$mode"
+    ZIGAI_FIXTURE_BASE_URL=http://127.0.0.1:18765 ./zig-out/bin/zigai-http-stress
+done

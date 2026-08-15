@@ -114,3 +114,34 @@ bounded campaign on macOS for every push and pull request. Zig 0.16.0 currently
 emits an empty fuzzer coverage record on Linux before the targets start, while
 the same targets run normally on macOS; Linux still runs the corpus smoke tests
 and the 100% line-coverage gate.
+
+## Stress and allocation failures
+
+The bounded stress suite exercises the public API under sustained load:
+
+- 128-step tool loops and 32-call parallel tool batches;
+- cancellation racing an active model request, with work drained before return;
+- repeated provider connection failures followed by successful retries;
+- 1,024-message histories and 2,048 streaming deltas;
+- every allocation failure in an agent tool loop;
+- 512 HTTP client init/deinit cycles; and
+- 128 real HTTP requests through one client while the fixture closes every
+  connection, forcing connection recovery.
+
+Run both safety-oriented build modes locally:
+
+```console
+./scripts/stress
+```
+
+Run only one mode while iterating:
+
+```console
+./scripts/stress Debug
+./scripts/stress ReleaseSafe
+```
+
+The suite is deliberately bounded and deterministic, so it is suitable for
+every push. CI runs it in both modes on Linux and macOS. Longer fuzz campaigns
+and live-provider tests remain opt-in because their duration or external state
+is not deterministic.
