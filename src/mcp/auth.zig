@@ -970,6 +970,9 @@ test "deployment policy validates TLS browser origins and request hosts" {
         deployment.validateRequest(true, null, null),
     );
     try (DeploymentPolicy{ .allow_cleartext = true }).validateRequest(false, null, null);
+    try std.testing.expectError(error.InvalidOrigin, validateOrigin(""));
+    try std.testing.expectError(error.InvalidOrigin, validateOrigin("null"));
+    try std.testing.expectError(error.InvalidOrigin, validateOrigin("https://app.example.com\n"));
     try std.testing.expectError(error.InvalidOrigin, validateOrigin("https://app.example.com/path"));
     try std.testing.expectError(error.InvalidRequestHost, validateHost("mcp.example.com/path"));
 
@@ -980,6 +983,15 @@ test "deployment policy validates TLS browser origins and request hosts" {
         .scopes = &.{"tools:read"},
     };
     try policy.validate();
+    try std.testing.expectError(
+        error.InvalidProtectedResourceMetadata,
+        (ServerPolicy{
+            .resource = policy.resource,
+            .resource_metadata_url = policy.resource_metadata_url,
+            .authorizer = policy.authorizer,
+            .scopes = &.{"tools read"},
+        }).validate(),
+    );
 }
 
 test "authorization response issuer and scope union follow exact rules" {
@@ -1050,6 +1062,13 @@ test "Bearer authorization headers reject alternate channels and unsafe values" 
 test "authorization parsers and discovery release every partial allocation" {
     const Check = struct {
         fn run(allocator: std.mem.Allocator) !void {
+            const token = try AccessToken.initAlloc(
+                allocator,
+                "token",
+                "https://auth.example.com",
+                &.{ "profile", "tools:read" },
+            );
+            defer token.deinit(allocator);
             const scopes = try unionScopesAlloc(allocator, &.{"profile"}, &.{"tools:read"});
             defer deinitScopes(allocator, scopes);
             const challenge = try parseBearerChallengeAlloc(
@@ -1097,7 +1116,7 @@ fn fuzzAuthorizationHeaders(_: void, smith: *std.testing.Smith) !void {
     const value = buffer[0..smith.slice(&buffer)];
     _ = parseBearerAuthorization(value) catch {};
     const challenge = parseBearerChallengeAlloc(std.testing.allocator, value) catch return;
-    challenge.deinit(std.testing.allocator);
+    challenge.deinit(std.testing.allocator); // kcov-ignore: Zig fuzz callbacks lack stable native line attribution
 }
 
 test "fuzz MCP authorization headers" {

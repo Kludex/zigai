@@ -3711,6 +3711,43 @@ test "MCP HTTP authorization releases every partial allocation" {
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, CheckServer.run, .{});
 
+    var accepted_context: u8 = 0;
+    var server = Server{
+        .handler = .{ .context = &accepted_context, .handleFn = CheckServer.handle },
+        .authorization = .{
+            .resource = "https://mcp.example.com/mcp",
+            .resource_metadata_url = "https://mcp.example.com/.well-known/oauth-protected-resource/mcp",
+            .authorizer = .{ .context = &accepted_context, .authorizeFn = CheckServer.authorize },
+            .scopes = &.{"tools:read"},
+        },
+    };
+    const authorized_request = try buildRequest(
+        std.testing.allocator,
+        1,
+        "extension/check",
+        "{}",
+        "client",
+        "1",
+        "{}",
+    );
+    defer std.testing.allocator.free(authorized_request);
+    const headers = [_]http.Header{
+        .{ .name = "mcp-protocol-version", .value = protocol_version },
+        .{ .name = "mcp-method", .value = "extension/check" },
+        .{ .name = "authorization", .value = "Bearer token" },
+    };
+    const accepted = try server.handle(std.testing.allocator, authorized_request, .{ .headers = &headers });
+    defer accepted.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 200), accepted.status);
+
+    const CheckScopes = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const scopes = try copyTestScopes(allocator, &.{ "profile", "tools:read" });
+            defer auth.deinitScopes(allocator, scopes);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, CheckScopes.run, .{});
+
     const CheckClient = struct {
         fn token(_: *anyopaque, allocator: std.mem.Allocator, request: auth.TokenRequest) !auth.AccessToken {
             return auth.AccessToken.initAlloc(allocator, "token", request.authorization_server, &.{});
