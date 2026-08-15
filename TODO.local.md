@@ -96,10 +96,12 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Complete the SEP-2663 MCP Tasks extension: server-directed task creation,
   polling, input updates, cooperative cancellation, TTL, status subscriptions,
   routing headers, and durable resume across process restarts.
-- [ ] Harden MCP transports. Add Streamable HTTP reconnection/resumption,
-  session expiration, concurrent in-flight requests, bounded SSE buffering,
-  stdio stderr policy, child shutdown escalation, backpressure, and exhaustive
-  malformed/partial-frame tests.
+- [ ] Harden MCP transports for the stateless 2026-07-28 wire format. Add
+  concurrent in-flight Streamable HTTP requests, bounded request-scoped SSE
+  delivery and stateless subscription re-establishment, explicit stdio stderr
+  policy, graceful child shutdown with escalation, backpressure, and exhaustive
+  malformed/partial-frame tests. Deliberately omit the removed
+  `Mcp-Session-Id`, session expiration, and `Last-Event-ID` resumption paths.
 - [ ] Add an official MCP interoperability suite against the reference servers
   and SDKs, with recorded fixtures plus opt-in live CI for stdio and HTTP.
 
