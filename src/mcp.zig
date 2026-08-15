@@ -678,7 +678,7 @@ pub const Server = struct {
             if (!std.mem.eql(u8, requested, protocol_version)) {
                 return self.unsupportedVersionResponse(allocator, id, requested);
             }
-            if (meta_object.get("io.modelcontextprotocol/clientCapabilities") == null) {
+            const client_capabilities = meta_object.get("io.modelcontextprotocol/clientCapabilities") orelse {
                 return self.errorResponse(
                     allocator,
                     id,
@@ -686,7 +686,15 @@ pub const Server = struct {
                     "Missing client capabilities",
                     400,
                 );
-            }
+            };
+            validateClientCapabilities(client_capabilities, error.InvalidMcpMessage) catch
+                return self.errorResponse(
+                    allocator,
+                    id,
+                    error_codes.invalid_params,
+                    "Invalid client capabilities",
+                    400,
+                );
         }
         if (metadata) |http_metadata| {
             if (!validateStandardHeaders(http_metadata.headers, method, params)) {
@@ -761,6 +769,7 @@ pub const Server = struct {
             .{},
             error.InvalidMcpMessage,
         );
+        try validateServerCapabilities(capabilities, error.InvalidMcpResponse);
         return std.json.Stringify.valueAlloc(allocator, .{
             .resultType = "complete",
             .ttlMs = self.discovery_ttl_ms,
@@ -871,7 +880,7 @@ fn buildRequest(
         .{},
         error.InvalidMcpMessage,
     );
-    if (capabilities != .object) return error.InvalidMcpMessage;
+    try validateClientCapabilities(capabilities, error.InvalidMcpMessage);
     const memory = arena.allocator();
     var client_info: std.json.ObjectMap = .{};
     try client_info.put(memory, "name", .{ .string = client_name });
@@ -1123,7 +1132,10 @@ fn validateMethodResult(method: []const u8, result: std.json.Value) !void {
 
     if (std.mem.eql(u8, method, methods.discover)) {
         try requireStringArray(object, "supportedVersions", 1, null);
-        _ = try requiredObject(object.get("capabilities") orelse return error.InvalidMcpResponse);
+        try validateServerCapabilities(
+            object.get("capabilities") orelse return error.InvalidMcpResponse,
+            error.InvalidMcpResponse,
+        );
         try validateCacheableResult(object);
     } else if (std.mem.eql(u8, method, methods.list_tools)) {
         try requireArray(object, "tools");
@@ -1153,6 +1165,125 @@ fn validateMethodResult(method: []const u8, result: std.json.Value) !void {
             return error.InvalidMcpResponse;
         if (subscription_id != .integer and subscription_id != .string) return error.InvalidMcpResponse;
     }
+}
+
+fn validateClientCapabilities(value: std.json.Value, comptime invalid_error: anytype) !void {
+    const capabilities = switch (value) {
+        .object => |object| object,
+        else => return invalid_error,
+    };
+    if (capabilities.get("experimental")) |experimental| {
+        try validateObjectValues(experimental, invalid_error);
+    }
+    if (capabilities.get("roots")) |roots| try requireCapabilityObject(roots, invalid_error);
+    if (capabilities.get("sampling")) |sampling_value| {
+        const sampling = try capabilityObject(sampling_value, invalid_error);
+        try validateOptionalObject(sampling, "context", invalid_error);
+        try validateOptionalObject(sampling, "tools", invalid_error);
+    }
+    if (capabilities.get("elicitation")) |elicitation_value| {
+        const elicitation = try capabilityObject(elicitation_value, invalid_error);
+        try validateOptionalObject(elicitation, "form", invalid_error);
+        try validateOptionalObject(elicitation, "url", invalid_error);
+    }
+    if (capabilities.get("extensions")) |extensions| {
+        try validateExtensions(extensions, invalid_error);
+    }
+}
+
+fn validateServerCapabilities(value: std.json.Value, comptime invalid_error: anytype) !void {
+    const capabilities = switch (value) {
+        .object => |object| object,
+        else => return invalid_error,
+    };
+    if (capabilities.get("experimental")) |experimental| {
+        try validateObjectValues(experimental, invalid_error);
+    }
+    try validateOptionalObject(capabilities, "logging", invalid_error);
+    try validateOptionalObject(capabilities, "completions", invalid_error);
+    if (capabilities.get("prompts")) |prompts_value| {
+        const prompts = try capabilityObject(prompts_value, invalid_error);
+        try validateOptionalBool(prompts, "listChanged", invalid_error);
+    }
+    if (capabilities.get("resources")) |resources_value| {
+        const resources = try capabilityObject(resources_value, invalid_error);
+        try validateOptionalBool(resources, "subscribe", invalid_error);
+        try validateOptionalBool(resources, "listChanged", invalid_error);
+    }
+    if (capabilities.get("tools")) |tools_value| {
+        const tools = try capabilityObject(tools_value, invalid_error);
+        try validateOptionalBool(tools, "listChanged", invalid_error);
+    }
+    if (capabilities.get("extensions")) |extensions| {
+        try validateExtensions(extensions, invalid_error);
+    }
+}
+
+fn validateExtensions(value: std.json.Value, comptime invalid_error: anytype) !void {
+    const extensions = try capabilityObject(value, invalid_error);
+    var iterator = extensions.iterator();
+    while (iterator.next()) |entry| {
+        if (!validPrefixedMetaKey(entry.key_ptr.*)) return invalid_error;
+        try requireCapabilityObject(entry.value_ptr.*, invalid_error);
+    }
+}
+
+fn validateObjectValues(value: std.json.Value, comptime invalid_error: anytype) !void {
+    const object = try capabilityObject(value, invalid_error);
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| try requireCapabilityObject(entry.value_ptr.*, invalid_error);
+}
+
+fn validateOptionalObject(
+    object: std.json.ObjectMap,
+    name: []const u8,
+    comptime invalid_error: anytype,
+) !void {
+    if (object.get(name)) |value| try requireCapabilityObject(value, invalid_error);
+}
+
+fn validateOptionalBool(
+    object: std.json.ObjectMap,
+    name: []const u8,
+    comptime invalid_error: anytype,
+) !void {
+    if (object.get(name)) |value| if (value != .bool) return invalid_error;
+}
+
+fn requireCapabilityObject(value: std.json.Value, comptime invalid_error: anytype) !void {
+    _ = try capabilityObject(value, invalid_error);
+}
+
+fn capabilityObject(value: std.json.Value, comptime invalid_error: anytype) !std.json.ObjectMap {
+    return switch (value) {
+        .object => |object| object,
+        else => invalid_error,
+    };
+}
+
+fn validPrefixedMetaKey(key: []const u8) bool {
+    const slash = std.mem.indexOfScalar(u8, key, '/') orelse return false;
+    if (slash == 0 or std.mem.indexOfScalarPos(u8, key, slash + 1, '/') != null) return false;
+    var labels = std.mem.splitScalar(u8, key[0..slash], '.');
+    while (labels.next()) |label| {
+        if (label.len == 0 or !std.ascii.isAlphabetic(label[0]) or
+            !std.ascii.isAlphanumeric(label[label.len - 1])) return false;
+        if (label.len > 2) {
+            for (label[1 .. label.len - 1]) |character| {
+                if (!std.ascii.isAlphanumeric(character) and character != '-') return false;
+            }
+        }
+    }
+    const name = key[slash + 1 ..];
+    if (name.len == 0) return true;
+    if (!std.ascii.isAlphanumeric(name[0]) or !std.ascii.isAlphanumeric(name[name.len - 1])) return false;
+    if (name.len > 2) {
+        for (name[1 .. name.len - 1]) |character| {
+            if (!std.ascii.isAlphanumeric(character) and character != '-' and
+                character != '_' and character != '.') return false;
+        }
+    }
+    return true;
 }
 
 fn validateInputRequiredResult(object: std.json.ObjectMap) !void {
@@ -1486,6 +1617,125 @@ test "method result validation rejects every structural boundary" {
     defer result.deinit(std.testing.allocator);
     try result.put(std.testing.allocator, "completion", .{ .object = completion });
     try std.testing.expectError(error.InvalidMcpResponse, validateMethodResult(methods.complete, .{ .object = result }));
+}
+
+test "capability validation preserves open fields and checks known shapes" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const valid_client = try parseResponse(
+        arena.allocator(),
+        "{\"experimental\":{\"preview\":{}},\"roots\":{}," ++
+            "\"sampling\":{\"context\":{},\"tools\":{},\"future\":true}," ++
+            "\"elicitation\":{\"form\":{},\"url\":{}}," ++
+            "\"extensions\":{\"io.modelcontextprotocol/oauth-client-credentials\":{}," ++
+            "\"com.example/my-name_1.x\":{}},\"futureCapability\":42}",
+    );
+    try validateClientCapabilities(valid_client, error.InvalidMcpMessage);
+    const valid_server = try parseResponse(
+        arena.allocator(),
+        "{\"experimental\":{\"preview\":{}},\"logging\":{},\"completions\":{}," ++
+            "\"prompts\":{\"listChanged\":true}," ++
+            "\"resources\":{\"subscribe\":false,\"listChanged\":true}," ++
+            "\"tools\":{\"listChanged\":false,\"future\":1}," ++
+            "\"extensions\":{\"a/\":{},\"a-b.c9/feature\":{}},\"futureCapability\":[]}",
+    );
+    try validateServerCapabilities(valid_server, error.InvalidMcpResponse);
+
+    const invalid_clients = [_][]const u8{
+        "[]",
+        "{\"experimental\":[]}",
+        "{\"experimental\":{\"preview\":true}}",
+        "{\"roots\":true}",
+        "{\"sampling\":[]}",
+        "{\"sampling\":{\"context\":true}}",
+        "{\"sampling\":{\"tools\":true}}",
+        "{\"elicitation\":[]}",
+        "{\"elicitation\":{\"form\":true}}",
+        "{\"elicitation\":{\"url\":true}}",
+        "{\"extensions\":[]}",
+        "{\"extensions\":{\"com.example/feature\":true}}",
+    };
+    for (invalid_clients) |source| {
+        try std.testing.expectError(
+            error.InvalidMcpMessage,
+            validateClientCapabilities(try parseResponse(arena.allocator(), source), error.InvalidMcpMessage),
+        );
+    }
+
+    const invalid_servers = [_][]const u8{
+        "[]",
+        "{\"experimental\":{\"preview\":true}}",
+        "{\"logging\":true}",
+        "{\"completions\":true}",
+        "{\"prompts\":[]}",
+        "{\"prompts\":{\"listChanged\":1}}",
+        "{\"resources\":[]}",
+        "{\"resources\":{\"subscribe\":1}}",
+        "{\"resources\":{\"listChanged\":1}}",
+        "{\"tools\":[]}",
+        "{\"tools\":{\"listChanged\":1}}",
+    };
+    for (invalid_servers) |source| {
+        try std.testing.expectError(
+            error.InvalidMcpResponse,
+            validateServerCapabilities(try parseResponse(arena.allocator(), source), error.InvalidMcpResponse),
+        );
+    }
+}
+
+test "extension capability identifiers follow prefixed metadata syntax" {
+    const valid = [_][]const u8{
+        "a/",
+        "a/x",
+        "com.example/feature",
+        "a-b.c9/my-name_1.x",
+    };
+    for (valid) |key| try std.testing.expect(validPrefixedMetaKey(key));
+    const invalid = [_][]const u8{
+        "feature",
+        "/feature",
+        "com.example/feature/extra",
+        ".example/feature",
+        "9example/feature",
+        "example-/feature",
+        "exam_ple/feature",
+        "example/-feature",
+        "example/feature_",
+        "example/feat@ure",
+    };
+    for (invalid) |key| try std.testing.expect(!validPrefixedMetaKey(key));
+}
+
+test "client and server reject malformed advertised capabilities at boundaries" {
+    try std.testing.expectError(error.InvalidMcpMessage, buildRequest(
+        std.testing.allocator,
+        1,
+        methods.discover,
+        "{}",
+        "client",
+        "1",
+        "{\"elicitation\":true}",
+    ));
+
+    const Handler = struct {
+        fn handle(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8, _: []const u8) ![]u8 {
+            return allocator.dupe(u8, "{}");
+        }
+    };
+    var unused: u8 = 0;
+    var server = Server{
+        .handler = .{ .context = &unused, .handleFn = Handler.handle },
+        .capabilities_json = "{\"tools\":true}",
+    };
+    try std.testing.expectError(error.InvalidMcpResponse, server.discoveryResult(std.testing.allocator));
+    const malformed_request =
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\",\"params\":{" ++
+        "\"_meta\":{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\"," ++
+        "\"io.modelcontextprotocol/clientCapabilities\":{\"sampling\":true}}}}";
+    const response = try server.handle(std.testing.allocator, malformed_request, null);
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 400), response.status);
+    try std.testing.expect(std.mem.indexOf(u8, response.body.?, "Invalid client capabilities") != null);
 }
 
 test "state-only MRTR retries without an input handler" {
