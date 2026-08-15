@@ -113,9 +113,22 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Replace generic OpenAI-compatible defaults with tested provider-specific
   profiles for every exported provider and model family; reject unsupported
   settings/tools/content before network I/O.
-- [ ] Add native adapters where compatibility APIs lose features: Bedrock
-  Converse, Azure Responses, xAI, Mistral, Cohere, OpenRouter, and Google Cloud;
-  add Ollama, Crusoe, Snowflake Cortex, Z.AI, and custom-provider examples.
+- [x] Add the native Amazon Bedrock Converse adapter while keeping Mantle Chat
+  Completions as an explicit compatibility path.
+- [x] Add the native Azure OpenAI v1 Responses adapter while keeping Chat
+  Completions as an explicit compatibility path.
+- [x] Add the native xAI Responses adapter and isolate xAI-managed tools and
+  extension bodies from the explicit Chat Completions compatibility client.
+- [x] Add the native Mistral Conversations adapter, including managed tools,
+  streamed entries, and explicit stored-session operations.
+- [x] Add the native Cohere v2 Chat adapter while preserving the existing
+  Compatibility API aliases.
+- [ ] Add typed OpenRouter routing, provider-selection, and response metadata
+  without leaking OpenRouter extensions into the generic OpenAI-compatible API.
+- [ ] Add a Google Cloud Vertex AI provider boundary that reuses the Gemini
+  GenerateContent codec without coupling Google AI Studio credentials or URLs.
+- [ ] Add focused Ollama, Crusoe, Snowflake Cortex, Z.AI, and custom-provider
+  examples with provider-specific profiles and pre-I/O validation.
 - [x] Add provider file lifecycle APIs: upload, inspect, reuse, download where
   safe, and delete, with provider ownership checks and cassette redaction.
 - [ ] Add model discovery and explicit model-ID resolution with aliases,
