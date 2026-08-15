@@ -169,10 +169,10 @@ state for every request. `zigai.providers.http.Configured` supplies the shared
 HTTP implementation, including credential-safe error reporting. Discovery and
 file results are explicitly arena-owned.
 
-OpenAI, Anthropic, and Google make the split explicit: keep their `Provider` at
-a stable address, then give `provider.provider()` to the corresponding
-`Client`. Use `Provider.initWithOptions` for custom API roots, headers, request
-policy, or model profile overrides.
+Every module in the table exposes the same split: keep its `Provider` at a
+stable address, then give `provider.provider()` to the corresponding `Client`.
+Use `Provider.initWithOptions` for custom API roots, headers, request policy,
+authentication style, or model profile overrides.
 
 | Provider | API |
 | --- | --- |
@@ -205,9 +205,9 @@ var client = zigai.providers.anthropic.Client{
 };
 ```
 
-OpenAI-compatible clients retain their direct configuration while their
-provider migration is in progress. Azure and Bedrock also expose
-`apiBase` helpers because their endpoints depend on the resource or region:
+OpenAI-compatible APIs use the same provider/model split. Named providers such
+as Azure OpenAI and Bedrock also expose `apiBase` helpers because their
+endpoints depend on the resource or region:
 
 ```zig
 const base_url = try zigai.providers.azure_openai.apiBase(
@@ -216,11 +216,14 @@ const base_url = try zigai.providers.azure_openai.apiBase(
 );
 defer allocator.free(base_url);
 
+var azure_provider = zigai.providers.azure_openai.Provider.initWithOptions(
+    azure_api_key,
+    http.transport(),
+    .{ .base_url = base_url },
+);
 var client = zigai.providers.azure_openai.Client{
     .model_name = "gpt-4o",
-    .api_key = azure_api_key,
-    .transport = http.transport(),
-    .base_url = base_url,
+    .provider = azure_provider.provider(),
 };
 ```
 

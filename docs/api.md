@@ -166,6 +166,16 @@ Google uses `zigai.providers.google.Provider`; it owns `x-goog-api-key` and
 keeps the stable `gcp.gen_ai` provider identity. Its client builds model-bound
 GenerateContent endpoints and encodes Gemini request and response bodies.
 
+OpenAI-compatible modules follow the same rule. Each named module exports a
+matching `Provider` and `Client` built from shared compile-time defaults. The
+provider owns the API root, provider identity, authentication style, headers,
+request policy, transport, and profile callbacks. The client owns only the
+model name, model settings, Chat Completions behavior, and optional
+gateway-specific idempotency header. Use
+`openai_compatible.Provider.initWithOptions` when the endpoint or identity is
+selected at runtime; Azure OpenAI and Bedrock expose `apiBase` helpers for
+deployment-specific roots.
+
 `agent_spec.Owned` owns parsed configuration in an arena. It is data-only and
 does not read secrets or construct clients. `validateResolution` uses
 application-supplied provider and capability catalogs without building a

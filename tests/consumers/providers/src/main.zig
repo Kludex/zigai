@@ -10,10 +10,16 @@ pub fn main() !void {
     if (!std.mem.eql(u8, anthropic.api_base, zigai.providers.anthropic.api_base)) return error.AnthropicAliasMismatch;
     if (!std.mem.eql(u8, google.api_base, zigai.providers.google.api_base)) return error.GoogleAliasMismatch;
     _ = openai.Error;
+    _ = openai.Provider;
     _ = anthropic.Error;
+    _ = anthropic.Provider;
     _ = google.Error;
+    _ = google.Provider;
     _ = openai_compatible.Error;
+    _ = openai_compatible.Provider;
     _ = openai_compatible.Client;
+    _ = zigai.providers.azure_openai.Provider;
+    _ = zigai.providers.azure_openai.Client;
     _ = zigai.AgentError;
     _ = zigai.RequestMessage;
     _ = zigai.ResponseMessage;

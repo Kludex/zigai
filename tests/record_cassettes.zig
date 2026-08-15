@@ -113,16 +113,17 @@ fn recordCompatible(
 
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
-    var client = zigai.providers.openai_compatible.Client{
-        .model_name = entry.model,
-        .api_key = api_key,
-        .transport = recording.transport(),
+    var provider = zigai.providers.openai_compatible.Provider.initWithOptions(api_key, recording.transport(), .{
         .base_url = base_url,
         .provider_name = entry.provider,
         .authentication = if (entry.api_key_header)
             .{ .header = "api-key", .prefix = "" }
         else
             .{},
+    });
+    var client = zigai.providers.openai_compatible.Client{
+        .model_name = entry.model,
+        .provider = provider.provider(),
     };
     try runTextScenario(init, client.model());
     if (entry.endpoint != .fixed) try normalizeCompatibleUrl(init.gpa, &recording, entry);

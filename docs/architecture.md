@@ -546,10 +546,12 @@ Gemini. Tool-call thought signatures remain provider-neutral metadata on the
 call, are serialized with history, and are sent back unchanged so stateless
 thinking-model tool loops retain their reasoning state.
 
-`zopenai_compatible` maps the same contract to Chat Completions. Its explicit
-base URL, provider label, conservative profile presets, and stream-usage toggle
-cover gateways and local servers without assuming every compatible model has
-the same capabilities.
+`zopenai_compatible` maps the same contract to Chat Completions. Its provider
+owns the base URL, provider label, authentication style, headers, transport,
+policy, and profile overrides. Its model adapter retains the conservative
+profile presets, wire behavior, and stream-usage toggle. Named compatible
+modules export provider/client pairs from the same compile-time defaults, so
+gateways and local servers do not need a second configuration pattern.
 
 The default `HttpTransport` uses only Zig's standard library.
 

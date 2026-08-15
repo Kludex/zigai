@@ -106,16 +106,17 @@ test "real OpenAI-compatible provider cassettes replay text responses" {
             .azure_openai => "https://example.openai.azure.com/openai/v1",
             .bedrock => "https://bedrock-mantle.example-region.api.aws/v1",
         };
-        var client = zigai.providers.openai_compatible.Client{
-            .model_name = entry.model,
-            .api_key = "not-recorded",
-            .transport = cassette.transport(),
+        var provider_state = zigai.providers.openai_compatible.Provider.initWithOptions("not-recorded", cassette.transport(), .{
             .base_url = base_url,
             .provider_name = entry.provider,
             .authentication = if (entry.api_key_header)
                 .{ .header = "api-key", .prefix = "" }
             else
                 .{},
+        });
+        var client = zigai.providers.openai_compatible.Client{
+            .model_name = entry.model,
+            .provider = provider_state.provider(),
         };
         var result = try (zigai.Agent{
             .model = client.model(),
@@ -341,11 +342,12 @@ test "Google cassette covers the complete agent tool loop" {
 test "OpenAI-compatible cassette covers the complete Chat Completions tool loop" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/openai_compatible_tool_loop.yaml"));
     defer cassette.deinit();
+    var provider_state = zigai.openai_compatible.Provider.initWithOptions("not-recorded", cassette.transport(), .{
+        .base_url = "https://compatible.test/v1",
+    });
     var client = zigai.openai_compatible.Client{
         .model_name = "compat-test",
-        .api_key = "not-recorded",
-        .transport = cassette.transport(),
-        .base_url = "https://compatible.test/v1",
+        .provider = provider_state.provider(),
     };
     var calls: u8 = 0;
     const tool = weatherTool(&calls);
@@ -537,11 +539,12 @@ test "Google streaming cassette covers chunked text and the tool loop" {
 test "OpenAI-compatible streaming cassette covers fragmented Chat Completions tools" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/openai_compatible_stream_tool_loop.yaml"));
     defer cassette.deinit();
+    var provider_state = zigai.openai_compatible.Provider.initWithOptions("not-recorded", cassette.transport(), .{
+        .base_url = "https://compatible.test/v1",
+    });
     var client = zigai.openai_compatible.Client{
         .model_name = "compat-test",
-        .api_key = "not-recorded",
-        .transport = cassette.transport(),
-        .base_url = "https://compatible.test/v1",
+        .provider = provider_state.provider(),
     };
     var calls: u8 = 0;
     const tool = weatherTool(&calls);
@@ -727,7 +730,8 @@ test "Anthropic, Google, and OpenAI-compatible clients classify server failures"
     var anthropic = zigai.anthropic.Client{ .model_name = "claude-test", .provider = anthropic_provider.provider() };
     var google_provider = zigai.google.Provider.init("test", transport);
     var google = zigai.google.Client{ .model_name = "gemini-test", .provider = google_provider.provider() };
-    var compatible = zigai.openai_compatible.Client{ .model_name = "compat-test", .api_key = "test", .transport = transport, .base_url = "https://compatible.test/v1" };
+    var compatible_provider = zigai.openai_compatible.Provider.initWithOptions("test", transport, .{ .base_url = "https://compatible.test/v1" });
+    var compatible = zigai.openai_compatible.Client{ .model_name = "compat-test", .provider = compatible_provider.provider() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectError(error.ProviderServerError, anthropic.model().request(arena.allocator(), .{ .messages = &.{} }));
@@ -758,7 +762,8 @@ test "all streaming clients classify multiline server failures" {
     var anthropic = zigai.anthropic.Client{ .model_name = "test", .provider = anthropic_provider.provider() };
     var google_provider = zigai.google.Provider.init("test", transport);
     var google = zigai.google.Client{ .model_name = "test", .provider = google_provider.provider() };
-    var compatible = zigai.openai_compatible.Client{ .model_name = "test", .api_key = "test", .transport = transport, .base_url = "https://compatible.test/v1" };
+    var compatible_provider = zigai.openai_compatible.Provider.initWithOptions("test", transport, .{ .base_url = "https://compatible.test/v1" });
+    var compatible = zigai.openai_compatible.Client{ .model_name = "test", .provider = compatible_provider.provider() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     inline for (.{ openai.model(), anthropic.model(), google.model(), compatible.model() }) |model| {
@@ -797,7 +802,8 @@ test "streaming clients reject malformed events and Anthropic accepts empty tool
     var openai = zigai.openai.Client{ .model_name = "test", .provider = openai_provider.provider() };
     var anthropic_provider = zigai.anthropic.Provider.init("test", transport);
     var anthropic = zigai.anthropic.Client{ .model_name = "test", .provider = anthropic_provider.provider() };
-    var compatible = zigai.openai_compatible.Client{ .model_name = "test", .api_key = "test", .transport = transport, .base_url = "https://compatible.test/v1" };
+    var compatible_provider = zigai.openai_compatible.Provider.initWithOptions("test", transport, .{ .base_url = "https://compatible.test/v1" });
+    var compatible = zigai.openai_compatible.Client{ .model_name = "test", .provider = compatible_provider.provider() };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectError(error.ProviderResponseDecodeError, openai.model().stream(arena.allocator(), .{ .messages = &.{} }, sink));

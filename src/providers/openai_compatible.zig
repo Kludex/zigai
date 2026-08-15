@@ -2,6 +2,8 @@
 
 const std = @import("std");
 const model_types = @import("../model.zig");
+const provider_types = @import("../provider.zig");
+const http_provider = @import("http.zig");
 const http = @import("../transport.zig");
 const common = @import("common.zig");
 const json_limits = @import("../json.zig");
@@ -89,18 +91,58 @@ pub const ClientDefaults = struct {
     include_stream_usage: bool = true,
 };
 
-/// Defines a Chat Completions client with provider-specific defaults while
-/// retaining runtime overrides for gateways and private deployments.
+/// Defines provider state for an OpenAI-compatible API while retaining
+/// compile-time defaults for named providers.
+pub fn ProviderWithDefaults(comptime defaults: ClientDefaults) type {
+    return struct {
+        http: http_provider.Configured,
+
+        const Self = @This();
+
+        pub const Options = struct {
+            base_url: []const u8 = defaults.base_url,
+            provider_name: []const u8 = defaults.provider_name,
+            authentication: Authentication = defaults.authentication,
+            headers: []const http.Header = &.{},
+            request_policy: provider_types.RequestPolicy = .{},
+            model_profiles: ?http_provider.Configured.ModelProfiles = null,
+        };
+
+        pub fn init(api_key: []const u8, transport: http.Transport) Self {
+            return initWithOptions(api_key, transport, .{});
+        }
+
+        pub fn initWithOptions(api_key: []const u8, transport: http.Transport, options: Options) Self {
+            return .{ .http = .{
+                .name = options.provider_name,
+                .base_url = options.base_url,
+                .transport = transport,
+                .credential = .{ .header = .{
+                    .name = options.authentication.header,
+                    .value = api_key,
+                    .prefix = options.authentication.prefix,
+                } },
+                .headers = options.headers,
+                .request_policy = options.request_policy,
+                .model_profiles = options.model_profiles,
+            } };
+        }
+
+        pub fn provider(self: *Self) provider_types.Provider {
+            return self.http.provider();
+        }
+    };
+}
+
+pub const Provider = ProviderWithDefaults(.{});
+
+/// Defines a Chat Completions adapter with provider-specific model defaults.
+/// Runtime connection configuration belongs to `ProviderWithDefaults`.
 pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
     return struct {
         model_name: []const u8,
-        api_key: []const u8,
-        transport: http.Transport,
-        base_url: []const u8 = defaults.base_url,
-        provider_name: []const u8 = defaults.provider_name,
+        provider: provider_types.Provider,
         profile: model_types.ModelProfile = defaults.profile,
-        authentication: Authentication = defaults.authentication,
-        headers: []const http.Header = &.{},
         /// Optional gateway-specific header used to deduplicate retries.
         idempotency_header: ?[]const u8 = null,
         include_stream_usage: bool = defaults.include_stream_usage,
@@ -109,12 +151,12 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
         const Self = @This();
 
         pub fn model(self: *Self) model_types.Model {
-            var model_profile = self.profile;
+            var model_profile = self.provider.modelProfile(self.model_name, self.profile);
             model_profile.supports_idempotency_key = self.idempotency_header != null;
             return .{
                 .context = self,
                 .profile = model_profile,
-                .provider_name = self.provider_name,
+                .provider_name = self.provider.name,
                 .model_name = self.model_name,
                 .settings = self.settings,
                 .requestFn = request,
@@ -130,45 +172,31 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
             const self: *Self = @ptrCast(@alignCast(context));
             const body = try encodeRequest(allocator, self.model_name, value);
             defer allocator.free(body);
-            const url = try endpointUrl(allocator, self.base_url);
-            defer allocator.free(url);
-            try value.url_policy.validate(url);
-            const authentication = try std.mem.concat(
-                allocator,
-                u8,
-                &.{ self.authentication.prefix, self.api_key },
-            );
-            defer allocator.free(authentication);
             var headers: std.ArrayList(http.Header) = .empty;
             defer headers.deinit(allocator);
-            try headers.appendSlice(allocator, &.{
-                .{ .name = "content-type", .value = "application/json" },
-                .{ .name = self.authentication.header, .value = authentication, .sensitive = true },
-            });
-            try headers.appendSlice(allocator, self.headers);
+            try headers.append(allocator, .{ .name = "content-type", .value = "application/json" });
             if (value.request_id) |request_id| try headers.append(allocator, .{ .name = "x-client-request-id", .value = request_id });
             if (self.idempotency_header) |name| if (value.idempotency_key) |key|
                 try headers.append(allocator, .{ .name = name, .value = key });
             try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
-            const response = self.transport.send(allocator, .{
+            const response = self.provider.request(allocator, .{
                 .method = .POST,
-                .url = url,
+                .endpoint = "/chat/completions",
                 .headers = headers.items,
                 .body = body,
                 .timeout_ms = value.timeout_ms,
                 .cancellation = value.cancellation,
+                .url_policy = value.url_policy,
             }) catch |failure| return common.transportError(failure);
             defer allocator.free(response.body);
             if (response.status < 200 or response.status >= 300) {
-                common.notifyProviderError(
+                self.provider.observeError(
                     allocator,
-                    value.error_observer,
-                    self.provider_name,
                     response.status,
                     response.body,
                     response.metadata,
+                    value.error_observer,
                     value.error_policy,
-                    &.{self.api_key},
                 );
                 return common.statusError(response.status);
             }
@@ -184,46 +212,32 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
             const self: *Self = @ptrCast(@alignCast(context));
             const body = try encodeStreamingRequest(allocator, self.model_name, value, self.include_stream_usage);
             defer allocator.free(body);
-            const url = try endpointUrl(allocator, self.base_url);
-            defer allocator.free(url);
-            try value.url_policy.validate(url);
-            const authentication = try std.mem.concat(
-                allocator,
-                u8,
-                &.{ self.authentication.prefix, self.api_key },
-            );
-            defer allocator.free(authentication);
             var headers: std.ArrayList(http.Header) = .empty;
             defer headers.deinit(allocator);
-            try headers.appendSlice(allocator, &.{
-                .{ .name = "content-type", .value = "application/json" },
-                .{ .name = self.authentication.header, .value = authentication, .sensitive = true },
-            });
-            try headers.appendSlice(allocator, self.headers);
+            try headers.append(allocator, .{ .name = "content-type", .value = "application/json" });
             if (value.request_id) |request_id| try headers.append(allocator, .{ .name = "x-client-request-id", .value = request_id });
             if (self.idempotency_header) |name| if (value.idempotency_key) |key|
                 try headers.append(allocator, .{ .name = name, .value = key });
             try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
             var state = StreamState{ .allocator = allocator, .sink = sink };
             defer state.deinit();
-            const response = self.transport.streamLines(allocator, .{
+            const response = self.provider.streamLines(allocator, .{
                 .method = .POST,
-                .url = url,
+                .endpoint = "/chat/completions",
                 .headers = headers.items,
                 .body = body,
                 .timeout_ms = value.timeout_ms,
                 .cancellation = value.cancellation,
+                .url_policy = value.url_policy,
             }, state.lineSink()) catch |failure| return common.transportError(failure);
             if (response.status < 200 or response.status >= 300) {
-                common.notifyProviderError(
+                self.provider.observeError(
                     allocator,
-                    value.error_observer,
-                    self.provider_name,
                     response.status,
                     state.error_body.items,
                     response.metadata,
+                    value.error_observer,
                     value.error_policy,
-                    &.{self.api_key},
                 );
                 return common.statusError(response.status);
             }
@@ -242,14 +256,6 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
 }
 
 pub const Client = ClientWithDefaults(.{});
-
-fn endpointUrl(allocator: std.mem.Allocator, base_url: []const u8) ![]u8 {
-    return std.fmt.allocPrint(
-        allocator,
-        "{s}/chat/completions",
-        .{std.mem.trimEnd(u8, base_url, "/")},
-    );
-}
 
 pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {
     request.settings.validate() catch return error.InvalidRequestEncoding;
@@ -1033,10 +1039,13 @@ test "compatible clients forward correlation and configured idempotency headers"
         streaming: bool = false,
 
         fn hasHeaders(request: http.Request) bool {
+            var authorization = false;
             var correlation = false;
             var idempotency = false;
             var feature = false;
             for (request.headers) |header| {
+                if (std.ascii.eqlIgnoreCase(header.name, "authorization"))
+                    authorization = std.mem.eql(u8, header.value, "Bearer secret");
                 if (std.ascii.eqlIgnoreCase(header.name, "x-client-request-id"))
                     correlation = std.mem.eql(u8, header.value, "run-123");
                 if (std.ascii.eqlIgnoreCase(header.name, "x-idempotency-key"))
@@ -1044,7 +1053,8 @@ test "compatible clients forward correlation and configured idempotency headers"
                 if (std.ascii.eqlIgnoreCase(header.name, "x-feature"))
                     feature = std.mem.eql(u8, header.value, "on");
             }
-            return correlation and idempotency and feature;
+            return authorization and correlation and idempotency and feature and
+                std.mem.eql(u8, request.url, "https://api.openai.com/v1/chat/completions");
         }
 
         fn send(context: *anyopaque, allocator: std.mem.Allocator, request_value: http.Request) !http.Response {
@@ -1060,10 +1070,10 @@ test "compatible clients forward correlation and configured idempotency headers"
         }
     };
     var state: State = .{};
+    var provider_state = Provider.init("secret", .{ .context = &state, .sendFn = State.send, .streamLinesFn = State.stream });
     var client = Client{
         .model_name = "model",
-        .api_key = "secret",
-        .transport = .{ .context = &state, .sendFn = State.send, .streamLinesFn = State.stream },
+        .provider = provider_state.provider(),
         .idempotency_header = "x-idempotency-key",
     };
     try std.testing.expect(client.model().profile.supports_idempotency_key);

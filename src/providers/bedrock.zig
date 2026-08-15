@@ -6,10 +6,13 @@ const compatible = @import("openai_compatible.zig");
 pub const api_key_env = "AWS_BEARER_TOKEN_BEDROCK";
 pub const region_env = "AWS_DEFAULT_REGION";
 
-pub const Client = compatible.ClientWithDefaults(.{
+const defaults: compatible.ClientDefaults = .{
     .base_url = "",
     .provider_name = "bedrock",
-});
+};
+
+pub const Provider = compatible.ProviderWithDefaults(defaults);
+pub const Client = compatible.ClientWithDefaults(defaults);
 
 /// Builds the regional Bedrock Mantle v1 API base.
 pub fn apiBase(allocator: std.mem.Allocator, region: []const u8) ![]u8 {

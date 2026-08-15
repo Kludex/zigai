@@ -22,6 +22,11 @@
   GenerateContent adapter. `google.Provider` owns the API key header and HTTP
   policy while preserving the established `gcp.gen_ai` history and file-owner
   identity.
+- Split OpenAI-compatible provider configuration from the Chat Completions
+  adapter. Generic and named compatible modules now expose matching
+  provider/client pairs; credentials, API roots, provider identity, headers,
+  request policy, transport, authentication style, and profile callbacks stay
+  on the provider side of the boundary.
 - Pin the official MCP `2026-07-28` conformance framework and TypeScript and
   Python reference servers in a validated test-only interoperability matrix.
 - Add a test-only Cassetter-style YAML format that replays ordered MCP
