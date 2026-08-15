@@ -79,12 +79,16 @@ pub const Error = error{
     McpResponseIdMismatch,
     /// The peer returned a JSON-RPC error envelope.
     McpRpcError,
+    /// A paginated MCP collection repeated an already-seen cursor.
+    McpPaginationCursorCycle,
     /// An MCP-backed toolset was used without its client.
     MissingMcpClient,
     /// Streamable HTTP did not provide the required SSE response stream.
     MissingMcpSseResponse,
     /// Elicitation exceeded the configured request/response round-trip limit.
     TooManyMcpRoundTrips,
+    /// A paginated MCP collection exceeded the configured page limit.
+    TooManyMcpPages,
     /// Discovery negotiated a protocol revision ZigAI does not support.
     UnsupportedMcpProtocolVersion,
 };
@@ -322,6 +326,7 @@ pub const Client = struct {
     capabilities_json: []const u8 = "{}",
     input_handler: ?InputHandler = null,
     max_round_trips: usize = 16,
+    max_pages: usize = 256,
     next_id: std.atomic.Value(u64) = .init(1),
 
     pub fn toolset(self: *Client) agent.Toolset {
@@ -520,8 +525,16 @@ pub const Client = struct {
     ) ![]const agent.ToolsetEntry {
         const self: *Client = @ptrCast(@alignCast(context orelse return error.MissingMcpClient));
         var entries: std.ArrayList(agent.ToolsetEntry) = .empty;
+        var cursors: std.ArrayList([]u8) = .empty;
+        defer {
+            for (cursors.items) |owned| allocator.free(owned);
+            cursors.deinit(allocator);
+        }
         var cursor: ?[]const u8 = null;
+        var page_count: usize = 0;
         while (true) {
+            if (page_count >= self.max_pages) return error.TooManyMcpPages;
+            page_count += 1;
             const result_json = try self.listToolsOwnedParams(allocator, cursor);
             defer allocator.free(result_json);
             var arena = std.heap.ArenaAllocator.init(allocator);
@@ -554,11 +567,16 @@ pub const Client = struct {
                     .executeFn = executeTool,
                 } });
             }
-            cursor = if (optionalString(object, "nextCursor")) |next|
-                try allocator.dupe(u8, next)
-            else
-                null;
-            if (cursor == null) break;
+            const next = optionalString(object, "nextCursor") orelse break;
+            for (cursors.items) |seen| {
+                if (std.mem.eql(u8, seen, next)) return error.McpPaginationCursorCycle;
+            }
+            const owned = try allocator.dupe(u8, next);
+            cursors.append(allocator, owned) catch |failure| {
+                allocator.free(owned);
+                return failure;
+            };
+            cursor = owned;
         }
         return entries.toOwnedSlice(allocator);
     }
@@ -2732,7 +2750,10 @@ test "toolset paginates, mirrors headers, and renders rich results" {
                 ),
                 2 => allocator.dupe(
                     u8,
-                    "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resultType\":\"complete\",\"tools\":[{\"name\":\"invalid\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"object\",\"x-mcp-header\":\"X\"}}}}],\"ttlMs\":0,\"cacheScope\":\"private\"}}",
+                    blk: {
+                        try std.testing.expect(std.mem.indexOf(u8, request.message, "\"cursor\":\"two\"") != null);
+                        break :blk "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resultType\":\"complete\",\"tools\":[{\"name\":\"invalid\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"object\",\"x-mcp-header\":\"X\"}}}}],\"ttlMs\":0,\"cacheScope\":\"private\"}}";
+                    },
                 ),
                 3 => blk: {
                     try std.testing.expectEqualStrings("Madrid", findHeader(request.headers, "mcp-param-city").?);
@@ -2760,6 +2781,57 @@ test "toolset paginates, mirrors headers, and renders rich results" {
     defer std.testing.allocator.free(output);
     try std.testing.expect(std.mem.indexOf(u8, output, "sunny") != null);
     try std.testing.expect(std.mem.indexOf(u8, output, "image") != null);
+}
+
+test "tool pagination rejects cursor cycles and page exhaustion" {
+    const Stub = struct {
+        calls: usize = 0,
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, _: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            return std.fmt.allocPrint(
+                allocator,
+                "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"resultType\":\"complete\"," ++
+                    "\"tools\":[],\"nextCursor\":\"same\",\"ttlMs\":0,\"cacheScope\":\"private\"}}}}",
+                .{self.calls},
+            );
+        }
+    };
+    const context = agent.ToolsetContext{
+        .messages = &.{},
+        .usage = .{},
+        .model_requests = 0,
+        .dependencies = null,
+    };
+    var cycle_stub: Stub = .{};
+    var cycle_client = Client{ .transport = .{ .context = &cycle_stub, .sendFn = Stub.send } };
+    try std.testing.expectError(
+        error.McpPaginationCursorCycle,
+        cycle_client.toolset().prepare(std.testing.allocator, context),
+    );
+    try std.testing.expectEqual(@as(usize, 2), cycle_stub.calls);
+
+    var limited_stub: Stub = .{};
+    var limited_client = Client{
+        .transport = .{ .context = &limited_stub, .sendFn = Stub.send },
+        .max_pages = 1,
+    };
+    try std.testing.expectError(
+        error.TooManyMcpPages,
+        limited_client.toolset().prepare(std.testing.allocator, context),
+    );
+    try std.testing.expectEqual(@as(usize, 1), limited_stub.calls);
+
+    var disabled_stub: Stub = .{};
+    var disabled_client = Client{
+        .transport = .{ .context = &disabled_stub, .sendFn = Stub.send },
+        .max_pages = 0,
+    };
+    try std.testing.expectError(
+        error.TooManyMcpPages,
+        disabled_client.toolset().prepare(std.testing.allocator, context),
+    );
+    try std.testing.expectEqual(@as(usize, 0), disabled_stub.calls);
 }
 
 test "server returns specified errors and validates tool parameter headers" {
