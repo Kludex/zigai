@@ -220,6 +220,8 @@ test "fallback profile intersects builtin tools" {
             .content_types = model_types.ModelProfile.ContentTypeSet.initMany(&.{.image}),
         }, .requestFn = Stub.request },
     };
+    const direct = try candidates[0].request(std.testing.allocator, .{ .messages = &.{} });
+    try std.testing.expectEqualStrings("unused", direct.parts[0].text);
     var fallback = Fallback{ .models = &candidates };
     const profile = fallback.model().profile;
     try std.testing.expect(profile.supportsBuiltinTool(.web_search));

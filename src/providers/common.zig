@@ -39,10 +39,8 @@ pub fn transportError(failure: anyerror) anyerror {
 }
 
 pub fn responseDecodeError(failure: anyerror) anyerror {
-    return switch (failure) {
-        error.OutOfMemory => failure,
-        else => error.ProviderResponseDecodeError,
-    };
+    if (failure == error.OutOfMemory) return failure;
+    return error.ProviderResponseDecodeError;
 }
 
 pub fn notifyProviderError(
@@ -202,6 +200,28 @@ pub fn objectInteger(object: std.json.ObjectMap, field: []const u8) !u64 {
     return @intCast(value.integer);
 }
 
+/// Reads a nullable or absent non-negative integer while rejecting other JSON types.
+pub fn optionalObjectInteger(object: std.json.ObjectMap, field: []const u8) !?u64 {
+    const value = object.get(field) orelse return null;
+    return switch (value) {
+        .integer => |integer| if (integer >= 0) @intCast(integer) else error.InvalidProviderResponse,
+        .null => null,
+        else => error.InvalidProviderResponse,
+    };
+}
+
+/// Reads a nullable or absent JSON number as `f64`.
+pub fn optionalObjectNumber(object: std.json.ObjectMap, field: []const u8) !?f64 {
+    const value = object.get(field) orelse return null;
+    return switch (value) {
+        .integer => |integer| @floatFromInt(integer),
+        .float => |number| number,
+        .number_string => |number| std.fmt.parseFloat(f64, number) catch return error.InvalidProviderResponse,
+        .null => null,
+        else => error.InvalidProviderResponse,
+    };
+}
+
 /// Reads a nullable or absent string field while rejecting other JSON types.
 pub fn optionalObjectString(object: std.json.ObjectMap, field: []const u8) !?[]const u8 {
     const value = object.get(field) orelse return null;
@@ -234,6 +254,30 @@ test "object scalar helpers accept values and reject wrong types" {
     try std.testing.expectEqual(@as(u64, 7), try objectInteger(values.object, "count"));
     const negative = try std.json.parseFromSliceLeaky(std.json.Value, arena.allocator(), "{\"value\":-1}", .{});
     try std.testing.expectError(error.InvalidProviderResponse, objectInteger(negative.object, "value"));
+    try std.testing.expectEqual(@as(?u64, 7), try optionalObjectInteger(values.object, "count"));
+    try std.testing.expect((try optionalObjectInteger(values.object, "missing")) == null);
+    try std.testing.expectError(error.InvalidProviderResponse, optionalObjectInteger(values.object, "value"));
+
+    const numbers = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        "{\"integer\":2,\"float\":1.5,\"none\":null}",
+        .{},
+    );
+    try std.testing.expectEqual(@as(f64, 2), (try optionalObjectNumber(numbers.object, "integer")).?);
+    try std.testing.expectEqual(@as(f64, 1.5), (try optionalObjectNumber(numbers.object, "float")).?);
+    try std.testing.expect((try optionalObjectNumber(numbers.object, "none")) == null);
+    const lexical = try std.json.parseFromSliceLeaky(
+        std.json.Value,
+        arena.allocator(),
+        "{\"number\":1.25}",
+        .{ .parse_numbers = false },
+    );
+    try std.testing.expectEqual(@as(f64, 1.25), (try optionalObjectNumber(lexical.object, "number")).?);
+    var invalid_number: std.json.ObjectMap = .empty;
+    defer invalid_number.deinit(arena.allocator());
+    try invalid_number.put(arena.allocator(), "number", .{ .number_string = "invalid" });
+    try std.testing.expectError(error.InvalidProviderResponse, optionalObjectNumber(invalid_number, "number"));
 }
 
 test "HTTP statuses map to stable provider errors" {

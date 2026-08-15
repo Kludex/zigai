@@ -75,11 +75,18 @@ Hook payloads are borrowed. Hook failures stop the run; terminal failures emit
 
 OpenTelemetry instrumentation is attached as an isolated lifecycle observer
 for each run. It emits one trace with agent, model-request, and tool-call spans,
-plus counters and histograms for calls, retries, latency, token usage, and
-application-estimated cost. GenAI names and attributes follow the OpenTelemetry
+plus counters and histograms for calls, retries, latency, cached/reasoning/audio
+token usage, and provider-reported or application-estimated cost. GenAI names and attributes follow the OpenTelemetry
 semantic conventions. Export callbacks are synchronous and borrowed; they can
 bridge to an SDK or OTLP pipeline. Prompt content is omitted unless explicitly
 enabled, and exporter failures are fail-open by default.
+
+Provider adapters produce `RequestUsage`; the agent aggregates it into
+`RunUsage` and records attempts, tool calls, provider time, and run time.
+Provider totals are normalized so cached and audio input are included in input,
+and reasoning and audio output are included in output. Unknown integer counters
+retain their provider names. Optional pricing uses immutable tables, exact
+nano-USD arithmetic, and explicit snapshot versions; missing rates stay unknown.
 
 Structured output is provider neutral at the agent boundary. JSON-object mode
 and named, strict JSON Schema mode are encoded as `text.format` for OpenAI and

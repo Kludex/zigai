@@ -5,6 +5,7 @@
 //! borrowed unless an enclosing owned result or history value says otherwise.
 
 const std = @import("std");
+const usage_types = @import("usage.zig");
 
 /// Application metadata retained in message history but never interpreted by
 /// provider adapters.
@@ -353,20 +354,10 @@ pub const ResponseState = enum {
     interrupted,
 };
 
-/// Token usage reported by a provider.
-pub const Usage = struct {
-    input_tokens: u64 = 0,
-    output_tokens: u64 = 0,
-
-    pub fn add(self: *Usage, other: Usage) void {
-        self.input_tokens += other.input_tokens;
-        self.output_tokens += other.output_tokens;
-    }
-
-    pub fn totalTokens(self: Usage) u64 {
-        return self.input_tokens + self.output_tokens;
-    }
-};
+pub const Usage = usage_types.RequestUsage;
+pub const RequestUsage = usage_types.RequestUsage;
+pub const UsageDetail = usage_types.Detail;
+pub const UsageCost = usage_types.Cost;
 
 /// Why a provider ended generation, normalized without discarding its raw value.
 pub const FinishReason = struct {
@@ -561,8 +552,9 @@ fn dupeToolCall(arena: std.mem.Allocator, value: ToolCall) !ToolCall {
 
 fn dupeToolResult(arena: std.mem.Allocator, value: ToolResult) !ToolResult {
     const gpa = arena;
+    const call_id = try gpa.dupe(u8, value.call_id);
     return .{
-        .call_id = try gpa.dupe(u8, value.call_id),
+        .call_id = call_id,
         .name = try gpa.dupe(u8, value.name),
         .content = try gpa.dupe(u8, value.content),
         .files = try dupeContents(gpa, value.files),
@@ -600,8 +592,9 @@ fn dupeToolSearchResult(arena: std.mem.Allocator, value: ToolSearchResult) !Tool
 
 fn dupeSpeech(arena: std.mem.Allocator, value: SpeechPart) !SpeechPart {
     const gpa = arena;
+    const speaker = value.speaker;
     return .{
-        .speaker = value.speaker,
+        .speaker = speaker,
         .transcript = try dupeOptional(gpa, value.transcript),
         .audio = if (value.audio) |audio| try dupeContent(gpa, audio) else null,
         .interrupted_at_ms = value.interrupted_at_ms,
@@ -929,13 +922,9 @@ fn checkAllVariantDupes(allocator: std.mem.Allocator) !void {
     _ = try dupeMetadata(gpa, &.{});
 }
 
-test "usage accumulates provider totals" {
-    var usage = Usage{ .input_tokens = 3, .output_tokens = 5 };
-    usage.add(.{ .input_tokens = 7, .output_tokens = 11 });
-
-    try std.testing.expectEqual(@as(u64, 10), usage.input_tokens);
-    try std.testing.expectEqual(@as(u64, 16), usage.output_tokens);
-    try std.testing.expectEqual(@as(u64, 26), usage.totalTokens());
+test "usage reports provider totals" {
+    const value = Usage{ .input_tokens = 10, .output_tokens = 16 };
+    try std.testing.expectEqual(@as(u64, 26), value.totalTokens());
 }
 
 test "tool results expose only failed outcomes as provider errors" {

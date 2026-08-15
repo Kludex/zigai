@@ -50,9 +50,10 @@ pub const Client = struct {
     },
 
     pub fn model(self: *Client) model_types.Model {
+        const profile = self.profile;
         return .{
             .context = self,
-            .profile = self.profile,
+            .profile = profile,
             .provider_name = "anthropic",
             .model_name = self.model_name,
             .settings = self.settings,
@@ -268,7 +269,7 @@ const StreamState = struct {
         if (std.mem.eql(u8, kind, "message_start")) {
             const message = try common.requiredObject(root, "message");
             const usage = try common.requiredObject(.{ .object = message }, "usage");
-            self.usage.input_tokens = try common.objectInteger(usage, "input_tokens");
+            self.usage = try decodeUsageObject(self.allocator, usage);
         } else if (std.mem.eql(u8, kind, "content_block_start")) {
             const block = try common.requiredObject(root, "content_block");
             const block_type = try common.objectString(block, "type");
@@ -801,16 +802,44 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
             .object => |value| value,
             else => return error.InvalidProviderResponse,
         };
-        usage = .{
-            .input_tokens = try common.objectInteger(object, "input_tokens"),
-            .output_tokens = try common.objectInteger(object, "output_tokens"),
-        };
+        usage = try decodeUsageObject(allocator, object);
     }
     const finish_reason = if (try common.optionalObjectString(root_object, "stop_reason")) |reason|
         anthropicFinishReason(reason)
     else
         null;
     return .{ .parts = try parts.toOwnedSlice(allocator), .usage = usage, .finish_reason = finish_reason };
+}
+
+fn decodeUsageObject(allocator: std.mem.Allocator, object: std.json.ObjectMap) !model_types.RequestUsage {
+    const uncached = try common.objectInteger(object, "input_tokens");
+    const cache_write = try common.optionalObjectInteger(object, "cache_creation_input_tokens") orelse 0;
+    const cache_read = try common.optionalObjectInteger(object, "cache_read_input_tokens") orelse 0;
+    const cached_input = std.math.add(u64, cache_write, cache_read) catch return error.InvalidProviderResponse;
+    const input = std.math.add(u64, uncached, cached_input) catch return error.InvalidProviderResponse;
+    var details: std.ArrayList(model_types.UsageDetail) = .empty;
+    if (object.get("cache_creation")) |value| {
+        const cache = switch (value) {
+            .object => |entry| entry,
+            .null => null,
+            else => return error.InvalidProviderResponse,
+        };
+        if (cache) |entry| inline for ([_]struct { raw: []const u8, name: []const u8 }{
+            .{ .raw = "ephemeral_5m_input_tokens", .name = "cache_write_5m_tokens" },
+            .{ .raw = "ephemeral_1h_input_tokens", .name = "cache_write_1h_tokens" },
+        }) |field| {
+            if (try common.optionalObjectInteger(entry, field.raw)) |counter| {
+                try details.append(allocator, .{ .name = field.name, .value = counter });
+            }
+        };
+    }
+    return .{
+        .input_tokens = input,
+        .cache_write_tokens = cache_write,
+        .cache_read_tokens = cache_read,
+        .output_tokens = try common.optionalObjectInteger(object, "output_tokens") orelse 0,
+        .details = try details.toOwnedSlice(allocator),
+    };
 }
 
 fn anthropicFinishReason(raw: []const u8) model_types.FinishReason {
@@ -831,7 +860,7 @@ fn anthropicFinishReason(raw: []const u8) model_types.FinishReason {
 
 test "decodes Anthropic tool use" {
     const body =
-        \\{"content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{"city":"Madrid"}}],"stop_reason":"tool_use","usage":{"input_tokens":8,"output_tokens":3}}
+        \\{"content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{"city":"Madrid"}}],"stop_reason":"tool_use","usage":{"input_tokens":8,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"cache_creation":{"ephemeral_5m_input_tokens":1,"ephemeral_1h_input_tokens":1},"output_tokens":3}}
     ;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -839,6 +868,10 @@ test "decodes Anthropic tool use" {
     try std.testing.expectEqualStrings("toolu_1", response.parts[0].tool_call.id);
     try std.testing.expectEqualStrings("{\"city\":\"Madrid\"}", response.parts[0].tool_call.arguments_json);
     try std.testing.expectEqual(@as(u64, 3), response.usage.output_tokens);
+    try std.testing.expectEqual(@as(u64, 13), response.usage.input_tokens);
+    try std.testing.expectEqual(@as(u64, 2), response.usage.cache_write_tokens);
+    try std.testing.expectEqual(@as(u64, 3), response.usage.cache_read_tokens);
+    try std.testing.expectEqual(@as(u64, 1), response.usage.detail("cache_write_5m_tokens").?);
     try std.testing.expectEqual(model_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
 }
 
@@ -874,6 +907,10 @@ test "rejects malformed usage" {
     try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(
         arena.allocator(),
         "{\"content\":[],\"usage\":false}",
+    ));
+    try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(
+        arena.allocator(),
+        "{\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_creation\":false}}",
     ));
 }
 

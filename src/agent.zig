@@ -10,6 +10,8 @@ const telemetry_types = @import("telemetry.zig");
 const json_limits = @import("json.zig");
 const transport = @import("transport.zig");
 const security = @import("security.zig");
+const usage_types = @import("usage.zig");
+const pricing_types = @import("pricing.zig");
 
 const Message = model_types.Message;
 const PromptPart = model_types.PromptPart;
@@ -92,6 +94,8 @@ const AgentError = error{
     ModelOutputTruncated,
     /// Reported cumulative output usage exceeded its run limit.
     OutputTokenLimitExceeded,
+    /// Estimated or provider-reported cumulative cost exceeded its run limit.
+    CostLimitExceeded,
     /// A model emitted parallel calls while parallel execution was disabled.
     ParallelToolCallsNotSupported,
     /// Parallel tool execution was required without an `Io` runtime.
@@ -112,6 +116,8 @@ const AgentError = error{
     UrlHostNotAllowed,
     /// Reported cumulative input plus output usage exceeded its run limit.
     TotalTokenLimitExceeded,
+    /// Usage counters, durations, or cost overflowed their exact integer type.
+    UsageOverflow,
     /// The runtime could not schedule all required controlled tool tasks.
     ToolConcurrencyUnavailable,
     /// A tool returned too many or too-large follow-up messages.
@@ -163,6 +169,8 @@ const AgentUsageLimits = struct {
     max_input_tokens: ?u64 = null,
     max_output_tokens: ?u64 = null,
     max_total_tokens: ?u64 = null,
+    /// Exact nano-USD ceiling. It is enforced only when cost is available.
+    max_cost_nano_usd: ?u64 = null,
 };
 
 const AgentBackoff = struct {
@@ -531,7 +539,7 @@ pub const PausedRun = struct {
     arena: std.heap.ArenaAllocator,
     state_json: []const u8,
     calls: []const DeferredToolCall,
-    usage: model_types.Usage,
+    usage: usage_types.RunUsage,
     model_requests: usize,
 
     pub fn deinit(self: *PausedRun) void {
@@ -550,7 +558,7 @@ const SerializedPause = struct {
     prompt: []const u8,
     history_json: []const u8,
     instructions: []const []const u8,
-    usage: model_types.Usage,
+    usage: usage_types.RunUsage,
     model_requests: usize,
     total_tool_calls: usize,
     output_retries: usize,
@@ -562,7 +570,7 @@ const SerializedPause = struct {
 const ResumeState = struct {
     messages: []const Message,
     instructions: []const []const u8,
-    usage: model_types.Usage,
+    usage: usage_types.RunUsage,
     model_requests: usize,
     total_tool_calls: usize,
     output_retries: usize,
@@ -581,7 +589,7 @@ pub const CapabilityContext = struct {
 /// Current run state available while preparing tools for the next model step.
 pub const ToolsetContext = struct {
     messages: []const Message,
-    usage: model_types.Usage,
+    usage: usage_types.RunUsage,
     model_requests: usize,
     dependencies: ?*anyopaque,
     control: model_types.RunControl = .{},
@@ -647,7 +655,7 @@ pub const LifecycleEvent = union(enum) {
 
     pub const RunEnd = struct {
         output: []const u8,
-        usage: model_types.Usage,
+        usage: usage_types.RunUsage,
         model_requests: usize,
     };
 
@@ -805,7 +813,7 @@ pub fn TypedResult(comptime Output: type) type {
         output: Output,
         output_json: []const u8,
         messages: []const Message,
-        usage: model_types.Usage,
+        usage: usage_types.RunUsage,
         model_requests: usize,
         finish_reason: ?model_types.FinishReason,
 
@@ -858,6 +866,9 @@ pub const Agent = struct {
     io: ?std.Io = null,
     /// Optional per-run OpenTelemetry spans and metrics.
     telemetry: ?telemetry_types.OpenTelemetry = null,
+    /// Optional deterministic pricing snapshot. Unknown or incompletely
+    /// priced models retain a null cost.
+    price_table: ?pricing_types.Table = null,
 
     pub const UsageLimits = AgentUsageLimits;
     pub const RetryPolicy = AgentRetryPolicy;
@@ -873,7 +884,7 @@ pub const Agent = struct {
         arena: std.heap.ArenaAllocator,
         output: []const u8,
         messages: []const Message,
-        usage: model_types.Usage,
+        usage: usage_types.RunUsage,
         model_requests: usize,
         finish_reason: ?model_types.FinishReason,
 
@@ -1287,6 +1298,7 @@ pub const Agent = struct {
         else
             try ensureContentSupported(self.model, self.url_policy, options.message_history);
         try ensurePromptPartsSupported(self.model, self.url_policy, options.prompt_parts);
+        const invocation_started = monotonicNow(self.io);
         try emitLifecycle(hooks, .{ .run_start = .{ .prompt = prompt, .model = self.model } });
 
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -1308,7 +1320,15 @@ pub const Agent = struct {
 
         var messages: std.ArrayList(Message) = .empty;
         var definitions: std.ArrayList(model_types.ToolDefinition) = .empty;
-        var total_usage: model_types.Usage = if (resume_state) |state| state.usage else .{};
+        var total_usage: usage_types.RunUsage = if (resume_state) |state|
+            try state.usage.dupe(memory)
+        else
+            .{};
+        if (resume_state) |state| {
+            if (total_usage.requests == 0) total_usage.requests = state.model_requests;
+            if (total_usage.requests != state.model_requests) return Error.InvalidDeferredState;
+            total_usage.tool_calls = state.total_tool_calls;
+        }
         var provider_errors = ProviderErrorCapture{ .target = self.provider_error_observer };
         var tool_retries = ToolRetryTracker{ .allocator = memory };
 
@@ -1351,11 +1371,12 @@ pub const Agent = struct {
                 return Error.ModelDoesNotSupportTools;
             }
             if (resume_pending) {
+                const current_messages = messages.items;
                 const tool_batch = try executeResumedToolCalls(
                     self,
                     available_tools,
                     memory,
-                    messages.items,
+                    current_messages,
                     decisions,
                     resume_state.?.calls,
                     &tool_retries,
@@ -1428,7 +1449,7 @@ pub const Agent = struct {
             else
                 null;
             var retries: usize = 0;
-            const response = request: while (true) {
+            var response = request: while (true) {
                 try control.check();
                 if (model_requests >= self.limits.max_model_requests) {
                     return Error.MaxModelRequestsExceeded;
@@ -1461,7 +1482,8 @@ pub const Agent = struct {
                     .request = model_request,
                     .streaming = stream_sink != null,
                 } });
-                break :request (if (stream_sink != null)
+                const request_started = monotonicNow(self.io);
+                const attempt = if (stream_sink != null)
                     control.invoke(
                         model_types.ModelResponse,
                         streamModel,
@@ -1472,7 +1494,9 @@ pub const Agent = struct {
                         model_types.ModelResponse,
                         requestModel,
                         .{ self.model, memory, model_request },
-                    )) catch |err| {
+                    );
+                const value = attempt catch |err| {
+                    try total_usage.recordRequest(elapsedMilliseconds(self.io, request_started));
                     const retry_candidate = !stream_emitted and retries < self.retry_policy.max_retries and
                         shouldRetry(err, self.retry_policy);
                     const delay_ms = if (retry_candidate) if (self.retry_policy.backoff) |backoff|
@@ -1520,12 +1544,28 @@ pub const Agent = struct {
                     }
                     return err;
                 };
+                const request_duration = elapsedMilliseconds(self.io, request_started);
+                try total_usage.recordRequest(request_duration);
+                var accounted = value;
+                accounted.usage.duration_ms = request_duration;
+                break :request accounted;
+            };
+            if (response.usage.cost == null) if (self.price_table) |table| {
+                if (self.model.provider_name) |provider_name| if (self.model.model_name) |model_name| {
+                    const estimate = table.estimate(provider_name, model_name, response.usage) catch
+                        return Error.UsageOverflow;
+                    if (estimate) |value| {
+                        response.usage.cost = value.cost;
+                        response.usage.cost_source = .price_table;
+                        response.usage.cost_table_version = value.table_version;
+                    }
+                };
             };
             try emitLifecycle(hooks, .{ .model_request_end = .{
                 .number = model_requests,
                 .response = response,
             } });
-            total_usage.add(response.usage);
+            try total_usage.addRequest(memory, response.usage);
             try enforceUsageLimits(total_usage, self.limits);
             try enforceFinishReason(response.finish_reason);
             if (response.parts.len == 0) return Error.EmptyModelResponse;
@@ -1587,6 +1627,7 @@ pub const Agent = struct {
                     .output = output,
                     .structured_output = try structuredOutputSnapshot(memory, self.output, output),
                 } });
+                addRunDuration(&total_usage, self.io, invocation_started) catch return Error.UsageOverflow;
                 try emitLifecycle(hooks, .{ .run_end = .{
                     .output = output,
                     .usage = total_usage,
@@ -1605,18 +1646,21 @@ pub const Agent = struct {
                 return Error.MaxToolCallsExceeded;
             }
             total_tool_calls += tool_call_count;
+            total_usage.tool_calls = total_tool_calls;
             if (!self.model.profile.supports_tools) return Error.ModelDoesNotSupportTools;
             if (tool_call_count > 1 and !self.model.profile.supports_parallel_tool_calls) {
                 return Error.ParallelToolCallsNotSupported;
             }
             if (hasDeferredToolCall(available_tools, response.parts)) {
                 if (!allow_pause) return Error.ToolCallRequiresDeferredRun;
+                const pending_queue = options.pending_messages;
                 const pending = try closeAndCopyPendingMessages(
-                    options.pending_messages,
+                    pending_queue,
                     self.model,
                     self.url_policy,
                     memory,
                 );
+                addRunDuration(&total_usage, self.io, invocation_started) catch return Error.UsageOverflow;
                 const paused = try createPausedRun(
                     &arena,
                     memory,
@@ -1696,7 +1740,7 @@ fn createPausedRun(
     prompt: []const u8,
     messages: []const Message,
     instructions: []const []const u8,
-    usage: model_types.Usage,
+    usage: usage_types.RunUsage,
     model_requests: usize,
     total_tool_calls: usize,
     output_retries: usize,
@@ -2149,7 +2193,7 @@ fn executeToolCalls(
     @memset(admitted_per_tool, 0);
     var admitted: usize = 0;
     var completed: usize = 0; // kcov-ignore
-    const global_capacity = executionCapacity(agent.tool_limits);
+    const global_capacity = agent.tool_limits.max_concurrency +| agent.tool_limits.max_queue_size;
     for (work, states, outcomes) |item, *state, *outcome| {
         if (item.validation_failure) |failure| {
             outcome.* = .{ .failure = failure };
@@ -2586,7 +2630,8 @@ fn toolResult(
         .failure => |failure| recover: {
             if (!tool.isRecoverable(failure)) return failure;
             const retry_limit = tool.max_retries orelse agent.max_tool_retries;
-            if (!try tool_retries.consume(work.call.name, retry_limit)) return failure;
+            const retry_allowed = try tool_retries.consume(work.call.name, retry_limit);
+            if (!retry_allowed) return failure;
             break :recover .{
                 .content = try std.fmt.allocPrint(
                     allocator,
@@ -2867,7 +2912,28 @@ fn normalizeBackoffSleepError(err: error{Canceled}) Agent.Error {
     };
 }
 
-fn enforceUsageLimits(usage: model_types.Usage, limits: Agent.UsageLimits) Agent.Error!void {
+fn monotonicNow(io: ?std.Io) ?std.Io.Clock.Timestamp {
+    return std.Io.Clock.Timestamp.now(io orelse return null, .awake);
+}
+
+fn elapsedMilliseconds(io: ?std.Io, started: ?std.Io.Clock.Timestamp) ?u64 {
+    const start = started orelse return null;
+    const end = std.Io.Clock.Timestamp.now(io orelse return null, start.clock);
+    const nanoseconds = start.durationTo(end).raw.nanoseconds;
+    if (nanoseconds <= 0) return 0;
+    return @intCast(@min(@divFloor(nanoseconds, std.time.ns_per_ms), std.math.maxInt(u64)));
+}
+
+fn addRunDuration(
+    usage: *usage_types.RunUsage,
+    io: ?std.Io,
+    started: ?std.Io.Clock.Timestamp,
+) error{UsageOverflow}!void {
+    const duration = elapsedMilliseconds(io, started) orelse return;
+    usage.run_duration_ms = std.math.add(u64, usage.run_duration_ms, duration) catch return error.UsageOverflow;
+}
+
+fn enforceUsageLimits(usage: usage_types.RunUsage, limits: Agent.UsageLimits) Agent.Error!void {
     if (limits.max_input_tokens) |maximum| {
         if (usage.input_tokens > maximum) return Agent.Error.InputTokenLimitExceeded;
     }
@@ -2877,6 +2943,9 @@ fn enforceUsageLimits(usage: model_types.Usage, limits: Agent.UsageLimits) Agent
     if (limits.max_total_tokens) |maximum| {
         if (usage.totalTokens() > maximum) return Agent.Error.TotalTokenLimitExceeded;
     }
+    if (limits.max_cost_nano_usd) |maximum| if (usage.cost) |cost| {
+        if (cost.nano_usd > maximum) return Agent.Error.CostLimitExceeded;
+    };
 }
 
 fn enforceFinishReason(reason: ?model_types.FinishReason) Agent.Error!void {

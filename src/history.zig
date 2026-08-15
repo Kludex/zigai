@@ -6,6 +6,7 @@
 const std = @import("std");
 const model = @import("model.zig");
 const message_types = @import("messages.zig");
+const usage_types = @import("usage.zig");
 const json_limits = @import("json.zig");
 
 pub const Error = error{
@@ -29,7 +30,7 @@ pub const Owned = struct {
 /// Runtime state supplied to history processors before a model request.
 pub const Context = struct {
     profile: model.ModelProfile,
-    usage: message_types.Usage,
+    usage: usage_types.RunUsage,
     model_requests: usize,
     control: model.RunControl = .{},
 };
@@ -259,7 +260,7 @@ fn writeResponse(allocator: std.mem.Allocator, json: *std.json.Stringify, respon
         try json.endObject();
     }
     try json.endArray();
-    if (response.usage.input_tokens != 0 or response.usage.output_tokens != 0) {
+    if (response.usage.hasValues()) {
         try json.objectField("usage");
         try json.write(response.usage);
     }
@@ -792,7 +793,7 @@ fn parseResponse(allocator: std.mem.Allocator, object: std.json.ObjectMap) !mess
     const state_name = try optionalJsonString(object, "state");
     return .{
         .parts = parts,
-        .usage = try parseUsage(object.get("usage")),
+        .usage = try parseUsage(allocator, object.get("usage")),
         .timestamp_unix_ms = try optionalJsonInteger(object, "timestamp_unix_ms"),
         .provider_name = try optionalJsonString(object, "provider_name"),
         .provider_url = try optionalJsonString(object, "provider_url"),
@@ -1121,11 +1122,53 @@ fn parseInstructionParts(
     return result;
 }
 
-fn parseUsage(value: ?std.json.Value) !message_types.Usage {
+fn parseUsage(allocator: std.mem.Allocator, value: ?std.json.Value) !message_types.Usage {
     const object = try asObject(value orelse return .{});
+    const details_values = if (object.get("details")) |details| switch (details) {
+        .array => |array| array.items,
+        else => return Error.InvalidHistory,
+    } else &.{};
+    const details = try allocator.alloc(usage_types.Detail, details_values.len);
+    for (details_values, details) |item, *detail| {
+        const detail_object = try asObject(item);
+        const counter = try jsonInteger(detail_object, "value");
+        if (counter < 0) return Error.InvalidHistory;
+        detail.* = .{ .name = try jsonString(detail_object, "name"), .value = @intCast(counter) };
+    }
+    const cost = if (object.get("cost")) |cost_value| switch (cost_value) {
+        .object => |cost_object| blk: {
+            break :blk usage_types.Cost{ .nano_usd = try jsonUnsigned(cost_object, "nano_usd") };
+        },
+        .null => null,
+        else => return Error.InvalidHistory,
+    } else null;
     return .{
-        .input_tokens = @intCast(try jsonInteger(object, "input_tokens")),
-        .output_tokens = @intCast(try jsonInteger(object, "output_tokens")),
+        .input_tokens = try jsonUnsigned(object, "input_tokens"),
+        .cache_write_tokens = try optionalJsonUnsigned(object, "cache_write_tokens") orelse 0,
+        .cache_read_tokens = try optionalJsonUnsigned(object, "cache_read_tokens") orelse 0,
+        .output_tokens = try jsonUnsigned(object, "output_tokens"),
+        .reasoning_tokens = try optionalJsonUnsigned(object, "reasoning_tokens") orelse 0,
+        .input_audio_tokens = try optionalJsonUnsigned(object, "input_audio_tokens") orelse 0,
+        .cache_audio_read_tokens = try optionalJsonUnsigned(object, "cache_audio_read_tokens") orelse 0,
+        .output_audio_tokens = try optionalJsonUnsigned(object, "output_audio_tokens") orelse 0,
+        .details = details,
+        .cost = cost,
+        .cost_source = if (object.get("cost_source")) |source| switch (source) {
+            .string => |name| std.meta.stringToEnum(usage_types.CostSource, name) orelse
+                return Error.InvalidHistory,
+            .null => null,
+            else => return Error.InvalidHistory,
+        } else null,
+        .cost_table_version = if (object.get("cost_table_version")) |version| switch (version) {
+            .string => |text| text,
+            .null => null,
+            else => return Error.InvalidHistory,
+        } else null,
+        .duration_ms = if (object.get("duration_ms")) |duration| switch (duration) {
+            .integer => |integer| if (integer >= 0) @intCast(integer) else return Error.InvalidHistory,
+            .null => null,
+            else => return Error.InvalidHistory,
+        } else null,
     };
 }
 
@@ -1507,12 +1550,24 @@ fn jsonInteger(object: std.json.ObjectMap, name: []const u8) !i64 {
     };
 }
 
+fn jsonUnsigned(object: std.json.ObjectMap, name: []const u8) !u64 {
+    const value = try jsonInteger(object, name);
+    if (value < 0) return Error.InvalidHistory;
+    return @intCast(value);
+}
+
 fn optionalJsonInteger(object: std.json.ObjectMap, name: []const u8) !?i64 {
     const value = object.get(name) orelse return null;
     return switch (value) {
         .integer => |integer| integer,
         else => Error.InvalidHistory, // kcov-ignore
     };
+}
+
+fn optionalJsonUnsigned(object: std.json.ObjectMap, name: []const u8) !?u64 {
+    const value = try optionalJsonInteger(object, name) orelse return null;
+    if (value < 0) return Error.InvalidHistory;
+    return @intCast(value);
 }
 
 fn optionalJsonBool(object: std.json.ObjectMap, name: []const u8) !?bool {
@@ -1588,7 +1643,20 @@ test "history version 2 round trips request response parts and provenance" {
                     .media_type = "application/octet-stream",
                 } },
             },
-            .usage = .{ .input_tokens = 3, .output_tokens = 2 },
+            .usage = .{
+                .input_tokens = 3,
+                .cache_write_tokens = 1,
+                .cache_read_tokens = 1,
+                .output_tokens = 2,
+                .reasoning_tokens = 1,
+                .input_audio_tokens = 1,
+                .cache_audio_read_tokens = 1,
+                .output_audio_tokens = 1,
+                .details = &.{.{ .name = "native", .value = 7 }},
+                .cost = .{ .nano_usd = 2_400 },
+                .cost_source = .provider,
+                .duration_ms = 9,
+            },
             .timestamp_unix_ms = 20,
             .provider_name = "openai",
             .provider_url = "https://api.openai.com/v1",
@@ -1614,6 +1682,11 @@ test "history version 2 round trips request response parts and provenance" {
     try std.testing.expectEqualStrings("answer", response.parts[0].text);
     try std.testing.expect(response.provider_details.?.value.object.get("cached").?.bool);
     try std.testing.expectEqual(@as(u64, 5), response.usage.totalTokens());
+    try std.testing.expectEqual(@as(u64, 1), response.usage.reasoning_tokens);
+    try std.testing.expectEqual(@as(u64, 7), response.usage.detail("native").?);
+    try std.testing.expectEqual(@as(u64, 2_400), response.usage.cost.?.nano_usd);
+    try std.testing.expectEqual(usage_types.CostSource.provider, response.usage.cost_source.?);
+    try std.testing.expectEqual(@as(u64, 9), response.usage.duration_ms.?);
     try std.testing.expectEqual(message_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
 }
 
@@ -1992,6 +2065,11 @@ test "history rejects malformed documents and invalid structured provider detail
         "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"timestamp_unix_ms\":\"now\",\"parts\":[]}]}",
         "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"provider_name\":1,\"parts\":[]}]}",
         "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"usage\":{\"input_tokens\":\"one\",\"output_tokens\":0},\"parts\":[]}]}",
+        "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"usage\":{\"input_tokens\":-1,\"output_tokens\":0},\"parts\":[]}]}",
+        "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"details\":false},\"parts\":[]}]}",
+        "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"cost\":false},\"parts\":[]}]}",
+        "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"cost_source\":\"unknown\"},\"parts\":[]}]}",
+        "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"usage\":{\"input_tokens\":0,\"output_tokens\":0,\"duration_ms\":-1},\"parts\":[]}]}",
         "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"state\":\"other\",\"parts\":[]}]}",
         "{\"version\":2,\"messages\":[{\"kind\":\"request\",\"parts\":[{\"part_kind\":\"speech\",\"speaker\":\"assistant\"}]}]}",
         "{\"version\":2,\"messages\":[{\"kind\":\"response\",\"parts\":[{\"part_kind\":\"speech\",\"speaker\":\"user\"}]}]}",

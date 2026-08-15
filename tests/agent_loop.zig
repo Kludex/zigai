@@ -60,6 +60,8 @@ test "agent executes a tool and sends its result back to the model" {
     try std.testing.expectEqual(@as(usize, 2), result.model_requests);
     try std.testing.expectEqual(@as(u64, 28), result.usage.input_tokens);
     try std.testing.expectEqual(@as(u64, 10), result.usage.output_tokens);
+    try std.testing.expectEqual(@as(usize, 2), result.usage.requests);
+    try std.testing.expectEqual(@as(usize, 1), result.usage.tool_calls);
 }
 
 fn successfulTool(state: *u8) zigai.Tool {
@@ -2726,6 +2728,82 @@ test "OpenTelemetry records runs requests tools retries tokens cost and latency"
     try std.testing.expectApproxEqAbs(@as(f64, 0.08), capture.cost, 0.0001);
     try std.testing.expect(capture.saw_latency);
     try std.testing.expect(!capture.saw_prompt);
+    try std.testing.expectEqual(@as(usize, 3), result.usage.requests);
+    try std.testing.expectEqual(@as(usize, 1), result.usage.tool_calls);
+}
+
+test "agent applies an explicit versioned price table" {
+    const Model = struct {
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: zigai.ModelRequest) !zigai.model.ModelResponse {
+            return .{
+                .parts = &.{.{ .text = "priced" }},
+                .usage = .{
+                    .input_tokens = 1_000_000,
+                    .cache_read_tokens = 100_000,
+                    .output_tokens = 100_000,
+                },
+            };
+        }
+    };
+    const Capture = struct {
+        cost: f64 = 0,
+
+        fn span(_: *anyopaque, _: zigai.TelemetrySpan) !void {}
+
+        fn metric(context: *anyopaque, value: zigai.TelemetryMetric) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (std.mem.eql(u8, value.name, "gen_ai.client.estimated_cost")) self.cost += value.value;
+        }
+    };
+    var unused: u8 = 0;
+    var capture: Capture = .{};
+    const model = zigai.Model{
+        .context = &unused,
+        .profile = .{},
+        .provider_name = "openai",
+        .model_name = "gpt-5-nano",
+        .requestFn = Model.request,
+    };
+    var result = try (zigai.Agent{
+        .model = model,
+        .io = std.testing.io,
+        .price_table = zigai.pricing.builtin,
+        .telemetry = .{
+            .io = std.testing.io,
+            .exporter = .{ .context = &capture, .spanFn = Capture.span, .metricFn = Capture.metric },
+        },
+    }).run(std.testing.allocator, "price this");
+    defer result.deinit();
+
+    try std.testing.expectEqual(@as(u64, 85_500_000), result.usage.cost.?.nano_usd);
+    try std.testing.expectEqual(zigai.UsageCostSource.price_table, result.usage.cost_source.?);
+    try std.testing.expectEqualStrings(zigai.pricing.builtin_version, result.usage.cost_table_version.?);
+    try std.testing.expectEqual(@as(usize, 1), result.usage.requests);
+    try std.testing.expectEqual(@as(usize, 0), result.usage.tool_calls);
+    try std.testing.expectEqual(@as(usize, 1), result.messages.len - 1);
+    try std.testing.expect(result.messages[result.messages.len - 1].response.usage.duration_ms != null);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0855), capture.cost, 0.0000001);
+
+    try std.testing.expectError(
+        zigai.AgentError.CostLimitExceeded,
+        (zigai.Agent{
+            .model = model,
+            .price_table = zigai.pricing.builtin,
+            .limits = .{ .max_cost_nano_usd = 85_499_999 },
+        }).run(std.testing.allocator, "price this"),
+    );
+    const overflowing_prices = zigai.PriceTable{
+        .version = "overflow",
+        .entries = &.{.{
+            .provider = "openai",
+            .model = "gpt-5-nano",
+            .rates = .{ .input = std.math.maxInt(u64), .cache_read = std.math.maxInt(u64), .output = std.math.maxInt(u64) },
+        }},
+    };
+    try std.testing.expectError(
+        zigai.AgentError.UsageOverflow,
+        (zigai.Agent{ .model = model, .price_table = overflowing_prices }).run(std.testing.allocator, "price this"),
+    );
 }
 
 test "provider credentials reach only the trusted transport" {

@@ -156,3 +156,10 @@ The suite is deliberately bounded and deterministic, so it is suitable for
 every push. CI runs it in both modes on Linux and macOS. Longer fuzz campaigns
 and live-provider tests remain opt-in because their duration or external state
 is not deterministic.
+
+## Pricing snapshots
+
+`zigai.pricing.builtin_version` identifies the checked-in standard-price
+snapshot. Before changing it, verify every edited row against the provider URLs
+in `pricing.builtin_sources`, update the version date, and keep a focused unit
+test for each first-party provider. Pricing tests never call a live billing API.

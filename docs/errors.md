@@ -20,6 +20,8 @@ cases relevant to the application, then propagate the remainder.
 | `InputTokenLimitExceeded` | Provider-reported cumulative input usage exceeded the run limit. |
 | `OutputTokenLimitExceeded` | Provider-reported cumulative output usage exceeded the run limit. |
 | `TotalTokenLimitExceeded` | Provider-reported combined usage exceeded the run limit. |
+| `CostLimitExceeded` | Available provider-reported or estimated cost exceeded the nano-USD run limit. |
+| `UsageOverflow` | A usage counter, duration, or exact cost exceeded its integer representation. |
 | `MaxModelRequestsExceeded` | The run exhausted its model-request budget. |
 | `MaxToolCallsExceeded` | The run exhausted its local tool-call budget. |
 

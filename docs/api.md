@@ -62,6 +62,8 @@ Use these namespaces for the rest of the API:
 | Namespace | Purpose |
 | --- | --- |
 | `zigai.messages` | Provider-neutral request/response messages and parts |
+| `zigai.usage` | Per-request and aggregate run usage, exact costs, and native counters |
+| `zigai.pricing` | Explicit versioned price tables and deterministic estimates |
 | `zigai.codecs.pydantic_ai` | Lossless PydanticAI stable-v2 JSON interchange |
 | `zigai.security` | Outbound URL validation and diagnostic redaction |
 | `zigai.providers` | Native and named OpenAI-compatible provider clients |
@@ -94,6 +96,17 @@ ZigAI follows one rule for high-level operations: a returned type with a
 | `codecs.pydantic_ai.Owned` | Owns the complete PydanticAI JSON value graph until `deinit` |
 | `evals.Report` | Owns every case and evaluation result until `deinit` |
 | `transport.Response` | Caller frees `body` with the allocator passed to `send` |
+
+`ResponseMessage.usage` is `RequestUsage`. `Agent.Result`, `PausedRun`,
+`TypedResult`, and `evals.Report` expose `RunUsage`. Cached and modality fields
+are inclusive subsets of the input/output totals, so `totalTokens()` is always
+`input_tokens + output_tokens`. Result arenas own usage detail names and price
+table version strings.
+
+`UsageCost` stores nano-USD exactly. `PriceTable.estimate` returns null for an
+unknown model or any non-empty bucket without a rate. `pricing.builtin` is an
+opt-in snapshot identified by `pricing.builtin_version`; applications may
+provide a different immutable table through `Agent.price_table`.
 
 `transport.HttpTransport.init` uses bounded decompressed response defaults:
 16 MiB per buffered body and 1 MiB per streaming line. Pass a

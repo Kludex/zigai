@@ -666,15 +666,55 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
             .object => |value| value,
             else => return error.InvalidProviderResponse,
         };
-        usage = .{
-            .input_tokens = try common.objectInteger(object, "promptTokenCount"),
-            .output_tokens = try common.objectInteger(object, "candidatesTokenCount"),
-        };
+        usage = try decodeUsageMetadata(allocator, object);
     }
     if (finish_reason) |*reason| {
         if (reason.kind == .stop and hasToolCalls(parts.items)) reason.kind = .tool_calls;
     }
     return .{ .parts = try parts.toOwnedSlice(allocator), .usage = usage, .finish_reason = finish_reason };
+}
+
+fn decodeUsageMetadata(allocator: std.mem.Allocator, object: std.json.ObjectMap) !model_types.RequestUsage {
+    const candidates = try common.objectInteger(object, "candidatesTokenCount");
+    const reasoning = try common.optionalObjectInteger(object, "thoughtsTokenCount") orelse 0;
+    const output = std.math.add(u64, candidates, reasoning) catch return error.InvalidProviderResponse;
+    var details: std.ArrayList(model_types.UsageDetail) = .empty;
+    if (try common.optionalObjectInteger(object, "totalTokenCount")) |value| {
+        try details.append(allocator, .{ .name = "total_tokens", .value = value });
+    }
+    if (try common.optionalObjectInteger(object, "toolUsePromptTokenCount")) |value| {
+        try details.append(allocator, .{ .name = "tool_use_prompt_tokens", .value = value });
+    }
+    return .{
+        .input_tokens = try common.objectInteger(object, "promptTokenCount"),
+        .cache_read_tokens = try common.optionalObjectInteger(object, "cachedContentTokenCount") orelse 0,
+        .output_tokens = output,
+        .reasoning_tokens = reasoning,
+        .input_audio_tokens = try modalityTokens(object, "promptTokensDetails", "AUDIO"),
+        .output_audio_tokens = try modalityTokens(object, "candidatesTokensDetails", "AUDIO"),
+        .details = try details.toOwnedSlice(allocator),
+    };
+}
+
+fn modalityTokens(object: std.json.ObjectMap, field: []const u8, modality: []const u8) !u64 {
+    const value = object.get(field) orelse return 0;
+    const array = switch (value) {
+        .array => |items| items,
+        .null => return 0,
+        else => return error.InvalidProviderResponse,
+    };
+    var total: u64 = 0;
+    for (array.items) |item| {
+        const detail = switch (item) {
+            .object => |entry| entry,
+            else => return error.InvalidProviderResponse,
+        };
+        const kind = try common.optionalObjectString(detail, "modality") orelse return error.InvalidProviderResponse;
+        if (!std.ascii.eqlIgnoreCase(kind, modality)) continue;
+        total = std.math.add(u64, total, try common.objectInteger(detail, "tokenCount")) catch
+            return error.InvalidProviderResponse;
+    }
+    return total;
 }
 
 fn richPart(content: model_types.Content) model_types.Part {
@@ -825,7 +865,7 @@ test "encodes and decodes Gemini rich content and thinking" {
 
 test "decodes Gemini text, calls with and without ids, and usage" {
     const body =
-        \\{"candidates":[{"content":{"parts":[{"text":"checking"},{"functionCall":{"id":"call_1","name":"weather","args":{"city":"Madrid"}},"thoughtSignature":"signed-state"},{"functionCall":{"name":"other","args":{}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":3}}
+        \\{"candidates":[{"content":{"parts":[{"text":"checking"},{"functionCall":{"id":"call_1","name":"weather","args":{"city":"Madrid"}},"thoughtSignature":"signed-state"},{"functionCall":{"name":"other","args":{}}}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":8,"cachedContentTokenCount":2,"candidatesTokenCount":3,"thoughtsTokenCount":4,"totalTokenCount":15,"toolUsePromptTokenCount":1,"promptTokensDetails":[{"modality":"AUDIO","tokenCount":2}],"candidatesTokensDetails":[{"modality":"AUDIO","tokenCount":1}],"unusedTokensDetails":null}}
     ;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -836,6 +876,20 @@ test "decodes Gemini text, calls with and without ids, and usage" {
     try std.testing.expectEqualStrings("signed-state", response.parts[1].tool_call.thought_signature.?);
     try std.testing.expectEqualStrings("google-call-2", response.parts[2].tool_call.id);
     try std.testing.expectEqual(@as(u64, 8), response.usage.input_tokens);
+    try std.testing.expectEqual(@as(u64, 7), response.usage.output_tokens);
+    try std.testing.expectEqual(@as(u64, 2), response.usage.cache_read_tokens);
+    try std.testing.expectEqual(@as(u64, 4), response.usage.reasoning_tokens);
+    try std.testing.expectEqual(@as(u64, 2), response.usage.input_audio_tokens);
+    try std.testing.expectEqual(@as(u64, 1), response.usage.output_audio_tokens);
+    try std.testing.expectEqual(@as(u64, 1), response.usage.detail("tool_use_prompt_tokens").?);
+    try std.testing.expectEqual(@as(u64, 0), try modalityTokens(
+        std.json.ObjectMap.empty,
+        "missing",
+        "AUDIO",
+    ));
+    var null_details: std.json.ObjectMap = .empty;
+    try null_details.put(arena.allocator(), "details", .null);
+    try std.testing.expectEqual(@as(u64, 0), try modalityTokens(null_details, "details", "AUDIO"));
     try std.testing.expectEqual(model_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
     try std.testing.expectEqualStrings("STOP", response.finish_reason.?.raw);
 }
@@ -879,6 +933,7 @@ test "rejects malformed Gemini responses" {
         "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"name\":\"x\"}}]}}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[{\"functionCall\":{\"id\":false,\"name\":\"x\",\"args\":{}}}]}}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[]}}],\"usageMetadata\":false}",
+        "{\"candidates\":[{\"content\":{\"parts\":[]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":1,\"promptTokensDetails\":[false]}}",
     };
     for (invalid) |body| {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

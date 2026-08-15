@@ -518,6 +518,36 @@ validation, errors, retries, and stream events before and after delivery.
 Hook values are borrowed and callbacks run synchronously. Copy only what you
 need to retain. A hook error stops the run and is reported through `run_error`.
 
+## Usage and cost
+
+Every provider response has `RequestUsage`. Agent results have `RunUsage`,
+which also includes request attempts, tool calls, provider latency, and total
+run duration.
+
+Cached and audio tokens are subsets of the input or output totals. Reasoning
+tokens are a subset of output tokens. Provider counters without a portable
+field stay available through `usage.details`.
+
+Cost estimation is opt-in:
+
+```zig
+var result = try (zigai.Agent{
+    .model = model,
+    .price_table = zigai.pricing.builtin,
+}).run(allocator, "Hello");
+defer result.deinit();
+
+if (result.usage.cost) |cost| {
+    std.debug.print("estimated cost: ${d:.6}\n", .{cost.usd()});
+}
+```
+
+`pricing.builtin` is a checked-in snapshot, not a live price feed. Its version
+is available as `pricing.builtin_version`; unknown models and unpriced token
+buckets produce no estimate. Pass your own `PriceTable` when you need other
+models, contracts, regions, or service tiers. Money is stored as integer
+nano-USD.
+
 ## OpenTelemetry
 
 Configure `Agent.telemetry` to export OpenTelemetry-shaped spans and metrics:
@@ -531,8 +561,9 @@ Configure `Agent.telemetry` to export OpenTelemetry-shaped spans and metrics:
 ```
 
 Each run has one trace with child model-request and tool-call spans. Metrics
-cover latency, request and tool counts, retries, input and output tokens, and
-optional estimated cost. The exporter is a small synchronous bridge to your
+cover latency, request and tool counts, retries, cached/reasoning/audio token
+usage, and optional cost. `cost_estimator` is a telemetry-only fallback when
+the agent has no provider-reported or price-table cost. The exporter is a small synchronous bridge to your
 OpenTelemetry SDK or OTLP pipeline.
 
 Prompt capture is disabled by default. Set `capture_prompts = true` only when

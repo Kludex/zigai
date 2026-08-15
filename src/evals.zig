@@ -25,7 +25,7 @@ pub const Case = struct {
 pub const Context = struct {
     case: Case,
     output: []const u8,
-    usage: model_types.Usage,
+    usage: model_types.RunUsage,
 };
 
 pub const Evaluation = struct {
@@ -58,7 +58,7 @@ pub const EvaluationResult = struct {
 pub const CaseResult = struct {
     name: []const u8,
     output: []const u8,
-    usage: model_types.Usage,
+    usage: model_types.RunUsage,
     evaluations: []const EvaluationResult,
 
     pub fn passed(self: CaseResult) bool {
@@ -71,7 +71,7 @@ pub const CaseResult = struct {
 pub const Report = struct {
     arena: std.heap.ArenaAllocator,
     cases: []const CaseResult,
-    usage: model_types.Usage,
+    usage: model_types.RunUsage,
 
     pub fn deinit(self: *Report) void {
         self.arena.deinit();
@@ -101,11 +101,11 @@ pub const Dataset = struct {
         errdefer arena.deinit();
         const memory = arena.allocator();
         const results = try memory.alloc(CaseResult, self.cases.len);
-        var total_usage: model_types.Usage = .{};
+        var total_usage: model_types.RunUsage = .{};
         for (self.cases, results) |case, *case_result| {
             var run_result = try agent.runWithOptions(allocator, case.prompt, case.options);
             defer run_result.deinit();
-            total_usage.add(run_result.usage);
+            try total_usage.addRun(memory, run_result.usage);
             const output = try memory.dupe(u8, run_result.output);
             const evaluations = try memory.alloc(EvaluationResult, self.evaluators.len);
             for (self.evaluators, evaluations) |evaluator, *evaluation_result| {

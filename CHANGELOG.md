@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add normalized request/run usage for caching, reasoning, audio, native
+  counters, request/tool counts, latency, exact cost, cost limits, and opt-in
+  estimation from an explicit versioned first-party price snapshot.
 - Add a thread-safe, one-run pending-message queue with deep-copy ownership,
   deterministic batch ordering, stream events, pause-state persistence, and
   atomic final/cancellation closure.

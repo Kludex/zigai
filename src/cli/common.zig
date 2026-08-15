@@ -187,6 +187,9 @@ pub fn printResult(io: std.Io, output: []const u8) !void {
 }
 
 test "CLI argument parsing accepts streaming and tool manifests in either order" {
+    var io = std.testing.io;
+    try printStreamEvent(&io, .{ .model = .{ .usage = .{} } });
+    try printStreamEvent(&io, .{ .final_result = .{ .output = "done" } });
     const first = try parseArguments(&.{ "cli", "--stream", "--tools", "tools.json", "hello" });
     try std.testing.expect(first.stream);
     try std.testing.expectEqualStrings("tools.json", first.tools_path.?);

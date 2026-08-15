@@ -498,7 +498,7 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
     }
     return .{
         .parts = try parts.toOwnedSlice(allocator),
-        .usage = try decodeUsage(root),
+        .usage = try decodeUsage(allocator, root),
         .finish_reason = finish_reason,
     };
 }
@@ -517,7 +517,7 @@ fn compatibleFinishReason(raw: []const u8) model_types.FinishReason {
     return .{ .kind = kind, .raw = raw };
 }
 
-fn decodeUsage(root: std.json.Value) !model_types.Usage {
+fn decodeUsage(allocator: std.mem.Allocator, root: std.json.Value) !model_types.Usage {
     const object = switch (root) {
         .object => |value| value,
         else => return error.InvalidProviderResponse,
@@ -528,9 +528,50 @@ fn decodeUsage(root: std.json.Value) !model_types.Usage {
         .null => return .{},
         else => return error.InvalidProviderResponse,
     };
+    const prompt_details = if (usage.get("prompt_tokens_details")) |value| switch (value) {
+        .object => |details| details,
+        .null => null,
+        else => return error.InvalidProviderResponse,
+    } else null;
+    const completion_details = if (usage.get("completion_tokens_details")) |value| switch (value) {
+        .object => |details| details,
+        .null => null,
+        else => return error.InvalidProviderResponse,
+    } else null;
+    var details: std.ArrayList(model_types.UsageDetail) = .empty;
+    if (try common.optionalObjectInteger(usage, "total_tokens")) |value| {
+        try details.append(allocator, .{ .name = "total_tokens", .value = value });
+    }
+    const cost = if (try common.optionalObjectNumber(usage, "cost")) |value|
+        model_types.UsageCost.fromUsd(value) catch return error.InvalidProviderResponse
+    else
+        null;
     return .{
         .input_tokens = try common.objectInteger(usage, "prompt_tokens"),
+        .cache_write_tokens = if (prompt_details) |value|
+            try common.optionalObjectInteger(value, "cache_write_tokens") orelse 0
+        else
+            0,
+        .cache_read_tokens = if (prompt_details) |value|
+            try common.optionalObjectInteger(value, "cached_tokens") orelse 0
+        else
+            0,
         .output_tokens = try common.objectInteger(usage, "completion_tokens"),
+        .reasoning_tokens = if (completion_details) |value|
+            try common.optionalObjectInteger(value, "reasoning_tokens") orelse 0
+        else
+            0,
+        .input_audio_tokens = if (prompt_details) |value|
+            try common.optionalObjectInteger(value, "audio_tokens") orelse 0
+        else
+            0,
+        .output_audio_tokens = if (completion_details) |value|
+            try common.optionalObjectInteger(value, "audio_tokens") orelse 0
+        else
+            0,
+        .details = try details.toOwnedSlice(allocator),
+        .cost = cost,
+        .cost_source = if (cost != null) .provider else null,
     };
 }
 
@@ -597,7 +638,7 @@ const StreamState = struct {
             .{},
             error.InvalidProviderResponse,
         );
-        const usage = try decodeUsage(root);
+        const usage = try decodeUsage(self.allocator, root);
         if (usage.input_tokens != 0 or usage.output_tokens != 0) {
             self.usage = usage;
             try self.sink.emit(.{ .usage = usage });
@@ -851,11 +892,15 @@ test "compatible clients forward correlation and configured idempotency headers"
 test "decodes Chat Completions text, tools, usage, and finish reason" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const response = try decodeResponse(arena.allocator(), "{\"choices\":[{\"message\":{\"content\":\"hello\",\"tool_calls\":[{\"id\":\"call\",\"function\":{\"name\":\"weather\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2}}");
+    const response = try decodeResponse(arena.allocator(), "{\"choices\":[{\"message\":{\"content\":\"hello\",\"tool_calls\":[{\"id\":\"call\",\"function\":{\"name\":\"weather\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":2,\"total_tokens\":5,\"cost\":0.0000024,\"prompt_tokens_details\":{\"cached_tokens\":1,\"cache_write_tokens\":1,\"audio_tokens\":1},\"completion_tokens_details\":{\"reasoning_tokens\":1,\"audio_tokens\":1}}}");
     try std.testing.expectEqual(@as(usize, 2), response.parts.len);
     try std.testing.expectEqualStrings("hello", response.parts[0].text);
     try std.testing.expectEqualStrings("weather", response.parts[1].tool_call.name);
     try std.testing.expectEqual(@as(u64, 5), response.usage.totalTokens());
+    try std.testing.expectEqual(@as(u64, 1), response.usage.cache_read_tokens);
+    try std.testing.expectEqual(@as(u64, 1), response.usage.reasoning_tokens);
+    try std.testing.expectEqual(@as(u64, 2_400), response.usage.cost.?.nano_usd);
+    try std.testing.expectEqual(model_types.UsageCostSource.provider, response.usage.cost_source.?);
     try std.testing.expectEqual(model_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
 }
 

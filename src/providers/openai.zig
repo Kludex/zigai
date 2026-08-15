@@ -263,10 +263,7 @@ const StreamState = struct {
                     .object => |usage_object| usage_object,
                     else => return error.InvalidProviderResponse,
                 };
-                self.usage = .{
-                    .input_tokens = try common.objectInteger(usage, "input_tokens"),
-                    .output_tokens = try common.objectInteger(usage, "output_tokens"),
-                };
+                self.usage = try decodeUsageObject(self.allocator, usage);
                 try self.sink.emit(.{ .usage = self.usage });
             }
         }
@@ -635,10 +632,7 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
             .object => |value| value,
             else => return error.InvalidProviderResponse,
         };
-        usage = .{
-            .input_tokens = try common.objectInteger(usage_object, "input_tokens"),
-            .output_tokens = try common.objectInteger(usage_object, "output_tokens"),
-        };
+        usage = try decodeUsageObject(allocator, usage_object);
     }
     const finish_reason = if (content_filtered)
         model_types.FinishReason{ .kind = .content_filter, .raw = "refusal" }
@@ -648,6 +642,48 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
         .parts = try parts.toOwnedSlice(allocator),
         .usage = usage,
         .finish_reason = finish_reason,
+    };
+}
+
+fn decodeUsageObject(allocator: std.mem.Allocator, object: std.json.ObjectMap) !model_types.RequestUsage {
+    const input_details = if (object.get("input_tokens_details")) |value| switch (value) {
+        .object => |details| details,
+        .null => null,
+        else => return error.InvalidProviderResponse,
+    } else null;
+    const output_details = if (object.get("output_tokens_details")) |value| switch (value) {
+        .object => |details| details,
+        .null => null,
+        else => return error.InvalidProviderResponse,
+    } else null;
+    var details: std.ArrayList(model_types.UsageDetail) = .empty;
+    if (try common.optionalObjectInteger(object, "total_tokens")) |value| {
+        try details.append(allocator, .{ .name = "total_tokens", .value = value });
+    }
+    return .{
+        .input_tokens = try common.objectInteger(object, "input_tokens"),
+        .cache_write_tokens = if (input_details) |value|
+            try common.optionalObjectInteger(value, "cache_write_tokens") orelse 0
+        else
+            0,
+        .cache_read_tokens = if (input_details) |value|
+            try common.optionalObjectInteger(value, "cached_tokens") orelse 0
+        else
+            0,
+        .output_tokens = try common.objectInteger(object, "output_tokens"),
+        .reasoning_tokens = if (output_details) |value|
+            try common.optionalObjectInteger(value, "reasoning_tokens") orelse 0
+        else
+            0,
+        .input_audio_tokens = if (input_details) |value|
+            try common.optionalObjectInteger(value, "audio_tokens") orelse 0
+        else
+            0,
+        .output_audio_tokens = if (output_details) |value|
+            try common.optionalObjectInteger(value, "audio_tokens") orelse 0
+        else
+            0,
+        .details = try details.toOwnedSlice(allocator),
     };
 }
 
@@ -694,7 +730,7 @@ fn hasToolCalls(parts: []const model_types.Part) bool {
 
 test "decodes text, function calls, and usage" {
     const body =
-        \\{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"thinking"}]},{"type":"function_call","call_id":"call_1","name":"weather","arguments":"{\"city\":\"Madrid\"}"}],"usage":{"input_tokens":11,"output_tokens":7}}
+        \\{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"thinking"}]},{"type":"function_call","call_id":"call_1","name":"weather","arguments":"{\"city\":\"Madrid\"}"}],"usage":{"input_tokens":11,"input_tokens_details":{"cached_tokens":4,"cache_write_tokens":2,"audio_tokens":1},"output_tokens":7,"output_tokens_details":{"reasoning_tokens":3,"audio_tokens":2},"total_tokens":18}}
     ;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -703,6 +739,12 @@ test "decodes text, function calls, and usage" {
     try std.testing.expectEqualStrings("thinking", response.parts[0].text);
     try std.testing.expectEqualStrings("weather", response.parts[1].tool_call.name);
     try std.testing.expectEqual(@as(u64, 11), response.usage.input_tokens);
+    try std.testing.expectEqual(@as(u64, 4), response.usage.cache_read_tokens);
+    try std.testing.expectEqual(@as(u64, 2), response.usage.cache_write_tokens);
+    try std.testing.expectEqual(@as(u64, 3), response.usage.reasoning_tokens);
+    try std.testing.expectEqual(@as(u64, 1), response.usage.input_audio_tokens);
+    try std.testing.expectEqual(@as(u64, 2), response.usage.output_audio_tokens);
+    try std.testing.expectEqual(@as(u64, 18), response.usage.detail("total_tokens").?);
     try std.testing.expectEqual(model_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
     try std.testing.expectEqualStrings("completed", response.finish_reason.?.raw);
 }

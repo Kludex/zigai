@@ -1,6 +1,7 @@
 const std = @import("std");
 const json_limits = @import("json.zig");
 const messages = @import("messages.zig");
+const usage_types = @import("usage.zig");
 const security = @import("security.zig");
 
 pub const Content = messages.Content;
@@ -38,6 +39,11 @@ pub const ToolSearchResult = messages.ToolSearchResult;
 pub const ToolAvailabilityDeltaPart = messages.ToolAvailabilityDeltaPart;
 pub const UploadedFile = messages.UploadedFile;
 pub const Usage = messages.Usage;
+pub const RequestUsage = usage_types.RequestUsage;
+pub const RunUsage = usage_types.RunUsage;
+pub const UsageDetail = usage_types.Detail;
+pub const UsageCost = usage_types.Cost;
+pub const UsageCostSource = usage_types.CostSource;
 pub const UserContent = messages.UserContent;
 pub const dupeContent = messages.dupeContent;
 pub const dupeMetadata = messages.dupeMetadata;
@@ -364,7 +370,7 @@ fn validateToolArgumentsJson(allocator: std.mem.Allocator, arguments_json: []con
 /// checked-at-the-call-site cast while keeping Agent itself non-generic.
 pub const ToolRunContext = struct {
     dependencies: ?*anyopaque = null,
-    usage: Usage = .{},
+    usage: RunUsage = .{},
     model_requests: usize = 0,
     /// Shared cooperative cancellation state for the run.
     cancellation: ?*const CancellationToken = null,
@@ -755,14 +761,6 @@ pub const Model = struct {
         return response;
     }
 };
-
-test "usage adds provider totals" {
-    var usage = Usage{ .input_tokens = 2, .output_tokens = 3 };
-    usage.add(.{ .input_tokens = 5, .output_tokens = 7 });
-    try std.testing.expectEqual(@as(u64, 7), usage.input_tokens);
-    try std.testing.expectEqual(@as(u64, 10), usage.output_tokens);
-    try std.testing.expectEqual(@as(u64, 17), usage.totalTokens());
-}
 
 test "run control shares one deadline and drains interrupted work" {
     const State = struct {

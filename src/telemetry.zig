@@ -183,9 +183,9 @@ pub const Run = struct {
     ) !void {
         const start = self.run_start orelse return;
         const end = self.now();
-        var attributes: [8]Attribute = undefined;
+        var attributes: [20]Attribute = undefined;
         var count: usize = 0;
-        self.modelAttributes(&attributes, &count);
+        modelAttributes(self, &attributes, &count);
         attributes[count] = .{ .key = "gen_ai.operation.name", .value = .{ .string = "invoke_agent" } };
         count += 1;
         if (self.input_messages) |messages| {
@@ -229,19 +229,14 @@ pub const Run = struct {
     ) !void {
         const start = self.request_start orelse return;
         const end = self.now();
-        var attributes: [8]Attribute = undefined;
+        var attributes: [20]Attribute = undefined;
         var count: usize = 0;
-        self.modelAttributes(&attributes, &count);
+        modelAttributes(self, &attributes, &count);
         attributes[count] = .{ .key = "gen_ai.operation.name", .value = .{ .string = "chat" } };
         count += 1;
         attributes[count] = .{ .key = "zigai.request.number", .value = .{ .integer = @intCast(self.request_number) } };
         count += 1;
-        if (usage.totalTokens() > 0) {
-            attributes[count] = .{ .key = "gen_ai.usage.input_tokens", .value = .{ .integer = @intCast(usage.input_tokens) } };
-            count += 1;
-            attributes[count] = .{ .key = "gen_ai.usage.output_tokens", .value = .{ .integer = @intCast(usage.output_tokens) } };
-            count += 1;
-        }
+        usageAttributes(usage, &attributes, &count);
         if (failure) |value| {
             attributes[count] = .{ .key = "error.type", .value = .{ .string = @errorName(value) } };
             count += 1;
@@ -266,13 +261,19 @@ pub const Run = struct {
             .unit = "{request}",
             .attributes = attributes[0..count],
         });
-        if (usage.totalTokens() > 0) {
+        if (usage.hasValues()) {
             try self.usageMetrics(usage);
-            if (self.config.cost_estimator) |estimator| {
+            const estimated_cost = if (usage.cost) |cost|
+                cost.usd()
+            else if (self.config.cost_estimator) |estimator|
+                estimator.estimate(self.request_provider_name, self.request_model_name, usage)
+            else
+                null;
+            if (estimated_cost) |cost| {
                 try self.exportMetric(.{
                     .name = "gen_ai.client.estimated_cost",
                     .kind = .counter,
-                    .value = estimator.estimate(self.request_provider_name, self.request_model_name, usage),
+                    .value = cost,
                     .unit = "USD",
                     .attributes = attributes[0..count],
                 });
@@ -351,8 +352,15 @@ pub const Run = struct {
     fn usageMetrics(self: *Run, usage: model_types.Usage) !void {
         for ([_]struct { name: []const u8, value: u64 }{
             .{ .name = "input", .value = usage.input_tokens },
+            .{ .name = "cache_write", .value = usage.cache_write_tokens },
+            .{ .name = "cache_read", .value = usage.cache_read_tokens },
             .{ .name = "output", .value = usage.output_tokens },
+            .{ .name = "reasoning", .value = usage.reasoning_tokens },
+            .{ .name = "input_audio", .value = usage.input_audio_tokens },
+            .{ .name = "cache_audio_read", .value = usage.cache_audio_read_tokens },
+            .{ .name = "output_audio", .value = usage.output_audio_tokens },
         }) |token| {
+            if (token.value == 0) continue;
             var attributes: [4]Attribute = undefined;
             var count: usize = 0;
             self.modelAttributes(&attributes, &count); // kcov-ignore
@@ -365,6 +373,26 @@ pub const Run = struct {
                 .unit = "{token}",
                 .attributes = attributes[0..count],
             });
+        }
+    }
+
+    fn usageAttributes(usage: model_types.Usage, attributes: []Attribute, count: *usize) void {
+        for ([_]struct { name: []const u8, value: u64 }{
+            .{
+                .name = "gen_ai.usage.input_tokens",
+                .value = usage.input_tokens,
+            },
+            .{ .name = "gen_ai.usage.cache_creation.input_tokens", .value = usage.cache_write_tokens },
+            .{ .name = "gen_ai.usage.cache_read.input_tokens", .value = usage.cache_read_tokens },
+            .{ .name = "gen_ai.usage.output_tokens", .value = usage.output_tokens },
+            .{ .name = "gen_ai.usage.details.reasoning_tokens", .value = usage.reasoning_tokens },
+            .{ .name = "gen_ai.usage.details.input_audio_tokens", .value = usage.input_audio_tokens },
+            .{ .name = "gen_ai.usage.details.cache_audio_read_tokens", .value = usage.cache_audio_read_tokens },
+            .{ .name = "gen_ai.usage.details.output_audio_tokens", .value = usage.output_audio_tokens },
+        }) |item| {
+            if (item.value == 0) continue;
+            attributes[count.*] = .{ .key = item.name, .value = .{ .integer = @intCast(item.value) } };
+            count.* += 1;
         }
     }
 

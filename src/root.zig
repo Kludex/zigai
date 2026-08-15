@@ -2,6 +2,8 @@
 
 pub const model = @import("model.zig");
 pub const messages = @import("messages.zig");
+pub const usage = @import("usage.zig");
+pub const pricing = @import("pricing.zig");
 pub const security = @import("security.zig");
 pub const agent = @import("agent.zig");
 pub const testing = @import("testing.zig");
@@ -92,6 +94,13 @@ pub const ModelSettings = model.ModelSettings;
 pub const ReasoningEffort = model.ReasoningEffort;
 pub const FinishReason = messages.FinishReason;
 pub const Usage = messages.Usage;
+pub const RequestUsage = usage.RequestUsage;
+pub const RunUsage = usage.RunUsage;
+pub const UsageDetail = usage.Detail;
+pub const UsageCost = usage.Cost;
+pub const UsageCostSource = usage.CostSource;
+pub const PriceTable = pricing.Table;
+pub const PriceEstimate = pricing.Estimate;
 pub const Tool = model.Tool;
 pub const ToolCall = messages.ToolCall;
 pub const ToolOutcome = messages.ToolOutcome;
