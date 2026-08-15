@@ -82,6 +82,7 @@ zig build record-cassettes -- native-tools
 zig build record-cassettes -- native-google
 zig build record-cassettes -- native-bedrock
 zig build record-cassettes -- native-azure
+zig build record-cassettes -- native-cohere
 zig build record-cassettes -- mistral
 zig build record-cassettes -- rich-content
 zig build record-cassettes -- rich-anthropic

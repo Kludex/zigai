@@ -49,6 +49,11 @@ const native_mistral = NativeEntry{
     .model = "mistral-small-latest",
     .cassette = "cassettes/native/mistral_conversations_web_search.yaml",
 };
+const native_cohere = NativeEntry{
+    .provider = "cohere",
+    .model = "command-a-03-2025",
+    .cassette = "cassettes/native/cohere_v2_command_a.yaml",
+};
 const rich_openai = NativeEntry{
     .provider = "openai",
     .model = "gpt-5-nano",
@@ -120,6 +125,14 @@ pub fn main(init: std.process.Init) !void {
             http.transport(),
             requiredKey(init, zigai.providers.mistral.api_key_env),
             native_mistral,
+        );
+    }
+    if (selectedNative(args, native_cohere)) {
+        try recordNativeCohere(
+            init,
+            http.transport(),
+            requiredKey(init, zigai.providers.cohere.api_key_env),
+            native_cohere,
         );
     }
     if (selectedRich(args, rich_openai)) {
@@ -248,7 +261,8 @@ fn selectedNative(args: []const []const u8, entry: NativeEntry) bool {
             (std.mem.eql(u8, entry.provider, "anthropic") and std.mem.eql(u8, argument, "native-anthropic")) or
             (std.mem.eql(u8, entry.provider, "google") and std.mem.eql(u8, argument, "native-google")) or
             (std.mem.eql(u8, entry.provider, "bedrock") and std.mem.eql(u8, argument, "native-bedrock")) or
-            (std.mem.eql(u8, entry.provider, "azure-openai") and std.mem.eql(u8, argument, "native-azure"));
+            (std.mem.eql(u8, entry.provider, "azure-openai") and std.mem.eql(u8, argument, "native-azure")) or
+            (std.mem.eql(u8, entry.provider, "cohere") and std.mem.eql(u8, argument, "native-cohere"));
         if (std.mem.eql(u8, argument, "native-tools") or
             provider_filter or
             std.mem.eql(u8, argument, entry.provider) or
@@ -550,6 +564,24 @@ fn recordNativeMistral(
         &.{.{ .web_search = .{} }},
         native_google_prompt,
     );
+    try writeNative(init, recording, entry);
+}
+
+fn recordNativeCohere(
+    init: std.process.Init,
+    transport: zigai.transport.Transport,
+    api_key: []const u8,
+    entry: NativeEntry,
+) !void {
+    var recording = cassettes.RecordingTransport.init(init.gpa, transport);
+    defer recording.deinit();
+    var provider = zigai.providers.cohere.ChatProvider.init(api_key, recording.transport());
+    var client = zigai.providers.cohere.ChatClient{
+        .model_name = entry.model,
+        .provider = provider.provider(),
+        .settings = .{ .extra_body = .{ .cohere = "{\"strict_tools\":true}" } },
+    };
+    try runScenario(init, client.model());
     try writeNative(init, recording, entry);
 }
 

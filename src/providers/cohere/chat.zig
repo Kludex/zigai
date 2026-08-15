@@ -656,26 +656,37 @@ fn writeAssistantMessage(
     try json.beginObject();
     try json.objectField("role");
     try json.write("assistant");
-    try json.objectField("content");
-    try json.beginArray();
+    var has_content = false;
     for (parts) |part| switch (part) {
-        .text => |text| try writeContentBlock(json, "text", "text", text),
-        .text_part => |text| {
-            try ensureProviderPart(text.provider, provider_name);
-            try writeContentBlock(json, "text", "text", text.content);
-        },
-        .thinking => |thinking| {
-            try ensureProviderPart(thinking.provider, provider_name);
-            if (!isToolPlan(thinking.provider)) try writeContentBlock(json, "thinking", "thinking", thinking.content);
-        },
-        .speech => |speech| {
-            try ensureProviderPart(speech.provider, provider_name);
-            try writeContentBlock(json, "text", "text", speech.transcript orelse return error.UnsupportedContentType);
+        .text, .text_part, .speech => has_content = true,
+        .thinking => |thinking| if (!isToolPlan(thinking.provider)) {
+            has_content = true;
         },
         .tool_call, .capability_load_call => {},
         else => return error.UnsupportedContentType,
     };
-    try json.endArray();
+    if (has_content) {
+        try json.objectField("content");
+        try json.beginArray();
+        for (parts) |part| switch (part) {
+            .text => |text| try writeContentBlock(json, "text", "text", text),
+            .text_part => |text| {
+                try ensureProviderPart(text.provider, provider_name);
+                try writeContentBlock(json, "text", "text", text.content);
+            },
+            .thinking => |thinking| {
+                try ensureProviderPart(thinking.provider, provider_name);
+                if (!isToolPlan(thinking.provider)) try writeContentBlock(json, "thinking", "thinking", thinking.content);
+            },
+            .speech => |speech| {
+                try ensureProviderPart(speech.provider, provider_name);
+                try writeContentBlock(json, "text", "text", speech.transcript orelse return error.UnsupportedContentType);
+            },
+            .tool_call, .capability_load_call => {},
+            else => unreachable,
+        };
+        try json.endArray();
+    }
     for (parts) |part| switch (part) {
         .thinking => |thinking| if (isToolPlan(thinking.provider)) {
             try json.objectField("tool_plan");
@@ -731,7 +742,13 @@ fn writeToolCall(
     try json.objectField("name");
     try json.write(call.name);
     try json.objectField("arguments");
-    try common.rawJson(allocator, json, call.arguments_json, json_limits.defaults.tool_payload);
+    try json_limits.validateAs(
+        allocator,
+        call.arguments_json,
+        json_limits.defaults.tool_payload,
+        error.InvalidRequestEncoding,
+    );
+    try json.write(call.arguments_json);
     try json.endObject();
     try json.endObject();
 }
@@ -1031,6 +1048,7 @@ test "native Cohere v2 request preserves messages tools and settings" {
         },
     });
     try std.testing.expect(std.mem.indexOf(u8, body, "\"tool_plan\":\"Use weather.\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"arguments\":\"{\\\"city\\\":\\\"Madrid\\\"}\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"tool_call_id\":\"call_1\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"tool_choice\":\"REQUIRED\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"strict_tools\":true") != null);

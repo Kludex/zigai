@@ -182,6 +182,21 @@ test "real Mistral Conversations cassette replays native web search" {
     );
 }
 
+test "real Cohere v2 cassette replays a complete tool loop" {
+    var cassette = try cassettes.ReplayTransport.init(
+        std.testing.allocator,
+        @embedFile("cassettes/native/cohere_v2_command_a.yaml"),
+    );
+    defer cassette.deinit();
+    var provider_state = zigai.providers.cohere.ChatProvider.init("not-recorded", cassette.transport());
+    var client = zigai.providers.cohere.ChatClient{
+        .model_name = "command-a-03-2025",
+        .provider = provider_state.provider(),
+        .settings = .{ .extra_body = .{ .cohere = "{\"strict_tools\":true}" } },
+    };
+    try replayMatrixScenario(client.model(), &cassette);
+}
+
 fn replayCompatibleProvider(
     comptime ProviderType: type,
     comptime ClientType: type,
