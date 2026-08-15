@@ -1184,3 +1184,83 @@ test "partial schemas follow references and composition without requiring final 
     try std.testing.expectEqualStrings("{\"value\":\"x\"}", partial.json);
     try std.testing.expect((try validatePartial(allocator, format, "[]")) == null);
 }
+
+test "partial JSON repair covers completed containers tokens and bounded failures" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try std.testing.expectEqualStrings("{}", (try validatePartial(allocator, .json_object, "{}")).?.json);
+    const array_format: model_types.OutputFormat = .{ .json_schema = .{
+        .name = "array",
+        .schema = "{\"type\":\"array\"}",
+    } };
+    try std.testing.expectEqualStrings("[]", (try validatePartial(allocator, array_format, "[]")).?.json);
+    try std.testing.expect((try validatePartial(allocator, .json_object, "x")) == null);
+
+    const string_format: model_types.OutputFormat = .{ .json_schema = .{
+        .name = "string",
+        .schema = "{\"type\":\"string\"}",
+    } };
+    try std.testing.expectEqualStrings("\"\"", (try validatePartial(allocator, string_format, "\"\\u12")).?.json);
+    try std.testing.expect((try validatePartial(allocator, string_format, "\"\\u12xz")) == null);
+    try std.testing.expectEqualStrings("\"\\u0061\"", (try validatePartial(allocator, string_format, "\"\\u0061\"")).?.json);
+    try std.testing.expectEqualStrings("\"a\\n\"", (try validatePartial(allocator, string_format, "\"a\\n\"")).?.json);
+    try std.testing.expect((try validatePartial(allocator, string_format, &.{ '"', 0xff })) == null);
+
+    const boolean_format: model_types.OutputFormat = .{ .json_schema = .{
+        .name = "boolean",
+        .schema = "{\"type\":\"boolean\"}",
+    } };
+    try std.testing.expectEqualStrings("false", (try validatePartial(allocator, boolean_format, "false")).?.json);
+    const number_format: model_types.OutputFormat = .{ .json_schema = .{
+        .name = "number",
+        .schema = "{\"type\":\"number\"}",
+    } };
+    try std.testing.expectEqualStrings("1.0", (try validatePartial(allocator, number_format, "1.")).?.json);
+
+    const oversized = try allocator.alloc(u8, json_limits.defaults.tool_payload.max_document_bytes + 1);
+    @memset(oversized, ' ');
+    try std.testing.expectError(
+        json_limits.ValidationError.DocumentTooLarge,
+        validatePartial(allocator, .json_object, oversized),
+    );
+}
+
+test "partial schemas cover boolean property tuple and additional-property branches" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    try std.testing.expect((try validatePartial(allocator, .{ .json_schema = .{
+        .name = "allowed",
+        .schema = "true",
+    } }, "null")) != null);
+    try std.testing.expect((try validatePartial(allocator, .{ .json_schema = .{
+        .name = "denied",
+        .schema = "false",
+    } }, "null")) == null);
+
+    const object_format: model_types.OutputFormat = .{ .json_schema = .{
+        .name = "object",
+        .schema = "{\"type\":\"object\",\"propertyNames\":{\"minLength\":2}," ++
+            "\"additionalProperties\":{\"type\":\"string\"}}",
+    } };
+    try std.testing.expect((try validatePartial(allocator, object_format, "{\"ok\":\"yes")) != null);
+    try std.testing.expect((try validatePartial(allocator, object_format, "{\"x\":\"yes\"}")) == null);
+    try std.testing.expect((try validatePartial(allocator, object_format, "{\"ok\":1}")) == null);
+
+    const tuple_format: model_types.OutputFormat = .{ .json_schema = .{
+        .name = "tuple",
+        .schema = "{\"type\":\"array\",\"prefixItems\":[{\"type\":\"string\"}]," ++
+            "\"items\":{\"type\":\"integer\"}}",
+    } };
+    try std.testing.expect((try validatePartial(allocator, tuple_format, "[\"ok\",2")) != null);
+    try std.testing.expect((try validatePartial(allocator, tuple_format, "[1")) == null);
+
+    const alternatives: model_types.OutputFormat = .{ .json_schema = .{
+        .name = "alternatives",
+        .schema = "{\"anyOf\":[{\"type\":\"string\"},{\"type\":\"boolean\"}]}",
+    } };
+    try std.testing.expect((try validatePartial(allocator, alternatives, "1")) == null);
+}

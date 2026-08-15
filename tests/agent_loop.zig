@@ -2280,6 +2280,96 @@ test "tool output functions receive partial and final streaming contexts" {
     try std.testing.expectEqual(@as(usize, 2), state.streamed_partials);
 }
 
+test "streaming snapshots handle metadata text and atomic output tools" {
+    const State = struct {
+        kind: enum { text, tool },
+        partials: usize = 0,
+
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: zigai.ModelRequest) !zigai.ModelResponse {
+            return error.UnexpectedBufferedRequest;
+        }
+
+        fn stream(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            _: zigai.ModelRequest,
+            sink: zigai.ModelStreamSink,
+        ) !zigai.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return switch (self.kind) {
+                .text => {
+                    const part = zigai.Part{ .text_part = .{ .content = "done" } };
+                    try sink.emit(.{ .part_start = .{
+                        .index = 0,
+                        .part = .{ .text_part = .{ .content = "" } },
+                    } });
+                    try sink.emit(.{ .part_end = .{ .index = 0, .part = part } });
+                    return .{ .parts = &.{part} };
+                },
+                .tool => {
+                    const part = zigai.Part{ .tool_call = .{
+                        .id = "finish-1",
+                        .name = "finish",
+                        .arguments_json = "{\"value\":4}",
+                    } };
+                    try sink.emit(.{ .part_start = .{ .index = 0, .part = .{ .tool_call = .{
+                        .id = "finish-1",
+                        .name = "finish",
+                        .arguments_json = "",
+                    } } } });
+                    try sink.emit(.{ .part_end = .{ .index = 0, .part = part } });
+                    return .{ .parts = &.{part} };
+                },
+            };
+        }
+
+        fn event(context: *anyopaque, value: zigai.AgentStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (value == .partial_output) self.partials += 1;
+        }
+    };
+
+    var text_state = State{ .kind = .text };
+    const text_model = zigai.Model{
+        .context = &text_state,
+        .profile = .{ .supports_streaming = true },
+        .requestFn = State.request,
+        .streamFn = State.stream,
+    };
+    var text_result = try (zigai.Agent{ .model = text_model }).runStream(
+        std.testing.allocator,
+        "answer",
+        .{ .context = &text_state, .eventFn = State.event },
+    );
+    defer text_result.deinit();
+    try std.testing.expectEqualStrings("done", text_result.output);
+    try std.testing.expectEqual(@as(usize, 1), text_state.partials);
+
+    const choices = [_]zigai.OutputChoice{.{
+        .name = "finish",
+        .schema = "{\"type\":\"object\",\"properties\":{\"value\":{\"type\":\"integer\"}}," ++
+            "\"required\":[\"value\"],\"additionalProperties\":false}",
+    }};
+    var tool_state = State{ .kind = .tool };
+    const tool_model = zigai.Model{
+        .context = &tool_state,
+        .profile = .{ .supports_streaming = true, .supports_tools = true },
+        .requestFn = State.request,
+        .streamFn = State.stream,
+    };
+    var tool_result = try (zigai.Agent{
+        .model = tool_model,
+        .output = .{ .tool = .{ .output = .{ .choices = &choices } } },
+    }).runStream(
+        std.testing.allocator,
+        "answer",
+        .{ .context = &tool_state, .eventFn = State.event },
+    );
+    defer tool_result.deinit();
+    try std.testing.expectEqualStrings("{\"value\":4}", tool_result.output);
+    try std.testing.expectEqual(@as(usize, 1), tool_state.partials);
+}
+
 test "streaming validation suppresses the final event for invalid output" {
     const parts = [_]zigai.model.Part{.{ .text = "not JSON" }};
     var scripted = zigai.testing.ScriptedModel{
