@@ -117,6 +117,21 @@ ordered notifications observed while it was active, and its response. Replay
 is transport-neutral; the transcript metadata records whether the evidence was
 captured from stdio or HTTP.
 
+`zig build mcp-interop` is the opt-in recorder. It expects an official server
+checkout at the revision named in `tests/mcp/upstreams.yaml` and atomically
+replaces the requested fixture only after discovery and the tool, resource,
+and prompt inventories all succeed:
+
+```console
+zig build mcp-interop -- stdio <server> <revision> <fixture.yaml> <command> [args...]
+zig build mcp-interop -- http <server> <revision> <fixture.yaml> <endpoint>
+```
+
+The committed TypeScript todos recordings prove identical behavior over stdio
+and HTTP. The Python everything-server recording adds a second official SDK
+and a much broader schema surface. Ordinary CI replays all three without a
+network connection or upstream toolchain.
+
 ## Fuzzing
 
 ZigAI fuzzes every untrusted parser family: history and deferred state, JSON

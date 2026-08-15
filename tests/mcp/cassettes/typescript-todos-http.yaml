@@ -1,0 +1,287 @@
+version: 1
+protocol_version: "2026-07-28"
+source:
+  server: "typescript-todos"
+  revision: "27a94b5d1c952480747568c0e04fe647efbe99f4"
+transport: http
+interactions:
+- request:
+    method: "server/discover"
+    message:
+      type: json
+      content:
+        jsonrpc: "2.0"
+        id: 1
+        method: "server/discover"
+        params:
+          _meta:
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+            "io.modelcontextprotocol/clientInfo":
+              name: "zigai-interop"
+              version: "0.1.0"
+            "io.modelcontextprotocol/clientCapabilities": {}
+  events: []
+  response:
+    type: json
+    content:
+      result:
+        supportedVersions:
+          - "2026-07-28"
+        capabilities:
+          logging: {}
+          resources:
+            listChanged: true
+            subscribe: true
+          completions: {}
+          prompts:
+            listChanged: true
+          tools:
+            listChanged: true
+        instructions: |-
+          todos is a small project todo board (it starts empty). Use list_tasks to see the board, add_task / add_tasks and complete_task to change it, prioritize to rank the open tasks, brainstorm_tasks to invent themed example tasks, work_through_tasks to finish every open task with progress updates, and clear_done to remove finished ones (it asks the user for confirmation). The full board is also available as the todos://board resource, and it can be watched/subscribed to for change notifications. When the user greets you or asks what to try, suggest this tour: 1) ask to brainstorm tasks (the server asks how many — elicitation — then borrows the host model — sampling), 2) ask to prioritize the open tasks (sampling), 3) run the plan-my-day prompt, 4) attach the todos://board resource as context and ask about it, 5) say "do all my tasks" and watch the progress and log notifications, 6) ask to clear completed tasks (an elicitation-confirmed bulk delete). Watching the board resource (/watch in cli-client) shows live change notifications along the way.
+        resultType: "complete"
+        ttlMs: 0
+        cacheScope: "private"
+        _meta:
+          "io.modelcontextprotocol/serverInfo":
+            name: "todos"
+            version: "1.0.0"
+      jsonrpc: "2.0"
+      id: 1
+- request:
+    method: "tools/list"
+    message:
+      type: json
+      content:
+        jsonrpc: "2.0"
+        id: 2
+        method: "tools/list"
+        params:
+          _meta:
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+            "io.modelcontextprotocol/clientInfo":
+              name: "zigai-interop"
+              version: "0.1.0"
+            "io.modelcontextprotocol/clientCapabilities": {}
+  events: []
+  response:
+    type: json
+    content:
+      result:
+        tools:
+          - name: "add_task"
+            description: "Add a task to the board"
+            inputSchema:
+              type: "object"
+              "$schema": "https://json-schema.org/draft/2020-12/schema"
+              properties:
+                title:
+                  type: "string"
+                  description: "What needs doing"
+                project:
+                  description: "Project bucket, e.g. \"ops\""
+                  type: "string"
+                priority:
+                  type: "string"
+                  enum:
+                    - "high"
+                    - "medium"
+                    - "low"
+                due:
+                  description: "Free-form due date, e.g. \"Friday\""
+                  type: "string"
+                notes:
+                  type: "string"
+              required:
+                - "title"
+            outputSchema:
+              "$schema": "https://json-schema.org/draft/2020-12/schema"
+              type: "object"
+              properties:
+                id:
+                  type: "string"
+                title:
+                  type: "string"
+                status:
+                  type: "string"
+                  enum:
+                    - "open"
+                    - "done"
+              required:
+                - "id"
+                - "title"
+                - "status"
+              additionalProperties: false
+          - name: "add_tasks"
+            description: "Add several tasks to the board at once"
+            inputSchema:
+              type: "object"
+              "$schema": "https://json-schema.org/draft/2020-12/schema"
+              properties:
+                tasks:
+                  minItems: 1
+                  type: "array"
+                  items:
+                    type: "object"
+                    properties:
+                      title:
+                        type: "string"
+                      project:
+                        type: "string"
+                      priority:
+                        type: "string"
+                        enum:
+                          - "high"
+                          - "medium"
+                          - "low"
+                      due:
+                        type: "string"
+                      notes:
+                        type: "string"
+                    required:
+                      - "title"
+                  description: "Tasks to add"
+              required:
+                - "tasks"
+          - name: "brainstorm_tasks"
+            description: "Invent short, funny example tasks for a theme and add them to the board — asks the user how many (elicitation), then has the LLM connected to the host invent them (sampling)"
+            inputSchema:
+              type: "object"
+              "$schema": "https://json-schema.org/draft/2020-12/schema"
+              properties:
+                theme:
+                  description: "Theme for the invented tasks (default: \"an engineer's week in hell\")"
+                  type: "string"
+          - name: "list_tasks"
+            description: "List tasks on the board"
+            inputSchema:
+              type: "object"
+              "$schema": "https://json-schema.org/draft/2020-12/schema"
+              properties:
+                status:
+                  description: "Which tasks to list (default: open)"
+                  type: "string"
+                  enum:
+                    - "open"
+                    - "done"
+                    - "all"
+                project:
+                  description: "Only tasks in this project"
+                  type: "string"
+          - name: "complete_task"
+            description: "Mark a task as done"
+            inputSchema:
+              type: "object"
+              "$schema": "https://json-schema.org/draft/2020-12/schema"
+              properties:
+                task:
+                  type: "string"
+                  description: "Task id, or part of its title"
+              required:
+                - "task"
+          - name: "work_through_tasks"
+            description: "Work through every open task one by one (simulated, a few seconds each), logging what it is \"doing\", reporting progress, and marking each as done"
+            inputSchema:
+              type: "object"
+              "$schema": "https://json-schema.org/draft/2020-12/schema"
+              properties:
+                secondsPerTask:
+                  description: "How long to pretend each task takes (default: 3 seconds)"
+                  type: "number"
+                  minimum: 0
+                  maximum: 15
+          - name: "clear_done"
+            description: "Delete every completed task (asks the user to confirm first)"
+            inputSchema:
+              type: "object"
+              properties: {}
+          - name: "prioritize"
+            description: "Rank the open tasks by importance using the LLM connected to the host, and update their priorities"
+            inputSchema:
+              type: "object"
+              properties: {}
+        resultType: "complete"
+        ttlMs: 0
+        cacheScope: "private"
+        _meta:
+          "io.modelcontextprotocol/serverInfo":
+            name: "todos"
+            version: "1.0.0"
+      jsonrpc: "2.0"
+      id: 2
+- request:
+    method: "resources/list"
+    message:
+      type: json
+      content:
+        jsonrpc: "2.0"
+        id: 3
+        method: "resources/list"
+        params:
+          _meta:
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+            "io.modelcontextprotocol/clientInfo":
+              name: "zigai-interop"
+              version: "0.1.0"
+            "io.modelcontextprotocol/clientCapabilities": {}
+  events: []
+  response:
+    type: json
+    content:
+      result:
+        resources:
+          - uri: "todos://board"
+            name: "board"
+            description: "The whole todo board as markdown"
+            mimeType: "text/markdown"
+        resultType: "complete"
+        ttlMs: 0
+        cacheScope: "private"
+        _meta:
+          "io.modelcontextprotocol/serverInfo":
+            name: "todos"
+            version: "1.0.0"
+      jsonrpc: "2.0"
+      id: 3
+- request:
+    method: "prompts/list"
+    message:
+      type: json
+      content:
+        jsonrpc: "2.0"
+        id: 4
+        method: "prompts/list"
+        params:
+          _meta:
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+            "io.modelcontextprotocol/clientInfo":
+              name: "zigai-interop"
+              version: "0.1.0"
+            "io.modelcontextprotocol/clientCapabilities": {}
+  events: []
+  response:
+    type: json
+    content:
+      result:
+        prompts:
+          - name: "seed-board"
+            description: "Have the assistant invent themed example tasks and add them to the board (via add_tasks)"
+            arguments:
+              - name: "theme"
+                description: "A theme for the invented tasks"
+                required: true
+          - name: "plan-my-day"
+            description: "Seed a planning conversation around the current board"
+            arguments:
+              - name: "focus"
+                description: "Project to focus on"
+                required: true
+        resultType: "complete"
+        ttlMs: 0
+        cacheScope: "private"
+        _meta:
+          "io.modelcontextprotocol/serverInfo":
+            name: "todos"
+            version: "1.0.0"
+      jsonrpc: "2.0"
+      id: 4

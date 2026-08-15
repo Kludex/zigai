@@ -171,6 +171,138 @@ pub const ReplayTransport = struct {
     }
 };
 
+pub const RecordingTransport = struct {
+    allocator: std.mem.Allocator,
+    inner: zigai.mcp.Transport,
+    source: Source,
+    transport_kind: TransportKind,
+    interactions: std.ArrayList(OwnedInteraction) = .empty,
+
+    const OwnedInteraction = struct {
+        method: []u8,
+        message: []u8,
+        events: std.ArrayList([]const u8) = .empty,
+        response: []u8,
+
+        fn deinit(self: *OwnedInteraction, allocator: std.mem.Allocator) void {
+            allocator.free(self.method);
+            allocator.free(self.message);
+            for (self.events.items) |event| allocator.free(event);
+            self.events.deinit(allocator);
+            allocator.free(self.response);
+            self.* = undefined;
+        }
+    };
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        inner: zigai.mcp.Transport,
+        source: Source,
+        transport_kind: TransportKind,
+    ) RecordingTransport {
+        return .{
+            .allocator = allocator,
+            .inner = inner,
+            .source = source,
+            .transport_kind = transport_kind,
+        };
+    }
+
+    pub fn deinit(self: *RecordingTransport) void {
+        for (self.interactions.items) |*interaction| interaction.deinit(self.allocator);
+        self.interactions.deinit(self.allocator);
+        self.* = undefined;
+    }
+
+    pub fn transport(self: *RecordingTransport) zigai.mcp.Transport {
+        return .{ .context = self, .sendFn = send };
+    }
+
+    pub fn transcriptYaml(self: *const RecordingTransport, allocator: std.mem.Allocator) ![]u8 {
+        const interactions = try allocator.alloc(Interaction, self.interactions.items.len);
+        defer allocator.free(interactions);
+        for (self.interactions.items, interactions) |owned, *interaction| interaction.* = .{
+            .request = .{ .method = owned.method, .message = owned.message },
+            .events = owned.events.items,
+            .response = owned.response,
+        };
+        return stringify(allocator, .{
+            .protocol_version = zigai.mcp.protocol_version,
+            .source = self.source,
+            .transport = self.transport_kind,
+            .interactions = interactions,
+        });
+    }
+
+    pub fn writeTranscriptAtomic(
+        self: *const RecordingTransport,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        dir: std.Io.Dir,
+        path: []const u8,
+    ) !void {
+        const text = try self.transcriptYaml(allocator);
+        defer allocator.free(text);
+        var atomic = try dir.createFileAtomic(io, path, .{ .make_path = true, .replace = true });
+        defer atomic.deinit(io);
+        var buffer: [4096]u8 = undefined;
+        var writer = atomic.file.writer(io, &buffer);
+        try writer.interface.writeAll(text);
+        try writer.interface.flush();
+        try atomic.file.sync(io);
+        try atomic.replace(io);
+    }
+
+    fn send(context: *anyopaque, allocator: std.mem.Allocator, request: zigai.mcp.WireRequest) ![]const u8 {
+        const self: *RecordingTransport = @ptrCast(@alignCast(context));
+        var events: std.ArrayList([]const u8) = .empty;
+        errdefer {
+            for (events.items) |event| self.allocator.free(event);
+            events.deinit(self.allocator);
+        }
+        var capture = EventCapture{
+            .allocator = self.allocator,
+            .events = &events,
+            .downstream = request.events,
+        };
+        var forwarded = request;
+        forwarded.events = capture.eventSink();
+        const response = try self.inner.send(allocator, forwarded);
+        errdefer allocator.free(response);
+        const method = try self.allocator.dupe(u8, request.method);
+        errdefer self.allocator.free(method);
+        const message = try self.allocator.dupe(u8, request.message);
+        errdefer self.allocator.free(message);
+        const response_copy = try self.allocator.dupe(u8, response);
+        errdefer self.allocator.free(response_copy);
+        try self.interactions.append(self.allocator, .{
+            .method = method,
+            .message = message,
+            .events = events,
+            .response = response_copy,
+        });
+        return response;
+    }
+};
+
+const EventCapture = struct {
+    allocator: std.mem.Allocator,
+    events: *std.ArrayList([]const u8),
+    downstream: ?zigai.mcp.EventSink,
+
+    fn eventSink(self: *EventCapture) zigai.mcp.EventSink {
+        return .{ .context = self, .eventFn = emit };
+    }
+
+    fn emit(context: *anyopaque, message: []const u8) !void {
+        const self: *EventCapture = @ptrCast(@alignCast(context));
+        if (self.downstream) |downstream| try downstream.emit(message);
+        const copy = try self.allocator.dupe(u8, message);
+        errdefer self.allocator.free(copy);
+        try self.events.append(self.allocator, copy);
+    }
+};
+
 fn parseEvents(allocator: std.mem.Allocator, node: *const yaml.Node) ![]const []const u8 {
     const sequence = try requireSequence(node);
     const events = try allocator.alloc([]const u8, sequence.items.len);
@@ -333,4 +465,65 @@ test "MCP transcript replay rejects drift exhaustion and missing event sinks" {
         .method = "server/discover",
         .message = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\",\"params\":{}}",
     }));
+}
+
+test "MCP transcript recorder captures events without requiring a downstream sink" {
+    const Stub = struct {
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, request: zigai.mcp.WireRequest) ![]const u8 {
+            try request.events.?.emit("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progress\":1}}");
+            return allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}");
+        }
+    };
+    var unused: u8 = 0;
+    var recorder = RecordingTransport.init(
+        std.testing.allocator,
+        .{ .context = &unused, .sendFn = Stub.send },
+        .{ .server = "reference", .revision = "0123456789abcdef0123456789abcdef01234567" },
+        .http,
+    );
+    defer recorder.deinit();
+    const response = try recorder.transport().send(std.testing.allocator, .{
+        .method = "server/discover",
+        .message = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\",\"params\":{}}",
+    });
+    defer std.testing.allocator.free(response);
+    const text = try recorder.transcriptYaml(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    var replay = try ReplayTransport.init(std.testing.allocator, text);
+    defer replay.deinit();
+    try std.testing.expectEqual(@as(usize, 1), replay.parsed.value.interactions[0].events.len);
+}
+
+test "MCP transcript recorder atomically replaces nested fixture paths" {
+    const Stub = struct {
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, _: zigai.mcp.WireRequest) ![]const u8 {
+            return allocator.dupe(u8, "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}");
+        }
+    };
+    var unused: u8 = 0;
+    var recorder = RecordingTransport.init(
+        std.testing.allocator,
+        .{ .context = &unused, .sendFn = Stub.send },
+        .{ .server = "reference", .revision = "0123456789abcdef0123456789abcdef01234567" },
+        .stdio,
+    );
+    defer recorder.deinit();
+    const response = try recorder.transport().send(std.testing.allocator, .{
+        .method = "server/discover",
+        .message = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\",\"params\":{}}",
+    });
+    defer std.testing.allocator.free(response);
+
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    try recorder.writeTranscriptAtomic(std.testing.allocator, std.testing.io, temporary.dir, "nested/transcript.yaml");
+    try recorder.writeTranscriptAtomic(std.testing.allocator, std.testing.io, temporary.dir, "nested/transcript.yaml");
+    const written = try temporary.dir.readFileAlloc(
+        std.testing.io,
+        "nested/transcript.yaml",
+        std.testing.allocator,
+        .limited(64 * 1024),
+    );
+    defer std.testing.allocator.free(written);
+    try std.testing.expect(std.mem.indexOf(u8, written, "server/discover") != null);
 }

@@ -7,6 +7,8 @@
 - Add a test-only Cassetter-style YAML format that replays ordered MCP
   requests, notifications, and responses without adding fixture code to the
   production library.
+- Add atomic live transcript recording and deterministic stdio/HTTP replays
+  captured from pinned official TypeScript and Python MCP reference servers.
 - Allow bounded concurrent MCP Streamable HTTP requests with configurable
   in-flight backpressure and request-local authorization retries.
 - Add a standalone bounded SSE parser with standard multi-line data framing

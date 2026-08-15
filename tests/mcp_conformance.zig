@@ -7,10 +7,12 @@ const std = @import("std");
 const zigai = @import("zigai");
 const upstreams = @import("mcp/upstreams.zig");
 const transcripts = @import("mcp/transcripts.zig");
+const interop_fixtures = @import("mcp/interop_fixtures.zig");
 
 comptime {
     _ = upstreams;
     _ = transcripts;
+    _ = interop_fixtures;
 }
 
 const Flow = enum {

@@ -1,0 +1,1030 @@
+version: 1
+protocol_version: "2026-07-28"
+source:
+  server: "python-everything"
+  revision: "52ad0a8876f97f631b6e7cb973a786b253088a4d"
+transport: http
+interactions:
+- request:
+    method: "server/discover"
+    message:
+      type: json
+      content:
+        jsonrpc: "2.0"
+        id: 1
+        method: "server/discover"
+        params:
+          _meta:
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+            "io.modelcontextprotocol/clientInfo":
+              name: "zigai-interop"
+              version: "0.1.0"
+            "io.modelcontextprotocol/clientCapabilities": {}
+  events: []
+  response:
+    type: json
+    content:
+      jsonrpc: "2.0"
+      id: 1
+      result:
+        cacheScope: "private"
+        capabilities:
+          completions: {}
+          logging: {}
+          prompts:
+            listChanged: true
+          resources:
+            listChanged: true
+            subscribe: true
+          tools:
+            listChanged: true
+        resultType: "complete"
+        supportedVersions:
+          - "2026-07-28"
+        ttlMs: 0
+        _meta:
+          "io.modelcontextprotocol/serverInfo":
+            name: "mcp-conformance-test-server"
+            version: "0.1.0"
+- request:
+    method: "tools/list"
+    message:
+      type: json
+      content:
+        jsonrpc: "2.0"
+        id: 2
+        method: "tools/list"
+        params:
+          _meta:
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+            "io.modelcontextprotocol/clientInfo":
+              name: "zigai-interop"
+              version: "0.1.0"
+            "io.modelcontextprotocol/clientCapabilities": {}
+  events: []
+  response:
+    type: json
+    content:
+      jsonrpc: "2.0"
+      id: 2
+      result:
+        cacheScope: "private"
+        resultType: "complete"
+        tools:
+          - description: "Tests simple text content response"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_simple_textArguments"
+            name: "test_simple_text"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_simple_textOutput"
+              type: "object"
+          - description: "Tests image content response"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_image_contentArguments"
+            name: "test_image_content"
+            outputSchema:
+              "$defs":
+                Annotations:
+                  description: "Optional annotations the client can use to inform how objects are used or displayed."
+                  properties:
+                    audience:
+                      anyOf:
+                        - items:
+                            enum:
+                              - "user"
+                              - "assistant"
+                            type: "string"
+                          type: "array"
+                        - type: "null"
+                      default: null
+                      title: "Audience"
+                    priority:
+                      anyOf:
+                        - maximum: 1
+                          minimum: 0
+                          type: "number"
+                        - type: "null"
+                      default: null
+                      title: "Priority"
+                    lastModified:
+                      anyOf:
+                        - type: "string"
+                        - type: "null"
+                      default: null
+                      title: "Lastmodified"
+                  title: "Annotations"
+                  type: "object"
+                ImageContent:
+                  description: "An image provided to or from an LLM."
+                  properties:
+                    type:
+                      const: "image"
+                      default: "image"
+                      title: "Type"
+                      type: "string"
+                    data:
+                      title: "Data"
+                      type: "string"
+                    mimeType:
+                      title: "Mimetype"
+                      type: "string"
+                    annotations:
+                      anyOf:
+                        - "$ref": "#/$defs/Annotations"
+                        - type: "null"
+                      default: null
+                    _meta:
+                      anyOf:
+                        - additionalProperties: true
+                          type: "object"
+                        - type: "null"
+                      default: null
+                      title: "Meta"
+                  required:
+                    - "data"
+                    - "mimeType"
+                  title: "ImageContent"
+                  type: "object"
+              properties:
+                result:
+                  items:
+                    "$ref": "#/$defs/ImageContent"
+                  title: "Result"
+                  type: "array"
+              required:
+                - "result"
+              title: "test_image_contentOutput"
+              type: "object"
+          - description: "Tests audio content response"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_audio_contentArguments"
+            name: "test_audio_content"
+            outputSchema:
+              "$defs":
+                Annotations:
+                  description: "Optional annotations the client can use to inform how objects are used or displayed."
+                  properties:
+                    audience:
+                      anyOf:
+                        - items:
+                            enum:
+                              - "user"
+                              - "assistant"
+                            type: "string"
+                          type: "array"
+                        - type: "null"
+                      default: null
+                      title: "Audience"
+                    priority:
+                      anyOf:
+                        - maximum: 1
+                          minimum: 0
+                          type: "number"
+                        - type: "null"
+                      default: null
+                      title: "Priority"
+                    lastModified:
+                      anyOf:
+                        - type: "string"
+                        - type: "null"
+                      default: null
+                      title: "Lastmodified"
+                  title: "Annotations"
+                  type: "object"
+                AudioContent:
+                  description: "Audio provided to or from an LLM."
+                  properties:
+                    type:
+                      const: "audio"
+                      default: "audio"
+                      title: "Type"
+                      type: "string"
+                    data:
+                      title: "Data"
+                      type: "string"
+                    mimeType:
+                      title: "Mimetype"
+                      type: "string"
+                    annotations:
+                      anyOf:
+                        - "$ref": "#/$defs/Annotations"
+                        - type: "null"
+                      default: null
+                    _meta:
+                      anyOf:
+                        - additionalProperties: true
+                          type: "object"
+                        - type: "null"
+                      default: null
+                      title: "Meta"
+                  required:
+                    - "data"
+                    - "mimeType"
+                  title: "AudioContent"
+                  type: "object"
+              properties:
+                result:
+                  items:
+                    "$ref": "#/$defs/AudioContent"
+                  title: "Result"
+                  type: "array"
+              required:
+                - "result"
+              title: "test_audio_contentOutput"
+              type: "object"
+          - description: "Tests embedded resource content response"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_embedded_resourceArguments"
+            name: "test_embedded_resource"
+            outputSchema:
+              "$defs":
+                Annotations:
+                  description: "Optional annotations the client can use to inform how objects are used or displayed."
+                  properties:
+                    audience:
+                      anyOf:
+                        - items:
+                            enum:
+                              - "user"
+                              - "assistant"
+                            type: "string"
+                          type: "array"
+                        - type: "null"
+                      default: null
+                      title: "Audience"
+                    priority:
+                      anyOf:
+                        - maximum: 1
+                          minimum: 0
+                          type: "number"
+                        - type: "null"
+                      default: null
+                      title: "Priority"
+                    lastModified:
+                      anyOf:
+                        - type: "string"
+                        - type: "null"
+                      default: null
+                      title: "Lastmodified"
+                  title: "Annotations"
+                  type: "object"
+                BlobResourceContents:
+                  description: "Binary contents of a resource."
+                  properties:
+                    uri:
+                      title: "Uri"
+                      type: "string"
+                    mimeType:
+                      anyOf:
+                        - type: "string"
+                        - type: "null"
+                      default: null
+                      title: "Mimetype"
+                    _meta:
+                      anyOf:
+                        - additionalProperties: true
+                          type: "object"
+                        - type: "null"
+                      default: null
+                      title: "Meta"
+                    blob:
+                      title: "Blob"
+                      type: "string"
+                  required:
+                    - "uri"
+                    - "blob"
+                  title: "BlobResourceContents"
+                  type: "object"
+                EmbeddedResource:
+                  description: "The contents of a resource, embedded into a prompt or tool call result.\n\nIt is up to the client how best to render embedded resources for the benefit\nof the LLM and/or the user."
+                  properties:
+                    type:
+                      const: "resource"
+                      default: "resource"
+                      title: "Type"
+                      type: "string"
+                    resource:
+                      anyOf:
+                        - "$ref": "#/$defs/TextResourceContents"
+                        - "$ref": "#/$defs/BlobResourceContents"
+                      title: "Resource"
+                    annotations:
+                      anyOf:
+                        - "$ref": "#/$defs/Annotations"
+                        - type: "null"
+                      default: null
+                    _meta:
+                      anyOf:
+                        - additionalProperties: true
+                          type: "object"
+                        - type: "null"
+                      default: null
+                      title: "Meta"
+                  required:
+                    - "resource"
+                  title: "EmbeddedResource"
+                  type: "object"
+                TextResourceContents:
+                  description: "Text contents of a resource."
+                  properties:
+                    uri:
+                      title: "Uri"
+                      type: "string"
+                    mimeType:
+                      anyOf:
+                        - type: "string"
+                        - type: "null"
+                      default: null
+                      title: "Mimetype"
+                    _meta:
+                      anyOf:
+                        - additionalProperties: true
+                          type: "object"
+                        - type: "null"
+                      default: null
+                      title: "Meta"
+                    text:
+                      title: "Text"
+                      type: "string"
+                  required:
+                    - "uri"
+                    - "text"
+                  title: "TextResourceContents"
+                  type: "object"
+              properties:
+                result:
+                  items:
+                    "$ref": "#/$defs/EmbeddedResource"
+                  title: "Result"
+                  type: "array"
+              required:
+                - "result"
+              title: "test_embedded_resourceOutput"
+              type: "object"
+          - description: "Tests response with multiple content types (text, image, resource)"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_multiple_content_typesArguments"
+            name: "test_multiple_content_types"
+            outputSchema:
+              "$defs":
+                Annotations:
+                  description: "Optional annotations the client can use to inform how objects are used or displayed."
+                  properties:
+                    audience:
+                      anyOf:
+                        - items:
+                            enum:
+                              - "user"
+                              - "assistant"
+                            type: "string"
+                          type: "array"
+                        - type: "null"
+                      default: null
+                      title: "Audience"
+                    priority:
+                      anyOf:
+                        - maximum: 1
+                          minimum: 0
+                          type: "number"
+                        - type: "null"
+                      default: null
+                      title: "Priority"
+                    lastModified:
+                      anyOf:
+                        - type: "string"
+                        - type: "null"
+                      default: null
+                      title: "Lastmodified"
+                  title: "Annotations"
+                  type: "object"
+                BlobResourceContents:
+                  description: "Binary contents of a resource."
+                  properties:
+                    uri:
+                      title: "Uri"
+                      type: "string"
+                    mimeType:
+                      anyOf:
+                        - type: "string"
+                        - type: "null"
+                      default: null
+                      title: "Mimetype"
+                    _meta:
+                      anyOf:
+                        - additionalProperties: true
+                          type: "object"
+                        - type: "null"
+                      default: null
+                      title: "Meta"
+                    blob:
+                      title: "Blob"
+                      type: "string"
+                  required:
+                    - "uri"
+                    - "blob"
+                  title: "BlobResourceContents"
+                  type: "object"
+                EmbeddedResource:
+                  description: "The contents of a resource, embedded into a prompt or tool call result.\n\nIt is up to the client how best to render embedded resources for the benefit\nof the LLM and/or the user."
+                  properties:
+                    type:
+                      const: "resource"
+                      default: "resource"
+                      title: "Type"
+                      type: "string"
+                    resource:
+                      anyOf:
+                        - "$ref": "#/$defs/TextResourceContents"
+                        - "$ref": "#/$defs/BlobResourceContents"
+                      title: "Resource"
+                    annotations:
+                      anyOf:
+                        - "$ref": "#/$defs/Annotations"
+                        - type: "null"
+                      default: null
+                    _meta:
+                      anyOf:
+                        - additionalProperties: true
+                          type: "object"
+                        - type: "null"
+                      default: null
+                      title: "Meta"
+                  required:
+                    - "resource"
+                  title: "EmbeddedResource"
+                  type: "object"
+                ImageContent:
+                  description: "An image provided to or from an LLM."
+                  properties:
+                    type:
+                      const: "image"
+                      default: "image"
+                      title: "Type"
+                      type: "string"
+                    data:
+                      title: "Data"
+                      type: "string"
+                    mimeType:
+                      title: "Mimetype"
+                      type: "string"
+                    annotations:
+                      anyOf:
+                        - "$ref": "#/$defs/Annotations"
+                        - type: "null"
+                      default: null
+                    _meta:
+                      anyOf:
+                        - additionalProperties: true
+                          type: "object"
+                        - type: "null"
+                      default: null
+                      title: "Meta"
+                  required:
+                    - "data"
+                    - "mimeType"
+                  title: "ImageContent"
+                  type: "object"
+                TextContent:
+                  description: "Text provided to or from an LLM."
+                  properties:
+                    type:
+                      const: "text"
+                      default: "text"
+                      title: "Type"
+                      type: "string"
+                    text:
+                      title: "Text"
+                      type: "string"
+                    annotations:
+                      anyOf:
+                        - "$ref": "#/$defs/Annotations"
+                        - type: "null"
+                      default: null
+                    _meta:
+                      anyOf:
+                        - additionalProperties: true
+                          type: "object"
+                        - type: "null"
+                      default: null
+                      title: "Meta"
+                  required:
+                    - "text"
+                  title: "TextContent"
+                  type: "object"
+                TextResourceContents:
+                  description: "Text contents of a resource."
+                  properties:
+                    uri:
+                      title: "Uri"
+                      type: "string"
+                    mimeType:
+                      anyOf:
+                        - type: "string"
+                        - type: "null"
+                      default: null
+                      title: "Mimetype"
+                    _meta:
+                      anyOf:
+                        - additionalProperties: true
+                          type: "object"
+                        - type: "null"
+                      default: null
+                      title: "Meta"
+                    text:
+                      title: "Text"
+                      type: "string"
+                  required:
+                    - "uri"
+                    - "text"
+                  title: "TextResourceContents"
+                  type: "object"
+              properties:
+                result:
+                  items:
+                    anyOf:
+                      - "$ref": "#/$defs/TextContent"
+                      - "$ref": "#/$defs/ImageContent"
+                      - "$ref": "#/$defs/EmbeddedResource"
+                  title: "Result"
+                  type: "array"
+              required:
+                - "result"
+              title: "test_multiple_content_typesOutput"
+              type: "object"
+          - description: "Tests tool that emits log messages during execution"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_tool_with_loggingArguments"
+            name: "test_tool_with_logging"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_tool_with_loggingOutput"
+              type: "object"
+          - description: "Tests tool that reports progress notifications"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_tool_with_progressArguments"
+            name: "test_tool_with_progress"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_tool_with_progressOutput"
+              type: "object"
+          - description: "Tests server-initiated sampling (LLM completion request)"
+            inputSchema:
+              type: "object"
+              properties:
+                prompt:
+                  title: "Prompt"
+                  type: "string"
+              required:
+                - "prompt"
+              title: "test_samplingArguments"
+            name: "test_sampling"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_samplingOutput"
+              type: "object"
+          - description: "Tests server-initiated elicitation (user input request)"
+            inputSchema:
+              type: "object"
+              properties:
+                message:
+                  title: "Message"
+                  type: "string"
+              required:
+                - "message"
+              title: "test_elicitationArguments"
+            name: "test_elicitation"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_elicitationOutput"
+              type: "object"
+          - description: "Tests elicitation with default values for all primitive types (SEP-1034)"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_elicitation_sep1034_defaultsArguments"
+            name: "test_elicitation_sep1034_defaults"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_elicitation_sep1034_defaultsOutput"
+              type: "object"
+          - description: "Tests elicitation with enum schema variations per SEP-1330"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_elicitation_sep1330_enumsArguments"
+            name: "test_elicitation_sep1330_enums"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_elicitation_sep1330_enumsOutput"
+              type: "object"
+          - description: "Tests error response handling"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_error_handlingArguments"
+            name: "test_error_handling"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_error_handlingOutput"
+              type: "object"
+          - description: "Tests SEP-2243 Mcp-Param-* server-side validation.\n\nArms the http-custom-header-server-validation conformance scenario, which\nskips when no tool with an `x-mcp-header` annotation is found.\n"
+            inputSchema:
+              type: "object"
+              properties:
+                region:
+                  default: "<none>"
+                  description: "Mirrored into the Mcp-Param-Region header"
+                  title: "Region"
+                  type: "string"
+                  x-mcp-header: "Region"
+              title: "test_x_mcp_headerArguments"
+            name: "test_x_mcp_header"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_x_mcp_headerOutput"
+              type: "object"
+          - description: "Tests that a handler-raised MISSING_REQUIRED_CLIENT_CAPABILITY surfaces as a top-level JSON-RPC error.\n\nRequires the client to declare the ``sampling`` capability. When absent, raises\n`MCPError` (which the tool dispatch re-raises rather than wrapping in\n``CallToolResult.isError``) so the conformance harness observes a protocol-level\nerror response with ``data.requiredCapabilities``.\n"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_missing_capabilityArguments"
+            name: "test_missing_capability"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_missing_capabilityOutput"
+              type: "object"
+          - description: "Tests InputRequiredResult with a single elicitation request"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_input_required_result_elicitationArguments"
+            name: "test_input_required_result_elicitation"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_input_required_result_elicitationOutput"
+              type: "object"
+          - description: "Tests InputRequiredResult with a single sampling request"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_input_required_result_samplingArguments"
+            name: "test_input_required_result_sampling"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_input_required_result_samplingOutput"
+              type: "object"
+          - description: "Tests InputRequiredResult with a single roots/list request"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_input_required_result_list_rootsArguments"
+            name: "test_input_required_result_list_roots"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_input_required_result_list_rootsOutput"
+              type: "object"
+          - description: "Tests requestState round-tripping in the InputRequiredResult flow"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_input_required_result_request_stateArguments"
+            name: "test_input_required_result_request_state"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_input_required_result_request_stateOutput"
+              type: "object"
+          - description: "Tests InputRequiredResult carrying elicitation, sampling and roots requests together"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_input_required_result_multiple_inputsArguments"
+            name: "test_input_required_result_multiple_inputs"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_input_required_result_multiple_inputsOutput"
+              type: "object"
+          - description: "Tests a three-round InputRequiredResult flow with evolving requestState"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_input_required_result_multi_roundArguments"
+            name: "test_input_required_result_multi_round"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_input_required_result_multi_roundOutput"
+              type: "object"
+          - description: "Tests that the server rejects a tampered requestState echo.\n\nThe handler stays plaintext; tamper rejection happens in the SDK's request-state boundary.\n"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_input_required_result_tampered_stateArguments"
+            name: "test_input_required_result_tampered_state"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_input_required_result_tampered_stateOutput"
+              type: "object"
+          - description: "Tests that inputRequests only include methods the client declared support for"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_input_required_result_capabilitiesArguments"
+            name: "test_input_required_result_capabilities"
+          - description: "Tests JSON Schema 2020-12 keyword preservation in tools/list (inputSchema installed below)."
+            inputSchema:
+              "$schema": "https://json-schema.org/draft/2020-12/schema"
+              type: "object"
+              "$defs":
+                address:
+                  "$anchor": "addressDef"
+                  type: "object"
+                  properties:
+                    street:
+                      type: "string"
+                    city:
+                      type: "string"
+              properties:
+                name:
+                  type: "string"
+                address:
+                  "$ref": "#/$defs/address"
+                contactMethod:
+                  type: "string"
+                  enum:
+                    - "phone"
+                    - "email"
+                phone:
+                  type: "string"
+                email:
+                  type: "string"
+              allOf:
+                - anyOf:
+                    - required:
+                        - "phone"
+                    - required:
+                        - "email"
+              if:
+                properties:
+                  contactMethod:
+                    const: "phone"
+                required:
+                  - "contactMethod"
+              then:
+                required:
+                  - "phone"
+              else:
+                required:
+                  - "email"
+              additionalProperties: false
+            name: "json_schema_2020_12_tool"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "json_schema_2020_12_toolOutput"
+              type: "object"
+          - description: "Tests SSE polling by closing stream mid-call (SEP-1699)"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_reconnectionArguments"
+            name: "test_reconnection"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_reconnectionOutput"
+              type: "object"
+          - description: "Mutates the tool list and announces it to subscriptions/listen streams (SEP-2575)"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_trigger_tool_changeArguments"
+            name: "test_trigger_tool_change"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_trigger_tool_changeOutput"
+              type: "object"
+          - description: "Mutates the prompt list and announces it to subscriptions/listen streams (SEP-2575)"
+            inputSchema:
+              type: "object"
+              properties: {}
+              title: "test_trigger_prompt_changeArguments"
+            name: "test_trigger_prompt_change"
+            outputSchema:
+              properties:
+                result:
+                  title: "Result"
+                  type: "string"
+              required:
+                - "result"
+              title: "test_trigger_prompt_changeOutput"
+              type: "object"
+        ttlMs: 0
+        _meta:
+          "io.modelcontextprotocol/serverInfo":
+            name: "mcp-conformance-test-server"
+            version: "0.1.0"
+- request:
+    method: "resources/list"
+    message:
+      type: json
+      content:
+        jsonrpc: "2.0"
+        id: 3
+        method: "resources/list"
+        params:
+          _meta:
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+            "io.modelcontextprotocol/clientInfo":
+              name: "zigai-interop"
+              version: "0.1.0"
+            "io.modelcontextprotocol/clientCapabilities": {}
+  events: []
+  response:
+    type: json
+    content:
+      jsonrpc: "2.0"
+      id: 3
+      result:
+        cacheScope: "private"
+        resources:
+          - description: "A static text resource for testing"
+            mimeType: "text/plain"
+            name: "static_text_resource"
+            uri: "test://static-text"
+          - description: "A static binary resource (image) for testing"
+            mimeType: "text/plain"
+            name: "static_binary_resource"
+            uri: "test://static-binary"
+          - description: "A resource that can be subscribed to for updates"
+            mimeType: "text/plain"
+            name: "watched_resource"
+            uri: "test://watched-resource"
+        resultType: "complete"
+        ttlMs: 0
+        _meta:
+          "io.modelcontextprotocol/serverInfo":
+            name: "mcp-conformance-test-server"
+            version: "0.1.0"
+- request:
+    method: "prompts/list"
+    message:
+      type: json
+      content:
+        jsonrpc: "2.0"
+        id: 4
+        method: "prompts/list"
+        params:
+          _meta:
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28"
+            "io.modelcontextprotocol/clientInfo":
+              name: "zigai-interop"
+              version: "0.1.0"
+            "io.modelcontextprotocol/clientCapabilities": {}
+  events: []
+  response:
+    type: json
+    content:
+      jsonrpc: "2.0"
+      id: 4
+      result:
+        cacheScope: "private"
+        prompts:
+          - arguments: []
+            description: "A simple prompt without arguments"
+            name: "test_simple_prompt"
+          - arguments:
+              - name: "arg1"
+                required: true
+              - name: "arg2"
+                required: true
+            description: "A prompt with required arguments"
+            name: "test_prompt_with_arguments"
+          - arguments:
+              - name: "resourceUri"
+                required: true
+            description: "A prompt that includes an embedded resource"
+            name: "test_prompt_with_embedded_resource"
+          - arguments: []
+            description: "A prompt that includes image content"
+            name: "test_prompt_with_image"
+          - arguments: []
+            description: "Tests InputRequiredResult from prompts/get (SEP-2322 non-tool request)"
+            name: "test_input_required_result_prompt"
+        resultType: "complete"
+        ttlMs: 0
+        _meta:
+          "io.modelcontextprotocol/serverInfo":
+            name: "mcp-conformance-test-server"
+            version: "0.1.0"
