@@ -207,6 +207,10 @@ test "native provider composes application profile lookup and overrides" {
         },
     });
     const provider = state.provider();
+    try std.testing.expectError(
+        error.UnexpectedRequest,
+        provider.request(std.testing.allocator, .{ .method = .POST, .endpoint = "/converse" }),
+    );
     const application = provider.modelProfile("application-model", .{});
     try std.testing.expect(application.supports_tools);
     try std.testing.expect(!application.supports_streaming);

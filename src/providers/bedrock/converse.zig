@@ -972,9 +972,18 @@ test "Converse client preserves the provider boundary" {
         ) void {
             const self: *@This() = @ptrCast(@alignCast(context));
             self.observed = status == 429 and std.mem.indexOf(u8, body, "slow down") != null and observer != null;
+            if (observer) |target| target.observe(.{
+                .provider = "bedrock",
+                .status = status,
+                .message = body,
+                .body = "",
+            });
         }
 
-        fn observeApplication(_: *anyopaque, _: model_types.ProviderError) void {}
+        fn observeApplication(context: *anyopaque, _: model_types.ProviderError) void {
+            const called: *bool = @ptrCast(@alignCast(context));
+            called.* = true;
+        }
 
         fn expectHeader(headers: []const transport.Header, name: []const u8, value: []const u8) !void {
             for (headers) |header| if (std.ascii.eqlIgnoreCase(header.name, name)) {
@@ -985,6 +994,7 @@ test "Converse client preserves the provider boundary" {
         }
     };
     var state: State = .{};
+    try std.testing.expectError(error.MissingHeader, State.expectHeader(&.{}, "missing", "value"));
     var client = Client{
         .model_name = "arn:aws:bedrock/model name",
         .provider = .{
@@ -995,10 +1005,10 @@ test "Converse client preserves the provider boundary" {
             .observeErrorFn = State.observe,
         },
     };
-    var marker: u8 = 0;
+    var observer_called = false;
     const request_value = model_types.ModelRequest{
         .messages = &.{},
-        .error_observer = .{ .context = &marker, .observeFn = State.observeApplication },
+        .error_observer = .{ .context = &observer_called, .observeFn = State.observeApplication },
         .error_policy = .{ .capture_body = true },
         .settings = .{ .extra_headers = &.{.{ .name = "x-trace", .value = "boundary" }} },
     };
@@ -1008,4 +1018,5 @@ test "Converse client preserves the provider boundary" {
     try std.testing.expectEqualStrings("ok", response.parts[0].text);
     try std.testing.expectError(error.ProviderRateLimited, client.model().request(arena.allocator(), request_value));
     try std.testing.expect(state.observed);
+    try std.testing.expect(observer_called);
 }
