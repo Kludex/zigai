@@ -271,6 +271,25 @@ returns an arena-owned native entry list with a typed family and complete
 structured `ProviderDetails`, including unknown beta entry types. Call
 `deinit` when finished. Conversation IDs are validated before path assembly.
 
+Cohere keeps its existing Compatibility API aliases. Native v2 Chat uses an
+explicit provider and client:
+
+```zig
+var provider = zigai.providers.cohere.ChatProvider.init(api_key, transport);
+var client = zigai.providers.cohere.ChatClient{
+    .model_name = "command-a-03-2025",
+    .provider = provider.provider(),
+};
+```
+
+The native adapter supports chronological system, user, assistant, and tool
+messages; buffered and streamed text, thinking, tool plans, and parallel tool
+calls; structured output; normalized usage; and structured citation and
+log-probability details. Cohere-only fields such as `strict_tools`, documents,
+citation options, safety mode, and priority use the isolated `.cohere`
+extension body. Authentication stays on `ChatProvider`; compatibility clients
+continue to use `Provider` and `Client`.
+
 OpenAI-compatible modules follow the same rule. Each named module exports a
 matching `Provider` and `Client` built from shared compile-time defaults. The
 provider owns the API root, provider identity, authentication style, headers,

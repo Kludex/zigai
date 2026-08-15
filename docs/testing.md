@@ -56,8 +56,9 @@ size tiers. It is defined once in
 search, Anthropic web search plus fetch, Google Search plus URL Context, a
 complete Amazon Bedrock Converse function-tool loop, and an Azure OpenAI v1
 Responses function-tool loop. It also contains a Mistral Conversations web
-search with native execution entries, references, and connector-token usage.
-These recordings verify the native request shapes and responses.
+search with native execution entries, references, and connector-token usage,
+plus a Cohere v2 strict function-tool loop with citations. These recordings
+verify the native request shapes and responses.
 
 `tests/cassettes/rich/` contains one real inline-image exchange for each
 first-party provider.
@@ -94,9 +95,10 @@ The recorder accepts `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and either
 `GOOGLE_API_KEY` or `GEMINI_API_KEY`. Native Bedrock recording additionally
 uses `AWS_BEARER_TOKEN_BEDROCK` and `AWS_DEFAULT_REGION`; native Azure recording
 uses `AZURE_OPENAI_API_KEY` and `AZURE_OPENAI_ENDPOINT`; native Mistral uses
-`MISTRAL_API_KEY`. It replaces each cassette atomically only after a successful
-agent tool loop. Authentication headers are never copied; provider-specific URL
-filters replace the real Bedrock region and Azure resource endpoint.
+`MISTRAL_API_KEY`; native Cohere uses `CO_API_KEY`. It replaces each cassette
+atomically only after a successful agent tool loop. Authentication headers are
+never copied; provider-specific URL filters replace the real Bedrock region and
+Azure resource endpoint.
 
 The files follow Cassetter v1 YAML. JSON bodies are nested YAML values, streamed
 responses use literal text blocks, and binary bodies are explicit. Headers are

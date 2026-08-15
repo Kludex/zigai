@@ -183,7 +183,7 @@ authentication style, or model profile overrides.
 | `zigai.providers.bedrock` | Amazon Bedrock Converse; Mantle Chat Completions |
 | `zigai.providers.xai` | xAI Responses; explicit Chat Completions compatibility |
 | `zigai.providers.cerebras` | Cerebras Inference |
-| `zigai.providers.cohere` | Cohere Compatibility API |
+| `zigai.providers.cohere` | Cohere v2 Chat; explicit Compatibility API |
 | `zigai.providers.deepseek` | DeepSeek |
 | `zigai.providers.doubleword` | Doubleword |
 | `zigai.providers.groq` | Groq |
@@ -238,6 +238,10 @@ and `mantleApiBase` only for the OpenAI-compatible Mantle endpoint.
 Mistral keeps its compatibility aliases stable: `Provider` and `Client` use
 Chat Completions. Use `ConversationsProvider` and `ConversationsClient` for
 native entries, managed tools, streaming, and explicit stored sessions.
+
+Cohere follows the same compatibility rule. `Provider` and `Client` keep the
+existing Compatibility API; use `ChatProvider` and `ChatClient` for native v2
+messages, tool plans, strict tools, thinking, citations, and streaming.
 
 Every first-party and OpenAI-compatible provider can discover the models
 visible to the configured credential:

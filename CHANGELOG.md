@@ -59,6 +59,11 @@
 - Record and replay a redacted real `mistral-small-latest` Conversations web
   search, including native execution details, tool references, and connector
   token counters.
+- Add a native Cohere v2 Chat provider and client while preserving the existing
+  Compatibility API aliases. The native adapter supports buffered and streamed
+  messages, thinking, tool plans and calls, strict tools, structured output,
+  normalized usage, citations, log probabilities, and isolated `.cohere`
+  extensions. A redacted real Command A tool loop verifies replay and citations.
 - Record and replay a redacted real Azure OpenAI `gpt-4o` Responses function
   tool loop, normalizing the resource endpoint and omitting authentication.
 - Record and replay a redacted real Claude Sonnet 4.6 Converse tool loop. The
