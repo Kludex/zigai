@@ -5,7 +5,9 @@ pub fn main(init: std.process.Init) !void {
     const base_url = init.environ_map.get("ZIGAI_FIXTURE_BASE_URL") orelse return error.MissingFixtureUrl;
     const url = try std.fmt.allocPrint(init.gpa, "{s}/health", .{base_url});
     defer init.gpa.free(url);
-    var http = zigai.transport.HttpTransport.init(init.gpa, init.io);
+    var http = zigai.transport.HttpTransport.initWithOptions(init.gpa, init.io, .{
+        .url_policy = .{ .allow_http = true, .allow_local_network = true },
+    });
     defer http.deinit();
     const response = try http.transport().send(init.gpa, .{ .method = .GET, .url = url });
     defer init.gpa.free(response.body);
@@ -40,9 +42,42 @@ pub fn main(init: std.process.Init) !void {
     });
     if (capture.starts != 2 or capture.lines != 6) return error.UnexpectedStreamEvents;
 
-    var limited_http = zigai.transport.HttpTransport.initWithLimits(init.gpa, init.io, .{
-        .max_response_body_bytes = 8,
-        .max_stream_line_bytes = 8,
+    const redirect_url = try std.fmt.allocPrint(init.gpa, "{s}/redirect", .{base_url});
+    defer init.gpa.free(redirect_url);
+    if (http.transport().send(init.gpa, .{ .method = .GET, .url = redirect_url })) |redirect| {
+        init.gpa.free(redirect.body);
+        return error.ExpectedRedirectRejection;
+    } else |err| switch (err) {
+        error.RedirectRejected => {},
+        else => return err,
+    }
+    if (http.transport().streamLines(init.gpa, .{ .method = .GET, .url = redirect_url }, .{
+        .context = &capture,
+        .startFn = Capture.start,
+        .lineFn = Capture.line,
+    })) |_| {
+        return error.ExpectedRedirectRejection;
+    } else |err| switch (err) {
+        error.RedirectRejected => {},
+        else => return err,
+    }
+    if (capture.starts != 2 or capture.lines != 6) return error.UnexpectedRedirectEvents;
+
+    var inspect_redirect_http = zigai.transport.HttpTransport.initWithOptions(init.gpa, init.io, .{
+        .url_policy = .{ .allow_http = true, .allow_local_network = true },
+        .redirect_policy = .return_response,
+    });
+    defer inspect_redirect_http.deinit();
+    const redirect = try inspect_redirect_http.transport().send(init.gpa, .{ .method = .GET, .url = redirect_url });
+    defer init.gpa.free(redirect.body);
+    if (redirect.status != 302 or redirect.body.len != 0) return error.UnexpectedRedirectResponse;
+
+    var limited_http = zigai.transport.HttpTransport.initWithOptions(init.gpa, init.io, .{
+        .limits = .{
+            .max_response_body_bytes = 8,
+            .max_stream_line_bytes = 8,
+        },
+        .url_policy = .{ .allow_http = true, .allow_local_network = true },
     });
     defer limited_http.deinit();
     const exact_body_url = try std.fmt.allocPrint(init.gpa, "{s}/body-limit-exact", .{base_url});

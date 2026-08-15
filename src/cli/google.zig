@@ -4,13 +4,16 @@ const common = @import("common.zig");
 
 pub fn main(init: std.process.Init) !void {
     const input = try common.promptAndKey(init, "GEMINI_API_KEY");
-    var http = zigai.transport.HttpTransport.init(init.gpa, init.io);
+    const base_url = init.environ_map.get("GEMINI_BASE_URL") orelse zigai.google.api_base;
+    var http = zigai.transport.HttpTransport.initWithOptions(init.gpa, init.io, .{
+        .url_policy = common.urlPolicyForConfiguredEndpoint(base_url, zigai.google.api_base),
+    });
     defer http.deinit();
     var client = zigai.google.Client{
         .model_name = init.environ_map.get("GEMINI_MODEL") orelse "gemini-2.5-flash-lite",
         .api_key = input.api_key,
         .transport = http.transport(),
-        .base_url = init.environ_map.get("GEMINI_BASE_URL") orelse zigai.google.api_base,
+        .base_url = base_url,
     };
     var loaded_tools = try common.LoadedTools.load(init.gpa, init.io, input.tools_path);
     defer loaded_tools.deinit();

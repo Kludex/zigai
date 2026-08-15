@@ -1,5 +1,6 @@
 const std = @import("std");
 const model_types = @import("model.zig");
+const security = @import("security.zig");
 
 /// Transport failures defined by ZigAI. Concrete transports may add their own
 /// I/O, TLS, URI, callback, and allocation errors.
@@ -16,6 +17,8 @@ pub const Error = error{
     StreamingNotSupported,
     /// The response selected a content encoding ZigAI cannot decompress.
     UnsupportedCompressionMethod,
+    /// A redirect response was rejected before its target could receive credentials.
+    RedirectRejected,
 };
 
 /// Allocation limits applied after HTTP content decompression.
@@ -24,6 +27,24 @@ pub const Limits = struct {
     max_response_body_bytes: usize = 16 * 1024 * 1024,
     /// Maximum bytes accepted before the newline in one streaming line.
     max_stream_line_bytes: usize = 1024 * 1024,
+};
+
+/// Handling for HTTP 3xx responses. ZigAI never follows redirects implicitly.
+pub const RedirectPolicy = enum {
+    /// Return `error.RedirectRejected` without exposing or following `Location`.
+    reject,
+    /// Return the 3xx response to the caller without following it.
+    return_response,
+};
+
+/// Configuration for the standard-library HTTP transport.
+pub const Options = struct {
+    /// Decompressed response allocation limits.
+    limits: Limits = .{},
+    /// Validation applied before DNS or socket work.
+    url_policy: security.UrlPolicy = .{},
+    /// Treatment of 3xx responses; redirects are never followed here.
+    redirect_policy: RedirectPolicy = .reject,
 };
 
 pub const Method = enum {
@@ -35,6 +56,16 @@ pub const Header = struct {
     name: []const u8,
     value: []const u8,
     sensitive: bool = false,
+
+    /// Returns whether this header must be hidden from diagnostic consumers.
+    pub fn isSensitive(self: Header) bool {
+        return self.sensitive or security.isSensitiveHeaderName(self.name);
+    }
+
+    /// Returns the original value for ordinary headers and a static marker for secrets.
+    pub fn redactedValue(self: Header) []const u8 {
+        return security.redactedHeaderValue(self.name, self.value, self.sensitive);
+    }
 };
 
 pub const Request = struct {
@@ -125,14 +156,26 @@ pub const LineSink = struct {
 pub const HttpTransport = struct {
     client: std.http.Client,
     limits: Limits = .{},
+    url_policy: security.UrlPolicy = .{},
+    redirect_policy: RedirectPolicy = .reject,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) HttpTransport {
-        return initWithLimits(allocator, io, .{});
+        return initWithOptions(allocator, io, .{});
     }
 
     /// Initializes an HTTP transport with explicit decompressed response limits.
     pub fn initWithLimits(allocator: std.mem.Allocator, io: std.Io, limits: Limits) HttpTransport {
-        return .{ .client = .{ .allocator = allocator, .io = io }, .limits = limits };
+        return initWithOptions(allocator, io, .{ .limits = limits });
+    }
+
+    /// Initializes an HTTP transport with explicit limits and outbound policy.
+    pub fn initWithOptions(allocator: std.mem.Allocator, io: std.Io, options: Options) HttpTransport {
+        return .{
+            .client = .{ .allocator = allocator, .io = io },
+            .limits = options.limits,
+            .url_policy = options.url_policy,
+            .redirect_policy = options.redirect_policy,
+        };
     }
 
     pub fn deinit(self: *HttpTransport) void {
@@ -155,6 +198,7 @@ pub const HttpTransport = struct {
 
     fn sendDirect(context: *anyopaque, allocator: std.mem.Allocator, request_value: Request) !Response {
         const self: *HttpTransport = @ptrCast(@alignCast(context));
+        try self.url_policy.validate(request_value.url);
         var headers: std.ArrayList(std.http.Header) = .empty;
         defer headers.deinit(allocator);
         for (request_value.headers) |header| {
@@ -182,6 +226,7 @@ pub const HttpTransport = struct {
         }
         var response = try request.receiveHead(&.{});
         const status: u16 = @intFromEnum(response.head.status);
+        if (isRedirect(status) and self.redirect_policy == .reject) return error.RedirectRejected;
         const metadata = responseMetadata(response.head);
 
         const decompress_buffer = try decompressionBuffer(allocator, response.head.content_encoding);
@@ -209,6 +254,7 @@ pub const HttpTransport = struct {
 
     fn streamLinesDirect(context: *anyopaque, allocator: std.mem.Allocator, request_value: Request, sink: LineSink) !StreamResponse {
         const self: *HttpTransport = @ptrCast(@alignCast(context));
+        try self.url_policy.validate(request_value.url);
         var headers: std.ArrayList(std.http.Header) = .empty;
         defer headers.deinit(allocator);
         for (request_value.headers) |header| try headers.append(allocator, .{ .name = header.name, .value = header.value });
@@ -232,6 +278,7 @@ pub const HttpTransport = struct {
         }
         var response = try request.receiveHead(&.{});
         const result = StreamResponse{ .status = @intFromEnum(response.head.status), .metadata = responseMetadata(response.head) };
+        if (isRedirect(result.status) and self.redirect_policy == .reject) return error.RedirectRejected;
         try sink.start(result);
         const decompress_buffer = try decompressionBuffer(allocator, response.head.content_encoding);
         defer if (decompress_buffer.len > 0) allocator.free(decompress_buffer);
@@ -245,6 +292,10 @@ pub const HttpTransport = struct {
         return result;
     }
 };
+
+fn isRedirect(status: u16) bool {
+    return status >= 300 and status < 400;
+}
 
 fn streamLine(allocator: std.mem.Allocator, reader: *std.Io.Reader, maximum_bytes: usize) !?[]u8 {
     var line_writer: std.Io.Writer.Allocating = .init(allocator);
@@ -473,6 +524,41 @@ test "transport reports unsupported line streaming" {
         .startFn = Stub.start,
         .lineFn = Stub.line,
     }));
+}
+
+test "headers redact conventional and explicitly marked secrets" {
+    const authorization = Header{ .name = "Authorization", .value = "Bearer private" };
+    try std.testing.expect(authorization.isSensitive());
+    try std.testing.expectEqualStrings(security.redacted_value, authorization.redactedValue());
+
+    const marked = Header{ .name = "x-custom", .value = "private", .sensitive = true };
+    try std.testing.expect(marked.isSensitive());
+    try std.testing.expectEqualStrings(security.redacted_value, marked.redactedValue());
+
+    const content_type = Header{ .name = "content-type", .value = "application/json" };
+    try std.testing.expect(!content_type.isSensitive());
+    try std.testing.expectEqualStrings("application/json", content_type.redactedValue());
+}
+
+test "HTTP transport enforces its outbound URL policy before socket work" {
+    var http = HttpTransport.init(std.testing.allocator, std.testing.io);
+    defer http.deinit();
+    try std.testing.expectError(error.UrlSchemeNotAllowed, http.transport().send(std.testing.allocator, .{
+        .method = .GET,
+        .url = "http://example.com",
+    }));
+    try std.testing.expectError(error.LocalNetworkUrlForbidden, http.transport().send(std.testing.allocator, .{
+        .method = .GET,
+        .url = "https://127.0.0.1",
+    }));
+
+    var limited = HttpTransport.initWithLimits(std.testing.allocator, std.testing.io, .{
+        .max_response_body_bytes = 1,
+        .max_stream_line_bytes = 1,
+    });
+    defer limited.deinit();
+    try std.testing.expectEqual(@as(usize, 1), limited.limits.max_response_body_bytes);
+    try std.testing.expectEqual(@as(usize, 1), limited.limits.max_stream_line_bytes);
 }
 
 test "response metadata parses retry and provider rate-limit headers" {

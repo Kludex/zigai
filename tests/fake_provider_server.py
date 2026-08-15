@@ -9,6 +9,12 @@ import time
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
+        if self.path == "/redirect":
+            self.send_response(302)
+            self.send_header("location", "/health")
+            self.send_header("content-length", "0")
+            self.end_headers()
+            return
         if self.path in ("/body-limit-exact", "/body-limit-over"):
             size = 8 if self.path.endswith("exact") else 9
             body = gzip.compress(b"x" * size)

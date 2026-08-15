@@ -8,6 +8,16 @@ pub const Input = struct {
     tools_path: ?[]const u8,
 };
 
+/// Returns the transport policy for a provider endpoint selected by the CLI.
+/// A custom endpoint is an explicit operator choice and may target local HTTP.
+pub fn urlPolicyForConfiguredEndpoint(base_url: []const u8, default_url: []const u8) zigai.security.UrlPolicy {
+    if (std.mem.eql(u8, base_url, default_url)) return .{};
+    return .{
+        .allow_http = std.ascii.startsWithIgnoreCase(base_url, "http://"),
+        .allow_local_network = true,
+    };
+}
+
 pub fn promptAndKey(init: std.process.Init, key_name: []const u8) !Input {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     const parsed = parseArguments(args) catch {
@@ -186,6 +196,20 @@ test "CLI argument parsing accepts streaming and tool manifests in either order"
     try std.testing.expectError(error.InvalidArguments, parseArguments(&.{ "cli", "one", "two" }));
     try std.testing.expectError(error.InvalidArguments, parseArguments(&.{ "cli", "--unknown", "one" }));
     try std.testing.expectError(error.InvalidArguments, parseArguments(&.{ "cli", "--stream", "--stream", "one" }));
+}
+
+test "CLI endpoint policy keeps defaults strict and permits explicit local endpoints" {
+    const strict = urlPolicyForConfiguredEndpoint("https://api.example.com", "https://api.example.com");
+    try std.testing.expect(!strict.allow_http);
+    try std.testing.expect(!strict.allow_local_network);
+
+    const local = urlPolicyForConfiguredEndpoint("HTTP://127.0.0.1:8000", "https://api.example.com");
+    try std.testing.expect(local.allow_http);
+    try std.testing.expect(local.allow_local_network);
+
+    const custom_https = urlPolicyForConfiguredEndpoint("https://gateway.internal", "https://api.example.com");
+    try std.testing.expect(!custom_https.allow_http);
+    try std.testing.expect(custom_https.allow_local_network);
 }
 
 test "tool manifests create executable provider-neutral tools" {

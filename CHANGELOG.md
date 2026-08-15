@@ -6,6 +6,8 @@
   module while preserving the existing root and `model` aliases.
 - Allocation-free outbound URL policy with HTTPS-by-default validation,
   local-network protection, host allowlists, and conventional header redaction.
+- Standard HTTP transport enforcement for outbound URL policy and explicit,
+  never-followed redirect handling, with local endpoint opt-in for the CLI.
 - Configurable post-decompression HTTP body and streaming-line limits with
   stable oversized-response errors.
 - Shared pre-allocation JSON validation with documented limits for history,
