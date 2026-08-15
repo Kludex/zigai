@@ -181,8 +181,8 @@ request policy, transport, and profile callbacks. The client owns only the
 model name, model settings, Chat Completions behavior, and optional
 gateway-specific idempotency header. Use
 `openai_compatible.Provider.initWithOptions` when the endpoint or identity is
-selected at runtime; Azure OpenAI and Bedrock expose `apiBase` helpers for
-deployment-specific roots.
+selected at runtime; Azure OpenAI exposes `apiBase`, while Bedrock Mantle
+exposes `mantleApiBase`, for deployment-specific roots.
 
 Named compatible providers resolve model capabilities in four layers:
 

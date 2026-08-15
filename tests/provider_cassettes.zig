@@ -102,7 +102,7 @@ test "real OpenAI-compatible provider cassettes replay text responses" {
         if (comptime std.mem.eql(u8, entry.provider, "azure-openai"))
             try replayCompatibleProvider(zigai.providers.azure_openai.Provider, zigai.providers.azure_openai.Client, entry)
         else if (comptime std.mem.eql(u8, entry.provider, "bedrock"))
-            try replayCompatibleProvider(zigai.providers.bedrock.Provider, zigai.providers.bedrock.Client, entry)
+            try replayCompatibleProvider(zigai.providers.bedrock.MantleProvider, zigai.providers.bedrock.MantleClient, entry)
         else if (comptime std.mem.eql(u8, entry.provider, "cerebras"))
             try replayCompatibleProvider(zigai.providers.cerebras.Provider, zigai.providers.cerebras.Client, entry)
         else if (comptime std.mem.eql(u8, entry.provider, "cohere"))

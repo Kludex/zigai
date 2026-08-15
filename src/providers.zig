@@ -73,7 +73,7 @@ fn namedCompatibleProfile(comptime ProviderType: type, comptime ClientType: type
 
 test "named compatible clients use their provider model profiles" {
     try std.testing.expect(namedCompatibleProfile(azure_openai.Provider, azure_openai.Client, "gpt-4o").supports_json_schema_output);
-    try std.testing.expect(namedCompatibleProfile(bedrock.Provider, bedrock.Client, "openai.gpt-oss-20b").supportsReasoningEffort(.medium));
+    try std.testing.expect(namedCompatibleProfile(bedrock.MantleProvider, bedrock.MantleClient, "openai.gpt-oss-20b").supportsReasoningEffort(.medium));
     try std.testing.expect(!namedCompatibleProfile(cerebras.Provider, cerebras.Client, "gpt-oss-120b").supports_parallel_tool_calls);
     try std.testing.expect(namedCompatibleProfile(cohere.Provider, cohere.Client, "command-a-plus").supports_tools);
     try std.testing.expect(!namedCompatibleProfile(deepseek.Provider, deepseek.Client, "deepseek-v4-flash").supports_temperature);

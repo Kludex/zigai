@@ -113,7 +113,7 @@ fn recordCompatible(
             init.gpa,
             requiredKey(init, zigai.providers.azure_openai.endpoint_env),
         ),
-        .bedrock => try zigai.providers.bedrock.apiBase(
+        .bedrock => try zigai.providers.bedrock.mantleApiBase(
             init.gpa,
             requiredKey(init, zigai.providers.bedrock.region_env),
         ),

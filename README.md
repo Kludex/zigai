@@ -180,7 +180,7 @@ authentication style, or model profile overrides.
 | `zigai.providers.anthropic` | Anthropic Messages |
 | `zigai.providers.google` | Gemini GenerateContent |
 | `zigai.providers.azure_openai` | Azure OpenAI v1 |
-| `zigai.providers.bedrock` | Amazon Bedrock Mantle |
+| `zigai.providers.bedrock` | Amazon Bedrock (Mantle compatibility adapter) |
 | `zigai.providers.cerebras` | Cerebras Inference |
 | `zigai.providers.cohere` | Cohere Compatibility API |
 | `zigai.providers.deepseek` | DeepSeek |
@@ -206,7 +206,7 @@ var client = zigai.providers.anthropic.Client{
 ```
 
 OpenAI-compatible APIs use the same provider/model split. Named providers such
-as Azure OpenAI and Bedrock also expose `apiBase` helpers because their
+as Azure OpenAI and Bedrock Mantle also expose API-base helpers because their
 endpoints depend on the resource or region:
 
 ```zig
