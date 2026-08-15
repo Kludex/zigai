@@ -815,6 +815,12 @@ test "OpenAI validates its endpoint before invoking a custom transport" {
         }
     };
     var called = false;
+    try std.testing.expectError(
+        error.UnexpectedTransportCall,
+        Stub.send(&called, std.testing.allocator, .{ .method = .POST, .url = "https://example.com" }),
+    );
+    try std.testing.expect(called);
+    called = false;
     var client = Client{
         .model_name = "gpt-test",
         .api_key = "secret",

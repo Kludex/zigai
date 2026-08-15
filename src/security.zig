@@ -191,12 +191,7 @@ test "URL policy blocks local names and non-public addresses" {
         "https://[::ffff:127.0.0.1]/x",
     };
     for (blocked) |value| {
-        if ((UrlPolicy{}).validate(value)) {
-            std.debug.print("unexpectedly allowed local URL: {s}\n", .{value});
-            return error.TestExpectedError;
-        } else |failure| {
-            try std.testing.expectEqual(error.LocalNetworkUrlForbidden, failure);
-        }
+        try std.testing.expectError(error.LocalNetworkUrlForbidden, (UrlPolicy{}).validate(value));
     }
     try (UrlPolicy{ .allow_local_network = true }).validate("https://127.0.0.1/x");
     try (UrlPolicy{}).validate("https://8.8.8.8/x");
