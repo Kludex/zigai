@@ -1863,7 +1863,7 @@ test "per-tool concurrency and queue limits serialize accepted calls" {
     try std.testing.expect(!state.overlapped.load(.seq_cst));
 }
 
-test "tool isolation cancels in-flight work and requires IO for timeouts" {
+test "tool isolation requires IO and available concurrency" {
     const call = [_]zigai.model.Part{.{ .tool_call = .{
         .id = "slow",
         .name = "slow",
@@ -1886,25 +1886,6 @@ test "tool isolation cancels in-flight work and requires IO for timeouts" {
                 .clock = .awake,
             } }).sleep(run_context.io.?);
             return allocator.dupe(u8, "late");
-        }
-    };
-    const Cancel = struct {
-        fn after(io: std.Io, token: *zigai.CancellationToken, state: *State) !void {
-            const start_deadline = std.Io.Clock.Timestamp.fromNow(io, .{
-                .raw = .fromSeconds(5),
-                .clock = .awake,
-            });
-            while (!state.active.load(.seq_cst)) {
-                if (std.Io.Clock.Timestamp.now(io, .awake).durationTo(start_deadline).raw.nanoseconds <= 0) {
-                    token.cancel();
-                    return error.ToolDidNotStart;
-                }
-                try (std.Io.Timeout{ .duration = .{
-                    .raw = .fromMilliseconds(1),
-                    .clock = .awake,
-                } }).sleep(io);
-            }
-            token.cancel();
         }
     };
     var state: State = .{};
@@ -1947,25 +1928,6 @@ test "tool isolation cancels in-flight work and requires IO for timeouts" {
             .io = no_concurrency.io(),
         }).run(std.testing.allocator, "Run."),
     );
-
-    var cancelled_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &call }} };
-    var token: zigai.CancellationToken = .{};
-    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
-    defer threaded.deinit();
-    var cancel_runtime = std.Io.Threaded.init(std.testing.allocator, .{});
-    defer cancel_runtime.deinit();
-    var cancel = try cancel_runtime.io().concurrent(Cancel.after, .{ cancel_runtime.io(), &token, &state });
-    try std.testing.expectError(
-        zigai.Agent.Error.Cancelled,
-        (zigai.Agent{
-            .model = cancelled_model.model(),
-            .tools = &.{tool},
-            .cancellation = &token,
-            .io = threaded.io(),
-        }).run(std.testing.allocator, "Run."),
-    );
-    try cancel.await(cancel_runtime.io());
-    try std.testing.expect(!state.active.load(.seq_cst));
 }
 
 test "parallel tools handle validation and terminal execution failures" {

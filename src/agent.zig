@@ -2691,7 +2691,7 @@ test "tool lookup is exact" {
     try std.testing.expectEqualStrings("ok", content);
 }
 
-test "tool control drains work at the absolute run deadline" {
+test "tool control drains work at deadlines and cancellation" {
     const State = struct {
         active: std.atomic.Value(bool) = .init(false),
 
@@ -2709,6 +2709,21 @@ test "tool control drains work at the absolute run deadline" {
                 .raw = .fromSeconds(10),
                 .clock = .awake,
             } }).sleep(run.io.?);
+        }
+
+        fn cancelAfter(io: std.Io, token: *CancellationToken, state: *@This()) !void {
+            const start_deadline = std.Io.Clock.Timestamp.fromNow(io, .{
+                .raw = .fromSeconds(5),
+                .clock = .awake,
+            });
+            while (!state.active.load(.seq_cst)) {
+                if (std.Io.Clock.Timestamp.now(io, .awake).durationTo(start_deadline).raw.nanoseconds <= 0) {
+                    token.cancel();
+                    return error.ToolDidNotStart;
+                }
+                try toolTimeout(1).sleep(io);
+            }
+            token.cancel();
         }
     };
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
@@ -2729,6 +2744,18 @@ test "tool control drains work at the absolute run deadline" {
         .deadline = deadline,
     }, "{}");
     try std.testing.expectEqual(Agent.Error.RunTimedOut, outcome.failure);
+    try std.testing.expect(!state.active.load(.seq_cst));
+
+    var token: CancellationToken = .{};
+    var cancel_runtime = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer cancel_runtime.deinit();
+    var cancel = try cancel_runtime.io().concurrent(State.cancelAfter, .{ cancel_runtime.io(), &token, &state });
+    const cancelled = executeToolControlled(io, tool, .{}, std.testing.allocator, .{
+        .io = io,
+        .cancellation = &token,
+    }, "{}");
+    try cancel.await(cancel_runtime.io());
+    try std.testing.expectEqual(Agent.Error.Cancelled, cancelled.failure);
     try std.testing.expect(!state.active.load(.seq_cst));
 }
 
