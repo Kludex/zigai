@@ -81,7 +81,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 
 ## P1 — MCP production conformance
 
-- [ ] Build an MCP conformance matrix for protocol `2026-07-28` covering every
+- [x] Build an MCP conformance matrix for protocol `2026-07-28` covering every
   advertised client/server capability, method, notification, error envelope,
   pagination path, unknown extension, and compatibility rule.
 - [ ] Add MCP authorization and deployment security: OAuth protected-resource
