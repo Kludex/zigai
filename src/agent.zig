@@ -2719,7 +2719,7 @@ test "tool control drains work at deadlines and cancellation" {
             while (!state.active.load(.seq_cst)) {
                 if (std.Io.Clock.Timestamp.now(io, .awake).durationTo(start_deadline).raw.nanoseconds <= 0) {
                     token.cancel();
-                    return error.ToolDidNotStart;
+                    return error.ToolDidNotStart; // unreachable in a passing scheduler test
                 }
                 try toolTimeout(1).sleep(io);
             }
@@ -2757,6 +2757,23 @@ test "tool control drains work at deadlines and cancellation" {
     try cancel.await(cancel_runtime.io());
     try std.testing.expectEqual(Agent.Error.Cancelled, cancelled.failure);
     try std.testing.expect(!state.active.load(.seq_cst));
+
+    const Fast = struct {
+        fn execute(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]const u8 {
+            return allocator.dupe(u8, "ok");
+        }
+    };
+    var live_token: CancellationToken = .{};
+    const succeeded = executeToolControlled(io, .{
+        .definition = .{ .name = "fast", .description = "", .parameters_json_schema = "{}" },
+        .context = &state,
+        .executeFn = Fast.execute,
+    }, .{}, std.testing.allocator, .{
+        .io = io,
+        .cancellation = &live_token,
+    }, "{}");
+    defer std.testing.allocator.free(succeeded.success.content);
+    try std.testing.expectEqualStrings("ok", succeeded.success.content);
 }
 
 test "capability requirement accepts and rejects" {

@@ -763,33 +763,21 @@ test "run control shares one deadline and drains interrupted work" {
 test "run control drains cancellation and supports cooperative fallback" {
     const State = struct {
         active: std.atomic.Value(bool) = .init(false),
+        started: std.atomic.Value(bool) = .init(false),
 
         fn slow(self: *@This(), io: std.Io) !void {
+            self.started.store(true, .seq_cst);
             self.active.store(true, .seq_cst);
             defer self.active.store(false, .seq_cst);
-            try (std.Io.Timeout{ .duration = .{
-                .raw = .fromMilliseconds(100),
+            while (true) try (std.Io.Timeout{ .duration = .{
+                .raw = .fromSeconds(10),
                 .clock = .awake,
             } }).sleep(io);
         }
 
-        fn cancelAfter(io: std.Io, token: *CancellationToken, state: *@This()) !void {
-            const start_deadline = std.Io.Clock.Timestamp.fromNow(io, .{
-                .raw = .fromSeconds(5),
-                .clock = .awake,
-            });
-            while (!state.active.load(.seq_cst)) {
-                if (std.Io.Clock.Timestamp.now(io, .awake).durationTo(start_deadline).raw.nanoseconds <= 0) {
-                    token.cancel();
-                    return error.OperationDidNotStart;
-                }
-                try (std.Io.Timeout{ .duration = .{
-                    .raw = .fromMilliseconds(1),
-                    .clock = .awake,
-                } }).sleep(io);
-            }
+        fn cancelAfter(io: std.Io, token: *CancellationToken) !void {
             try (std.Io.Timeout{ .duration = .{
-                .raw = .fromMilliseconds(10),
+                .raw = .fromMilliseconds(50),
                 .clock = .awake,
             } }).sleep(io);
             token.cancel();
@@ -810,15 +798,19 @@ test "run control drains cancellation and supports cooperative fallback" {
     const io = threaded.io();
     var token: CancellationToken = .{};
     var state: State = .{};
-    var canceller = try io.concurrent(State.cancelAfter, .{ io, &token, &state });
+    var cancel_runtime = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer cancel_runtime.deinit();
+    var canceller = try cancel_runtime.io().concurrent(State.cancelAfter, .{ cancel_runtime.io(), &token });
     try std.testing.expectError(
         error.Cancelled,
         (RunControl{ .io = io, .cancellation = &token }).invoke(void, State.slow, .{ &state, io }),
     );
-    try canceller.await(io);
+    try canceller.await(cancel_runtime.io());
+    try std.testing.expect(state.started.load(.seq_cst));
     try std.testing.expect(!state.active.load(.seq_cst));
 
     var live_token: CancellationToken = .{};
+    try (RunControl{ .io = io, .cancellation = &live_token }).invoke(void, State.succeed, .{});
     try (RunControl{ .cancellation = &live_token }).invoke(void, State.succeed, .{});
 
     var cooperative_token: CancellationToken = .{};
