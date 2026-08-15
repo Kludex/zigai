@@ -1107,8 +1107,8 @@ test "native Cohere client owns endpoint identity and provider errors" {
 
 test "native Cohere v2 stream preserves every part lifecycle" {
     const State = struct {
-        fn send(_: *anyopaque, allocator: std.mem.Allocator, _: http.Request) !http.Response {
-            return .{ .status = 200, .body = try allocator.dupe(u8, "{}") };
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, _: http.Request) !http.Response { // kcov-ignore: streaming must not use the buffered transport hook.
+            return .{ .status = 200, .body = try allocator.dupe(u8, "{}") }; // kcov-ignore: the stream-only fixture requires a complete transport vtable.
         }
 
         fn stream(_: *anyopaque, _: std.mem.Allocator, request: http.Request, sink: http.LineSink) !http.StreamResponse {
@@ -1183,8 +1183,8 @@ test "native Cohere stream maps status and protocol failures" {
     const State = struct {
         mode: enum { status, incomplete, unknown } = .status,
 
-        fn send(_: *anyopaque, allocator: std.mem.Allocator, _: http.Request) !http.Response {
-            return .{ .status = 200, .body = try allocator.dupe(u8, "{}") };
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, _: http.Request) !http.Response { // kcov-ignore: streaming must not use the buffered transport hook.
+            return .{ .status = 200, .body = try allocator.dupe(u8, "{}") }; // kcov-ignore: the stream-only fixture requires a complete transport vtable.
         }
 
         fn stream(context: *anyopaque, _: std.mem.Allocator, _: http.Request, sink: http.LineSink) !http.StreamResponse {
@@ -1203,7 +1203,7 @@ test "native Cohere stream maps status and protocol failures" {
         }
     };
     const Sink = struct {
-        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {} // kcov-ignore: every exercised failure occurs before emitting an event.
     };
     var state: State = .{};
     var provider = Provider.init("secret", .{
