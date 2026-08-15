@@ -22,7 +22,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Finish deadline and cancellation propagation. Use one run deadline across
   retries, DNS/connect/write/read, streaming, toolsets, tools, hooks, MCP, and
   deferred resume; prove that abandoned tasks are drained without late writes.
-- [ ] Harden retries. Add full-jitter exponential backoff, HTTP-date
+- [x] Harden retries. Add full-jitter exponential backoff, HTTP-date
   `Retry-After`, provider request IDs, idempotency keys where supported, a retry
   budget, and explicit retry classification for connection and decode failures.
 - [ ] Add context-budget controls. Estimate provider tokens before requests,
