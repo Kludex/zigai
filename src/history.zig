@@ -1,10 +1,11 @@
 //! Lossless serialization and provider-facing processing for reusable agent history.
 //!
-//! Version 2 stores distinct request and response messages. The parser also
+//! Version 2 stores distinct request and response message_types. The parser also
 //! accepts version 1 role-based histories and migrates them into the new model.
 
 const std = @import("std");
 const model = @import("model.zig");
+const message_types = @import("messages.zig");
 const json_limits = @import("json.zig");
 
 pub const Error = error{
@@ -17,7 +18,7 @@ pub const Error = error{
 /// An owned history parsed from ZigAI's versioned JSON representation.
 pub const Owned = struct {
     arena: std.heap.ArenaAllocator,
-    messages: []const model.Message,
+    messages: []const message_types.Message,
 
     pub fn deinit(self: *Owned) void {
         self.arena.deinit();
@@ -28,7 +29,7 @@ pub const Owned = struct {
 /// Runtime state supplied to history processors before a model request.
 pub const Context = struct {
     profile: model.ModelProfile,
-    usage: model.Usage,
+    usage: message_types.Usage,
     model_requests: usize,
     control: model.RunControl = .{},
 };
@@ -52,7 +53,7 @@ pub const Processor = union(enum) {
         summarizeFn: *const fn (
             context: *anyopaque,
             allocator: std.mem.Allocator,
-            messages: []const model.Message,
+            messages: []const message_types.Message,
         ) anyerror![]const u8,
     };
 
@@ -62,23 +63,23 @@ pub const Processor = union(enum) {
             context: *anyopaque,
             allocator: std.mem.Allocator,
             run: Context,
-            messages: []const model.Message,
-        ) anyerror![]const model.Message,
+            messages: []const message_types.Message,
+        ) anyerror![]const message_types.Message,
     };
 
     pub fn process(
         self: Processor,
         allocator: std.mem.Allocator,
         context: Context,
-        messages: []const model.Message,
-    ) ![]const model.Message {
+        messages: []const message_types.Message,
+    ) ![]const message_types.Message {
         return switch (self) {
             .trim => |options| trim(allocator, messages, options.max_messages),
             .compact => compact(allocator, messages),
             .provider_valid => providerValid(allocator, messages),
             .summarize => |options| summarize(allocator, messages, options, context.control),
             .custom => |custom| context.control.invoke(
-                []const model.Message,
+                []const message_types.Message,
                 invokeCustomProcessor,
                 .{ custom, allocator, context, messages },
             ),
@@ -90,8 +91,8 @@ fn invokeCustomProcessor(
     custom: Processor.Custom,
     allocator: std.mem.Allocator,
     context: Context,
-    messages: []const model.Message,
-) ![]const model.Message {
+    messages: []const message_types.Message,
+) ![]const message_types.Message {
     return custom.processFn(custom.context, allocator, context, messages);
 }
 
@@ -100,15 +101,15 @@ pub fn processAll(
     allocator: std.mem.Allocator,
     processors: []const Processor,
     context: Context,
-    messages: []const model.Message,
-) ![]const model.Message {
+    messages: []const message_types.Message,
+) ![]const message_types.Message {
     var current = messages;
     for (processors) |processor| current = try processor.process(allocator, context, current);
     return current;
 }
 
 /// Encodes messages using ZigAI history JSON version 2.
-pub fn stringify(allocator: std.mem.Allocator, messages: []const model.Message) ![]u8 {
+pub fn stringify(allocator: std.mem.Allocator, messages: []const message_types.Message) ![]u8 {
     var output: std.Io.Writer.Allocating = .init(allocator);
     defer output.deinit();
     var json: std.json.Stringify = .{ .writer = &output.writer };
@@ -126,7 +127,7 @@ pub fn stringify(allocator: std.mem.Allocator, messages: []const model.Message) 
     return output.toOwnedSlice();
 }
 
-fn writeRequest(allocator: std.mem.Allocator, json: *std.json.Stringify, request: model.RequestMessage) !void {
+fn writeRequest(allocator: std.mem.Allocator, json: *std.json.Stringify, request: message_types.RequestMessage) !void {
     try json.beginObject();
     try json.objectField("kind");
     try json.write("request");
@@ -164,7 +165,7 @@ fn writeRequest(allocator: std.mem.Allocator, json: *std.json.Stringify, request
     try json.endObject();
 }
 
-fn writeResponse(allocator: std.mem.Allocator, json: *std.json.Stringify, response: model.ResponseMessage) !void {
+fn writeResponse(allocator: std.mem.Allocator, json: *std.json.Stringify, response: message_types.ResponseMessage) !void {
     try json.beginObject();
     try json.objectField("kind");
     try json.write("response");
@@ -233,7 +234,7 @@ fn writeTextPart(json: *std.json.Stringify, kind: []const u8, content: []const u
     try json.write(content);
 }
 
-fn writeToolReturn(json: *std.json.Stringify, result: model.ToolResult) !void {
+fn writeToolReturn(json: *std.json.Stringify, result: message_types.ToolResult) !void {
     try json.objectField("tool_call_id");
     try json.write(result.call_id);
     try json.objectField("tool_name");
@@ -246,7 +247,7 @@ fn writeToolReturn(json: *std.json.Stringify, result: model.ToolResult) !void {
     }
 }
 
-fn writeUserContent(allocator: std.mem.Allocator, json: *std.json.Stringify, content: model.UserContent) !void {
+fn writeUserContent(allocator: std.mem.Allocator, json: *std.json.Stringify, content: message_types.UserContent) !void {
     try json.beginObject();
     switch (content) {
         .text => |text| {
@@ -267,7 +268,7 @@ fn writeResponseContent(
     allocator: std.mem.Allocator,
     json: *std.json.Stringify,
     kind: []const u8,
-    content: model.Content,
+    content: message_types.Content,
 ) !void {
     try json.objectField("part_kind");
     try json.write("file");
@@ -281,7 +282,7 @@ fn writeContent(
     allocator: std.mem.Allocator,
     json: *std.json.Stringify,
     kind: []const u8,
-    content: model.Content,
+    content: message_types.Content,
 ) !void {
     try json.objectField("kind");
     try json.write(kind);
@@ -350,7 +351,7 @@ fn writeOptionalRawJson(
     try json.write(parsed.value);
 }
 
-fn writeMetadata(json: *std.json.Stringify, metadata: []const model.Metadata) !void {
+fn writeMetadata(json: *std.json.Stringify, metadata: []const message_types.Metadata) !void {
     if (metadata.len == 0) return;
     try json.objectField("metadata");
     try json.write(metadata);
@@ -380,8 +381,8 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Owned {
     return .{ .arena = arena, .messages = messages };
 }
 
-fn parseV2(allocator: std.mem.Allocator, values: []const std.json.Value) ![]const model.Message {
-    const messages = try allocator.alloc(model.Message, values.len);
+fn parseV2(allocator: std.mem.Allocator, values: []const std.json.Value) ![]const message_types.Message {
+    const messages = try allocator.alloc(message_types.Message, values.len);
     for (values, messages) |value, *message| {
         const object = try asObject(value);
         const kind = try jsonString(object, "kind");
@@ -394,9 +395,9 @@ fn parseV2(allocator: std.mem.Allocator, values: []const std.json.Value) ![]cons
     return messages;
 }
 
-fn parseRequest(allocator: std.mem.Allocator, object: std.json.ObjectMap) !model.RequestMessage {
+fn parseRequest(allocator: std.mem.Allocator, object: std.json.ObjectMap) !message_types.RequestMessage {
     const values = try jsonArray(object, "parts");
-    const parts = try allocator.alloc(model.RequestPart, values.len);
+    const parts = try allocator.alloc(message_types.RequestPart, values.len);
     for (values, parts) |value, *part| {
         const part_object = try asObject(value);
         const kind = try jsonString(part_object, "part_kind");
@@ -419,15 +420,15 @@ fn parseRequest(allocator: std.mem.Allocator, object: std.json.ObjectMap) !model
         .conversation_id = try optionalJsonString(object, "conversation_id"),
         .metadata = try parseMetadata(allocator, object.get("metadata")),
         .state = if (state_name) |name|
-            std.meta.stringToEnum(model.RequestState, name) orelse return Error.InvalidHistory
+            std.meta.stringToEnum(message_types.RequestState, name) orelse return Error.InvalidHistory
         else
             .complete,
     };
 }
 
-fn parseResponse(allocator: std.mem.Allocator, object: std.json.ObjectMap) !model.ResponseMessage {
+fn parseResponse(allocator: std.mem.Allocator, object: std.json.ObjectMap) !message_types.ResponseMessage {
     const values = try jsonArray(object, "parts");
-    const parts = try allocator.alloc(model.ResponsePart, values.len);
+    const parts = try allocator.alloc(message_types.ResponsePart, values.len);
     for (values, parts) |value, *part| {
         const part_object = try asObject(value);
         const kind = try jsonString(part_object, "part_kind");
@@ -469,8 +470,8 @@ fn parseResponse(allocator: std.mem.Allocator, object: std.json.ObjectMap) !mode
     };
 }
 
-fn parseV1(allocator: std.mem.Allocator, values: []const std.json.Value) ![]const model.Message {
-    const messages = try allocator.alloc(model.Message, values.len);
+fn parseV1(allocator: std.mem.Allocator, values: []const std.json.Value) ![]const message_types.Message {
+    const messages = try allocator.alloc(message_types.Message, values.len);
     for (values, messages) |value, *message| {
         const object = try asObject(value);
         const role = try jsonString(object, "role");
@@ -479,7 +480,7 @@ fn parseV1(allocator: std.mem.Allocator, values: []const std.json.Value) ![]cons
         if (std.mem.eql(u8, role, "system") or std.mem.eql(u8, role, "user") or
             std.mem.eql(u8, role, "tool"))
         {
-            const request_parts = try allocator.alloc(model.RequestPart, parts.len);
+            const request_parts = try allocator.alloc(message_types.RequestPart, parts.len);
             for (parts, request_parts) |part_value, *part| {
                 const part_object = try asObject(part_value);
                 const part_kind = try jsonString(part_object, "type");
@@ -498,7 +499,7 @@ fn parseV1(allocator: std.mem.Allocator, values: []const std.json.Value) ![]cons
             }
             message.* = .{ .request = .{ .parts = request_parts, .metadata = metadata } };
         } else if (std.mem.eql(u8, role, "assistant")) {
-            const response_parts = try allocator.alloc(model.ResponsePart, parts.len);
+            const response_parts = try allocator.alloc(message_types.ResponsePart, parts.len);
             for (parts, response_parts) |part_value, *part| {
                 const part_object = try asObject(part_value);
                 const part_kind = try jsonString(part_object, "type");
@@ -510,7 +511,7 @@ fn parseV1(allocator: std.mem.Allocator, values: []const std.json.Value) ![]cons
     return messages;
 }
 
-fn parseUserContent(allocator: std.mem.Allocator, object: std.json.ObjectMap) !model.UserContent {
+fn parseUserContent(allocator: std.mem.Allocator, object: std.json.ObjectMap) !message_types.UserContent {
     const kind = try jsonString(object, "kind");
     if (std.mem.eql(u8, kind, "text")) return .{ .text = try jsonString(object, "content") };
     const content = try parseContent(allocator, object);
@@ -525,7 +526,7 @@ fn parseV1UserContent(
     allocator: std.mem.Allocator,
     object: std.json.ObjectMap,
     kind: []const u8,
-) !model.UserContent {
+) !message_types.UserContent {
     if (std.mem.eql(u8, kind, "text")) return .{ .text = try jsonString(object, "text") };
     const content = try parseContent(allocator, object);
     if (std.mem.eql(u8, kind, "image")) return .{ .image = content };
@@ -539,7 +540,7 @@ fn parseV1ResponsePart(
     allocator: std.mem.Allocator,
     object: std.json.ObjectMap,
     kind: []const u8,
-) !model.ResponsePart {
+) !message_types.ResponsePart {
     if (std.mem.eql(u8, kind, "text")) return .{ .text = try jsonString(object, "text") };
     if (std.mem.eql(u8, kind, "thinking")) return .{ .thinking = .{
         .content = try jsonString(object, "content"),
@@ -560,7 +561,7 @@ fn parseV1ResponsePart(
     return Error.InvalidHistory;
 }
 
-fn parseToolReturn(object: std.json.ObjectMap) !model.ToolResult {
+fn parseToolReturn(object: std.json.ObjectMap) !message_types.ToolResult {
     return .{
         .call_id = try jsonString(object, "tool_call_id"),
         .name = try jsonString(object, "tool_name"),
@@ -569,9 +570,9 @@ fn parseToolReturn(object: std.json.ObjectMap) !model.ToolResult {
     };
 }
 
-fn parseContent(allocator: std.mem.Allocator, object: std.json.ObjectMap) !model.Content {
+fn parseContent(allocator: std.mem.Allocator, object: std.json.ObjectMap) !message_types.Content {
     const source_name = try jsonString(object, "source");
-    const source: model.ContentSource = if (std.mem.eql(u8, source_name, "bytes")) blk: {
+    const source: message_types.ContentSource = if (std.mem.eql(u8, source_name, "bytes")) blk: {
         const encoded = try jsonString(object, "data");
         const size = std.base64.standard.Decoder.calcSizeForSlice(encoded) catch return Error.InvalidHistory;
         const decoded = try allocator.alloc(u8, size);
@@ -595,7 +596,7 @@ fn parseContent(allocator: std.mem.Allocator, object: std.json.ObjectMap) !model
     };
 }
 
-fn parseUsage(value: ?std.json.Value) !model.Usage {
+fn parseUsage(value: ?std.json.Value) !message_types.Usage {
     const object = try asObject(value orelse return .{});
     return .{
         .input_tokens = @intCast(try jsonInteger(object, "input_tokens")),
@@ -603,11 +604,11 @@ fn parseUsage(value: ?std.json.Value) !model.Usage {
     };
 }
 
-fn parseFinishReason(value: ?std.json.Value) !?model.FinishReason {
+fn parseFinishReason(value: ?std.json.Value) !?message_types.FinishReason {
     const object = try asObject(value orelse return null);
     const kind_name = try jsonString(object, "kind");
     return .{
-        .kind = std.meta.stringToEnum(model.FinishReason.Kind, kind_name) orelse return Error.InvalidHistory,
+        .kind = std.meta.stringToEnum(message_types.FinishReason.Kind, kind_name) orelse return Error.InvalidHistory,
         .raw = try jsonString(object, "raw"),
     };
 }
@@ -622,12 +623,12 @@ fn optionalJsonValue(
     return encoded;
 }
 
-fn parseMetadata(allocator: std.mem.Allocator, value: ?std.json.Value) ![]const model.Metadata {
+fn parseMetadata(allocator: std.mem.Allocator, value: ?std.json.Value) ![]const message_types.Metadata {
     const values = switch (value orelse return &.{}) {
         .array => |array| array.items,
         else => return Error.InvalidHistory,
     };
-    const metadata = try allocator.alloc(model.Metadata, values.len);
+    const metadata = try allocator.alloc(message_types.Metadata, values.len);
     for (values, metadata) |item, *result| {
         const object = try asObject(item);
         result.* = .{ .key = try jsonString(object, "key"), .value = try jsonString(object, "value") };
@@ -635,19 +636,19 @@ fn parseMetadata(allocator: std.mem.Allocator, value: ?std.json.Value) ![]const 
     return metadata;
 }
 
-/// Keeps system-prompt requests plus the newest `max_messages` other messages.
+/// Keeps system-prompt requests plus the newest `max_messages` other message_types.
 pub fn trim(
     allocator: std.mem.Allocator,
-    messages: []const model.Message,
+    messages: []const message_types.Message,
     max_messages: usize,
-) ![]const model.Message {
+) ![]const message_types.Message {
     var ordinary: usize = 0;
     for (messages) |message| if (!isSystemRequest(message)) {
         ordinary += 1;
     };
     const skip = ordinary -| max_messages;
     var seen: usize = 0;
-    var retained: std.ArrayList(model.Message) = .empty;
+    var retained: std.ArrayList(message_types.Message) = .empty;
     for (messages) |message| {
         if (isSystemRequest(message)) {
             try retained.append(allocator, message);
@@ -660,8 +661,8 @@ pub fn trim(
 }
 
 /// Merges adjacent text-only messages of the same request/response kind.
-pub fn compact(allocator: std.mem.Allocator, messages: []const model.Message) ![]const model.Message {
-    var result: std.ArrayList(model.Message) = .empty;
+pub fn compact(allocator: std.mem.Allocator, messages: []const message_types.Message) ![]const message_types.Message {
+    var result: std.ArrayList(message_types.Message) = .empty;
     for (messages) |message| {
         if (messagePartsLen(message) == 0) continue;
         if (result.items.len > 0) {
@@ -676,13 +677,13 @@ pub fn compact(allocator: std.mem.Allocator, messages: []const model.Message) ![
     return result.toOwnedSlice(allocator);
 }
 
-fn compactPair(allocator: std.mem.Allocator, left: model.Message, right: model.Message) !?model.Message {
+fn compactPair(allocator: std.mem.Allocator, left: message_types.Message, right: message_types.Message) !?message_types.Message {
     return switch (left) {
         .request => |left_request| switch (right) {
             .request => |right_request| if (requestText(left_request)) |left_text| blk: {
                 const right_text = requestText(right_request) orelse break :blk null;
                 const joined = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ left_text, right_text });
-                const parts = try allocator.alloc(model.RequestPart, 1);
+                const parts = try allocator.alloc(message_types.RequestPart, 1);
                 parts[0] = .{ .user_prompt = .{ .text = joined } };
                 break :blk .{ .request = .{ .parts = parts } };
             } else null,
@@ -692,7 +693,7 @@ fn compactPair(allocator: std.mem.Allocator, left: model.Message, right: model.M
             .response => |right_response| if (responseText(left_response)) |left_text| blk: {
                 const right_text = responseText(right_response) orelse break :blk null;
                 const joined = try std.fmt.allocPrint(allocator, "{s}\n{s}", .{ left_text, right_text });
-                const parts = try allocator.alloc(model.ResponsePart, 1);
+                const parts = try allocator.alloc(message_types.ResponsePart, 1);
                 parts[0] = .{ .text = joined };
                 break :blk .{ .response = .{ .parts = parts } };
             } else null,
@@ -702,12 +703,12 @@ fn compactPair(allocator: std.mem.Allocator, left: model.Message, right: model.M
 }
 
 /// Removes malformed and orphaned tool traffic and repairs tool-return names.
-pub fn providerValid(allocator: std.mem.Allocator, messages: []const model.Message) ![]const model.Message {
-    var cleaned: std.ArrayList(model.Message) = .empty;
+pub fn providerValid(allocator: std.mem.Allocator, messages: []const message_types.Message) ![]const message_types.Message {
+    var cleaned: std.ArrayList(message_types.Message) = .empty;
     for (messages) |message| switch (message) {
         .request => |request| if (request.parts.len > 0) try cleaned.append(allocator, message),
         .response => |response| {
-            var parts: std.ArrayList(model.ResponsePart) = .empty;
+            var parts: std.ArrayList(message_types.ResponsePart) = .empty;
             for (response.parts) |part| switch (part) {
                 .tool_call => |call| if (try validJson(allocator, call.arguments_json)) {
                     try parts.append(allocator, part);
@@ -722,11 +723,11 @@ pub fn providerValid(allocator: std.mem.Allocator, messages: []const model.Messa
         },
     };
 
-    var result: std.ArrayList(model.Message) = .empty;
+    var result: std.ArrayList(message_types.Message) = .empty;
     for (cleaned.items, 0..) |message, index| switch (message) {
         .request => |request| {
             const previous = lastResponse(result.items);
-            var parts: std.ArrayList(model.RequestPart) = .empty;
+            var parts: std.ArrayList(message_types.RequestPart) = .empty;
             for (request.parts) |part| switch (part) {
                 .tool_return => |tool_return| if (previous) |response| {
                     if (findCall(response.parts, tool_return.call_id)) |call| {
@@ -744,7 +745,7 @@ pub fn providerValid(allocator: std.mem.Allocator, messages: []const model.Messa
             }
         },
         .response => |response| {
-            var parts: std.ArrayList(model.ResponsePart) = .empty;
+            var parts: std.ArrayList(message_types.ResponsePart) = .empty;
             for (response.parts) |part| switch (part) {
                 .tool_call => |call| if (hasFutureReturn(cleaned.items[index + 1 ..], call.id)) {
                     try parts.append(allocator, part);
@@ -763,18 +764,18 @@ pub fn providerValid(allocator: std.mem.Allocator, messages: []const model.Messa
 
 fn summarize(
     allocator: std.mem.Allocator,
-    messages: []const model.Message,
+    messages: []const message_types.Message,
     options: Processor.Summarize,
     control: model.RunControl,
-) ![]const model.Message {
+) ![]const message_types.Message {
     var ordinary: usize = 0;
     for (messages) |message| {
         if (!isSystemRequest(message)) ordinary += 1;
     }
     if (ordinary <= options.keep_recent_messages) return messages;
     const older_count = ordinary - options.keep_recent_messages;
-    var older: std.ArrayList(model.Message) = .empty;
-    var retained: std.ArrayList(model.Message) = .empty;
+    var older: std.ArrayList(message_types.Message) = .empty;
+    var retained: std.ArrayList(message_types.Message) = .empty;
     var seen: usize = 0;
     for (messages) |message| {
         if (isSystemRequest(message)) {
@@ -789,9 +790,9 @@ fn summarize(
         invokeSummarizer,
         .{ options, allocator, older.items },
     );
-    const summary_parts = try allocator.alloc(model.RequestPart, 1);
+    const summary_parts = try allocator.alloc(message_types.RequestPart, 1);
     summary_parts[0] = .{ .user_prompt = .{ .text = summary } };
-    var with_summary: std.ArrayList(model.Message) = .empty;
+    var with_summary: std.ArrayList(message_types.Message) = .empty;
     var inserted = false;
     for (retained.items) |message| {
         if (!inserted and !isSystemRequest(message)) {
@@ -807,12 +808,12 @@ fn summarize(
 fn invokeSummarizer(
     options: Processor.Summarize,
     allocator: std.mem.Allocator,
-    messages: []const model.Message,
+    messages: []const message_types.Message,
 ) ![]const u8 {
     return options.summarizeFn(options.context, allocator, messages);
 }
 
-fn isSystemRequest(message: model.Message) bool {
+fn isSystemRequest(message: message_types.Message) bool {
     return switch (message) {
         .response => false,
         .request => |request| blk: {
@@ -823,14 +824,14 @@ fn isSystemRequest(message: model.Message) bool {
     };
 }
 
-fn messagePartsLen(message: model.Message) usize {
+fn messagePartsLen(message: message_types.Message) usize {
     return switch (message) {
         .request => |request| request.parts.len,
         .response => |response| response.parts.len,
     };
 }
 
-fn requestText(request: model.RequestMessage) ?[]const u8 {
+fn requestText(request: message_types.RequestMessage) ?[]const u8 {
     if (request.metadata.len > 0 or request.parts.len != 1) return null;
     return switch (request.parts[0]) {
         .user_prompt => |content| switch (content) {
@@ -841,7 +842,7 @@ fn requestText(request: model.RequestMessage) ?[]const u8 {
     };
 }
 
-fn responseText(response: model.ResponseMessage) ?[]const u8 {
+fn responseText(response: message_types.ResponseMessage) ?[]const u8 {
     if (response.metadata.len > 0 or response.parts.len != 1) return null;
     return switch (response.parts[0]) {
         .text => |text| text,
@@ -849,7 +850,7 @@ fn responseText(response: model.ResponseMessage) ?[]const u8 {
     };
 }
 
-fn lastResponse(messages: []const model.Message) ?model.ResponseMessage {
+fn lastResponse(messages: []const message_types.Message) ?message_types.ResponseMessage {
     var index = messages.len;
     while (index > 0) {
         index -= 1;
@@ -861,7 +862,7 @@ fn lastResponse(messages: []const model.Message) ?model.ResponseMessage {
     return null;
 }
 
-fn hasFutureReturn(messages: []const model.Message, id: []const u8) bool {
+fn hasFutureReturn(messages: []const message_types.Message, id: []const u8) bool {
     for (messages) |message| switch (message) {
         .response => return false,
         .request => |request| for (request.parts) |part| switch (part) {
@@ -872,7 +873,7 @@ fn hasFutureReturn(messages: []const model.Message, id: []const u8) bool {
     return false;
 }
 
-fn findCall(parts: []const model.ResponsePart, id: []const u8) ?model.ToolCall {
+fn findCall(parts: []const message_types.ResponsePart, id: []const u8) ?message_types.ToolCall {
     for (parts) |part| switch (part) {
         .tool_call => |call| if (std.mem.eql(u8, call.id, id)) return call,
         else => {},
@@ -941,7 +942,7 @@ fn optionalJsonBool(object: std.json.ObjectMap, name: []const u8) !?bool {
 }
 
 test "history version 2 round trips request response parts and provenance" {
-    const messages = [_]model.Message{
+    const messages = [_]message_types.Message{
         .{ .request = .{
             .parts = &.{
                 .{ .system_prompt = "rules" },
@@ -1018,12 +1019,12 @@ test "history version 2 round trips request response parts and provenance" {
     const request = decoded.messages[0].request;
     try std.testing.expectEqual(@as(usize, 8), request.parts.len);
     try std.testing.expectEqualStrings("hello", request.parts[1].user_prompt.text);
-    try std.testing.expectEqual(model.RequestState.interrupted, request.state);
+    try std.testing.expectEqual(message_types.RequestState.interrupted, request.state);
     const response = decoded.messages[1].response;
     try std.testing.expectEqualStrings("answer", response.parts[0].text);
     try std.testing.expectEqualStrings("{\"cached\":true}", response.provider_details_json.?);
     try std.testing.expectEqual(@as(u64, 5), response.usage.totalTokens());
-    try std.testing.expectEqual(model.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
+    try std.testing.expectEqual(message_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
 }
 
 test "history version 1 migrates role messages" {
@@ -1072,7 +1073,7 @@ test "history version 1 migrates every rich part" {
 fn summarizeForTest(
     context: *anyopaque,
     allocator: std.mem.Allocator,
-    messages: []const model.Message,
+    messages: []const message_types.Message,
 ) ![]const u8 {
     const calls: *usize = @ptrCast(@alignCast(context));
     calls.* += messages.len;
@@ -1083,17 +1084,17 @@ fn customForTest(
     context: *anyopaque,
     allocator: std.mem.Allocator,
     run: Context,
-    messages: []const model.Message,
-) ![]const model.Message {
+    messages: []const message_types.Message,
+) ![]const message_types.Message {
     const requests: *usize = @ptrCast(@alignCast(context));
     requests.* = run.model_requests;
-    return allocator.dupe(model.Message, messages);
+    return allocator.dupe(message_types.Message, messages);
 }
 
 test "history processors preserve system requests and repair tool traffic" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const messages = [_]model.Message{
+    const messages = [_]message_types.Message{
         .{ .request = .{ .parts = &.{.{ .system_prompt = "rules" }} } },
         .{ .request = .{ .parts = &.{.{ .user_prompt = .{ .text = "one" } }} } },
         .{ .request = .{ .parts = &.{.{ .user_prompt = .{ .text = "two" } }} } },
@@ -1122,7 +1123,7 @@ test "history processors preserve system requests and repair tool traffic" {
     const trimmed = try trim(arena.allocator(), &messages, 3);
     try std.testing.expectEqualStrings("rules", trimmed[0].request.parts[0].system_prompt);
 
-    const response_messages = [_]model.Message{
+    const response_messages = [_]message_types.Message{
         .{ .response = .{ .parts = &.{.{ .text = "one" }} } },
         .{ .response = .{ .parts = &.{.{ .text = "two" }} } },
     };
@@ -1149,7 +1150,7 @@ test "history processors preserve system requests and repair tool traffic" {
     _ = try processAll(arena.allocator(), &processors, context, &messages);
     try std.testing.expectEqual(@as(usize, 7), observed_requests);
 
-    const orphaned = [_]model.Message{
+    const orphaned = [_]message_types.Message{
         .{ .request = .{ .parts = &.{.{ .tool_return = .{ .call_id = "orphan", .name = "tool", .content = "x" } }} } },
         .{ .response = .{ .parts = &.{.{ .tool_call = .{ .id = "missing", .name = "tool", .arguments_json = "{}" } }} } },
         .{ .request = .{ .parts = &.{.{ .tool_return = .{ .call_id = "different", .name = "tool", .content = "x" } }} } },

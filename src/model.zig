@@ -1,5 +1,25 @@
 const std = @import("std");
 const json_limits = @import("json.zig");
+const messages = @import("messages.zig");
+
+pub const Content = messages.Content;
+pub const ContentSource = messages.ContentSource;
+pub const FinishReason = messages.FinishReason;
+pub const Message = messages.Message;
+pub const Metadata = messages.Metadata;
+pub const Part = messages.Part;
+pub const PromptPart = messages.PromptPart;
+pub const ProviderFile = messages.ProviderFile;
+pub const RequestMessage = messages.RequestMessage;
+pub const RequestPart = messages.RequestPart;
+pub const RequestState = messages.RequestState;
+pub const ResponseMessage = messages.ResponseMessage;
+pub const ResponsePart = messages.ResponsePart;
+pub const Thinking = messages.Thinking;
+pub const ToolCall = messages.ToolCall;
+pub const ToolResult = messages.ToolResult;
+pub const Usage = messages.Usage;
+pub const UserContent = messages.UserContent;
 
 pub const CancellationToken = struct {
     cancelled: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -141,136 +161,6 @@ pub const RunControl = struct {
         }
     }
 };
-
-pub const ToolCall = struct {
-    id: []const u8,
-    name: []const u8,
-    arguments_json: []const u8,
-    /// Provider reasoning state that must accompany this call in later turns.
-    thought_signature: ?[]const u8 = null,
-};
-
-pub const ToolResult = struct {
-    call_id: []const u8,
-    name: []const u8,
-    content: []const u8,
-    is_error: bool = false,
-};
-
-/// Application metadata retained in message history but never interpreted by
-/// provider adapters.
-pub const Metadata = struct {
-    key: []const u8,
-    value: []const u8,
-};
-
-pub const ProviderFile = struct {
-    /// Provider file identifier or URI.
-    id: []const u8,
-    /// Optional provider guard. When set, another provider must reject it.
-    provider: ?[]const u8 = null,
-};
-
-pub const ContentSource = union(enum) {
-    bytes: []const u8,
-    url: []const u8,
-    provider_file: ProviderFile,
-};
-
-/// Rich content with a semantic kind supplied by its enclosing `Part` tag.
-pub const Content = struct {
-    source: ContentSource,
-    media_type: []const u8,
-    filename: ?[]const u8 = null,
-    /// Opaque provider reasoning state attached to generated media.
-    thought_signature: ?[]const u8 = null,
-    metadata: []const Metadata = &.{},
-};
-
-/// Model reasoning retained for providers that require it on the next turn.
-/// Applications should treat signatures as opaque.
-pub const Thinking = struct {
-    content: []const u8,
-    signature: ?[]const u8 = null,
-    metadata: []const Metadata = &.{},
-};
-
-/// Content supplied by an application in a user prompt.
-pub const UserContent = union(enum) {
-    text: []const u8,
-    image: Content,
-    audio: Content,
-    document: Content,
-    binary: Content,
-};
-
-/// One part of a request sent to a model.
-pub const RequestPart = union(enum) {
-    system_prompt: []const u8,
-    user_prompt: UserContent,
-    tool_return: ToolResult,
-    retry_prompt: []const u8,
-};
-
-/// One part returned by a model.
-pub const ResponsePart = union(enum) {
-    text: []const u8,
-    image: Content,
-    audio: Content,
-    document: Content,
-    binary: Content,
-    thinking: Thinking,
-    tool_call: ToolCall,
-};
-
-/// Lifecycle state of a request captured in history.
-pub const RequestState = enum {
-    complete,
-    interrupted,
-};
-
-/// An application request recorded in provider-neutral message history.
-pub const RequestMessage = struct {
-    parts: []const RequestPart,
-    timestamp_unix_ms: ?i64 = null,
-    /// Rendered instructions used for the run that created this request.
-    instructions: ?[]const u8 = null,
-    run_id: ?[]const u8 = null,
-    conversation_id: ?[]const u8 = null,
-    /// Application metadata retained in history and never sent to providers.
-    metadata: []const Metadata = &.{},
-    state: RequestState = .complete,
-};
-
-/// A provider response recorded in provider-neutral message history.
-pub const ResponseMessage = struct {
-    parts: []const ResponsePart,
-    usage: Usage = .{},
-    timestamp_unix_ms: ?i64 = null,
-    provider_name: ?[]const u8 = null,
-    provider_url: ?[]const u8 = null,
-    /// Raw JSON for provider data that must survive a history round trip.
-    provider_details_json: ?[]const u8 = null,
-    provider_response_id: ?[]const u8 = null,
-    model_name: ?[]const u8 = null,
-    finish_reason: ?FinishReason = null,
-    run_id: ?[]const u8 = null,
-    conversation_id: ?[]const u8 = null,
-    /// Application metadata retained in history and never sent to providers.
-    metadata: []const Metadata = &.{},
-};
-
-/// A request or response in reusable provider-neutral history.
-pub const Message = union(enum) {
-    request: RequestMessage,
-    response: ResponseMessage,
-};
-
-/// Compatibility name for model response parts.
-pub const Part = ResponsePart;
-
-/// Rich content accepted by `RunOptions.prompt_parts`.
-pub const PromptPart = UserContent;
 
 pub const ToolDefinition = struct {
     name: []const u8,
@@ -557,35 +447,6 @@ pub const ModelSettings = struct {
             .reasoning_effort = overrides.reasoning_effort orelse self.reasoning_effort,
         };
     }
-};
-
-pub const Usage = struct {
-    input_tokens: u64 = 0,
-    output_tokens: u64 = 0,
-
-    pub fn add(self: *Usage, other: Usage) void {
-        self.input_tokens += other.input_tokens;
-        self.output_tokens += other.output_tokens;
-    }
-
-    pub fn totalTokens(self: Usage) u64 {
-        return self.input_tokens + self.output_tokens;
-    }
-};
-
-/// Why a provider ended generation, normalized without discarding its raw value.
-pub const FinishReason = struct {
-    kind: Kind,
-    raw: []const u8,
-
-    pub const Kind = enum {
-        stop,
-        tool_calls,
-        length,
-        content_filter,
-        incomplete_tool_call,
-        other,
-    };
 };
 
 /// Stable error categories emitted by provider adapters. Agents can make retry

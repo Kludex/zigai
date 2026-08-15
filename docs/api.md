@@ -27,10 +27,15 @@ model implementations return `ResponsePart`. `PromptPart` is the short alias
 for rich `UserContent` accepted by `RunOptions.prompt_parts`. `Part` remains a
 compatibility alias for `ResponsePart`.
 
+The same types live under `zigai.messages`. The namespace is the canonical home
+for durable conversation data; the root aliases keep common application code
+short, and `zigai.model` keeps compatibility aliases for model implementers.
+
 Use these namespaces for the rest of the API:
 
 | Namespace | Purpose |
 | --- | --- |
+| `zigai.messages` | Provider-neutral request/response messages and parts |
 | `zigai.providers` | Native and named OpenAI-compatible provider clients |
 | `zigai.models` | Fallback and application-selected model routing |
 | `zigai.history` | Version-2 history serialization, version-1 migration, and processors |

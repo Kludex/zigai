@@ -2,6 +2,18 @@
 
 ZigAI has four layers, and each one has one job.
 
+## Message contract
+
+`messages` contains the durable, provider-neutral conversation model. A
+`Message` is either a `RequestMessage` or `ResponseMessage`, and each side has
+its own part union so invalid role/part combinations are unrepresentable.
+
+Messages do not know about HTTP, model settings, tools available for the next
+call, or any provider wire schema. `history` serializes and processes them;
+provider adapters translate them at the model boundary. `model` re-exports the
+message types as compatibility aliases, but new code can use
+`zigai.messages.Message` when the distinction matters.
+
 ## Model contract
 
 `Model` is a small vtable: context, capabilities, and one request function. It

@@ -302,6 +302,8 @@ History cannot represent invalid role/part combinations. `Message` is a tagged
 union of `RequestMessage` and `ResponseMessage`. Requests use `RequestPart`
 (`system_prompt`, `user_prompt`, `tool_return`, or `retry_prompt`), while
 responses use `ResponsePart` for text, thinking, files, and tool calls.
+These durable types live in `zigai.messages`; the short root aliases are the
+same types.
 
 Version 2 preserves request state and instructions plus response usage, finish
 reason, provider identity, response ID, and raw provider details. The parser

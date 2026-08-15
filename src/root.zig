@@ -1,6 +1,7 @@
 //! Provider-neutral building blocks for tool-using LLM agents.
 
 pub const model = @import("model.zig");
+pub const messages = @import("messages.zig");
 pub const agent = @import("agent.zig");
 pub const testing = @import("testing.zig");
 pub const transport = @import("transport.zig");
@@ -59,35 +60,35 @@ pub const ModelProfile = model.ModelProfile;
 pub const ModelRequest = model.ModelRequest;
 pub const ModelResponse = model.ModelResponse;
 pub const OutputFormat = model.OutputFormat;
-pub const Message = model.Message;
-pub const RequestMessage = model.RequestMessage;
-pub const ResponseMessage = model.ResponseMessage;
-pub const RequestPart = model.RequestPart;
-pub const ResponsePart = model.ResponsePart;
-pub const UserContent = model.UserContent;
-pub const PromptPart = model.PromptPart;
-pub const Part = model.Part;
+pub const Message = messages.Message;
+pub const RequestMessage = messages.RequestMessage;
+pub const ResponseMessage = messages.ResponseMessage;
+pub const RequestPart = messages.RequestPart;
+pub const ResponsePart = messages.ResponsePart;
+pub const UserContent = messages.UserContent;
+pub const PromptPart = messages.PromptPart;
+pub const Part = messages.Part;
 pub const ModelSettings = model.ModelSettings;
 pub const ReasoningEffort = model.ReasoningEffort;
-pub const FinishReason = model.FinishReason;
-pub const Usage = model.Usage;
+pub const FinishReason = messages.FinishReason;
+pub const Usage = messages.Usage;
 pub const Tool = model.Tool;
-pub const ToolCall = model.ToolCall;
+pub const ToolCall = messages.ToolCall;
 pub const ToolCallDelta = model.ToolCallDelta;
 pub const ToolDefinition = model.ToolDefinition;
-pub const ToolResult = model.ToolResult;
+pub const ToolResult = messages.ToolResult;
 pub const ToolExecution = model.ToolExecution;
 pub const ToolOutput = model.ToolOutput;
 pub const ToolLimits = model.ToolLimits;
 pub const ToolReturn = model.ToolReturn;
 pub const BuiltinTool = model.BuiltinTool;
 pub const BuiltinToolKind = model.BuiltinToolKind;
-pub const Content = model.Content;
-pub const ContentSource = model.ContentSource;
+pub const Content = messages.Content;
+pub const ContentSource = messages.ContentSource;
 pub const ContentType = model.ContentType;
-pub const Metadata = model.Metadata;
-pub const ProviderFile = model.ProviderFile;
-pub const Thinking = model.Thinking;
+pub const Metadata = messages.Metadata;
+pub const ProviderFile = messages.ProviderFile;
+pub const Thinking = messages.Thinking;
 pub const ToolMetadata = model.ToolMetadata;
 pub const ToolRunContext = model.ToolRunContext;
 pub const ModelStreamEvent = model.ModelStreamEvent;
@@ -102,6 +103,17 @@ pub const ContextOverflow = context_budget.Overflow;
 pub const ContextOverflowEvent = context_budget.OverflowEvent;
 pub const ContextOverflowHook = context_budget.OverflowHook;
 pub const TokenEstimator = context_budget.TokenEstimator;
+
+test "messages namespace is the canonical conversation type" {
+    const value = messages.Message{ .response = .{
+        .parts = &.{.{ .text = "hello" }},
+    } };
+    const root_alias: Message = value;
+    const model_alias: model.Message = root_alias;
+
+    const std = @import("std");
+    try std.testing.expectEqualStrings("hello", model_alias.response.parts[0].text);
+}
 
 test {
     _ = @import("agent.zig");
