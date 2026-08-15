@@ -84,7 +84,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Build an MCP conformance matrix for protocol `2026-07-28` covering every
   advertised client/server capability, method, notification, error envelope,
   pagination path, unknown extension, and compatibility rule.
-- [ ] Add MCP authorization and deployment security: OAuth protected-resource
+- [x] Add MCP authorization and deployment security: OAuth protected-resource
   metadata, bearer-token refresh hooks, audience/resource checks, Origin and
   DNS-rebinding defenses, redirect policy, TLS configuration, and secret-safe
   diagnostics.
