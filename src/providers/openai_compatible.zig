@@ -88,6 +88,9 @@ pub const ClientDefaults = struct {
     base_url: []const u8 = api_base,
     provider_name: []const u8 = "openai-compatible",
     profile: model_types.ModelProfile = profiles.full,
+    /// Built-in capabilities for model families recognized by a named
+    /// provider. Application lookups take precedence and overrides run last.
+    model_profile_lookup: ?*const fn ([]const u8) ?model_types.ModelProfile = null,
     authentication: Authentication = .{},
     include_stream_usage: bool = true,
 };
@@ -98,6 +101,7 @@ pub fn ProviderWithDefaults(comptime defaults: ClientDefaults) type {
     return struct {
         http: http_provider.Configured,
         discovery_limits: operations.DiscoveryLimits,
+        application_model_profiles: ?http_provider.Configured.ModelProfiles,
 
         const Self = @This();
 
@@ -130,13 +134,21 @@ pub fn ProviderWithDefaults(comptime defaults: ClientDefaults) type {
                     .headers = options.headers,
                     .request_policy = options.request_policy,
                     .file_limits = options.file_limits,
-                    .model_profiles = options.model_profiles,
                 },
                 .discovery_limits = options.discovery_limits,
+                .application_model_profiles = options.model_profiles,
             };
         }
 
         pub fn provider(self: *Self) provider_types.Provider {
+            self.http.model_profiles = if (defaults.model_profile_lookup != null or self.application_model_profiles != null)
+                .{
+                    .context = self,
+                    .lookupFn = lookupModelProfile,
+                    .overrideFn = overrideModelProfile,
+                }
+            else
+                null;
             self.http.operations = .{
                 .context = self,
                 .listModelsFn = listModels,
@@ -147,6 +159,28 @@ pub fn ProviderWithDefaults(comptime defaults: ClientDefaults) type {
         fn listModels(context: *anyopaque, allocator: std.mem.Allocator) !provider_types.OwnedModels {
             const self: *Self = @ptrCast(@alignCast(context));
             return operations.listOpenAIModels(&self.http, allocator, self.discovery_limits);
+        }
+
+        fn lookupModelProfile(context: *anyopaque, model_name: []const u8) ?model_types.ModelProfile {
+            const self: *Self = @ptrCast(@alignCast(context));
+            if (self.application_model_profiles) |application| {
+                if (application.lookupFn) |lookup| {
+                    if (lookup(application.context, model_name)) |profile| return profile;
+                }
+            }
+            if (defaults.model_profile_lookup) |lookup| return lookup(model_name);
+            return null;
+        }
+
+        fn overrideModelProfile(
+            context: *anyopaque,
+            model_name: []const u8,
+            profile: model_types.ModelProfile,
+        ) model_types.ModelProfile {
+            const self: *Self = @ptrCast(@alignCast(context));
+            const application = self.application_model_profiles orelse return profile;
+            const apply = application.overrideFn orelse return profile;
+            return apply(application.context, model_name, profile);
         }
     };
 }
@@ -1167,6 +1201,76 @@ test "profiles provide conservative compatibility presets" {
     try std.testing.expect(profiles.full.supports_json_schema_output);
     try std.testing.expect(!profiles.basic.supports_parallel_tool_calls);
     try std.testing.expect(!profiles.minimal.supports_tools);
+}
+
+test "named compatible providers layer built-in and application profiles" {
+    const BuiltIn = struct {
+        fn lookup(name: []const u8) ?model_types.ModelProfile {
+            if (std.mem.eql(u8, name, "builtin")) return .{
+                .supports_tools = true,
+                .supports_streaming = true,
+            };
+            if (std.mem.eql(u8, name, "shared")) return .{
+                .supports_streaming = true,
+            };
+            return null;
+        }
+    };
+    const Application = struct {
+        fn lookup(_: *anyopaque, name: []const u8) ?model_types.ModelProfile {
+            if (!std.mem.eql(u8, name, "shared")) return null;
+            return .{ .supports_json_schema_output = true };
+        }
+
+        fn override(_: *anyopaque, _: []const u8, profile: model_types.ModelProfile) model_types.ModelProfile {
+            var result = profile;
+            result.supports_tools = false;
+            return result;
+        }
+    };
+    const Stub = struct {
+        fn send(_: *anyopaque, _: std.mem.Allocator, _: http.Request) !http.Response {
+            return error.UnexpectedRequest;
+        }
+    };
+    const NamedProvider = ProviderWithDefaults(.{
+        .provider_name = "named",
+        .model_profile_lookup = BuiltIn.lookup,
+    });
+
+    var marker: u8 = 0;
+    const transport = http.Transport{ .context = &marker, .sendFn = Stub.send };
+    var provider_state = NamedProvider.initWithOptions("secret", transport, .{
+        .model_profiles = .{
+            .context = &marker,
+            .lookupFn = Application.lookup,
+            .overrideFn = Application.override,
+        },
+    });
+    const provider = provider_state.provider();
+
+    const built_in = provider.modelProfile("builtin", .{});
+    try std.testing.expect(built_in.supports_streaming);
+    try std.testing.expect(!built_in.supports_tools);
+
+    const application = provider.modelProfile("shared", .{});
+    try std.testing.expect(application.supports_json_schema_output);
+    try std.testing.expect(!application.supports_streaming);
+
+    const fallback = provider.modelProfile("unknown", .{
+        .supports_tools = true,
+        .supports_seed = true,
+    });
+    try std.testing.expect(fallback.supports_seed);
+    try std.testing.expect(!fallback.supports_tools);
+
+    var built_in_only = NamedProvider.init("secret", transport);
+    try std.testing.expect(built_in_only.provider().modelProfile("builtin", .{}).supports_streaming);
+
+    var lookup_only = NamedProvider.initWithOptions("secret", transport, .{
+        .model_profiles = .{ .context = &marker, .lookupFn = Application.lookup },
+    });
+    try std.testing.expect(lookup_only.provider().modelProfile("shared", .{}).supports_json_schema_output);
 }
 
 test "compatible responses classify malformed buffered and streamed tools" {
