@@ -188,7 +188,7 @@ authentication style, or model profile overrides.
 | `zigai.providers.doubleword` | Doubleword |
 | `zigai.providers.groq` | Groq |
 | `zigai.providers.huggingface` | Hugging Face Inference Providers |
-| `zigai.providers.mistral` | Mistral AI |
+| `zigai.providers.mistral` | Mistral Conversations; explicit Chat Completions compatibility |
 | `zigai.providers.openrouter` | OpenRouter |
 | `zigai.providers.ovhcloud` | OVHcloud AI Endpoints |
 | `zigai.providers.pydantic_gateway` | Pydantic AI Gateway |
@@ -234,6 +234,10 @@ when a deployment requires Chat Completions.
 Bedrock's primary `Provider` and `Client` use the native Converse API. Construct
 the provider with an API key and region; use `MantleProvider`, `MantleClient`,
 and `mantleApiBase` only for the OpenAI-compatible Mantle endpoint.
+
+Mistral keeps its compatibility aliases stable: `Provider` and `Client` use
+Chat Completions. Use `ConversationsProvider` and `ConversationsClient` for
+native entries, managed tools, streaming, and explicit stored sessions.
 
 Every first-party and OpenAI-compatible provider can discover the models
 visible to the configured credential:

@@ -223,6 +223,54 @@ singletons. Use `xai.ChatProvider` with `xai.ChatClient` only when an existing
 Chat Completions integration requires that compatibility protocol. xAI-only
 extension JSON uses the `.xai` tag and cannot cross into another adapter.
 
+Mistral keeps Chat Completions and Conversations explicit. `mistral.Provider`
+and `mistral.Client` remain compatibility aliases; the native path uses
+`ConversationsProvider` and `ConversationsClient`:
+
+```zig
+var provider = zigai.providers.mistral.ConversationsProvider.init(
+    api_key,
+    transport,
+);
+var client = zigai.providers.mistral.ConversationsClient{
+    .model_name = "mistral-small-latest",
+    .provider = provider.provider(),
+};
+```
+
+`client.model()` is stateless. It sends the complete provider-neutral history
+with `store: false`, so retries, fallback, and ordinary agent calls never mutate
+hidden remote state. Portable web search and code execution map to Mistral's
+managed tools. Mistral-only premium search, image generation, document
+libraries, and connectors are configured through `client.managed_tools`;
+connector authorization remains request-scoped and borrowed. Native extension
+JSON uses the `.mistral` tag.
+
+Stored conversations are deliberate:
+
+```zig
+const first = try client.start(arena, request);
+const session = try zigai.providers.mistral.Session.init(
+    provider.provider(),
+    first.conversation_id.?,
+);
+
+const next = try session.append(arena, append_request);
+_ = next;
+
+var history = try session.history(gpa);
+defer history.deinit();
+
+try session.delete(gpa);
+```
+
+`Client.start` stores the initial conversation. `Session.append` accepts only
+new entries and completion settings; instructions and tool declarations belong
+to the initial request. The session borrows its provider and ID. `history`
+returns an arena-owned native entry list with a typed family and complete
+structured `ProviderDetails`, including unknown beta entry types. Call
+`deinit` when finished. Conversation IDs are validated before path assembly.
+
 OpenAI-compatible modules follow the same rule. Each named module exports a
 matching `Provider` and `Client` built from shared compile-time defaults. The
 provider owns the API root, provider identity, authentication style, headers,

@@ -49,6 +49,16 @@
   web search, X search, code execution, collection search, and keyed remote MCP
   servers as typed provider-managed tools, with bounded configuration checks
   and an isolated `.xai` extension body.
+- Add a native Mistral Conversations provider and client while preserving the
+  existing Chat Completions aliases. The native adapter supports buffered and
+  streamed entries, local functions, managed web search and code execution,
+  Mistral-only premium search, image generation, document libraries and
+  connectors, structured output, normalized connector usage, and isolated
+  `.mistral` extensions. Ordinary models remain stateless; stored start,
+  append, native history, and delete live behind an explicit `Session` API.
+- Record and replay a redacted real `mistral-small-latest` Conversations web
+  search, including native execution details, tool references, and connector
+  token counters.
 - Record and replay a redacted real Azure OpenAI `gpt-4o` Responses function
   tool loop, normalizing the resource endpoint and omitting authentication.
 - Record and replay a redacted real Claude Sonnet 4.6 Converse tool loop. The
