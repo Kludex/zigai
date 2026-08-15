@@ -96,7 +96,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Complete the SEP-2663 MCP Tasks extension: server-directed task creation,
   polling, input updates, cooperative cancellation, TTL, status subscriptions,
   routing headers, and durable resume across process restarts.
-- [ ] Harden MCP transports for the stateless 2026-07-28 wire format. Add
+- [x] Harden MCP transports for the stateless 2026-07-28 wire format. Add
   concurrent in-flight Streamable HTTP requests, bounded request-scoped SSE
   delivery and stateless subscription re-establishment, explicit stdio stderr
   policy, graceful child shutdown with escalation, backpressure, and exhaustive
