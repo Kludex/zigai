@@ -214,6 +214,8 @@ pub const Error = error{
     McpPaginationCursorCycle,
     /// An MCP-backed toolset was used without its client.
     MissingMcpClient,
+    /// A Tasks request was attempted without its per-request extension opt-in.
+    MissingMcpClientCapability,
     /// Streamable HTTP did not provide the required SSE response stream.
     MissingMcpSseResponse,
     /// Elicitation exceeded the configured request/response round-trip limit.
@@ -748,6 +750,46 @@ pub const Client = struct {
         allocator.free(response);
     }
 
+    /// Retrieves and parses one owned SEP-2663 task state.
+    pub fn getTask(self: *Client, allocator: std.mem.Allocator, task_id: []const u8) !tasks.Owned {
+        const params = try (tasks.Request{ .task_id = task_id }).stringifyAlloc(allocator);
+        defer allocator.free(params);
+        const result = try self.requestWithOptions(
+            allocator,
+            tasks.methods.get,
+            params,
+            .{ .routing_name = task_id },
+        );
+        defer allocator.free(result);
+        return tasks.parseDetailed(allocator, result, true);
+    }
+
+    /// Supplies one or more responses to an input-required task.
+    pub fn updateTask(self: *Client, allocator: std.mem.Allocator, update: tasks.UpdateRequest) !void {
+        const params = try update.stringifyAlloc(allocator);
+        defer allocator.free(params);
+        const result = try self.requestWithOptions(
+            allocator,
+            tasks.methods.update,
+            params,
+            .{ .routing_name = update.task_id },
+        );
+        allocator.free(result);
+    }
+
+    /// Signals cooperative task cancellation and consumes the empty ack.
+    pub fn cancelTask(self: *Client, allocator: std.mem.Allocator, task_id: []const u8) !void {
+        const params = try (tasks.Request{ .task_id = task_id }).stringifyAlloc(allocator);
+        defer allocator.free(params);
+        const result = try self.requestWithOptions(
+            allocator,
+            tasks.methods.cancel,
+            params,
+            .{ .routing_name = task_id },
+        );
+        allocator.free(result);
+    }
+
     fn requestOnce(
         self: *Client,
         allocator: std.mem.Allocator,
@@ -755,6 +797,22 @@ pub const Client = struct {
         params_json: []const u8,
         options: RequestOptions,
     ) ![]u8 {
+        if (isTaskMethod(method)) {
+            var capability_arena = std.heap.ArenaAllocator.init(allocator);
+            defer capability_arena.deinit();
+            const advertised = try json_limits.parseLeaky(
+                std.json.Value,
+                capability_arena.allocator(),
+                self.capabilities_json,
+                json_limits.defaults.mcp_message,
+                .{},
+                error.InvalidMcpMessage,
+            );
+            const capability_object = try capabilityObject(advertised, error.InvalidMcpMessage);
+            if (!hasExtensionCapability(capability_object, tasks.extension_identifier)) {
+                return error.MissingMcpClientCapability;
+            }
+        }
         const id = self.next_id.fetchAdd(1, .monotonic);
         const message = try buildRequestWithMetadata(
             allocator,
@@ -1150,6 +1208,17 @@ pub const Server = struct {
                 error.InvalidMcpResponse,
             );
             try validateServerCapabilities(server_capabilities, error.InvalidMcpResponse);
+            if (isTaskMethod(method) and request_client_capabilities != null) {
+                const requirements = ClientCapabilityRequirements{ .tasks = true };
+                if (!clientCapabilitiesSatisfy(request_client_capabilities.?, requirements)) {
+                    return self.missingCapabilityResponse(
+                        allocator,
+                        id,
+                        request_client_capabilities.?,
+                        requirements,
+                    );
+                }
+            }
             if (!serverSupportsMethod(server_capabilities, method)) {
                 return self.errorResponse(allocator, id, error_codes.method_not_found, "Method not advertised", 200);
             }
@@ -1763,9 +1832,20 @@ fn validateMethodResult(method: []const u8, result: std.json.Value) !void {
     else
         "complete";
     if (std.mem.eql(u8, result_type, "input_required")) return validateInputRequiredResult(object);
+    if (std.mem.eql(u8, result_type, "task")) {
+        if (!std.mem.eql(u8, method, methods.call_tool)) return error.InvalidMcpResponse;
+        tasks.validateCreated(result) catch return error.InvalidMcpResponse;
+        return;
+    }
     if (!std.mem.eql(u8, result_type, "complete")) return error.InvalidMcpResponse;
 
-    if (std.mem.eql(u8, method, methods.discover)) {
+    if (std.mem.eql(u8, method, tasks.methods.get)) {
+        tasks.validateDetailed(result, true) catch return error.InvalidMcpResponse;
+    } else if (std.mem.eql(u8, method, tasks.methods.update) or
+        std.mem.eql(u8, method, tasks.methods.cancel))
+    {
+        return;
+    } else if (std.mem.eql(u8, method, methods.discover)) {
         try requireStringArray(object, "supportedVersions", 1, null);
         try validateServerCapabilities(
             object.get("capabilities") orelse return error.InvalidMcpResponse,
@@ -1816,7 +1896,21 @@ fn validateRequestMethodParams(
     params: std.json.ObjectMap,
     comptime invalid_error: anytype,
 ) !void {
-    if (std.mem.eql(u8, method, methods.list_tools) or
+    if (std.mem.eql(u8, method, tasks.methods.get) or
+        std.mem.eql(u8, method, tasks.methods.cancel) or
+        std.mem.eql(u8, method, tasks.methods.update))
+    {
+        const task_id = try requireCapabilityString(params, "taskId", invalid_error);
+        if (task_id.len == 0) return invalid_error;
+        if (std.mem.eql(u8, method, tasks.methods.update)) {
+            const responses = try capabilityObject(
+                params.get("inputResponses") orelse return invalid_error,
+                invalid_error,
+            );
+            var iterator = responses.iterator();
+            while (iterator.next()) |entry| if (entry.value_ptr.* != .object) return invalid_error;
+        }
+    } else if (std.mem.eql(u8, method, methods.list_tools) or
         std.mem.eql(u8, method, methods.list_prompts) or
         std.mem.eql(u8, method, methods.list_resources) or
         std.mem.eql(u8, method, methods.list_resource_templates))
@@ -2490,11 +2584,14 @@ const ClientCapabilityRequirements = struct {
     sampling: bool = false,
     sampling_context: bool = false,
     sampling_tools: bool = false,
+    tasks: bool = false,
 };
 
 fn inputCapabilityRequirements(result: std.json.Value) !ClientCapabilityRequirements {
     const object = try requiredObject(result);
-    if (!std.mem.eql(u8, optionalString(object, "resultType") orelse "complete", "input_required")) return .{};
+    const result_type = optionalString(object, "resultType") orelse "complete";
+    if (std.mem.eql(u8, result_type, "task")) return .{ .tasks = true };
+    if (!std.mem.eql(u8, result_type, "input_required")) return .{};
     const requests = if (object.get("inputRequests")) |value| try requiredObject(value) else return .{};
     var requirements: ClientCapabilityRequirements = .{};
     var iterator = requests.iterator();
@@ -2550,6 +2647,7 @@ fn clientCapabilitiesSatisfy(
     if (requirements.sampling and capabilities.get("sampling") == null) return false;
     if (requirements.sampling_context and sampling.get("context") == null) return false;
     if (requirements.sampling_tools and sampling.get("tools") == null) return false;
+    if (requirements.tasks and !hasExtensionCapability(capabilities, tasks.extension_identifier)) return false;
     return true;
 }
 
@@ -2579,7 +2677,20 @@ fn missingClientCapabilities(
         if (requirements.sampling_tools) try sampling.put(allocator, "tools", .{ .object = .{} });
         try missing.put(allocator, "sampling", .{ .object = sampling });
     }
+    if (requirements.tasks and !hasExtensionCapability(capabilities, tasks.extension_identifier)) {
+        var extensions: std.json.ObjectMap = .{};
+        try extensions.put(allocator, tasks.extension_identifier, .{ .object = .{} });
+        try missing.put(allocator, "extensions", .{ .object = extensions });
+    }
     return .{ .object = missing };
+}
+
+fn hasExtensionCapability(capabilities: std.json.ObjectMap, identifier: []const u8) bool {
+    const extensions = switch (capabilities.get("extensions") orelse return false) {
+        .object => |object| object,
+        else => return false,
+    };
+    return extensions.get(identifier) != null;
 }
 
 fn serverSupportsMethod(capabilities_value: std.json.Value, method: []const u8) bool {
@@ -2587,6 +2698,9 @@ fn serverSupportsMethod(capabilities_value: std.json.Value, method: []const u8) 
         .object => |object| object,
         else => return false,
     };
+    if (isTaskMethod(method)) {
+        return hasExtensionCapability(capabilities, tasks.extension_identifier);
+    }
     if (std.mem.eql(u8, method, methods.complete)) return capabilities.get("completions") != null;
     if (std.mem.eql(u8, method, methods.get_prompt) or std.mem.eql(u8, method, methods.list_prompts)) {
         return capabilities.get("prompts") != null;
@@ -2843,11 +2957,20 @@ fn validateStandardHeaders(headers: []const http.Header, method: []const u8, par
 }
 
 fn routingName(method: []const u8, params: std.json.ObjectMap) ?[]const u8 {
+    if (isTaskMethod(method)) {
+        return optionalString(params, "taskId");
+    }
     if (std.mem.eql(u8, method, methods.call_tool) or std.mem.eql(u8, method, methods.get_prompt)) {
         return optionalString(params, "name");
     }
     if (std.mem.eql(u8, method, methods.read_resource)) return optionalString(params, "uri");
     return null;
+}
+
+fn isTaskMethod(method: []const u8) bool {
+    return std.mem.eql(u8, method, tasks.methods.get) or
+        std.mem.eql(u8, method, tasks.methods.update) or
+        std.mem.eql(u8, method, tasks.methods.cancel);
 }
 
 fn findHeader(headers: []const http.Header, name: []const u8) ?[]const u8 {
@@ -3056,6 +3179,10 @@ test "method result validation covers every core result family" {
         .{ methods.call_tool, "{\"content\":[]}" },
         .{ methods.complete, "{\"completion\":{\"values\":[\"one\"]}}" },
         .{ methods.listen, "{\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":\"listen-1\"}}" },
+        .{ methods.call_tool, "{\"resultType\":\"task\",\"taskId\":\"task-1\",\"status\":\"working\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":1000}" },
+        .{ tasks.methods.get, "{\"resultType\":\"complete\",\"taskId\":\"task-1\",\"status\":\"completed\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":1000,\"result\":{\"content\":[]}}" },
+        .{ tasks.methods.update, "{\"resultType\":\"complete\"}" },
+        .{ tasks.methods.cancel, "{\"resultType\":\"complete\"}" },
         .{ methods.call_tool, "{\"resultType\":\"input_required\",\"requestState\":\"state\"}" },
         .{ methods.call_tool, "{\"resultType\":\"input_required\",\"inputRequests\":{\"a\":{\"method\":\"elicitation/create\",\"params\":{\"mode\":\"url\",\"message\":\"Open\",\"url\":\"https://example.test\"}},\"b\":{\"method\":\"roots/list\"},\"c\":{\"method\":\"sampling/createMessage\",\"params\":{\"messages\":[],\"maxTokens\":1}}}}" },
     };
@@ -3081,6 +3208,9 @@ test "method result validation rejects every structural boundary" {
         .{ methods.complete, "{\"completion\":{\"values\":[1]}}" },
         .{ methods.listen, "{}" },
         .{ methods.listen, "{\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":true}}" },
+        .{ tasks.methods.get, "{\"resultType\":\"task\",\"taskId\":\"a\",\"status\":\"working\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":0}" },
+        .{ methods.call_tool, "{\"resultType\":\"task\"}" },
+        .{ tasks.methods.get, "{\"resultType\":\"complete\",\"taskId\":\"a\",\"status\":\"completed\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":0}" },
         .{ methods.list_tools, "{\"tools\":[],\"cacheScope\":\"private\"}" },
         .{ methods.list_tools, "{\"tools\":[],\"ttlMs\":\"0\",\"cacheScope\":\"private\"}" },
         .{ methods.list_tools, "{\"tools\":[],\"ttlMs\":-1,\"cacheScope\":\"private\"}" },
@@ -3942,6 +4072,9 @@ test "core request params cover every standardized method shape" {
         .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"review\"},\"argument\":{\"name\":\"language\",\"value\":\"z\"},\"context\":{\"arguments\":{\"other\":\"x\"}}}" },
         .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"ref/resource\",\"uri\":\"file:///{path}\"},\"argument\":{\"name\":\"path\",\"value\":\"src\"}}" },
         .{ .method = methods.listen, .params = "{\"notifications\":{\"toolsListChanged\":true,\"promptsListChanged\":false,\"resourcesListChanged\":true,\"resourceSubscriptions\":[\"file:///a\"]}}" },
+        .{ .method = tasks.methods.get, .params = "{\"taskId\":\"task-1\"}" },
+        .{ .method = tasks.methods.cancel, .params = "{\"taskId\":\"task-1\"}" },
+        .{ .method = tasks.methods.update, .params = "{\"taskId\":\"task-1\",\"inputResponses\":{\"approval\":{\"action\":\"accept\"}}}" },
         .{ .method = "com.example/future", .params = "{\"anything\":true}" },
     };
     for (valid) |case| try validateRequestMethodParams(
@@ -3978,6 +4111,12 @@ test "core request params cover every standardized method shape" {
         .{ .method = methods.listen, .params = "{\"notifications\":{\"toolsListChanged\":1}}" },
         .{ .method = methods.listen, .params = "{\"notifications\":{\"resourceSubscriptions\":{}}}" },
         .{ .method = methods.listen, .params = "{\"notifications\":{\"resourceSubscriptions\":[1]}}" },
+        .{ .method = tasks.methods.get, .params = "{}" },
+        .{ .method = tasks.methods.get, .params = "{\"taskId\":\"\"}" },
+        .{ .method = tasks.methods.cancel, .params = "{\"taskId\":1}" },
+        .{ .method = tasks.methods.update, .params = "{\"taskId\":\"a\"}" },
+        .{ .method = tasks.methods.update, .params = "{\"taskId\":\"a\",\"inputResponses\":[]}" },
+        .{ .method = tasks.methods.update, .params = "{\"taskId\":\"a\",\"inputResponses\":{\"x\":true}}" },
     };
     for (invalid) |case| try std.testing.expectError(
         error.InvalidMcpMessage,
@@ -4142,7 +4281,8 @@ test "server method guards follow its per-request advertised capabilities" {
     defer arena.deinit();
     const all = try parseResponse(
         arena.allocator(),
-        "{\"completions\":{},\"prompts\":{},\"resources\":{},\"tools\":{}}",
+        "{\"completions\":{},\"prompts\":{},\"resources\":{},\"tools\":{}," ++
+            "\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
     );
     const guarded = [_][]const u8{
         methods.complete,
@@ -4155,12 +4295,84 @@ test "server method guards follow its per-request advertised capabilities" {
         methods.list_tools,
     };
     for (guarded) |method| try std.testing.expect(serverSupportsMethod(all, method));
+    try std.testing.expect(serverSupportsMethod(all, tasks.methods.get));
+    try std.testing.expect(serverSupportsMethod(all, tasks.methods.update));
+    try std.testing.expect(serverSupportsMethod(all, tasks.methods.cancel));
     const none = try parseResponse(arena.allocator(), "{}");
     for (guarded) |method| try std.testing.expect(!serverSupportsMethod(none, method));
+    try std.testing.expect(!serverSupportsMethod(none, tasks.methods.get));
     try std.testing.expect(serverSupportsMethod(none, methods.discover));
     try std.testing.expect(serverSupportsMethod(none, methods.listen));
     try std.testing.expect(serverSupportsMethod(none, "com.example/future"));
     try std.testing.expect(!serverSupportsMethod(.null, methods.discover));
+}
+
+test "server task dispatch requires capability and matching task route" {
+    const Handler = struct {
+        calls: usize = 0,
+
+        fn handle(context: *anyopaque, allocator: std.mem.Allocator, method: []const u8, params: []const u8) ![]u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            try std.testing.expectEqualStrings(tasks.methods.get, method);
+            try std.testing.expect(std.mem.indexOf(u8, params, "\"taskId\":\"task-1\"") != null);
+            return allocator.dupe(
+                u8,
+                "{\"resultType\":\"complete\",\"taskId\":\"task-1\",\"status\":\"working\"," ++
+                    "\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":1000}",
+            );
+        }
+    };
+    var handler: Handler = .{};
+    var server = Server{
+        .handler = .{ .context = &handler, .handleFn = Handler.handle },
+        .capabilities_json = "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
+    };
+    const missing_request = try buildRequest(
+        std.testing.allocator,
+        1,
+        tasks.methods.get,
+        "{\"taskId\":\"task-1\"}",
+        "client",
+        "1",
+        "{}",
+    );
+    defer std.testing.allocator.free(missing_request);
+    const missing = try server.handle(std.testing.allocator, missing_request, null);
+    defer missing.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 400), missing.status);
+    try std.testing.expect(std.mem.indexOf(u8, missing.body.?, tasks.extension_identifier) != null);
+    try std.testing.expectEqual(@as(usize, 0), handler.calls);
+
+    const request = try buildRequest(
+        std.testing.allocator,
+        2,
+        tasks.methods.get,
+        "{\"taskId\":\"task-1\"}",
+        "client",
+        "1",
+        "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
+    );
+    defer std.testing.allocator.free(request);
+    const headers = [_]http.Header{
+        .{ .name = "MCP-Protocol-Version", .value = protocol_version },
+        .{ .name = "Mcp-Method", .value = tasks.methods.get },
+        .{ .name = "Mcp-Name", .value = "task-1" },
+    };
+    const accepted = try server.handle(std.testing.allocator, request, .{ .headers = &headers });
+    defer accepted.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 200), accepted.status);
+    try std.testing.expectEqual(@as(usize, 1), handler.calls);
+
+    const wrong_route = [_]http.Header{
+        headers[0],
+        headers[1],
+        .{ .name = "Mcp-Name", .value = "other-task" },
+    };
+    const rejected = try server.handle(std.testing.allocator, request, .{ .headers = &wrong_route });
+    defer rejected.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 400), rejected.status);
+    try std.testing.expectEqual(@as(usize, 1), handler.calls);
 }
 
 test "MRTR input requirements match the capabilities sent on the request" {
@@ -4206,6 +4418,26 @@ test "MRTR input requirements match the capabilities sent on the request" {
     try std.testing.expect(std.mem.indexOf(u8, missing_json, "\"roots\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, missing_json, "\"context\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, missing_json, "\"tools\"") != null);
+
+    const created = try parseResponse(
+        arena.allocator(),
+        "{\"resultType\":\"task\",\"taskId\":\"task-1\",\"status\":\"working\"," ++
+            "\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":1000}",
+    );
+    const task_requirements = try inputCapabilityRequirements(created);
+    try std.testing.expect(task_requirements.tasks);
+    try std.testing.expect(!clientCapabilitiesSatisfy(insufficient, task_requirements));
+    const task_capable = try parseResponse(
+        arena.allocator(),
+        "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
+    );
+    try std.testing.expect(clientCapabilitiesSatisfy(task_capable, task_requirements));
+    const missing_tasks = try missingClientCapabilities(arena.allocator(), insufficient, task_requirements);
+    const missing_tasks_json = try std.json.Stringify.valueAlloc(std.testing.allocator, missing_tasks, .{});
+    defer std.testing.allocator.free(missing_tasks_json);
+    try std.testing.expect(std.mem.indexOf(u8, missing_tasks_json, tasks.extension_identifier) != null);
+    const invalid_extensions = try parseResponse(arena.allocator(), "{\"extensions\":true}");
+    try std.testing.expect(!clientCapabilitiesSatisfy(invalid_extensions, task_requirements));
 
     const complete = try inputCapabilityRequirements(try parseResponse(arena.allocator(), "{}"));
     try std.testing.expect(clientCapabilitiesSatisfy(try parseResponse(arena.allocator(), "{}"), complete));
@@ -4322,6 +4554,102 @@ test "client emits self-describing requests and HTTP routing headers" {
     const result = try client.callTool(std.testing.allocator, "weather", "{}");
     defer std.testing.allocator.free(result);
     try std.testing.expect(std.mem.indexOf(u8, result, "sunny") != null);
+}
+
+test "typed task client helpers route requests and return owned state" {
+    const Stub = struct {
+        calls: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            try std.testing.expectEqualStrings("task-1", request.routing_name.?);
+            const parsed = try std.json.parseFromSlice(std.json.Value, allocator, request.message, .{});
+            defer parsed.deinit();
+            const root = try requiredObject(parsed.value);
+            const params = try requiredObject(root.get("params").?);
+            try std.testing.expectEqualStrings("task-1", try requiredString(params, "taskId"));
+            if (std.mem.eql(u8, request.method, tasks.methods.get)) {
+                return allocator.dupe(
+                    u8,
+                    "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\"," ++
+                        "\"taskId\":\"task-1\",\"status\":\"completed\",\"createdAt\":\"then\"," ++
+                        "\"lastUpdatedAt\":\"now\",\"ttlMs\":1000,\"result\":{\"content\":[]}}}",
+                );
+            }
+            if (std.mem.eql(u8, request.method, tasks.methods.update)) {
+                try std.testing.expect(params.get("inputResponses") != null);
+                return allocator.dupe(
+                    u8,
+                    "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"resultType\":\"complete\"}}",
+                );
+            }
+            try std.testing.expectEqualStrings(tasks.methods.cancel, request.method);
+            return allocator.dupe(
+                u8,
+                "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"resultType\":\"complete\"}}",
+            );
+        }
+    };
+    var stub: Stub = .{};
+    var client = Client{
+        .transport = .{ .context = &stub, .sendFn = Stub.send },
+        .capabilities_json = "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}",
+    };
+    var task = try client.getTask(std.testing.allocator, "task-1");
+    defer task.deinit();
+    const detailed = switch (task.value) {
+        .detailed => |value| value,
+        else => return error.TestUnexpectedResult,
+    };
+    try std.testing.expectEqual(tasks.Status.completed, detailed.status());
+    try std.testing.expectEqualStrings("then", detailed.metadata.created_at);
+    try client.updateTask(std.testing.allocator, .{
+        .task_id = "task-1",
+        .input_responses_json = "{\"approval\":{\"action\":\"accept\"}}",
+    });
+    try client.cancelTask(std.testing.allocator, "task-1");
+    try std.testing.expectEqual(@as(usize, 3), stub.calls);
+
+    var incapable = Client{ .transport = .{ .context = &stub, .sendFn = Stub.send } };
+    try std.testing.expectError(
+        error.MissingMcpClientCapability,
+        incapable.getTask(std.testing.allocator, "task-1"),
+    );
+    try std.testing.expectEqual(@as(usize, 3), stub.calls);
+    try std.testing.expectError(
+        error.InvalidTaskRequest,
+        client.cancelTask(std.testing.allocator, ""),
+    );
+}
+
+test "tool-created tasks require the advertised client extension" {
+    const Stub = struct {
+        calls: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, _: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            return std.fmt.allocPrint(
+                allocator,
+                "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"resultType\":\"task\"," ++
+                    "\"taskId\":\"task-1\",\"status\":\"working\",\"createdAt\":\"now\"," ++
+                    "\"lastUpdatedAt\":\"now\",\"ttlMs\":1000}}}}",
+                .{self.calls},
+            );
+        }
+    };
+    var stub: Stub = .{};
+    var client = Client{ .transport = .{ .context = &stub, .sendFn = Stub.send } };
+    try std.testing.expectError(
+        error.InvalidMcpResponse,
+        client.callTool(std.testing.allocator, "slow", "{}"),
+    );
+    client.capabilities_json = "{\"extensions\":{\"io.modelcontextprotocol/tasks\":{}}}";
+    const result = try client.callTool(std.testing.allocator, "slow", "{}");
+    defer std.testing.allocator.free(result);
+    try std.testing.expect(std.mem.indexOf(u8, result, "\"resultType\":\"task\"") != null);
+    try std.testing.expectEqual(@as(usize, 2), stub.calls);
 }
 
 test "Streamable HTTP refreshes issuer-bound tokens after a Bearer challenge" {

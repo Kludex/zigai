@@ -367,6 +367,11 @@ The Tasks extension lives in `mcp/tasks.zig`, outside core transport dispatch.
 Its request builders borrow application data, while parsed task results own a
 single arena. A tagged state union enforces the payload required by each task
 status, so completed, failed, and input-required states cannot be confused.
+`Client.getTask`, `Client.updateTask`, and `Client.cancelTask` are the narrow
+application-facing boundary: they attach the task ID as both the body parameter
+and HTTP route, require the extension capability before I/O, and validate the
+status-specific response before returning. Servers enforce the same capability
+and routing invariants before dispatching an extension handler.
 
 Multi round-trip requests replace server-initiated JSON-RPC calls. When a
 result requires sampling, roots, or elicitation, the configured `InputHandler`

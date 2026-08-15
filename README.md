@@ -538,27 +538,23 @@ subscriptions; `SubscriptionFilter` selects list and resource updates without
 hand-written JSON, while `PromptRequest` and `CompletionRequest` model their
 standardized parameters. Cancellation accepts the protocol's integer-or-string
 `RequestId`; `RequestOptions.metadata` adds a progress token and per-request
-logging opt-in. Use `Client.request` for extensions such as Tasks:
+logging opt-in. Tasks have typed helpers; capability negotiation and the
+`Mcp-Name` task route are applied automatically:
 
 ```zig
-const params_json = try (zigai.mcp.tasks.Request{
-    .task_id = "task-1",
-}).stringifyAlloc(allocator);
-defer allocator.free(params_json);
-
-const result_json = try mcp_client.request(
-    allocator,
-    "tasks/get",
-    params_json,
-);
-defer allocator.free(result_json);
-
-var task = try zigai.mcp.tasks.parseDetailed(allocator, result_json, true);
+var task = try mcp_client.getTask(allocator, "task-1");
 defer task.deinit();
+
+try mcp_client.updateTask(allocator, .{
+    .task_id = "task-1",
+    .input_responses_json = "{\"approval\":{\"action\":\"accept\"}}",
+});
+try mcp_client.cancelTask(allocator, "task-1");
 ```
 
 Task results own a single arena. Their tagged state exposes only the payload
-valid for the current status.
+valid for the current status. Set the Tasks extension in the client's typed
+capabilities before calling these methods.
 
 Extension settings stay as owned JSON:
 

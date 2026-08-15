@@ -9,6 +9,13 @@ const primitives = @import("primitives.zig");
 
 pub const extension_identifier = "io.modelcontextprotocol/tasks";
 
+pub const methods = struct {
+    pub const get = "tasks/get";
+    pub const update = "tasks/update";
+    pub const cancel = "tasks/cancel";
+    pub const status_notification = "notifications/tasks";
+};
+
 pub const Error = error{
     InvalidTask,
     InvalidTaskRequest,
@@ -134,6 +141,13 @@ pub fn parseCreated(allocator: std.mem.Allocator, source: []const u8) !Owned {
     return owned;
 }
 
+/// Validates a borrowed task-creation result without retaining it.
+pub fn validateCreated(value: std.json.Value) !void {
+    const object = valueObject(value) catch return error.InvalidTask;
+    try expectResultType(object, "task");
+    _ = try parseCommon(object);
+}
+
 /// Parses a `tasks/get` result, or a `notifications/tasks` parameter object when
 /// `has_result_type` is false.
 pub fn parseDetailed(
@@ -151,6 +165,14 @@ pub fn parseDetailed(
         .state = try parseState(object, common.status),
     } };
     return owned;
+}
+
+/// Validates a borrowed detailed task result or notification payload.
+pub fn validateDetailed(value: std.json.Value, has_result_type: bool) !void {
+    const object = valueObject(value) catch return error.InvalidTask;
+    if (has_result_type) try expectResultType(object, "complete");
+    const common = try parseCommon(object);
+    _ = try parseState(object, common.status);
 }
 
 const Common = struct {
@@ -248,6 +270,13 @@ fn parseObject(
 fn requiredObject(object: std.json.ObjectMap, name: []const u8) !std.json.ObjectMap {
     return switch (object.get(name) orelse return error.InvalidTask) {
         .object => |value| value,
+        else => error.InvalidTask,
+    };
+}
+
+fn valueObject(value: std.json.Value) !std.json.ObjectMap {
+    return switch (value) {
+        .object => |object| object,
         else => error.InvalidTask,
     };
 }
@@ -369,6 +398,32 @@ test "detailed task parsing enforces status-specific payloads" {
     const failure = notification.value.detailed.state.failed;
     try std.testing.expectEqual(@as(i64, -1), failure.code);
     try std.testing.expect(failure.data == null);
+
+    const borrowed = try json_limits.parseLeaky(
+        std.json.Value,
+        notification.arena.allocator(),
+        "{\"taskId\":\"v\",\"status\":\"working\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":0}",
+        json_limits.defaults.mcp_message,
+        .{},
+        error.InvalidTask,
+    );
+    try validateDetailed(borrowed, false);
+}
+
+test "borrowed task creation validation rejects non-objects" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const valid = try json_limits.parseLeaky(
+        std.json.Value,
+        arena.allocator(),
+        "{\"resultType\":\"task\",\"taskId\":\"a\",\"status\":\"working\",\"createdAt\":\"now\",\"lastUpdatedAt\":\"now\",\"ttlMs\":0}",
+        json_limits.defaults.mcp_message,
+        .{},
+        error.InvalidTask,
+    );
+    try validateCreated(valid);
+    try std.testing.expectError(error.InvalidTask, validateCreated(.{ .array = .init(arena.allocator()) }));
+    try std.testing.expectError(error.InvalidTask, validateDetailed(.null, false));
 }
 
 test "task parsing rejects malformed metadata and payload combinations" {
