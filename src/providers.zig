@@ -1,7 +1,8 @@
 //! First-party provider adapters.
 //!
-//! Providers own authentication, endpoints, and wire formats. Each client
-//! exposes the provider-neutral `Model` consumed by `Agent`.
+//! Providers own authentication, endpoints, policy, and provider operations.
+//! Model clients own wire encoding and expose the provider-neutral `Model`
+//! consumed by `Agent`.
 
 pub const openai = @import("providers/openai.zig");
 pub const openai_compatible = @import("providers/openai_compatible.zig");

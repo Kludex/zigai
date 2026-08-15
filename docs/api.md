@@ -117,6 +117,7 @@ Use these namespaces for the rest of the API:
 | `zigai.pricing` | Explicit versioned price tables and deterministic estimates |
 | `zigai.codecs.pydantic_ai` | Lossless PydanticAI stable-v2 JSON interchange |
 | `zigai.security` | Outbound URL validation and diagnostic redaction |
+| `zigai.provider` | Provider identity, authenticated operations, policy, discovery, files, and profiles |
 | `zigai.providers` | Native and named OpenAI-compatible provider clients |
 | `zigai.models` | Fallback and application-selected model routing |
 | `zigai.history` | Version-2 ZigAI history serialization, version-1 migration, and processors |
@@ -131,6 +132,8 @@ Use these namespaces for the rest of the API:
 Provider `Client.model()` values borrow their client. Keep the client and its
 transport alive for every agent run that uses the model. The same rule applies
 to model routers, MCP clients, callback contexts, dependencies, and toolsets.
+`Provider` values likewise borrow their concrete provider state. Model and file
+discovery results own arenas and must be released with `deinit`.
 
 `agent_spec.Owned` owns parsed configuration in an arena. It is data-only and
 does not read secrets or construct clients. `validateResolution` uses

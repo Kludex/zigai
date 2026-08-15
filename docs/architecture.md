@@ -333,6 +333,25 @@ ownership, model discovery, and application capability catalogs replaceable.
 Transitive capability dependencies are resolved before registry validation;
 provider construction happens only after all local checks pass.
 
+## Providers and model adapters
+
+`provider.Provider` is a borrowed operations boundary. Providers own
+credentials, API roots, configured headers, outbound policy, model discovery,
+file operations, profile lookup, and application capability overrides. The
+interface performs provider-wide and run-scoped URL validation before an HTTP
+callback and tightens request timeouts to the smaller configured value.
+
+Model adapters remain a separate layer. They choose relative endpoints and
+encode provider wire formats, then delegate authenticated I/O to their
+provider. A provider can therefore serve multiple compatible model interfaces
+without copying credential or lifecycle logic into each adapter.
+
+Discovered model lists and file records are arena-owned values with explicit
+`deinit`; requests, provider configuration, and the `Provider` itself are
+borrowed. Concrete provider state must outlive every model and in-flight
+operation that references it. Unsupported optional operations return one
+stable error rather than relying on null callback checks in application code.
+
 ## MCP toolsets
 
 `mcp.Client` implements the stateless MCP `2026-07-28` envelope. Every request

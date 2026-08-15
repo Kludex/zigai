@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Define a borrowed provider operations interface for authenticated requests,
+  base URL policy, model discovery, file APIs, model profile lookup, and
+  capability overrides, with explicit arena ownership for returned data.
 - Pin the official MCP `2026-07-28` conformance framework and TypeScript and
   Python reference servers in a validated test-only interoperability matrix.
 - Add a test-only Cassetter-style YAML format that replays ordered MCP
