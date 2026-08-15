@@ -40,21 +40,21 @@ compile_test() {
     fi
 }
 
-compile_test coverage/bin/unit-tests src/root.zig
-compile_test coverage/bin/agent-tests --dep zigai -Mroot=tests/agent_loop.zig -Mzigai=src/root.zig
-compile_test coverage/bin/pydantic-ai-codec-tests --dep zigai -Mroot=tests/pydantic_ai_codec.zig -Mzigai=src/root.zig
-compile_test coverage/bin/provider-tests --dep zigai --dep yaml -Mroot=tests/provider_cassettes.zig -Mzigai=src/root.zig -Myaml="$yaml_root"
-compile_test coverage/bin/cli-common-tests --dep zigai -Mroot=src/cli/common.zig -Mzigai=src/root.zig
+compile_test coverage/bin/unit-tests --dep yaml -Mroot=src/root.zig -Myaml="$yaml_root"
+compile_test coverage/bin/agent-tests --dep zigai -Mroot=tests/agent_loop.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+compile_test coverage/bin/pydantic-ai-codec-tests --dep zigai -Mroot=tests/pydantic_ai_codec.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+compile_test coverage/bin/provider-tests --dep zigai --dep yaml -Mroot=tests/provider_cassettes.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+compile_test coverage/bin/cli-common-tests --dep zigai -Mroot=src/cli/common.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 if [ -n "$coverage_target" ]; then
-    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/openai-cli --dep zigai -Mroot=src/cli/openai.zig -Mzigai=src/root.zig
-    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/anthropic-cli --dep zigai -Mroot=src/cli/anthropic.zig -Mzigai=src/root.zig
-    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/google-cli --dep zigai -Mroot=src/cli/google.zig -Mzigai=src/root.zig
-    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/http-smoke --dep zigai -Mroot=tests/http_transport_smoke.zig -Mzigai=src/root.zig
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/openai-cli --dep zigai -Mroot=src/cli/openai.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/anthropic-cli --dep zigai -Mroot=src/cli/anthropic.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/google-cli --dep zigai -Mroot=src/cli/google.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/http-smoke --dep zigai -Mroot=tests/http_transport_smoke.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 else
-    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/openai-cli --dep zigai -Mroot=src/cli/openai.zig -Mzigai=src/root.zig
-    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/anthropic-cli --dep zigai -Mroot=src/cli/anthropic.zig -Mzigai=src/root.zig
-    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/google-cli --dep zigai -Mroot=src/cli/google.zig -Mzigai=src/root.zig
-    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/http-smoke --dep zigai -Mroot=tests/http_transport_smoke.zig -Mzigai=src/root.zig
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/openai-cli --dep zigai -Mroot=src/cli/openai.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/anthropic-cli --dep zigai -Mroot=src/cli/anthropic.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/google-cli --dep zigai -Mroot=src/cli/google.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/http-smoke --dep zigai -Mroot=tests/http_transport_smoke.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 fi
 
 run_kcov() {
