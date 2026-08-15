@@ -95,9 +95,11 @@ pub const RunControl = struct {
         select.concurrent(.operation, operation, args) catch
             return error.RunControlConcurrencyUnavailable;
         if (self.deadline) |deadline|
-            select.async(.deadline, waitForDeadline, .{ io, deadline });
+            select.concurrent(.deadline, waitForDeadline, .{ io, deadline }) catch
+                return error.RunControlConcurrencyUnavailable;
         if (self.cancellation) |token|
-            select.async(.cancelled, waitForCancellation, .{ io, token });
+            select.concurrent(.cancelled, waitForCancellation, .{ io, token }) catch
+                return error.RunControlConcurrencyUnavailable;
 
         return switch (try select.await()) {
             .operation => |result| operation: {

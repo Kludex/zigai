@@ -147,6 +147,11 @@ Terminal control errors are `RunTimedOut`, `Cancelled`,
 contexts expose the shared `RunControl`, and `ToolRunContext` exposes its
 absolute `deadline` for nested work.
 
+Preemptive control requires the runtime to schedule the operation and each
+active deadline or cancellation watcher concurrently. If it cannot,
+`RunControlConcurrencyUnavailable` or `ToolConcurrencyUnavailable` is returned
+instead of running a watcher inline and risking a stalled caller.
+
 A paused run ends its invocation. `resumeRunWithOptions` starts a new monotonic
 budget because a process-local monotonic timestamp cannot be serialized safely
 across restarts.

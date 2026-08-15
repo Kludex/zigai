@@ -1892,11 +1892,14 @@ fn executeToolControlled(
     select.concurrent(.tool, executeTool, .{ tool, limits, allocator, run_context, arguments_json }) catch
         return .{ .failure = Agent.Error.ToolConcurrencyUnavailable };
     if (limits.timeout_ms) |milliseconds|
-        select.async(.timeout, waitForToolTimeout, .{ io, milliseconds });
+        select.concurrent(.timeout, waitForToolTimeout, .{ io, milliseconds }) catch
+            return .{ .failure = Agent.Error.ToolConcurrencyUnavailable };
     if (run_context.deadline) |deadline|
-        select.async(.deadline, waitForToolDeadline, .{ io, deadline });
+        select.concurrent(.deadline, waitForToolDeadline, .{ io, deadline }) catch
+            return .{ .failure = Agent.Error.ToolConcurrencyUnavailable };
     if (run_context.cancellation) |token|
-        select.async(.cancelled, waitForToolCancellation, .{ io, token });
+        select.concurrent(.cancelled, waitForToolCancellation, .{ io, token }) catch
+            return .{ .failure = Agent.Error.ToolConcurrencyUnavailable };
     const outcome = select.await() catch return .{ .failure = Agent.Error.Cancelled };
     return switch (outcome) {
         .tool => |result| tool_result: {
