@@ -2874,6 +2874,7 @@ test "MRTR rejects malformed request and callback response boundaries" {
         "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"x\":[]}}}}",
         "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"future\"}}}}}",
         "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"array\",\"items\":{\"enum\":[\"a\"]}}}}}}",
+        "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"array\",\"items\":{}}}}}}",
         "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{},\"required\":{}}}}",
         "{\"method\":\"sampling/createMessage\",\"params\":{}}",
         "{\"method\":\"sampling/createMessage\",\"params\":{\"messages\":{},\"maxTokens\":1}}",
@@ -3437,6 +3438,10 @@ test "core notification params and stream metadata are validated" {
             error.InvalidMcpMessage,
         ),
     );
+    try std.testing.expectError(
+        error.InvalidMcpResponse,
+        testValidateMethodResult(methods.listen, "{\"_meta\":{}}"),
+    );
 }
 
 test "client and server reject malformed advertised capabilities at boundaries" {
@@ -3901,6 +3906,7 @@ test "subscription streams enforce acknowledgement order and requested filters" 
         "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\",\"params\":{\"uri\":\"file:///a\"}}",
     );
     const invalid_requests = [_][]const u8{
+        "{",
         "{}",
         "{\"params\":[]}",
         "{\"params\":{}}",
@@ -3916,6 +3922,25 @@ test "subscription streams enforce acknowledgement order and requested filters" 
             source,
         ),
     );
+
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const parsed = try std.json.parseFromSlice(
+                std.json.Value,
+                allocator,
+                "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\"," ++
+                    "\"params\":{\"uri\":\"file:///a\"}}",
+                .{},
+            );
+            defer parsed.deinit();
+            try validateSubscriptionNotification(
+                allocator,
+                parsed.value,
+                "{\"params\":{\"notifications\":{\"resourceSubscriptions\":[\"file:///a\"]}}}",
+            );
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
 }
 
 test "stdio transport runs a modern MCP tool server child process" {
