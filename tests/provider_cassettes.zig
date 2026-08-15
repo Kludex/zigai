@@ -126,6 +126,25 @@ test "real OpenAI-compatible provider cassettes replay text responses" {
     }
 }
 
+test "real Bedrock Converse cassette replays a complete tool loop" {
+    var cassette = try cassettes.ReplayTransport.init(
+        std.testing.allocator,
+        @embedFile("cassettes/native/bedrock_converse_claude_sonnet_4_6.yaml"),
+    );
+    defer cassette.deinit();
+    var provider_state = try zigai.providers.bedrock.Provider.initWithOptions(
+        "not-recorded",
+        "example-region",
+        cassette.transport(),
+        .{ .base_url = "https://bedrock-runtime.example-region.amazonaws.com" },
+    );
+    var client = zigai.providers.bedrock.Client{
+        .model_name = "us.anthropic.claude-sonnet-4-6",
+        .provider = provider_state.provider(),
+    };
+    try replayMatrixScenario(client.model(), &cassette);
+}
+
 fn replayCompatibleProvider(
     comptime ProviderType: type,
     comptime ClientType: type,

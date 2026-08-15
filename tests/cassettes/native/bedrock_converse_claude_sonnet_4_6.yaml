@@ -1,0 +1,122 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://bedrock-runtime.example-region.amazonaws.com/model/us.anthropic.claude-sonnet-4-6/converse"
+    headers: {}
+    body:
+      type: json
+      content:
+        system:
+          - text: "Always use the weather tool before answering."
+        messages:
+          - role: "user"
+            content:
+              - text: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        toolConfig:
+          tools:
+            - toolSpec:
+                name: "weather"
+                description: "Get the current weather for a city."
+                inputSchema:
+                  json:
+                    type: "object"
+                    properties:
+                      city:
+                        type: "string"
+                    required:
+                      - "city"
+                    additionalProperties: false
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        metrics:
+          latencyMs: 1213
+        output:
+          message:
+            content:
+              - toolUse:
+                  input:
+                    city: "Madrid"
+                  name: "weather"
+                  toolUseId: "tooluse_A6gqYwvXS4yDHes93Axxko"
+                  type: "tool_use"
+            role: "assistant"
+        stopReason: "tool_use"
+        usage:
+          cacheReadInputTokenCount: 0
+          cacheReadInputTokens: 0
+          cacheWriteInputTokenCount: 0
+          cacheWriteInputTokens: 0
+          inputTokens: 591
+          outputTokens: 52
+          serverToolUsage: {}
+          totalTokens: 643
+- request:
+    method: POST
+    uri: "https://bedrock-runtime.example-region.amazonaws.com/model/us.anthropic.claude-sonnet-4-6/converse"
+    headers: {}
+    body:
+      type: json
+      content:
+        system:
+          - text: "Always use the weather tool before answering."
+        messages:
+          - role: "user"
+            content:
+              - text: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "assistant"
+            content:
+              - toolUse:
+                  toolUseId: "tooluse_A6gqYwvXS4yDHes93Axxko"
+                  name: "weather"
+                  input:
+                    city: "Madrid"
+          - role: "user"
+            content:
+              - toolResult:
+                  toolUseId: "tooluse_A6gqYwvXS4yDHes93Axxko"
+                  content:
+                    - json:
+                        temperature_c: 31
+                        condition: "sunny"
+        toolConfig:
+          tools:
+            - toolSpec:
+                name: "weather"
+                description: "Get the current weather for a city."
+                inputSchema:
+                  json:
+                    type: "object"
+                    properties:
+                      city:
+                        type: "string"
+                    required:
+                      - "city"
+                    additionalProperties: false
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        metrics:
+          latencyMs: 1415
+        output:
+          message:
+            content:
+              - text: "It's a sunny and warm day in Madrid at 31°C!"
+            role: "assistant"
+        stopReason: "end_turn"
+        usage:
+          cacheReadInputTokenCount: 0
+          cacheReadInputTokens: 0
+          cacheWriteInputTokenCount: 0
+          cacheWriteInputTokens: 0
+          inputTokens: 665
+          outputTokens: 18
+          serverToolUsage: {}
+          totalTokens: 683
