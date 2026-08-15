@@ -266,7 +266,7 @@ fn writeResponse(allocator: std.mem.Allocator, json: *std.json.Stringify, respon
     try writeOptionalInteger(json, "timestamp_unix_ms", response.timestamp_unix_ms);
     try writeOptionalString(json, "provider_name", response.provider_name);
     try writeOptionalString(json, "provider_url", response.provider_url);
-    try writeOptionalRawJson(allocator, json, "provider_details", response.provider_details_json);
+    try writeOptionalProviderDetails(json, "provider_details", response.provider_details);
     try writeOptionalString(json, "provider_response_id", response.provider_response_id);
     try writeOptionalString(json, "model_name", response.model_name);
     if (response.finish_reason) |reason| {
@@ -413,15 +413,15 @@ fn writeContent(
 }
 
 fn writeProviderPart(
-    allocator: std.mem.Allocator,
+    _: std.mem.Allocator,
     json: *std.json.Stringify,
     provider: message_types.ProviderPart,
 ) !void {
-    if ((provider.id != null or provider.provider_details_json != null) and provider.provider_name == null)
+    if ((provider.id != null or provider.provider_details != null) and provider.provider_name == null)
         return Error.InvalidHistory;
     try writeOptionalString(json, "id", provider.id);
     try writeOptionalString(json, "provider_name", provider.provider_name);
-    try writeOptionalRawJson(allocator, json, "provider_details", provider.provider_details_json);
+    try writeOptionalProviderDetails(json, "provider_details", provider.provider_details);
 }
 
 fn writeOptionalToolKind(json: *std.json.Stringify, kind: ?message_types.ToolPartKind) !void {
@@ -602,24 +602,15 @@ fn writeOptionalInteger(json: *std.json.Stringify, name: []const u8, value: ?i64
     }
 }
 
-fn writeOptionalRawJson(
-    allocator: std.mem.Allocator,
+fn writeOptionalProviderDetails(
     json: *std.json.Stringify,
     name: []const u8,
-    source: ?[]const u8,
+    details: ?message_types.ProviderDetails,
 ) !void {
-    const raw = source orelse return;
-    const parsed = try json_limits.parse(
-        std.json.Value,
-        allocator,
-        raw,
-        json_limits.defaults.history,
-        .{},
-        Error.InvalidHistory,
-    );
-    defer parsed.deinit();
+    const value = details orelse return;
+    if (value.value != .object) return Error.InvalidHistory;
     try json.objectField(name);
-    try json.write(parsed.value);
+    try json.write(value);
 }
 
 fn writeMetadata(json: *std.json.Stringify, metadata: []const message_types.Metadata) !void {
@@ -805,7 +796,7 @@ fn parseResponse(allocator: std.mem.Allocator, object: std.json.ObjectMap) !mess
         .timestamp_unix_ms = try optionalJsonInteger(object, "timestamp_unix_ms"),
         .provider_name = try optionalJsonString(object, "provider_name"),
         .provider_url = try optionalJsonString(object, "provider_url"),
-        .provider_details_json = try optionalJsonValue(allocator, object, "provider_details"),
+        .provider_details = try optionalProviderDetails(object, "provider_details"),
         .provider_response_id = try optionalJsonString(object, "provider_response_id"),
         .model_name = try optionalJsonString(object, "model_name"),
         .finish_reason = try parseFinishReason(object.get("finish_reason")),
@@ -969,19 +960,19 @@ fn parseContent(allocator: std.mem.Allocator, object: std.json.ObjectMap) !messa
     };
 }
 
-fn parseProviderPart(allocator: std.mem.Allocator, object: std.json.ObjectMap) !message_types.ProviderPart {
+fn parseProviderPart(_: std.mem.Allocator, object: std.json.ObjectMap) !message_types.ProviderPart {
     const provider = message_types.ProviderPart{
         .id = try optionalJsonString(object, "id"),
         .provider_name = try optionalJsonString(object, "provider_name"),
-        .provider_details_json = try optionalJsonValue(allocator, object, "provider_details"),
+        .provider_details = try optionalProviderDetails(object, "provider_details"),
     };
-    if ((provider.id != null or provider.provider_details_json != null) and provider.provider_name == null)
+    if ((provider.id != null or provider.provider_details != null) and provider.provider_name == null)
         return Error.InvalidHistory;
     return provider;
 }
 
 fn hasProviderPart(provider: message_types.ProviderPart) bool {
-    return provider.id != null or provider.provider_name != null or provider.provider_details_json != null;
+    return provider.id != null or provider.provider_name != null or provider.provider_details != null;
 }
 
 fn parseOptionalToolKind(object: std.json.ObjectMap) !?message_types.ToolPartKind {
@@ -1147,14 +1138,10 @@ fn parseFinishReason(value: ?std.json.Value) !?message_types.FinishReason {
     };
 }
 
-fn optionalJsonValue(
-    allocator: std.mem.Allocator,
-    object: std.json.ObjectMap,
-    name: []const u8,
-) !?[]const u8 {
+fn optionalProviderDetails(object: std.json.ObjectMap, name: []const u8) !?message_types.ProviderDetails {
     const value = object.get(name) orelse return null;
-    const encoded = try std.json.Stringify.valueAlloc(allocator, value, .{});
-    return encoded;
+    if (value == .null) return null;
+    return message_types.ProviderDetails.fromValue(value) catch return Error.InvalidHistory;
 }
 
 fn parseMetadata(allocator: std.mem.Allocator, value: ?std.json.Value) ![]const message_types.Metadata {
@@ -1536,7 +1523,15 @@ fn optionalJsonBool(object: std.json.ObjectMap, name: []const u8) !?bool {
     };
 }
 
+fn testingProviderDetails(arena: std.mem.Allocator, source: []const u8) !message_types.ProviderDetails {
+    const value = try std.json.parseFromSliceLeaky(std.json.Value, arena, source, .{});
+    return message_types.ProviderDetails.fromValue(value);
+}
+
 test "history version 2 round trips request response parts and provenance" {
+    var details_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer details_arena.deinit();
+    const provider_details = try testingProviderDetails(details_arena.allocator(), "{\"cached\":true}");
     const messages = [_]message_types.Message{
         .{ .request = .{
             .parts = &.{
@@ -1597,7 +1592,7 @@ test "history version 2 round trips request response parts and provenance" {
             .timestamp_unix_ms = 20,
             .provider_name = "openai",
             .provider_url = "https://api.openai.com/v1",
-            .provider_details_json = "{\"cached\":true}",
+            .provider_details = provider_details,
             .provider_response_id = "response",
             .model_name = "gpt",
             .finish_reason = .{ .kind = .tool_calls, .raw = "tool_calls" },
@@ -1617,16 +1612,18 @@ test "history version 2 round trips request response parts and provenance" {
     try std.testing.expectEqual(message_types.RequestState.interrupted, request.state);
     const response = decoded.messages[1].response;
     try std.testing.expectEqualStrings("answer", response.parts[0].text);
-    try std.testing.expectEqualStrings("{\"cached\":true}", response.provider_details_json.?);
+    try std.testing.expect(response.provider_details.?.value.object.get("cached").?.bool);
     try std.testing.expectEqual(@as(u64, 5), response.usage.totalTokens());
     try std.testing.expectEqual(message_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
 }
 
 test "history version 2 round trips the complete message vocabulary" {
+    var details_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer details_arena.deinit();
     const provider = message_types.ProviderPart{
         .id = "item-1",
         .provider_name = "openai",
-        .provider_details_json = "{\"opaque\":true}",
+        .provider_details = try testingProviderDetails(details_arena.allocator(), "{\"opaque\":true}"),
     };
     const uploaded = message_types.UploadedFile{
         .id = "file-1",
@@ -1966,12 +1963,12 @@ test "provider validation pairs typed calls and returns" {
     try std.testing.expectEqual(@as(usize, 0), (try providerValid(arena.allocator(), &invalid_native)).len);
 }
 
-test "history rejects malformed documents and invalid raw provider JSON" {
+test "history rejects malformed documents and invalid structured provider details" {
     try std.testing.expectError(Error.InvalidHistory, parse(std.testing.allocator, "{}"));
     try std.testing.expectError(Error.UnsupportedVersion, parse(std.testing.allocator, "{\"version\":3,\"messages\":[]}"));
     try std.testing.expectError(Error.InvalidHistory, stringify(std.testing.allocator, &.{.{ .response = .{
         .parts = &.{.{ .text = "x" }},
-        .provider_details_json = "{",
+        .provider_details = .{ .value = .{ .string = "not-an-object" } },
     } }}));
     try std.testing.expectError(Error.InvalidHistory, stringify(std.testing.allocator, &.{.{ .response = .{
         .parts = &.{.{ .text_part = .{
@@ -2062,7 +2059,7 @@ fn checkStringifyAllocationFailure(allocator: std.mem.Allocator) !void {
             .source = .{ .bytes = "data" },
             .media_type = "application/octet-stream",
         } }},
-        .provider_details_json = "{\"cached\":true}",
+        .provider_details = .{ .value = .{ .object = .empty } },
     } }}) catch |failure| switch (failure) {
         error.WriteFailed => return error.OutOfMemory,
         else => return failure,

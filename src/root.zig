@@ -110,6 +110,7 @@ pub const CompactionPart = messages.CompactionPart;
 pub const ContentType = model.ContentType;
 pub const Metadata = messages.Metadata;
 pub const ProviderFile = messages.ProviderFile;
+pub const ProviderDetails = messages.ProviderDetails;
 pub const ProviderPart = messages.ProviderPart;
 pub const UploadedFile = messages.UploadedFile;
 pub const Thinking = messages.Thinking;

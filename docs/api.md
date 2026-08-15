@@ -42,9 +42,12 @@ are convenient when no part metadata is needed. Their `*_part` counterparts
 retain timestamps, IDs, and provider replay data. Provider-bound parts carry a
 `ProviderPart`; file IDs carry their owner in `UploadedFile`.
 
-History preserves opaque provider data. Current adapters reject provider-bound
-part IDs or raw provider details they cannot replay, and validate uploaded-file
-ownership before encoding. They never silently flatten those fields.
+History preserves opaque provider data as `ProviderDetails`, a structured JSON
+object separate from application `Metadata`. Current adapters reject
+provider-bound part IDs or details they cannot replay, and validate ownership
+before encoding uploaded files. They never silently flatten fields.
+Create it from a parsed object with `ProviderDetails.fromValue`; nested slices,
+arrays, and object maps follow the enclosing owner's lifetime.
 
 All slices are borrowed. `Agent.Result`, `history.Owned`, and other explicitly
 owned containers define the lifetime of copied or parsed messages. The message

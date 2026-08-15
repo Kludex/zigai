@@ -13,18 +13,35 @@ pub const Metadata = struct {
     value: []const u8,
 };
 
+/// Provider-specific JSON retained without flattening it into application
+/// metadata. The value is always an object, and its complete graph follows the
+/// ownership boundary of the enclosing message.
+pub const ProviderDetails = struct {
+    value: std.json.Value,
+
+    /// Wraps a parsed JSON object without allocating.
+    pub fn fromValue(value: std.json.Value) error{InvalidProviderDetails}!ProviderDetails {
+        if (value != .object) return error.InvalidProviderDetails;
+        return .{ .value = value };
+    }
+
+    /// Writes the structured object through Zig's JSON serializer.
+    pub fn jsonStringify(self: ProviderDetails, json: anytype) !void {
+        try json.write(self.value);
+    }
+};
+
 /// Provider-owned fields that must be replayed only through the provider that
 /// produced them.
 pub const ProviderPart = struct {
     /// Provider item identifier, distinct from a function tool-call ID.
     id: ?[]const u8 = null,
     provider_name: ?[]const u8 = null,
-    /// Raw JSON retained until ZigAI's structured provider-details type lands.
-    provider_details_json: ?[]const u8 = null,
+    provider_details: ?ProviderDetails = null,
 
     /// Whether replaying this part requires provider-specific wire support.
     pub fn requiresReplay(self: ProviderPart) bool {
-        return self.id != null or self.provider_details_json != null;
+        return self.id != null or self.provider_details != null;
     }
 };
 
@@ -388,8 +405,8 @@ pub const ResponseMessage = struct {
     timestamp_unix_ms: ?i64 = null,
     provider_name: ?[]const u8 = null,
     provider_url: ?[]const u8 = null,
-    /// Raw JSON for provider data that must survive a history round trip.
-    provider_details_json: ?[]const u8 = null,
+    /// Structured provider data that must survive a history round trip.
+    provider_details: ?ProviderDetails = null,
     provider_response_id: ?[]const u8 = null,
     model_name: ?[]const u8 = null,
     finish_reason: ?FinishReason = null,
@@ -655,7 +672,38 @@ fn dupeProviderPart(arena: std.mem.Allocator, value: ProviderPart) !ProviderPart
     return .{
         .id = try dupeOptional(gpa, value.id),
         .provider_name = try dupeOptional(gpa, value.provider_name),
-        .provider_details_json = try dupeOptional(gpa, value.provider_details_json),
+        .provider_details = if (value.provider_details) |details| try dupeProviderDetails(gpa, details) else null,
+    };
+}
+
+/// Copies provider details and every nested JSON value into caller-owned memory.
+pub fn dupeProviderDetails(arena: std.mem.Allocator, details: ProviderDetails) !ProviderDetails {
+    return .{ .value = try dupeJsonValue(arena, details.value) };
+}
+
+fn dupeJsonValue(arena: std.mem.Allocator, value: std.json.Value) !std.json.Value {
+    return switch (value) {
+        .null => .null,
+        .bool => |item| .{ .bool = item },
+        .integer => |item| .{ .integer = item },
+        .float => |item| .{ .float = item },
+        .number_string => |item| .{ .number_string = try arena.dupe(u8, item) },
+        .string => |item| .{ .string = try arena.dupe(u8, item) },
+        .array => |items| blk: {
+            var copy = std.json.Array.init(arena);
+            for (items.items) |item| try copy.append(try dupeJsonValue(arena, item));
+            break :blk .{ .array = copy };
+        },
+        .object => |items| blk: {
+            var copy: std.json.ObjectMap = .empty;
+            var iterator = items.iterator();
+            while (iterator.next()) |entry| try copy.put(
+                arena,
+                try arena.dupe(u8, entry.key_ptr.*),
+                try dupeJsonValue(arena, entry.value_ptr.*),
+            );
+            break :blk .{ .object = copy };
+        },
     };
 }
 
@@ -688,10 +736,19 @@ fn checkAllVariantDupes(allocator: std.mem.Allocator) !void {
     const gpa = arena.allocator();
 
     const metadata = [_]Metadata{.{ .key = "source", .value = "test" }};
+    var provider_details_array = std.json.Array.init(gpa);
+    try provider_details_array.append(.null);
+    try provider_details_array.append(.{ .integer = 7 });
+    try provider_details_array.append(.{ .float = 1.5 });
+    try provider_details_array.append(.{ .number_string = "123456789012345678901234567890" });
+    try provider_details_array.append(.{ .string = "unknown" });
+    var provider_details_object: std.json.ObjectMap = .empty;
+    try provider_details_object.put(gpa, "opaque", .{ .bool = true });
+    try provider_details_object.put(gpa, "values", .{ .array = provider_details_array });
     const provider = ProviderPart{
         .id = "provider-item",
         .provider_name = "test-provider",
-        .provider_details_json = "{\"opaque\":true}",
+        .provider_details = .{ .value = .{ .object = provider_details_object } },
     };
     const uploaded = UploadedFile{
         .id = "file-1",
@@ -860,6 +917,12 @@ fn checkAllVariantDupes(allocator: std.mem.Allocator) !void {
     try std.testing.expectEqualStrings("file-1", uploaded_copy.id);
     const speech_copy = (try dupeResponsePart(gpa, response_parts[16])).speech;
     try std.testing.expectEqualStrings("bytes", speech_copy.audio.?.source.bytes);
+    const details_copy = (try dupeContent(gpa, rich_contents[0])).provider.provider_details.?;
+    try std.testing.expect(details_copy.value.object.get("opaque").?.bool);
+    try std.testing.expectEqualStrings(
+        "123456789012345678901234567890",
+        details_copy.value.object.get("values").?.array.items[3].number_string,
+    );
 
     _ = uploaded.asContent();
     _ = try dupeMetadata(gpa, &metadata);
@@ -884,8 +947,9 @@ test "tool results expose only failed outcomes as provider errors" {
     try std.testing.expect(!denied.isError());
     try std.testing.expectEqual(ToolOutcome.failed, legacy.effectiveOutcome());
     try std.testing.expect((ProviderPart{ .id = "item" }).requiresReplay());
-    try std.testing.expect((ProviderPart{ .provider_details_json = "{}" }).requiresReplay());
+    try std.testing.expect((ProviderPart{ .provider_details = .{ .value = .{ .object = .empty } } }).requiresReplay());
     try std.testing.expect(!(ProviderPart{ .provider_name = "provider" }).requiresReplay());
+    try std.testing.expectError(error.InvalidProviderDetails, ProviderDetails.fromValue(.{ .string = "invalid" }));
 }
 
 test "every message variant supports owned duplication" {

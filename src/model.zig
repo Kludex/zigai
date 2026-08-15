@@ -16,6 +16,7 @@ pub const Part = messages.Part;
 pub const PromptPart = messages.PromptPart;
 pub const ProviderFile = messages.ProviderFile;
 pub const ProviderPart = messages.ProviderPart;
+pub const ProviderDetails = messages.ProviderDetails;
 pub const RequestMessage = messages.RequestMessage;
 pub const RequestPart = messages.RequestPart;
 pub const RequestState = messages.RequestState;
@@ -42,6 +43,7 @@ pub const dupeContent = messages.dupeContent;
 pub const dupeMetadata = messages.dupeMetadata;
 pub const dupeRequestPart = messages.dupeRequestPart;
 pub const dupeResponsePart = messages.dupeResponsePart;
+pub const dupeProviderDetails = messages.dupeProviderDetails;
 pub const dupeUserContent = messages.dupeUserContent;
 
 pub const CancellationToken = struct {

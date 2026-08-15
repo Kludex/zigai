@@ -2192,10 +2192,59 @@ fn consumeContentBytes(total: *usize, limit: usize, content: model_types.Content
         !consumeFollowUpBytes(total, limit, content.thought_signature)) return false;
     if (!consumeFollowUpBytes(total, limit, content.provider.id) or
         !consumeFollowUpBytes(total, limit, content.provider.provider_name) or
-        !consumeFollowUpBytes(total, limit, content.provider.provider_details_json)) return false;
+        !consumeProviderDetailsBytes(total, limit, content.provider.provider_details)) return false;
     for (content.metadata) |metadata| {
         if (!consumeBoundedBytes(total, limit, metadata.key.len) or
             !consumeBoundedBytes(total, limit, metadata.value.len)) return false;
+    }
+    return true;
+}
+
+fn consumeProviderDetailsBytes(
+    total: *usize,
+    limit: usize,
+    details: ?model_types.ProviderDetails,
+) bool {
+    return consumeJsonValueBytes(total, limit, if (details) |value| value.value else return true);
+}
+
+fn consumeJsonValueBytes(total: *usize, limit: usize, value: std.json.Value) bool {
+    return switch (value) {
+        .null => consumeBoundedBytes(total, limit, 4),
+        .bool => |item| consumeBoundedBytes(total, limit, if (item) 4 else 5),
+        .integer => consumeBoundedBytes(total, limit, 20),
+        .float => consumeBoundedBytes(total, limit, 32),
+        .number_string => |item| consumeBoundedBytes(total, limit, item.len),
+        .string => |item| consumeJsonStringBytes(total, limit, item),
+        .array => |items| blk: {
+            if (!consumeBoundedBytes(total, limit, 2)) break :blk false;
+            for (items.items, 0..) |item, index| {
+                if ((index > 0 and !consumeBoundedBytes(total, limit, 1)) or
+                    !consumeJsonValueBytes(total, limit, item)) break :blk false;
+            }
+            break :blk true;
+        },
+        .object => |items| blk: {
+            if (!consumeBoundedBytes(total, limit, 2)) break :blk false;
+            var iterator = items.iterator();
+            var index: usize = 0;
+            while (iterator.next()) |entry| {
+                if ((index > 0 and !consumeBoundedBytes(total, limit, 1)) or
+                    !consumeJsonStringBytes(total, limit, entry.key_ptr.*) or
+                    !consumeBoundedBytes(total, limit, 1) or
+                    !consumeJsonValueBytes(total, limit, entry.value_ptr.*)) break :blk false;
+                index += 1;
+            }
+            break :blk true;
+        },
+    };
+}
+
+fn consumeJsonStringBytes(total: *usize, limit: usize, value: []const u8) bool {
+    if (!consumeBoundedBytes(total, limit, 2)) return false;
+    for (value) |byte| {
+        const encoded_len: usize = if (byte == '"' or byte == '\\') 2 else if (byte < 0x20) 6 else 1;
+        if (!consumeBoundedBytes(total, limit, encoded_len)) return false;
     }
     return true;
 }
@@ -2630,7 +2679,10 @@ fn copyResponseMessage(allocator: std.mem.Allocator, response: model_types.Respo
         .timestamp_unix_ms = response.timestamp_unix_ms,
         .provider_name = try copyOptionalString(allocator, response.provider_name),
         .provider_url = try copyOptionalString(allocator, response.provider_url),
-        .provider_details_json = try copyOptionalString(allocator, response.provider_details_json),
+        .provider_details = if (response.provider_details) |details|
+            try model_types.dupeProviderDetails(allocator, details)
+        else
+            null,
         .provider_response_id = try copyOptionalString(allocator, response.provider_response_id),
         .model_name = try copyOptionalString(allocator, response.model_name),
         .finish_reason = if (response.finish_reason) |reason| .{
@@ -2980,7 +3032,7 @@ fn ensureUploadedFileOwnedBy(selected_model: model_types.Model, file: model_type
 }
 
 fn ensureProviderPartOwnedBy(selected_model: model_types.Model, provider: model_types.ProviderPart) Agent.Error!void {
-    const has_provider_data = provider.id != null or provider.provider_details_json != null;
+    const has_provider_data = provider.id != null or provider.provider_details != null;
     const expected = provider.provider_name orelse if (has_provider_data)
         return Agent.Error.ProviderFileProviderMismatch
     else
@@ -3471,6 +3523,36 @@ test "agent private helpers cover ownership settings retries and rich content" {
         .{ .speech = .{ .speaker = .assistant, .transcript = " speech" } },
     });
     try std.testing.expectEqualStrings("detailed speech", collected);
+}
+
+test "structured provider details copy and count every JSON value kind" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var values = std.json.Array.init(allocator);
+    try values.append(.null);
+    try values.append(.{ .bool = false });
+    try values.append(.{ .integer = 1 });
+    try values.append(.{ .float = 1.5 });
+    try values.append(.{ .number_string = "123456789012345678901234567890" });
+    try values.append(.{ .string = "opaque\n\"value" });
+    var object: std.json.ObjectMap = .empty;
+    try object.put(allocator, "values", .{ .array = values });
+    const details = model_types.ProviderDetails{ .value = .{ .object = object } };
+
+    var total: usize = 0;
+    try std.testing.expect(consumeProviderDetailsBytes(&total, 256, details));
+    try std.testing.expect(total > 0);
+    total = 0;
+    try std.testing.expect(!consumeProviderDetailsBytes(&total, 1, details));
+    try std.testing.expect(consumeProviderDetailsBytes(&total, 1, null));
+
+    const copied = try copyResponseMessage(allocator, .{ .parts = &.{}, .provider_details = details });
+    try std.testing.expectEqualStrings(
+        "opaque\n\"value",
+        copied.provider_details.?.value.object.get("values").?.array.items[5].string,
+    );
 }
 
 test "typed result decoding releases invalid untyped results" {

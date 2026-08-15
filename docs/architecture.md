@@ -104,9 +104,11 @@ capability loading.
 
 Media uses one source union for bytes, URLs, legacy provider files, or an
 owner-qualified `UploadedFile`. Provider-generated parts keep IDs and opaque
-replay details in `ProviderPart`. Application metadata remains separate and is
-never sent to a model. Both kinds survive copying and versioned ZigAI history
-serialization.
+structured replay details in `ProviderPart`. `ProviderDetails` carries a JSON
+object graph, preserves unknown fields, and cannot contain malformed JSON; its
+lifetime follows the enclosing owned message result.
+Application metadata remains separate and is never sent to a model. Both kinds
+survive copying and versioned ZigAI history serialization.
 
 Profiles advertise supported content kinds. Request and response part unions
 make invalid content roles unrepresentable. The agent validates URLs and all
@@ -158,7 +160,7 @@ History uses a `Message` tagged union with distinct `RequestMessage` and
 `ResponseMessage` envelopes. Requests contain only system prompts, user
 prompts, retries, and tool returns. Responses contain only text, media,
 thinking, and tool calls. Response history retains usage, finish reason,
-provider/model identity, response IDs, and raw provider details.
+provider/model identity, response IDs, and structured provider details.
 
 Version 2 serializes those envelopes with `kind` and `part_kind`
 discriminators. The parser migrates version-1 role-based ZigAI histories.

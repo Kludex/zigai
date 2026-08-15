@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Replace provider-detail JSON strings with owned structured JSON objects,
+  preserving unknown fields across copies and history serialization while
+  making malformed provider JSON unrepresentable.
 - Add a separate PydanticAI `2.31.0` stable-v2 JSON codec with bounded parsing,
   lossless arbitrary JSON values and number lexemes, an arena-owned result,
   strict message-role validation, and an upstream-generated golden fixture.
