@@ -227,8 +227,8 @@ var client = zigai.providers.azure_openai.Client{
 };
 ```
 
-OpenAI and OpenAI-compatible providers can discover the models visible to the
-configured credential:
+Every first-party and OpenAI-compatible provider can discover the models
+visible to the configured credential:
 
 ```zig
 var models = try openai_provider.provider().listModels(allocator);
@@ -240,7 +240,7 @@ for (models.items) |model| {
 ```
 
 Discovery owns an arena so identifiers and raw provider metadata stay valid
-until `deinit`.
+until `deinit`. Paginated providers enforce configurable page and model limits.
 
 Each model exposes a `ModelProfile`. The profile tells the agent which
 capabilities are supported before it sends a paid request.

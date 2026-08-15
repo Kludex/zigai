@@ -97,6 +97,7 @@ pub const ClientDefaults = struct {
 pub fn ProviderWithDefaults(comptime defaults: ClientDefaults) type {
     return struct {
         http: http_provider.Configured,
+        discovery_limits: operations.DiscoveryLimits,
 
         const Self = @This();
 
@@ -107,6 +108,7 @@ pub fn ProviderWithDefaults(comptime defaults: ClientDefaults) type {
             headers: []const http.Header = &.{},
             request_policy: provider_types.RequestPolicy = .{},
             model_profiles: ?http_provider.Configured.ModelProfiles = null,
+            discovery_limits: operations.DiscoveryLimits = .{},
         };
 
         pub fn init(api_key: []const u8, transport: http.Transport) Self {
@@ -114,27 +116,35 @@ pub fn ProviderWithDefaults(comptime defaults: ClientDefaults) type {
         }
 
         pub fn initWithOptions(api_key: []const u8, transport: http.Transport, options: Options) Self {
-            return .{ .http = .{
-                .name = options.provider_name,
-                .base_url = options.base_url,
-                .transport = transport,
-                .credential = .{ .header = .{
-                    .name = options.authentication.header,
-                    .value = api_key,
-                    .prefix = options.authentication.prefix,
-                } },
-                .headers = options.headers,
-                .request_policy = options.request_policy,
-                .model_profiles = options.model_profiles,
-            } };
+            return .{
+                .http = .{
+                    .name = options.provider_name,
+                    .base_url = options.base_url,
+                    .transport = transport,
+                    .credential = .{ .header = .{
+                        .name = options.authentication.header,
+                        .value = api_key,
+                        .prefix = options.authentication.prefix,
+                    } },
+                    .headers = options.headers,
+                    .request_policy = options.request_policy,
+                    .model_profiles = options.model_profiles,
+                },
+                .discovery_limits = options.discovery_limits,
+            };
         }
 
         pub fn provider(self: *Self) provider_types.Provider {
             self.http.operations = .{
-                .context = &self.http,
-                .listModelsFn = operations.listOpenAIModels,
+                .context = self,
+                .listModelsFn = listModels,
             };
             return self.http.provider();
+        }
+
+        fn listModels(context: *anyopaque, allocator: std.mem.Allocator) !provider_types.OwnedModels {
+            const self: *Self = @ptrCast(@alignCast(context));
+            return operations.listOpenAIModels(&self.http, allocator, self.discovery_limits);
         }
     };
 }
@@ -1064,6 +1074,10 @@ test "compatible clients forward correlation and configured idempotency headers"
 
         fn send(context: *anyopaque, allocator: std.mem.Allocator, request_value: http.Request) !http.Response {
             const self: *@This() = @ptrCast(@alignCast(context));
+            if (std.mem.endsWith(u8, request_value.url, "/models")) return .{
+                .status = 200,
+                .body = try allocator.dupe(u8, "{\"data\":[{\"id\":\"model\"}]}"),
+            };
             self.buffered = hasHeaders(request_value);
             return .{ .status = 200, .body = try allocator.dupe(u8, "{\"choices\":[{\"message\":{\"role\":\"assistant\",\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}") };
         }
@@ -1081,6 +1095,9 @@ test "compatible clients forward correlation and configured idempotency headers"
         .provider = provider_state.provider(),
         .idempotency_header = "x-idempotency-key",
     };
+    var models = try provider_state.provider().listModels(std.testing.allocator);
+    defer models.deinit();
+    try std.testing.expectEqualStrings("model", models.items[0].id);
     try std.testing.expect(client.model().profile.supports_idempotency_key);
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

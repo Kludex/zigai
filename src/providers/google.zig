@@ -4,6 +4,7 @@ const std = @import("std");
 const model_types = @import("../model.zig");
 const provider_types = @import("../provider.zig");
 const http_provider = @import("http.zig");
+const operations = @import("operations.zig");
 const http = @import("../transport.zig");
 const common = @import("common.zig");
 const json_limits = @import("../json.zig");
@@ -23,12 +24,14 @@ pub const Error = model_types.ProviderRequestError || error{
 /// separate from the GenerateContent wire adapter.
 pub const Provider = struct {
     http: http_provider.Configured,
+    discovery_limits: operations.DiscoveryLimits,
 
     pub const Options = struct {
         base_url: []const u8 = api_base,
         headers: []const http.Header = &.{},
         request_policy: provider_types.RequestPolicy = .{},
         model_profiles: ?http_provider.Configured.ModelProfiles = null,
+        discovery_limits: operations.DiscoveryLimits = .{},
     };
 
     pub fn init(api_key: []const u8, transport: http.Transport) Provider {
@@ -36,19 +39,31 @@ pub const Provider = struct {
     }
 
     pub fn initWithOptions(api_key: []const u8, transport: http.Transport, options: Options) Provider {
-        return .{ .http = .{
-            .name = "gcp.gen_ai",
-            .base_url = options.base_url,
-            .transport = transport,
-            .credential = .{ .header = .{ .name = "x-goog-api-key", .value = api_key } },
-            .headers = options.headers,
-            .request_policy = options.request_policy,
-            .model_profiles = options.model_profiles,
-        } };
+        return .{
+            .http = .{
+                .name = "gcp.gen_ai",
+                .base_url = options.base_url,
+                .transport = transport,
+                .credential = .{ .header = .{ .name = "x-goog-api-key", .value = api_key } },
+                .headers = options.headers,
+                .request_policy = options.request_policy,
+                .model_profiles = options.model_profiles,
+            },
+            .discovery_limits = options.discovery_limits,
+        };
     }
 
     pub fn provider(self: *Provider) provider_types.Provider {
+        self.http.operations = .{
+            .context = self,
+            .listModelsFn = listModels,
+        };
         return self.http.provider();
+    }
+
+    fn listModels(context: *anyopaque, allocator: std.mem.Allocator) !provider_types.OwnedModels {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        return operations.listGoogleModels(&self.http, allocator, self.discovery_limits);
     }
 };
 
@@ -183,15 +198,23 @@ test "Google provider owns identity and model profile overrides" {
             return overridden;
         }
     };
-    var marker: u8 = 0;
-    var provider_state = Provider.initWithOptions("secret", .{ .context = &marker, .sendFn = undefined }, .{
-        .model_profiles = .{ .context = &marker, .overrideFn = Profiles.override },
+    const State = struct {
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, _: http.Request) !http.Response {
+            return .{ .status = 200, .body = try allocator.dupe(u8, "{\"models\":[{\"name\":\"models/gemini-test\"}]}") };
+        }
+    };
+    var state: State = .{};
+    var provider_state = Provider.initWithOptions("secret", .{ .context = &state, .sendFn = State.send }, .{
+        .model_profiles = .{ .context = &state, .overrideFn = Profiles.override },
     });
     var client = Client{ .model_name = "gemini-test", .provider = provider_state.provider() };
     const model = client.model();
     try std.testing.expectEqualStrings("gcp.gen_ai", model.provider_name.?);
     try std.testing.expect(!model.profile.supports_tools);
     try std.testing.expect(model.profile.supports_streaming);
+    var models = try provider_state.provider().listModels(std.testing.allocator);
+    defer models.deinit();
+    try std.testing.expectEqualStrings("gemini-test", models.items[0].id);
 }
 
 const StreamState = struct {

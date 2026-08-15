@@ -27,9 +27,10 @@
   provider/client pairs; credentials, API roots, provider identity, headers,
   request policy, transport, authentication style, and profile callbacks stay
   on the provider side of the boundary.
-- Add bounded, arena-owned model discovery for OpenAI and every
-  OpenAI-compatible provider through the provider operations interface,
-  preserving each model object's provider metadata.
+- Add bounded, arena-owned model discovery for OpenAI, Anthropic, Google, and
+  every OpenAI-compatible provider through the provider operations interface.
+  Paginated APIs have explicit page and model limits, identifiers are
+  normalized for client construction, and raw provider metadata is preserved.
 - Pin the official MCP `2026-07-28` conformance framework and TypeScript and
   Python reference servers in a validated test-only interoperability matrix.
 - Add a test-only Cassetter-style YAML format that replays ordered MCP

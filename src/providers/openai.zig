@@ -26,12 +26,14 @@ pub const Error = model_types.ProviderRequestError || error{
 /// are never exposed to `Client` or its wire encoder.
 pub const Provider = struct {
     http: http_provider.Configured,
+    discovery_limits: operations.DiscoveryLimits,
 
     pub const Options = struct {
         base_url: []const u8 = api_base,
         headers: []const http.Header = &.{},
         request_policy: provider_types.RequestPolicy = .{},
         model_profiles: ?http_provider.Configured.ModelProfiles = null,
+        discovery_limits: operations.DiscoveryLimits = .{},
     };
 
     pub fn init(api_key: []const u8, transport: http.Transport) Provider {
@@ -39,23 +41,31 @@ pub const Provider = struct {
     }
 
     pub fn initWithOptions(api_key: []const u8, transport: http.Transport, options: Options) Provider {
-        return .{ .http = .{
-            .name = "openai",
-            .base_url = options.base_url,
-            .transport = transport,
-            .credential = .{ .bearer = api_key },
-            .headers = options.headers,
-            .request_policy = options.request_policy,
-            .model_profiles = options.model_profiles,
-        } };
+        return .{
+            .http = .{
+                .name = "openai",
+                .base_url = options.base_url,
+                .transport = transport,
+                .credential = .{ .bearer = api_key },
+                .headers = options.headers,
+                .request_policy = options.request_policy,
+                .model_profiles = options.model_profiles,
+            },
+            .discovery_limits = options.discovery_limits,
+        };
     }
 
     pub fn provider(self: *Provider) provider_types.Provider {
         self.http.operations = .{
-            .context = &self.http,
-            .listModelsFn = operations.listOpenAIModels,
+            .context = self,
+            .listModelsFn = listModels,
         };
         return self.http.provider();
+    }
+
+    fn listModels(context: *anyopaque, allocator: std.mem.Allocator) !provider_types.OwnedModels {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        return operations.listOpenAIModels(&self.http, allocator, self.discovery_limits);
     }
 };
 
@@ -180,15 +190,23 @@ test "OpenAI provider owns identity and model profile overrides" {
             return overridden;
         }
     };
-    var marker: u8 = 0;
-    var provider_state = Provider.initWithOptions("secret", .{ .context = &marker, .sendFn = undefined }, .{
-        .model_profiles = .{ .context = &marker, .overrideFn = Profiles.override },
+    const State = struct {
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, _: http.Request) !http.Response {
+            return .{ .status = 200, .body = try allocator.dupe(u8, "{\"data\":[{\"id\":\"gpt-test\"}]}") };
+        }
+    };
+    var state: State = .{};
+    var provider_state = Provider.initWithOptions("secret", .{ .context = &state, .sendFn = State.send }, .{
+        .model_profiles = .{ .context = &state, .overrideFn = Profiles.override },
     });
     var client = Client{ .model_name = "gpt-test", .provider = provider_state.provider() };
     const model = client.model();
     try std.testing.expectEqualStrings("openai", model.provider_name.?);
     try std.testing.expect(!model.profile.supports_tools);
     try std.testing.expect(model.profile.supports_streaming);
+    var models = try provider_state.provider().listModels(std.testing.allocator);
+    defer models.deinit();
+    try std.testing.expectEqualStrings("gpt-test", models.items[0].id);
 }
 
 pub fn encodeStreamingRequest(allocator: std.mem.Allocator, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {

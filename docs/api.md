@@ -179,10 +179,12 @@ gateway-specific idempotency header. Use
 selected at runtime; Azure OpenAI and Bedrock expose `apiBase` helpers for
 deployment-specific roots.
 
-`Provider.listModels` is implemented by OpenAI and OpenAI-compatible provider
-objects. It authenticates through the provider boundary and returns
-`OwnedProviderModels`; call `deinit` after consuming its identifiers and raw
-metadata. Model adapters are not involved in discovery.
+`Provider.listModels` is implemented by OpenAI, Anthropic, Google, and
+OpenAI-compatible provider objects. It authenticates through the provider
+boundary and returns `OwnedProviderModels`; call `deinit` after consuming its
+identifiers and raw metadata. `Provider.Options.discovery_limits` bounds pages
+and total models for paginated APIs. Model adapters are not involved in
+discovery.
 
 `agent_spec.Owned` owns parsed configuration in an arena. It is data-only and
 does not read secrets or construct clients. `validateResolution` uses
