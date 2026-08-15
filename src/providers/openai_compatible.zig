@@ -1196,6 +1196,7 @@ test "named compatible decoders preserve selected response metadata" {
         error.InvalidProviderResponse,
         decodeResponseFor(arena.allocator(), base ++ ",\"router\":true}", "router"),
     );
+    try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(arena.allocator(), "[]"));
 }
 
 test "maps compatible truncation and content filtering" {

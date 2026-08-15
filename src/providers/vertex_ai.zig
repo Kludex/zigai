@@ -190,6 +190,12 @@ fn validateResourceSegment(value: []const u8) error{InvalidVertexResource}!void 
     }
 }
 
+const UnexpectedTransport = struct {
+    fn send(_: *anyopaque, _: std.mem.Allocator, _: transport.Request) !transport.Response {
+        return error.UnexpectedRequest;
+    }
+};
+
 test "Vertex provider maps Gemini requests to regional publisher resources" {
     const State = struct {
         buffered: bool = false,
@@ -248,6 +254,7 @@ test "Vertex provider maps Gemini requests to regional publisher resources" {
     const base_url = try regionalApiBase(std.testing.allocator, "europe-west1");
     defer std.testing.allocator.free(base_url);
     var state: State = .{};
+    try std.testing.expect(!State.authorized(&.{}));
     var provider_state = Provider.initWithOptions(
         "token",
         "my-project",
@@ -282,12 +289,12 @@ test "Vertex provider rejects unsafe resources and unsupported operations" {
     var marker: u8 = 0;
     const http_transport = transport.Transport{
         .context = &marker,
-        .sendFn = struct {
-            fn send(_: *anyopaque, _: std.mem.Allocator, _: transport.Request) !transport.Response {
-                return error.UnexpectedRequest;
-            }
-        }.send,
+        .sendFn = UnexpectedTransport.send,
     };
+    try std.testing.expectError(error.UnexpectedRequest, http_transport.send(std.testing.allocator, .{
+        .method = .GET,
+        .url = "https://example.test",
+    }));
     var provider_state = Provider.init("token", "project", "global", http_transport);
     const provider = provider_state.provider();
     try std.testing.expectError(error.UnsupportedVertexOperation, provider.request(std.testing.allocator, .{
@@ -342,11 +349,7 @@ test "Vertex provider composes application model profiles" {
     var marker: u8 = 0;
     var provider_state = Provider.initWithOptions("token", "project", "global", .{
         .context = &marker,
-        .sendFn = struct {
-            fn send(_: *anyopaque, _: std.mem.Allocator, _: transport.Request) !transport.Response {
-                return error.UnexpectedRequest;
-            }
-        }.send,
+        .sendFn = UnexpectedTransport.send,
     }, .{ .model_profiles = .{
         .context = &marker,
         .lookupFn = Profiles.lookup,
@@ -358,4 +361,39 @@ test "Vertex provider composes application model profiles" {
     try std.testing.expect(!known.supports_temperature);
     const unknown = provider.modelProfile("unknown", .{ .supports_temperature = true });
     try std.testing.expect(!unknown.supports_temperature);
+}
+
+test "Vertex provider reports errors through its credential-safe boundary" {
+    const Observer = struct {
+        seen: bool = false,
+        provider_name: []const u8 = "",
+        status: u16 = 0,
+        redacted: bool = false,
+
+        fn observe(context: *anyopaque, provider_error: model_types.ProviderError) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.seen = true;
+            self.provider_name = provider_error.provider;
+            self.status = provider_error.status;
+            self.redacted = provider_error.sensitive_data_redacted;
+        }
+    };
+    var marker: u8 = 0;
+    var observer: Observer = .{};
+    var provider_state = Provider.init("secret-token", "project", "global", .{
+        .context = &marker,
+        .sendFn = UnexpectedTransport.send,
+    });
+    provider_state.provider().observeError(
+        std.testing.allocator,
+        403,
+        "{\"error\":{\"message\":\"secret-token\"}}",
+        .{},
+        .{ .context = &observer, .observeFn = Observer.observe },
+        .{ .capture_body = true },
+    );
+    try std.testing.expect(observer.seen);
+    try std.testing.expectEqualStrings("gcp.vertex_ai", observer.provider_name);
+    try std.testing.expectEqual(@as(u16, 403), observer.status);
+    try std.testing.expect(observer.redacted);
 }
