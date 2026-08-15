@@ -230,6 +230,7 @@ fn writeText(json: *std.json.Stringify, text: []const u8) !void {
 fn writeToolUse(allocator: std.mem.Allocator, json: *std.json.Stringify, call: model_types.ToolCall) !void {
     try ensureReplayable(call.provider);
     if (call.thought_signature != null) return error.UnsupportedContentType;
+    if (!validToolIdentifier(call.id) or !validToolIdentifier(call.name)) return error.InvalidRequestEncoding;
     try json.beginObject();
     try json.objectField("toolUse");
     try json.beginObject();
@@ -471,10 +472,13 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
                 .object => |value| value,
                 else => return error.InvalidProviderResponse,
             };
+            const id = try common.objectString(tool, "toolUseId");
+            const name = try common.objectString(tool, "name");
+            if (!validToolIdentifier(id) or !validToolIdentifier(name)) return error.InvalidProviderResponse;
             const input = tool.get("input") orelse return error.InvalidProviderResponse;
             try parts.append(allocator, .{ .tool_call = .{
-                .id = try common.objectString(tool, "toolUseId"),
-                .name = try common.objectString(tool, "name"),
+                .id = id,
+                .name = name,
                 .arguments_json = try std.json.Stringify.valueAlloc(allocator, input, .{}),
             } });
         } else if (object.get("reasoningContent")) |reasoning_value| {
@@ -685,4 +689,326 @@ test "Converse endpoint encodes arbitrary model identifiers" {
     defer std.testing.allocator.free(endpoint);
     try std.testing.expectEqualStrings("/model/arn%3Aaws%3Abedrock%2Fmodel%20name/converse", endpoint);
     try std.testing.expectError(error.InvalidRequestEncoding, converseEndpoint(std.testing.allocator, ""));
+}
+
+test "encodes detailed portable message forms" {
+    const messages = [_]model_types.Message{
+        .{ .request = .{ .parts = &.{
+            .{ .system_prompt_part = .{ .content = "System detail." } },
+            .{ .user_prompt_part = .{ .content = .{ .text_content = .{ .content = "User detail." } } } },
+            .{ .retry_prompt = "Retry compact." },
+            .{ .retry_prompt_part = .{ .content = "Retry detail." } },
+            .{ .capability_load_return = .{ .call_id = "load_1", .instructions = "Use maps." } },
+            .{ .speech = .{ .speaker = .user, .transcript = "Spoken input." } },
+        } } },
+        .{ .response = .{ .parts = &.{
+            .{ .text = "Compact response." },
+            .{ .text_part = .{ .content = "Detailed response." } },
+            .{ .capability_load_call = .{ .call_id = "load_1", .capability_id = "maps" } },
+            .{ .thinking = .{ .content = "Reasoning.", .signature = "signed" } },
+            .{ .speech = .{ .speaker = .assistant, .transcript = "Spoken response." } },
+        } } },
+    };
+    const body = try encodeRequest(std.testing.allocator, .{ .messages = &messages });
+    defer std.testing.allocator.free(body);
+    for ([_][]const u8{
+        "System detail.",
+        "User detail.",
+        "Retry compact.",
+        "Retry detail.",
+        "load_capability",
+        "Use maps.",
+        "Spoken input.",
+        "Compact response.",
+        "Detailed response.",
+        "Reasoning.",
+        "signed",
+        "Spoken response.",
+    }) |expected| try std.testing.expect(std.mem.indexOf(u8, body, expected) != null);
+}
+
+test "encodes Converse tool results choices schemas and tiers" {
+    const tool = model_types.ToolDefinition{
+        .name = "weather",
+        .description = "Weather",
+        .parameters_json_schema = "{\"type\":\"object\"}",
+        .return_json_schema = "{\"type\":\"object\"}",
+        .return_schema_visibility = .model_description,
+    };
+    inline for (.{
+        .{ model_types.ToolChoice.auto, "\"toolChoice\":{\"auto\":{}}" },
+        .{ model_types.ToolChoice.required, "\"toolChoice\":{\"any\":{}}" },
+        .{ model_types.ToolChoice{ .tool = "weather" }, "\"toolChoice\":{\"tool\":{\"name\":\"weather\"}}" },
+    }) |entry| {
+        const body = try encodeRequest(std.testing.allocator, .{
+            .messages = &.{},
+            .tools = &.{tool},
+            .settings = .{ .tool_choice = entry[0] },
+        });
+        defer std.testing.allocator.free(body);
+        try std.testing.expect(std.mem.indexOf(u8, body, entry[1]) != null);
+        try std.testing.expect(std.mem.indexOf(u8, body, "Return value JSON Schema") != null);
+    }
+
+    const without_tools = try encodeRequest(std.testing.allocator, .{
+        .messages = &.{},
+        .tools = &.{tool},
+        .settings = .{ .tool_choice = .none },
+    });
+    defer std.testing.allocator.free(without_tools);
+    try std.testing.expect(std.mem.indexOf(u8, without_tools, "toolConfig") == null);
+
+    const results = [_]model_types.Message{
+        .{ .request = .{ .parts = &.{.{ .tool_return = .{
+            .call_id = "call_text",
+            .name = "weather",
+            .content = "not JSON",
+        } }} } },
+        .{ .request = .{ .parts = &.{.{ .tool_return = .{
+            .call_id = "call_error",
+            .name = "weather",
+            .content = "failed",
+            .outcome = .failed,
+        } }} } },
+    };
+    const result_body = try encodeRequest(std.testing.allocator, .{ .messages = &results });
+    defer std.testing.allocator.free(result_body);
+    try std.testing.expect(std.mem.indexOf(u8, result_body, "\"text\":\"not JSON\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, result_body, "\"status\":\"error\"") != null);
+
+    inline for (.{ model_types.ServiceTier.default, .flex, .priority }) |tier| {
+        const body = try encodeRequest(std.testing.allocator, .{
+            .messages = &.{},
+            .settings = .{ .service_tier = tier },
+        });
+        defer std.testing.allocator.free(body);
+        try std.testing.expect(std.mem.indexOf(u8, body, @tagName(tier)) != null);
+    }
+    const automatic = try encodeRequest(std.testing.allocator, .{
+        .messages = &.{},
+        .settings = .{ .service_tier = .auto },
+    });
+    defer std.testing.allocator.free(automatic);
+    try std.testing.expect(std.mem.indexOf(u8, automatic, "serviceTier") == null);
+}
+
+test "validates Converse output settings and tool identifiers" {
+    const valid = try encodeRequest(std.testing.allocator, .{
+        .messages = &.{},
+        .output = .{ .json_schema = .{ .name = "result", .schema = "{\"type\":\"object\"}" } },
+    });
+    defer std.testing.allocator.free(valid);
+    try std.testing.expect(std.mem.indexOf(u8, valid, "outputConfig") != null);
+
+    try std.testing.expectError(error.UnsupportedOutputMode, encodeRequest(std.testing.allocator, .{
+        .messages = &.{},
+        .output = .json_object,
+    }));
+    try std.testing.expectError(error.InvalidRequestEncoding, encodeRequest(std.testing.allocator, .{
+        .messages = &.{},
+        .output = .{ .json_schema = .{ .name = "bad name", .schema = "{}" } },
+    }));
+    try std.testing.expectError(error.InvalidRequestEncoding, encodeRequest(std.testing.allocator, .{
+        .messages = &.{},
+        .output = .{ .json_schema = .{ .name = "result", .schema = "not-json" } },
+    }));
+
+    try std.testing.expectError(error.InvalidRequestEncoding, encodeRequest(std.testing.allocator, .{
+        .messages = &.{.{ .response = .{ .parts = &.{.{ .tool_call = .{
+            .id = "bad id",
+            .name = "weather",
+            .arguments_json = "{}",
+        } }} } }},
+    }));
+    try std.testing.expectError(error.InvalidRequestEncoding, encodeRequest(std.testing.allocator, .{
+        .messages = &.{.{ .response = .{ .parts = &.{.{ .tool_call = .{
+            .id = "call_1",
+            .name = "bad name",
+            .arguments_json = "{}",
+        } }} } }},
+    }));
+    try std.testing.expectError(error.InvalidRequestEncoding, encodeRequest(std.testing.allocator, .{
+        .messages = &.{},
+        .tools = &.{.{
+            .name = "bad name",
+            .description = "Bad",
+            .parameters_json_schema = "{}",
+        }},
+    }));
+    inline for (.{ @as(f64, -0.1), 1.1 }) |temperature| try std.testing.expectError(
+        error.InvalidRequestEncoding,
+        encodeRequest(std.testing.allocator, .{
+            .messages = &.{},
+            .settings = .{ .temperature = temperature },
+        }),
+    );
+}
+
+test "rejects unsupported Converse history forms" {
+    const rich = model_types.Content{ .source = .{ .bytes = "data" }, .media_type = "image/png" };
+    const unsupported = [_]model_types.Message{
+        .{ .request = .{ .parts = &.{.{ .speech = .{ .speaker = .user } }} } },
+        .{ .request = .{ .parts = &.{.{ .tool_search_return = .{ .call_id = "search", .discovered_tools = &.{} } }} } },
+        .{ .request = .{ .parts = &.{.{ .tool_availability_delta = .{ .tools_added = &.{"weather"} } }} } },
+        .{ .request = .{ .parts = &.{.{ .user_prompt = .{ .image = rich } }} } },
+        .{ .response = .{ .parts = &.{.{ .text_part = .{ .content = "bound", .provider = .{ .id = "item" } } }} } },
+        .{ .response = .{ .parts = &.{.{ .speech = .{ .speaker = .assistant } }} } },
+        .{ .response = .{ .parts = &.{.{ .image = rich }} } },
+        .{ .response = .{ .parts = &.{.{ .tool_call = .{
+            .id = "call_1",
+            .name = "weather",
+            .arguments_json = "{}",
+            .thought_signature = "foreign",
+        } }} } },
+    };
+    for (unsupported) |message| try std.testing.expectError(
+        error.UnsupportedContentType,
+        encodeRequest(std.testing.allocator, .{ .messages = &.{message} }),
+    );
+}
+
+test "replays and validates Converse reasoning" {
+    var parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, "{\"redactedContent\":\"AA==\"}", .{});
+    defer parsed.deinit();
+    const details = try model_types.ProviderDetails.fromValue(parsed.value);
+    const replay = try encodeRequest(std.testing.allocator, .{
+        .messages = &.{.{ .response = .{ .parts = &.{.{ .thinking = .{
+            .content = "",
+            .provider = .{ .provider_name = "bedrock", .provider_details = details },
+        } }} } }},
+    });
+    defer std.testing.allocator.free(replay);
+    try std.testing.expect(std.mem.indexOf(u8, replay, "redactedContent") != null);
+
+    try std.testing.expectError(error.UnsupportedContentType, encodeRequest(std.testing.allocator, .{
+        .messages = &.{.{ .response = .{ .parts = &.{.{ .thinking = .{
+            .content = "",
+            .provider = .{ .provider_name = "anthropic", .provider_details = details },
+        } }} } }},
+    }));
+    try std.testing.expectError(error.UnsupportedContentType, encodeRequest(std.testing.allocator, .{
+        .messages = &.{.{ .response = .{ .parts = &.{.{ .thinking = .{
+            .content = "reason",
+            .provider = .{ .id = "reasoning-item" },
+        } }} } }},
+    }));
+}
+
+test "rejects malformed Converse responses and decodes all terminal reasons" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    for ([_][]const u8{
+        "{}",
+        "{\"output\":{\"message\":{\"role\":\"user\",\"content\":[]}}}",
+        "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[null]}}}",
+        "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[{}]}}}",
+        "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[{\"text\":\"x\",\"toolUse\":{}}]}}}",
+        "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[{\"toolUse\":null}]}}}",
+        "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[{\"toolUse\":{\"toolUseId\":\"bad id\",\"name\":\"tool\",\"input\":{}}}]}}}",
+        "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[{\"reasoningContent\":null}]}}}",
+        "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[{\"reasoningContent\":{}}]}}}",
+        "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[{\"reasoningContent\":{\"reasoningText\":null}}]}}}",
+        "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[{\"reasoningContent\":{\"reasoningText\":{\"text\":\"x\"},\"redactedContent\":\"AA==\"}}]}}}",
+        "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[]}},\"usage\":null}",
+    }) |body| try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(arena.allocator(), body));
+
+    const redacted = try decodeResponse(
+        arena.allocator(),
+        "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[{\"reasoningContent\":{\"redactedContent\":\"AA==\"}}]}}}",
+    );
+    try std.testing.expectEqualStrings("", redacted.parts[0].thinking.content);
+    try std.testing.expect(redacted.parts[0].thinking.provider.provider_details != null);
+
+    inline for (.{
+        .{ "stop_sequence", model_types.FinishReason.Kind.stop },
+        .{ "model_context_window_exceeded", model_types.FinishReason.Kind.length },
+        .{ "content_filtered", model_types.FinishReason.Kind.content_filter },
+        .{ "malformed_model_output", model_types.FinishReason.Kind.incomplete_tool_call },
+    }) |entry| try std.testing.expectEqual(entry[1], bedrockFinishReason(entry[0]).kind);
+}
+
+test "Converse encoding releases every partial allocation" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const body = try encodeRequest(allocator, .{
+                .messages = &.{.{ .request = .{ .parts = &.{.{ .tool_return = .{
+                    .call_id = "call_1",
+                    .name = "weather",
+                    .content = "{\"temperature\":31}",
+                } }} } }},
+            });
+            allocator.free(body);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
+test "Converse client preserves the provider boundary" {
+    const State = struct {
+        calls: usize = 0,
+        observed: bool = false,
+
+        fn request(context: *anyopaque, allocator: std.mem.Allocator, value: provider_types.Request) !transport.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expectEqual(transport.Method.POST, value.method);
+            try std.testing.expectEqualStrings("/model/arn%3Aaws%3Abedrock%2Fmodel%20name/converse", value.endpoint);
+            try expectHeader(value.headers, "content-type", "application/json");
+            try expectHeader(value.headers, "x-trace", "boundary");
+            self.calls += 1;
+            return .{
+                .status = if (self.calls == 1) 200 else 429,
+                .body = try allocator.dupe(u8, if (self.calls == 1)
+                    "{\"output\":{\"message\":{\"role\":\"assistant\",\"content\":[{\"text\":\"ok\"}]}}}"
+                else
+                    "{\"message\":\"slow down\"}"),
+            };
+        }
+
+        fn observe(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            status: u16,
+            body: []const u8,
+            _: transport.ResponseMetadata,
+            observer: ?model_types.ProviderErrorObserver,
+            _: model_types.ProviderErrorPolicy,
+        ) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.observed = status == 429 and std.mem.indexOf(u8, body, "slow down") != null and observer != null;
+        }
+
+        fn observeApplication(_: *anyopaque, _: model_types.ProviderError) void {}
+
+        fn expectHeader(headers: []const transport.Header, name: []const u8, value: []const u8) !void {
+            for (headers) |header| if (std.ascii.eqlIgnoreCase(header.name, name)) {
+                try std.testing.expectEqualStrings(value, header.value);
+                return;
+            };
+            return error.MissingHeader;
+        }
+    };
+    var state: State = .{};
+    var client = Client{
+        .model_name = "arn:aws:bedrock/model name",
+        .provider = .{
+            .context = &state,
+            .name = "bedrock",
+            .base_url = "https://bedrock.example.test",
+            .requestFn = State.request,
+            .observeErrorFn = State.observe,
+        },
+    };
+    var marker: u8 = 0;
+    const request_value = model_types.ModelRequest{
+        .messages = &.{},
+        .error_observer = .{ .context = &marker, .observeFn = State.observeApplication },
+        .error_policy = .{ .capture_body = true },
+        .settings = .{ .extra_headers = &.{.{ .name = "x-trace", .value = "boundary" }} },
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const response = try client.model().request(arena.allocator(), request_value);
+    try std.testing.expectEqualStrings("ok", response.parts[0].text);
+    try std.testing.expectError(error.ProviderRateLimited, client.model().request(arena.allocator(), request_value));
+    try std.testing.expect(state.observed);
 }

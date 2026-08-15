@@ -167,4 +167,46 @@ test "native provider binds generated and custom API bases" {
         .base_url = "https://bedrock.test",
     });
     try std.testing.expectEqualStrings("https://bedrock.test", custom.provider().base_url);
+    try std.testing.expectError(
+        error.UnexpectedRequest,
+        custom.provider().request(std.testing.allocator, .{ .method = .POST, .endpoint = "/converse" }),
+    );
+}
+
+test "native provider composes application profile lookup and overrides" {
+    const Profiles = struct {
+        fn lookup(_: *anyopaque, model_name: []const u8) ?@import("../model.zig").ModelProfile {
+            if (!std.mem.eql(u8, model_name, "application-model")) return null;
+            return .{ .supports_tools = true, .supports_streaming = true };
+        }
+
+        fn override(_: *anyopaque, _: []const u8, profile: @import("../model.zig").ModelProfile) @import("../model.zig").ModelProfile {
+            var result = profile;
+            result.supports_streaming = false;
+            return result;
+        }
+    };
+    const Stub = struct {
+        fn send(_: *anyopaque, _: std.mem.Allocator, _: transport.Request) !transport.Response {
+            return error.UnexpectedRequest;
+        }
+    };
+    var marker: u8 = 0;
+    var state = try Provider.initWithOptions("secret", "us-east-1", .{
+        .context = &marker,
+        .sendFn = Stub.send,
+    }, .{
+        .model_profiles = .{
+            .context = &marker,
+            .lookupFn = Profiles.lookup,
+            .overrideFn = Profiles.override,
+        },
+    });
+    const provider = state.provider();
+    const application = provider.modelProfile("application-model", .{});
+    try std.testing.expect(application.supports_tools);
+    try std.testing.expect(!application.supports_streaming);
+    const native = provider.modelProfile("us.anthropic.claude-sonnet-4-6", .{});
+    try std.testing.expect(native.supports_tools);
+    try std.testing.expect(!native.supports_streaming);
 }
