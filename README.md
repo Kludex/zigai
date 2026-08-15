@@ -536,7 +536,8 @@ MRTR input that was not advertised is rejected. `max_round_trips` and
 The typed helpers cover tools, prompts, resources, completion, discovery, and
 subscriptions; `SubscriptionFilter` selects list and resource updates without
 hand-written JSON, while `PromptRequest` and `CompletionRequest` model their
-standardized parameters. Use `Client.request` for extensions such as Tasks:
+standardized parameters. Cancellation accepts the protocol's integer-or-string
+`RequestId`. Use `Client.request` for extensions such as Tasks:
 
 ```zig
 const result_json = try mcp_client.request(

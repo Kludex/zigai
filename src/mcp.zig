@@ -726,13 +726,18 @@ pub const Client = struct {
         return self.requestWithOptions(allocator, methods.listen, params, .{ .events = events });
     }
 
-    pub fn cancel(self: *Client, allocator: std.mem.Allocator, request_id: u64, reason: ?[]const u8) !void {
-        const params = if (reason) |value|
-            try std.json.Stringify.valueAlloc(allocator, .{ .requestId = request_id, .reason = value }, .{})
-        else
-            try std.json.Stringify.valueAlloc(allocator, .{ .requestId = request_id }, .{});
-        defer allocator.free(params);
-        return self.notify(allocator, methods.cancelled, params);
+    pub fn cancel(self: *Client, allocator: std.mem.Allocator, request_id: RequestId, reason: ?[]const u8) !void {
+        const message = try (Notification{ .cancelled = .{
+            .request_id = request_id,
+            .reason = reason,
+        } }).stringifyAlloc(allocator, null);
+        defer allocator.free(message);
+        const response = try self.transport.send(allocator, .{
+            .message = message,
+            .method = methods.cancelled,
+            .expects_response = false,
+        });
+        allocator.free(response);
     }
 
     fn requestOnce(
@@ -4898,7 +4903,7 @@ test "generic client helpers cover every core request shape" {
         ),
     };
     defer for (calls) |value| std.testing.allocator.free(value);
-    try client.cancel(std.testing.allocator, 9, "done");
+    try client.cancel(std.testing.allocator, .{ .integer = 9 }, "done");
     try client.notify(std.testing.allocator, "com.example/changed", "{}");
     try std.testing.expectEqual(@as(usize, 2), stub.notifications);
     try std.testing.expectError(

@@ -357,6 +357,9 @@ Prompt retrieval and completion use `PromptRequest` and `CompletionRequest`;
 their embedded argument maps are bounded objects and their reference union
 makes prompt names distinct from resource URI templates. Explicitly named
 `getPromptJson` and `completeJson` methods retain the open wire escape hatch.
+Client cancellation uses the same integer-or-string `RequestId` as notification
+and subscription correlation and is encoded through the typed notification
+path.
 
 Multi round-trip requests replace server-initiated JSON-RPC calls. When a
 result requires sampling, roots, or elicitation, the configured `InputHandler`
