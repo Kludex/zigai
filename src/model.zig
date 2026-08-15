@@ -810,9 +810,12 @@ test "run control drains cancellation and supports cooperative fallback" {
     try std.testing.expect(!state.active.load(.seq_cst));
 
     var live_token: CancellationToken = .{};
+    var success_runtime = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer success_runtime.deinit();
+    const success_io = success_runtime.io();
     try (RunControl{
-        .io = io,
-        .deadline = std.Io.Clock.Timestamp.fromNow(io, .{
+        .io = success_io,
+        .deadline = std.Io.Clock.Timestamp.fromNow(success_io, .{
             .raw = .fromSeconds(10),
             .clock = .awake,
         }),
