@@ -189,7 +189,13 @@ pub const StreamableHttpTransport = struct {
             return response.body;
         }
 
-        const extracted = try extractSseResponse(allocator, response.body, request.message, request.events);
+        const extracted = try extractSseResponse(
+            allocator,
+            response.body,
+            request.message,
+            request.method,
+            request.events,
+        );
         allocator.free(response.body);
         return extracted;
     }
@@ -257,6 +263,14 @@ pub const StdioTransport = struct {
                 if (object.get("id") != null) {
                     try rejectLegacyServerRequest(self, allocator, object.get("id").?);
                 } else if (request.events) |events| {
+                    validateIncomingNotification(
+                        parsed.value,
+                        std.mem.eql(u8, request.method, methods.listen),
+                        error.InvalidMcpMessage,
+                    ) catch {
+                        allocator.free(line);
+                        continue;
+                    };
                     try events.emit(line);
                 }
                 allocator.free(line);
@@ -695,6 +709,17 @@ pub const Server = struct {
                     "Invalid client capabilities",
                     400,
                 );
+            validateRequestMethodParams(method, params, error.InvalidMcpMessage) catch
+                return self.errorResponse(allocator, id, error_codes.invalid_params, "Invalid method params", 400);
+        } else {
+            validateNotificationMethodParams(method, params, error.InvalidMcpMessage) catch
+                return self.errorResponse(
+                    allocator,
+                    id,
+                    error_codes.invalid_params,
+                    "Invalid notification params",
+                    400,
+                );
         }
         if (metadata) |http_metadata| {
             if (!validateStandardHeaders(http_metadata.headers, method, params)) {
@@ -872,6 +897,7 @@ fn buildRequest(
         error.InvalidMcpMessage,
     );
     var params = try requiredObject(params_value);
+    try validateRequestMethodParams(method, params, error.InvalidMcpMessage);
     const capabilities = try json_limits.parseLeaky(
         std.json.Value,
         arena.allocator(),
@@ -917,7 +943,11 @@ fn buildNotification(
         .{},
         error.InvalidMcpMessage,
     );
-    if (params != .object) return error.InvalidMcpMessage;
+    const params_object = switch (params) {
+        .object => |object| object,
+        else => return error.InvalidMcpMessage,
+    };
+    try validateNotificationMethodParams(method, params_object, error.InvalidMcpMessage);
     return std.json.Stringify.valueAlloc(allocator, .{
         .jsonrpc = "2.0",
         .method = method,
@@ -997,6 +1027,7 @@ fn extractSseResponse(
     allocator: std.mem.Allocator,
     body: []const u8,
     request: []const u8,
+    request_method: []const u8,
     events: ?EventSink,
 ) ![]u8 {
     const request_id = try JsonRpcId.parse(allocator, request);
@@ -1015,6 +1046,11 @@ fn extractSseResponse(
         defer parsed.deinit();
         const object = requiredObject(parsed.value) catch continue;
         if (object.get("method") != null) {
+            validateIncomingNotification(
+                parsed.value,
+                std.mem.eql(u8, request_method, methods.listen),
+                error.InvalidMcpMessage,
+            ) catch continue;
             if (events) |sink| try sink.emit(data);
             continue;
         }
@@ -1165,6 +1201,201 @@ fn validateMethodResult(method: []const u8, result: std.json.Value) !void {
             return error.InvalidMcpResponse;
         if (subscription_id != .integer and subscription_id != .string) return error.InvalidMcpResponse;
     }
+}
+
+fn validateRequestMethodParams(
+    method: []const u8,
+    params: std.json.ObjectMap,
+    comptime invalid_error: anytype,
+) !void {
+    if (std.mem.eql(u8, method, methods.list_tools) or
+        std.mem.eql(u8, method, methods.list_prompts) or
+        std.mem.eql(u8, method, methods.list_resources) or
+        std.mem.eql(u8, method, methods.list_resource_templates))
+    {
+        try validateOptionalString(params, "cursor", invalid_error);
+    } else if (std.mem.eql(u8, method, methods.read_resource)) {
+        _ = try requireCapabilityString(params, "uri", invalid_error);
+        try validateInputResponseParams(params, invalid_error);
+    } else if (std.mem.eql(u8, method, methods.get_prompt)) {
+        _ = try requireCapabilityString(params, "name", invalid_error);
+        if (params.get("arguments")) |arguments| try validateStringMap(arguments, invalid_error);
+        try validateInputResponseParams(params, invalid_error);
+    } else if (std.mem.eql(u8, method, methods.call_tool)) {
+        _ = try requireCapabilityString(params, "name", invalid_error);
+        try validateOptionalObject(params, "arguments", invalid_error);
+        try validateInputResponseParams(params, invalid_error);
+    } else if (std.mem.eql(u8, method, methods.complete)) {
+        try validateCompletionParams(params, invalid_error);
+    } else if (std.mem.eql(u8, method, methods.listen)) {
+        try validateSubscriptionFilter(
+            params.get("notifications") orelse return invalid_error,
+            invalid_error,
+        );
+    }
+}
+
+fn validateNotificationMethodParams(
+    method: []const u8,
+    params: std.json.ObjectMap,
+    comptime invalid_error: anytype,
+) !void {
+    if (std.mem.eql(u8, method, methods.cancelled)) {
+        try requireRequestId(params, "requestId", invalid_error);
+        try validateOptionalString(params, "reason", invalid_error);
+    } else if (std.mem.eql(u8, method, methods.progress)) {
+        try requireRequestId(params, "progressToken", invalid_error);
+        try requireNumber(params, "progress", invalid_error);
+        try validateOptionalNumber(params, "total", invalid_error);
+        try validateOptionalString(params, "message", invalid_error);
+    } else if (std.mem.eql(u8, method, methods.logging_message)) {
+        const level = try requireCapabilityString(params, "level", invalid_error);
+        if (!validLoggingLevel(level)) return invalid_error;
+        try validateOptionalString(params, "logger", invalid_error);
+        if (params.get("data") == null) return invalid_error;
+    } else if (std.mem.eql(u8, method, methods.resource_updated)) {
+        _ = try requireCapabilityString(params, "uri", invalid_error);
+    } else if (std.mem.eql(u8, method, methods.subscriptions_acknowledged)) {
+        try validateSubscriptionFilter(
+            params.get("notifications") orelse return invalid_error,
+            invalid_error,
+        );
+    }
+    if (params.get("_meta")) |meta_value| {
+        const meta = try capabilityObject(meta_value, invalid_error);
+        if (meta.get("io.modelcontextprotocol/subscriptionId")) |id| {
+            try validateRequestId(id, invalid_error);
+        }
+    }
+}
+
+fn validateIncomingNotification(
+    value: std.json.Value,
+    require_subscription_id: bool,
+    comptime invalid_error: anytype,
+) !void {
+    const object = try capabilityObject(value, invalid_error);
+    const version = try requireCapabilityString(object, "jsonrpc", invalid_error);
+    if (!std.mem.eql(u8, version, "2.0") or object.get("id") != null) return invalid_error;
+    const method = try requireCapabilityString(object, "method", invalid_error);
+    const params = if (object.get("params")) |params_value|
+        try capabilityObject(params_value, invalid_error)
+    else
+        std.json.ObjectMap{};
+    try validateNotificationMethodParams(method, params, invalid_error);
+    if (require_subscription_id) {
+        const meta = try capabilityObject(params.get("_meta") orelse return invalid_error, invalid_error);
+        try validateRequestId(
+            meta.get("io.modelcontextprotocol/subscriptionId") orelse return invalid_error,
+            invalid_error,
+        );
+    }
+}
+
+fn validateInputResponseParams(params: std.json.ObjectMap, comptime invalid_error: anytype) !void {
+    try validateOptionalObject(params, "inputResponses", invalid_error);
+    try validateOptionalString(params, "requestState", invalid_error);
+}
+
+fn validateCompletionParams(params: std.json.ObjectMap, comptime invalid_error: anytype) !void {
+    const reference = try capabilityObject(params.get("ref") orelse return invalid_error, invalid_error);
+    const reference_type = try requireCapabilityString(reference, "type", invalid_error);
+    if (std.mem.eql(u8, reference_type, "ref/prompt")) {
+        _ = try requireCapabilityString(reference, "name", invalid_error);
+    } else if (std.mem.eql(u8, reference_type, "ref/resource")) {
+        _ = try requireCapabilityString(reference, "uri", invalid_error);
+    } else return invalid_error;
+
+    const argument = try capabilityObject(params.get("argument") orelse return invalid_error, invalid_error);
+    _ = try requireCapabilityString(argument, "name", invalid_error);
+    _ = try requireCapabilityString(argument, "value", invalid_error);
+    if (params.get("context")) |context_value| {
+        const context = try capabilityObject(context_value, invalid_error);
+        if (context.get("arguments")) |arguments| try validateStringMap(arguments, invalid_error);
+    }
+}
+
+fn validateSubscriptionFilter(value: std.json.Value, comptime invalid_error: anytype) !void {
+    const filter = try capabilityObject(value, invalid_error);
+    try validateOptionalBool(filter, "toolsListChanged", invalid_error);
+    try validateOptionalBool(filter, "promptsListChanged", invalid_error);
+    try validateOptionalBool(filter, "resourcesListChanged", invalid_error);
+    if (filter.get("resourceSubscriptions")) |subscriptions| {
+        const values = switch (subscriptions) {
+            .array => |array| array,
+            else => return invalid_error,
+        };
+        for (values.items) |uri| if (uri != .string) return invalid_error;
+    }
+}
+
+fn validateStringMap(value: std.json.Value, comptime invalid_error: anytype) !void {
+    const object = try capabilityObject(value, invalid_error);
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| if (entry.value_ptr.* != .string) return invalid_error;
+}
+
+fn requireCapabilityString(
+    object: std.json.ObjectMap,
+    name: []const u8,
+    comptime invalid_error: anytype,
+) ![]const u8 {
+    return switch (object.get(name) orelse return invalid_error) {
+        .string => |string| string,
+        else => invalid_error,
+    };
+}
+
+fn validateOptionalString(
+    object: std.json.ObjectMap,
+    name: []const u8,
+    comptime invalid_error: anytype,
+) !void {
+    if (object.get(name)) |value| if (value != .string) return invalid_error;
+}
+
+fn requireRequestId(
+    object: std.json.ObjectMap,
+    name: []const u8,
+    comptime invalid_error: anytype,
+) !void {
+    try validateRequestId(object.get(name) orelse return invalid_error, invalid_error);
+}
+
+fn validateRequestId(value: std.json.Value, comptime invalid_error: anytype) !void {
+    if (value != .integer and value != .string) return invalid_error;
+}
+
+fn requireNumber(
+    object: std.json.ObjectMap,
+    name: []const u8,
+    comptime invalid_error: anytype,
+) !void {
+    try validateNumber(object.get(name) orelse return invalid_error, invalid_error);
+}
+
+fn validateOptionalNumber(
+    object: std.json.ObjectMap,
+    name: []const u8,
+    comptime invalid_error: anytype,
+) !void {
+    if (object.get(name)) |value| try validateNumber(value, invalid_error);
+}
+
+fn validateNumber(value: std.json.Value, comptime invalid_error: anytype) !void {
+    switch (value) {
+        .integer => {},
+        .float => |number| if (!std.math.isFinite(number)) return invalid_error,
+        else => return invalid_error,
+    }
+}
+
+fn validLoggingLevel(value: []const u8) bool {
+    const levels = [_][]const u8{
+        "debug", "info", "notice", "warning", "error", "critical", "alert", "emergency",
+    };
+    for (levels) |level| if (std.mem.eql(u8, value, level)) return true;
+    return false;
 }
 
 fn validateClientCapabilities(value: std.json.Value, comptime invalid_error: anytype) !void {
@@ -1706,6 +1937,158 @@ test "extension capability identifiers follow prefixed metadata syntax" {
     for (invalid) |key| try std.testing.expect(!validPrefixedMetaKey(key));
 }
 
+test "core request params cover every standardized method shape" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const valid = [_]struct { method: []const u8, params: []const u8 }{
+        .{ .method = methods.discover, .params = "{}" },
+        .{ .method = methods.list_tools, .params = "{\"cursor\":\"next\"}" },
+        .{ .method = methods.list_prompts, .params = "{}" },
+        .{ .method = methods.list_resources, .params = "{}" },
+        .{ .method = methods.list_resource_templates, .params = "{}" },
+        .{ .method = methods.read_resource, .params = "{\"uri\":\"file:///a\",\"inputResponses\":{},\"requestState\":\"s\"}" },
+        .{ .method = methods.get_prompt, .params = "{\"name\":\"review\",\"arguments\":{\"language\":\"zig\"}}" },
+        .{ .method = methods.call_tool, .params = "{\"name\":\"weather\",\"arguments\":{\"city\":\"Madrid\"}}" },
+        .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"review\"},\"argument\":{\"name\":\"language\",\"value\":\"z\"},\"context\":{\"arguments\":{\"other\":\"x\"}}}" },
+        .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"ref/resource\",\"uri\":\"file:///{path}\"},\"argument\":{\"name\":\"path\",\"value\":\"src\"}}" },
+        .{ .method = methods.listen, .params = "{\"notifications\":{\"toolsListChanged\":true,\"promptsListChanged\":false,\"resourcesListChanged\":true,\"resourceSubscriptions\":[\"file:///a\"]}}" },
+        .{ .method = "com.example/future", .params = "{\"anything\":true}" },
+    };
+    for (valid) |case| try validateRequestMethodParams(
+        case.method,
+        try capabilityObject(try parseResponse(arena.allocator(), case.params), error.InvalidMcpMessage),
+        error.InvalidMcpMessage,
+    );
+
+    const invalid = [_]struct { method: []const u8, params: []const u8 }{
+        .{ .method = methods.list_tools, .params = "{\"cursor\":1}" },
+        .{ .method = methods.read_resource, .params = "{}" },
+        .{ .method = methods.read_resource, .params = "{\"uri\":1}" },
+        .{ .method = methods.read_resource, .params = "{\"uri\":\"x\",\"inputResponses\":[]}" },
+        .{ .method = methods.read_resource, .params = "{\"uri\":\"x\",\"requestState\":1}" },
+        .{ .method = methods.get_prompt, .params = "{}" },
+        .{ .method = methods.get_prompt, .params = "{\"name\":\"x\",\"arguments\":[]}" },
+        .{ .method = methods.get_prompt, .params = "{\"name\":\"x\",\"arguments\":{\"a\":1}}" },
+        .{ .method = methods.call_tool, .params = "{}" },
+        .{ .method = methods.call_tool, .params = "{\"name\":\"x\",\"arguments\":[]}" },
+        .{ .method = methods.complete, .params = "{}" },
+        .{ .method = methods.complete, .params = "{\"ref\":[],\"argument\":{}}" },
+        .{ .method = methods.complete, .params = "{\"ref\":{},\"argument\":{}}" },
+        .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"future\"},\"argument\":{}}" },
+        .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"ref/prompt\"},\"argument\":{}}" },
+        .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"ref/resource\"},\"argument\":{}}" },
+        .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"x\"}}" },
+        .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"x\"},\"argument\":[]}" },
+        .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"x\"},\"argument\":{}}" },
+        .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"x\"},\"argument\":{\"name\":\"a\"}}" },
+        .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"x\"},\"argument\":{\"name\":\"a\",\"value\":\"b\"},\"context\":[]}" },
+        .{ .method = methods.complete, .params = "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"x\"},\"argument\":{\"name\":\"a\",\"value\":\"b\"},\"context\":{\"arguments\":{\"a\":1}}}" },
+        .{ .method = methods.listen, .params = "{}" },
+        .{ .method = methods.listen, .params = "{\"notifications\":[]}" },
+        .{ .method = methods.listen, .params = "{\"notifications\":{\"toolsListChanged\":1}}" },
+        .{ .method = methods.listen, .params = "{\"notifications\":{\"resourceSubscriptions\":{}}}" },
+        .{ .method = methods.listen, .params = "{\"notifications\":{\"resourceSubscriptions\":[1]}}" },
+    };
+    for (invalid) |case| try std.testing.expectError(
+        error.InvalidMcpMessage,
+        validateRequestMethodParams(
+            case.method,
+            try capabilityObject(try parseResponse(arena.allocator(), case.params), error.InvalidMcpMessage),
+            error.InvalidMcpMessage,
+        ),
+    );
+}
+
+test "core notification params and stream metadata are validated" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const valid = [_]struct { method: []const u8, params: []const u8 }{
+        .{ .method = methods.cancelled, .params = "{\"requestId\":1,\"reason\":\"done\"}" },
+        .{ .method = methods.cancelled, .params = "{\"requestId\":\"one\"}" },
+        .{ .method = methods.progress, .params = "{\"progressToken\":\"p\",\"progress\":1.5,\"total\":2,\"message\":\"working\"}" },
+        .{ .method = methods.resource_updated, .params = "{\"uri\":\"file:///a\"}" },
+        .{ .method = methods.subscriptions_acknowledged, .params = "{\"notifications\":{}}" },
+        .{ .method = methods.tool_list_changed, .params = "{}" },
+        .{ .method = "com.example/changed", .params = "{\"anything\":true}" },
+    };
+    for (valid) |case| try validateNotificationMethodParams(
+        case.method,
+        try capabilityObject(try parseResponse(arena.allocator(), case.params), error.InvalidMcpMessage),
+        error.InvalidMcpMessage,
+    );
+    const levels = [_][]const u8{
+        "debug", "info", "notice", "warning", "error", "critical", "alert", "emergency",
+    };
+    for (levels) |level| {
+        const source = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "{{\"level\":\"{s}\",\"logger\":\"test\",\"data\":null}}",
+            .{level},
+        );
+        defer std.testing.allocator.free(source);
+        try validateNotificationMethodParams(
+            methods.logging_message,
+            try capabilityObject(try parseResponse(arena.allocator(), source), error.InvalidMcpMessage),
+            error.InvalidMcpMessage,
+        );
+    }
+
+    const invalid = [_]struct { method: []const u8, params: []const u8 }{
+        .{ .method = methods.cancelled, .params = "{}" },
+        .{ .method = methods.cancelled, .params = "{\"requestId\":true}" },
+        .{ .method = methods.cancelled, .params = "{\"requestId\":1,\"reason\":1}" },
+        .{ .method = methods.progress, .params = "{}" },
+        .{ .method = methods.progress, .params = "{\"progressToken\":1}" },
+        .{ .method = methods.progress, .params = "{\"progressToken\":1,\"progress\":true}" },
+        .{ .method = methods.progress, .params = "{\"progressToken\":1,\"progress\":0,\"total\":true}" },
+        .{ .method = methods.progress, .params = "{\"progressToken\":1,\"progress\":0,\"message\":1}" },
+        .{ .method = methods.logging_message, .params = "{}" },
+        .{ .method = methods.logging_message, .params = "{\"level\":\"verbose\",\"data\":1}" },
+        .{ .method = methods.logging_message, .params = "{\"level\":\"info\"}" },
+        .{ .method = methods.logging_message, .params = "{\"level\":\"info\",\"logger\":1,\"data\":1}" },
+        .{ .method = methods.resource_updated, .params = "{}" },
+        .{ .method = methods.subscriptions_acknowledged, .params = "{}" },
+        .{ .method = methods.tool_list_changed, .params = "{\"_meta\":[]}" },
+        .{ .method = methods.tool_list_changed, .params = "{\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":true}}" },
+    };
+    for (invalid) |case| try std.testing.expectError(
+        error.InvalidMcpMessage,
+        validateNotificationMethodParams(
+            case.method,
+            try capabilityObject(try parseResponse(arena.allocator(), case.params), error.InvalidMcpMessage),
+            error.InvalidMcpMessage,
+        ),
+    );
+    try std.testing.expectError(
+        error.InvalidMcpMessage,
+        validateNumber(.{ .float = std.math.inf(f64) }, error.InvalidMcpMessage),
+    );
+
+    const stream_notification = try parseResponse(
+        arena.allocator(),
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"," ++
+            "\"params\":{\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":1}}}",
+    );
+    try validateIncomingNotification(stream_notification, true, error.InvalidMcpMessage);
+    const invalid_envelopes = [_][]const u8{
+        "[]",
+        "{\"method\":\"notifications/tools/list_changed\"}",
+        "{\"jsonrpc\":\"1.0\",\"method\":\"notifications/tools/list_changed\"}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"notifications/tools/list_changed\"}",
+        "{\"jsonrpc\":\"2.0\"}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\",\"params\":[]}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\",\"params\":{}}",
+    };
+    for (invalid_envelopes) |source| try std.testing.expectError(
+        error.InvalidMcpMessage,
+        validateIncomingNotification(
+            try parseResponse(arena.allocator(), source),
+            true,
+            error.InvalidMcpMessage,
+        ),
+    );
+}
+
 test "client and server reject malformed advertised capabilities at boundaries" {
     try std.testing.expectError(error.InvalidMcpMessage, buildRequest(
         std.testing.allocator,
@@ -1759,7 +2142,7 @@ test "state-only MRTR retries without an input handler" {
     };
     var stub = Stub{};
     var client = Client{ .transport = .{ .context = &stub, .sendFn = Stub.send } };
-    const result = try client.request(std.testing.allocator, methods.call_tool, "{}");
+    const result = try client.request(std.testing.allocator, methods.call_tool, "{\"name\":\"retry\"}");
     defer std.testing.allocator.free(result);
     try std.testing.expectEqual(@as(usize, 2), stub.calls);
 }
@@ -1981,12 +2364,15 @@ test "streamable HTTP emits subscription notifications before the result" {
     };
     var events: Events = .{};
     const body =
-        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\",\"params\":{}}\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\"," ++
+        "\"params\":{\"notifications\":{},\"_meta\":{" ++
+        "\"io.modelcontextprotocol/subscriptionId\":1}}}\n" ++
         "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\"}}\n";
     const result = try extractSseResponse(
         std.testing.allocator,
         body,
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"subscriptions/listen\"}",
+        methods.listen,
         .{ .context = &events, .eventFn = Events.emit },
     );
     defer std.testing.allocator.free(result);
@@ -2036,7 +2422,8 @@ test "HTTP transport handles SSE, notifications, and status failures" {
             self.count += 1;
         }
     };
-    var stub = Stub{ .body = "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n" ++
+    var stub = Stub{ .body = "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"," ++
+        "\"params\":{\"progressToken\":1,\"progress\":0}}\n" ++
         "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n" };
     var events: Events = .{};
     var streamable = StreamableHttpTransport.init(
@@ -2139,7 +2526,11 @@ test "generic client helpers cover every core request shape" {
         try client.readResource(std.testing.allocator, "file:///tmp/a"),
         try client.listPrompts(std.testing.allocator, null),
         try client.getPrompt(std.testing.allocator, "{\"name\":\"review\"}"),
-        try client.complete(std.testing.allocator, "{}"),
+        try client.complete(
+            std.testing.allocator,
+            "{\"ref\":{\"type\":\"ref/prompt\",\"name\":\"review\"}," ++
+                "\"argument\":{\"name\":\"language\",\"value\":\"z\"}}",
+        ),
         try client.listen(
             std.testing.allocator,
             "{\"toolsListChanged\":true}",
@@ -2174,12 +2565,12 @@ test "generic client helpers cover every core request shape" {
     }.send } };
     try std.testing.expectError(
         error.InputRequired,
-        no_handler.request(std.testing.allocator, methods.call_tool, "{}"),
+        no_handler.request(std.testing.allocator, methods.call_tool, "{\"name\":\"confirm\"}"),
     );
     no_handler.max_round_trips = 0;
     try std.testing.expectError(
         error.TooManyMcpRoundTrips,
-        no_handler.request(std.testing.allocator, methods.call_tool, "{}"), // kcov-ignore
+        no_handler.request(std.testing.allocator, methods.call_tool, "{\"name\":\"confirm\"}"), // kcov-ignore
     );
 }
 
@@ -2284,7 +2675,8 @@ test "server returns specified errors and validates tool parameter headers" {
     defer mismatch.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 400), mismatch.status);
 
-    const notification = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{}}";
+    const notification =
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":1}}";
     const accepted = try server.handle(std.testing.allocator, notification, null);
     defer accepted.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 202), accepted.status);
@@ -2388,7 +2780,7 @@ test "stdio transport filters interleaved modern and legacy messages" {
         \\read -r line
         \\printf '%s\n' '1'
         \\printf '%s\n' '{"jsonrpc":"2.0","id":99,"method":"legacy/request"}'
-        \\printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/progress"}'
+        \\printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/progress","params":{"progressToken":1,"progress":0}}'
         \\printf '%s\n' '{}'
         \\printf '%s\n' '{"jsonrpc":"2.0","id":999,"result":{}}'
         \\printf '%s\n' '{"jsonrpc":"2.0","id":"request-1","result":{}}'
@@ -2445,7 +2837,13 @@ test "stdio transport releases malformed and partial messages" {
 fn fuzzSseAndJsonRpcFraming(_: void, smith: *std.testing.Smith) !void {
     var buffer: [16 * 1024]u8 = undefined;
     const value = buffer[0..smith.slice(&buffer)];
-    const response = extractSseResponse(std.testing.allocator, value, "{\"id\":1}", null) catch return;
+    const response = extractSseResponse(
+        std.testing.allocator,
+        value,
+        "{\"id\":1}",
+        methods.discover,
+        null,
+    ) catch return;
     std.testing.allocator.free(response);
 }
 
