@@ -3644,6 +3644,35 @@ test "server enforces TLS Origin Host and bearer audience before dispatch" {
     });
     defer cleartext.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 403), cleartext.status);
+
+    const no_http_metadata = try server.handle(std.testing.allocator, request, null);
+    defer no_http_metadata.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 403), no_http_metadata.status);
+    const wrong_host_headers = [_]http.Header{
+        .{ .name = "host", .value = "other.example.com" },
+    };
+    const wrong_host = try server.handle(std.testing.allocator, request, .{ .headers = &wrong_host_headers });
+    defer wrong_host.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 403), wrong_host.status);
+    const duplicate_origin_headers = [_]http.Header{
+        .{ .name = "origin", .value = "https://app.example.com" },
+        .{ .name = "Origin", .value = "https://app.example.com" },
+    };
+    const duplicate_origin = try server.handle(std.testing.allocator, request, .{
+        .headers = &duplicate_origin_headers,
+    });
+    defer duplicate_origin.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 403), duplicate_origin.status);
+
+    const bad_scheme_headers = base_headers ++ [_]http.Header{.{ .name = "authorization", .value = "Basic token" }};
+    const bad_scheme = try server.handle(std.testing.allocator, request, .{ .headers = &bad_scheme_headers });
+    defer bad_scheme.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 401), bad_scheme.status);
+    const duplicate_auth_headers = valid_headers ++ [_]http.Header{.{ .name = "Authorization", .value = "Bearer valid" }};
+    const duplicate_auth = try server.handle(std.testing.allocator, request, .{ .headers = &duplicate_auth_headers });
+    defer duplicate_auth.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 401), duplicate_auth.status);
+    try std.testing.expectEqual(@as(usize, 3), state.authorization_calls);
 }
 
 test "MCP HTTP authorization releases every partial allocation" {
@@ -4234,6 +4263,72 @@ test "Streamable HTTP performs one bounded insufficient-scope step-up" {
     );
     try std.testing.expectEqual(@as(usize, 2), state.token_calls);
     try std.testing.expectEqual(@as(usize, 2), state.http_calls);
+}
+
+test "Streamable HTTP authorization fails closed on policy and challenge boundaries" {
+    const State = struct {
+        calls: usize = 0,
+        challenge: ?[]const u8 = null,
+
+        fn token(_: *anyopaque, allocator: std.mem.Allocator, request: auth.TokenRequest) !auth.AccessToken {
+            return auth.AccessToken.initAlloc(allocator, "token", request.authorization_server, &.{});
+        }
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, _: http.Request) !http.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            return .{
+                .status = 401,
+                .body = try allocator.dupe(u8, "unauthorized"),
+                .metadata = .{ .www_authenticate = if (self.challenge) |value|
+                    http.MetadataText.init(value)
+                else
+                    null },
+            };
+        }
+    };
+    var state: State = .{};
+    var streamable = StreamableHttpTransport.initWithOptions(
+        std.testing.io,
+        .{ .context = &state, .sendFn = State.send },
+        "https://mcp.example.com/mcp",
+        .{ .authorization = .{
+            .resource = "https://mcp.example.com/mcp",
+            .authorization_server = "https://auth.example.com",
+            .tokens = .{ .context = &state, .getFn = State.token },
+        } },
+    );
+    const request = WireRequest{
+        .message = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\"}",
+        .method = methods.discover,
+    };
+    try std.testing.expectError(
+        error.McpHttpRequestFailed,
+        streamable.transport().send(std.testing.allocator, request),
+    );
+    state.challenge = "Basic realm=\"mcp\"";
+    try std.testing.expectError(
+        error.McpHttpRequestFailed,
+        streamable.transport().send(std.testing.allocator, request),
+    );
+    state.challenge = "Bearer error=\"invalid_request\"";
+    try std.testing.expectError(
+        error.McpHttpRequestFailed,
+        streamable.transport().send(std.testing.allocator, request),
+    );
+    try std.testing.expectEqual(@as(usize, 3), state.calls);
+
+    streamable.headers = &.{.{ .name = "authorization", .value = "Bearer static" }};
+    try std.testing.expectError(
+        error.InvalidBearerToken,
+        streamable.transport().send(std.testing.allocator, request),
+    );
+    streamable.headers = &.{};
+    streamable.authorization.?.resource = "https://other.example.com/mcp";
+    try std.testing.expectError(
+        error.InvalidResourceUri,
+        streamable.transport().send(std.testing.allocator, request),
+    );
+    try std.testing.expect(findHttpHeader(&.{}, "authorization") == null);
 }
 
 test "Streamable HTTP validates endpoints before transport callbacks" {

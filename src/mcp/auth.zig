@@ -756,6 +756,18 @@ test "access tokens are issuer-bound and reject unsafe header bytes" {
     };
     defer wrong.deinit(std.testing.allocator);
     try std.testing.expectError(error.InvalidAuthorizationIssuer, wrong.validate(request));
+    const WrongCallbacks = struct {
+        fn get(_: *anyopaque, allocator: std.mem.Allocator, _: TokenRequest) !AccessToken {
+            return AccessToken.initAlloc(allocator, "secret", "https://other.example.com", &.{});
+        }
+    };
+    try std.testing.expectError(
+        error.InvalidAuthorizationIssuer,
+        (TokenProvider{ .context = &unused, .getFn = WrongCallbacks.get }).get(
+            std.testing.allocator,
+            request,
+        ),
+    );
     std.testing.allocator.free(wrong.value);
     wrong.value = try std.testing.allocator.dupe(u8, "bad\nvalue");
     try std.testing.expectError(error.InvalidBearerToken, wrong.validate(.{
@@ -779,6 +791,16 @@ test "protected resource metadata validates and serializes" {
         (ProtectedResourceMetadata{
             .resource = metadata.resource,
             .authorization_servers = &.{},
+        }).validate(.{}),
+    );
+    try std.testing.expectError(
+        error.InvalidProtectedResourceMetadata,
+        (ProtectedResourceMetadata{
+            .resource = metadata.resource,
+            .authorization_servers = &.{
+                "https://auth.example.com/tenant",
+                "https://auth.example.com/tenant",
+            },
         }).validate(.{}),
     );
     try std.testing.expectError(
@@ -910,6 +932,15 @@ test "authorization server metadata is issuer-bound HTTPS and PKCE-capable" {
             .code_challenge_methods_supported = &.{"S256"},
         }).validateFor("https://auth.example.com", .{}),
     );
+    try std.testing.expectError(
+        error.InvalidAuthorizationServerMetadata,
+        (AuthorizationServerMetadata{
+            .issuer = "https://auth.example.com",
+            .authorization_endpoint = "https://auth.example.com/authorize",
+            .token_endpoint = "http://auth.example.com/token",
+            .code_challenge_methods_supported = &.{"S256"},
+        }).validateFor("https://auth.example.com", .{}),
+    );
 }
 
 test "deployment policy validates TLS browser origins and request hosts" {
@@ -1001,6 +1032,10 @@ test "Bearer challenges parse bounded refresh and scope fields" {
     try std.testing.expectError(
         error.InvalidBearerChallenge,
         parseBearerChallengeAlloc(std.testing.allocator, "Bearer error=\"invalid_token\", error=other"),
+    );
+    try std.testing.expectError(
+        error.InvalidBearerChallenge,
+        parseBearerChallengeAlloc(std.testing.allocator, "Bearer error=\"unterminated"),
     );
 }
 
