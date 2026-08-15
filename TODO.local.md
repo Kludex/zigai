@@ -88,9 +88,11 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   metadata, bearer-token refresh hooks, audience/resource checks, Origin and
   DNS-rebinding defenses, redirect policy, TLS configuration, and secret-safe
   diagnostics.
-- [ ] Complete MCP primitives: roots, resource subscribe/unsubscribe updates,
-  prompts, completions, logging level/messages, progress, cancellation, ping,
-  sampling, elicitation, and capability negotiation for each direction.
+- [x] Complete MCP primitives for MCP 2026-07-28: typed roots, subscription
+  filters and resource updates, prompts, completions, per-request logging and
+  progress, cancellation, deprecated sampling/elicitation compatibility, and
+  capability negotiation. Deliberately omit removed ping and legacy resource
+  subscription RPCs.
 - [ ] Complete MCP task support, including SEP-1686 background tasks, polling,
   result retrieval, cancellation, TTL, progress, input requests, and durable
   resume across process restarts.
