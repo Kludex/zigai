@@ -11,6 +11,9 @@ const agent = @import("agent.zig");
 const model = @import("model.zig");
 const http = @import("transport.zig");
 const json_limits = @import("json.zig");
+
+/// OAuth 2.1 and deployment-security contracts for Streamable HTTP.
+pub const auth = @import("mcp/auth.zig");
 const security = @import("security.zig");
 
 /// Latest stable MCP protocol revision supported by ZigAI.
