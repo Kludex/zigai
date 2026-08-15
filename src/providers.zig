@@ -202,3 +202,42 @@ test "named compatible profiles reject unsupported requests before transport" {
     }).runWithOptions(std.testing.allocator, "hello", .{ .prompt_parts = &.{image} }));
     try std.testing.expectEqual(@as(usize, 0), transport_state.calls);
 }
+
+test "custom compatible provider keeps endpoint authentication and profile contracts explicit" {
+    const Profiles = struct {
+        fn lookup(_: *anyopaque, name: []const u8) ?model.ModelProfile {
+            if (!std.mem.eql(u8, name, "known-model")) return null;
+            return .{
+                .supports_system_messages = true,
+                .supports_streaming = true,
+                .supports_request_headers = true,
+                .extra_body_kind = .openai_compatible,
+            };
+        }
+    };
+    var transport_state: TestTransport = .{};
+    var marker: u8 = 0;
+    var provider_state = openai_compatible.Provider.initWithOptions("secret", .{
+        .context = &transport_state,
+        .sendFn = TestTransport.send,
+    }, .{
+        .base_url = "https://custom.example/v1",
+        .provider_name = "custom-provider",
+        .authentication = .{ .header = "authorization", .prefix = "Bearer " },
+        .model_profiles = .{ .context = &marker, .lookupFn = Profiles.lookup },
+    });
+    const provider = provider_state.provider();
+    try provider.validate();
+    try std.testing.expectEqualStrings("custom-provider", provider.name);
+    try std.testing.expect(provider.modelProfile("known-model", .{}).supports_streaming);
+    var client = openai_compatible.Client{
+        .model_name = "unknown-model",
+        .provider = provider,
+        .profile = openai_compatible.profiles.unknown,
+    };
+    try std.testing.expectError(agent.Agent.Error.ModelDoesNotSupportTemperature, (agent.Agent{
+        .model = client.model(),
+        .model_settings = .{ .temperature = 0.2 },
+    }).run(std.testing.allocator, "hello"));
+    try std.testing.expectEqual(@as(usize, 0), transport_state.calls);
+}

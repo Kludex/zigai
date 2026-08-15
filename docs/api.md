@@ -407,6 +407,13 @@ surface, including JSON-object output and GLM 5.2 reasoning effort. Z.AI's
 native adapter tracked on the production roadmap; the generic codec does not
 claim to preserve them.
 
+The compiled custom-provider example demonstrates the runtime extension path.
+It validates a public HTTPS API root, configures bearer authentication, assigns
+a stable provider identity, and supplies an exact application profile lookup.
+Its client explicitly selects `profiles.unknown` as the fallback. Applications
+should add only capabilities their server contract guarantees; this keeps
+unsupported settings, tools, and content out of transport callbacks.
+
 `Provider.listModels` is implemented by OpenAI, Anthropic, Google, and
 OpenAI-compatible provider objects. It authenticates through the provider
 boundary and returns `OwnedProviderModels`; call `deinit` after consuming its

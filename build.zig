@@ -229,7 +229,7 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&stress_tests.step);
 
     const examples = b.step("examples", "Compile runnable provider examples");
-    inline for (.{ "openai", "anthropic", "google", "ollama", "crusoe", "snowflake", "zai" }) |provider| {
+    inline for (.{ "openai", "anthropic", "google", "ollama", "crusoe", "snowflake", "zai", "custom_provider" }) |provider| {
         const executable = addCli(b, target, optimize, zigai, "example-" ++ provider, "examples/" ++ provider ++ ".zig");
         examples.dependOn(&executable.step);
         check.dependOn(&executable.step);

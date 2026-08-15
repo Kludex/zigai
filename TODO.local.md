@@ -135,7 +135,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   and pre-I/O validation.
 - [x] Add a focused Z.AI example with provider-specific profiles and pre-I/O
   validation.
-- [ ] Add a focused custom-provider example with an explicit authentication,
+- [x] Add a focused custom-provider example with an explicit authentication,
   endpoint, profile, and pre-I/O validation contract.
 - [ ] Add typed Snowflake Cortex Claude reasoning controls, including the
   `reasoning` object and required temperature invariant.

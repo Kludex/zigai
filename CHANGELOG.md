@@ -10,6 +10,8 @@
   family-specific Chat Completions profiles, and a compiled example.
 - Add a named Z.AI provider with GLM profiles, conservative pre-I/O capability
   checks, and a compiled example.
+- Add a compiled custom-provider example with explicit endpoint,
+  authentication, identity, model-profile, and fail-closed validation rules.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

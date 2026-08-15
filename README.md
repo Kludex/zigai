@@ -264,6 +264,12 @@ Z.AI uses bearer authentication from `ZAI_API_KEY` and defaults the compiled
 example to `glm-5.1`. GLM 5.2 reasoning-effort settings and JSON-object output
 are profiled explicitly; unknown model IDs remain fail-closed.
 
+For another Chat Completions-compatible server, start from
+`examples/custom_provider.zig`. It keeps the runtime endpoint, authentication
+header, provider identity, and exact model profile visible. The example uses a
+fail-closed fallback, so a model outside the declared contract cannot silently
+inherit the generic full-capability preset.
+
 Use `azure_openai.ChatClient` (or its backwards-compatible `Client` alias) only
 when a deployment requires Chat Completions.
 
