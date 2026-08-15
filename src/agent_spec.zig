@@ -229,8 +229,80 @@ test "agent specifications reject unknown fields literals duplicates and invalid
     try std.testing.expectError(Error.InvalidAgentSpec, parseYaml(std.testing.allocator,
         \\version: 1
         \\provider: {name: openai, model: m}
-        \\unknown: true
+        \\unknown: [null, true, 1.5]
     ));
+    try std.testing.expectError(Error.InvalidAgentSpec, parseYaml(std.testing.allocator,
+        \\version: 1
+        \\provider: &provider {name: openai, model: m}
+        \\copy: *provider
+    ));
+    try std.testing.expectError(Error.InvalidAgentSpec, parseYaml(std.testing.allocator,
+        \\? [complex]
+        \\: value
+    ));
+}
+
+test "agent specification semantic validation covers every bounded field" {
+    const valid_provider = ProviderSpec{ .name = "openai", .model = "model" };
+    try validate(.{ .version = 1, .provider = .{ .name = "gateway_1.test", .model = "model" } });
+    try std.testing.expectError(Error.InvalidAgentSpec, validate(.{
+        .version = 1,
+        .name = "",
+        .provider = valid_provider,
+    }));
+    try std.testing.expectError(Error.InvalidAgentSpec, validate(.{
+        .version = 1,
+        .provider = .{ .name = "", .model = "model" },
+    }));
+    try std.testing.expectError(Error.InvalidAgentSpec, validate(.{
+        .version = 1,
+        .provider = .{ .name = "openai", .model = "" },
+    }));
+    try std.testing.expectError(Error.InvalidAgentSpec, validate(.{
+        .version = 1,
+        .provider = .{ .name = "openai", .model = "model", .base_url = "" },
+    }));
+    try std.testing.expectError(Error.InvalidAgentSpec, validate(.{
+        .version = 1,
+        .provider = .{ .name = "openai", .model = "model", .api_key = .{ .env = "" } },
+    }));
+    try std.testing.expectError(Error.InvalidAgentSpec, validate(.{
+        .version = 1,
+        .provider = .{ .name = "openai", .model = "model", .api_key = .{ .env = "1KEY" } },
+    }));
+    const too_many_instructions = [_][]const u8{"instruction"} ** 65;
+    try std.testing.expectError(Error.InvalidAgentSpec, validate(.{
+        .version = 1,
+        .provider = valid_provider,
+        .instructions = &too_many_instructions,
+    }));
+    const empty_instruction = [_][]const u8{""};
+    try std.testing.expectError(Error.InvalidAgentSpec, validate(.{
+        .version = 1,
+        .provider = valid_provider,
+        .instructions = &empty_instruction,
+    }));
+    const too_many_capabilities = [_]CapabilitySpec{.{ .id = "same" }} ** 257;
+    try std.testing.expectError(Error.InvalidAgentSpec, validate(.{
+        .version = 1,
+        .provider = valid_provider,
+        .capabilities = &too_many_capabilities,
+    }));
+    const invalid_capability = [_]CapabilitySpec{.{ .id = "-invalid" }};
+    try std.testing.expectError(Error.InvalidAgentSpec, validate(.{
+        .version = 1,
+        .provider = valid_provider,
+        .capabilities = &invalid_capability,
+    }));
+}
+
+test "agent specification parsers enforce the document byte limit" {
+    const limit = json_limits.defaults.cli_config.max_document_bytes;
+    const source = try std.testing.allocator.alloc(u8, limit + 1);
+    defer std.testing.allocator.free(source);
+    @memset(source, 'x');
+    try std.testing.expectError(error.DocumentTooLarge, parseJson(std.testing.allocator, source));
+    try std.testing.expectError(error.DocumentTooLarge, parseYaml(std.testing.allocator, source));
 }
 
 fn checkAllocationFailure(gpa: std.mem.Allocator) !void {
