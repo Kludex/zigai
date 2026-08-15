@@ -33,3 +33,12 @@ jobs:
         with:
           name: coverage-html
           path: coverage/merged/kcov-merged
+
+  fuzz-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: ./scripts/fuzz 1000

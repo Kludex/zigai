@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Bounded fuzz targets and seed corpora for persisted state, schemas, provider
+  decoders, cassette YAML, MCP framing, CLI manifests, and HTTP metadata.
 - Separate provider-neutral conversation types into the public `messages`
   module while preserving the existing root and `model` aliases.
 - Allocation-free outbound URL policy with HTTPS-by-default validation,

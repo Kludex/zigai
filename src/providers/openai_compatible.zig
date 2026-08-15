@@ -897,3 +897,25 @@ test "compatible tool parsing propagates allocation failures" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, checkBufferedToolAllocationFailure, .{});
     try std.testing.checkAllAllocationFailures(std.testing.allocator, checkStreamedToolAllocationFailure, .{});
 }
+
+fn fuzzStreamLine(_: void, smith: *std.testing.Smith) !void {
+    var buffer: [16 * 1024]u8 = undefined;
+    const value = buffer[0..smith.slice(&buffer)];
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+    };
+    var context: u8 = 0;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var state = StreamState{
+        .allocator = arena.allocator(),
+        .sink = .{ .context = &context, .eventFn = Sink.emit },
+        .status = 200,
+    };
+    defer state.deinit();
+    StreamState.line(&state, value) catch {};
+}
+
+test "fuzz OpenAI-compatible streaming decoder" {
+    try std.testing.fuzz({}, fuzzStreamLine, .{ .corpus = &.{"\x08\x00\x00\x00data: {}"} });
+}

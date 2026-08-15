@@ -703,3 +703,17 @@ test "stream line propagates a read failure after partial input" {
     try std.testing.expectError(error.ReadFailed, streamLine(std.testing.allocator, &failing.reader, 8));
     try std.testing.expectEqual(@as(usize, 2), failing.reads);
 }
+
+fn fuzzHttpMetadata(_: void, smith: *std.testing.Smith) !void {
+    var buffer: [1024]u8 = undefined;
+    const value = buffer[0..smith.slice(&buffer)];
+    _ = parseRetryAfter(value, "Wed, 21 Oct 2015 07:28:00 GMT");
+    _ = parseHttpDate(value);
+}
+
+test "fuzz HTTP metadata parsers" {
+    try std.testing.fuzz({}, fuzzHttpMetadata, .{ .corpus = &.{
+        "\x02\x00\x00\x0010",
+        "\x1d\x00\x00\x00Wed, 21 Oct 2015 07:28:00 GMT",
+    } });
+}

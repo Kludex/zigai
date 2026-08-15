@@ -833,3 +833,24 @@ test "OpenAI validates its endpoint before invoking a custom transport" {
     );
     try std.testing.expect(!called);
 }
+
+fn fuzzStreamLine(_: void, smith: *std.testing.Smith) !void {
+    var buffer: [16 * 1024]u8 = undefined;
+    const value = buffer[0..smith.slice(&buffer)];
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+    };
+    var context: u8 = 0;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var state = StreamState{
+        .allocator = arena.allocator(),
+        .sink = .{ .context = &context, .eventFn = Sink.emit },
+        .status = 200,
+    };
+    StreamState.line(&state, value) catch {};
+}
+
+test "fuzz OpenAI streaming decoder" {
+    try std.testing.fuzz({}, fuzzStreamLine, .{ .corpus = &.{"\x08\x00\x00\x00data: {}"} });
+}

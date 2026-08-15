@@ -1944,3 +1944,16 @@ test "stdio transport releases malformed and partial messages" {
         partial.transport().send(std.testing.allocator, request),
     );
 }
+
+fn fuzzSseAndJsonRpcFraming(_: void, smith: *std.testing.Smith) !void {
+    var buffer: [16 * 1024]u8 = undefined;
+    const value = buffer[0..smith.slice(&buffer)];
+    const response = extractSseResponse(std.testing.allocator, value, "{\"id\":1}", null) catch return;
+    std.testing.allocator.free(response);
+}
+
+test "fuzz MCP SSE and JSON-RPC framing" {
+    try std.testing.fuzz({}, fuzzSseAndJsonRpcFraming, .{ .corpus = &.{
+        "\x1e\x00\x00\x00data: {\"jsonrpc\":\"2.0\",\"id\":1}\n",
+    } });
+}

@@ -89,3 +89,25 @@ runs unit, cassette, agent, real-transport, CLI-success, and CLI-error paths,
 merges their reports, checks that every source file is represented, and fails
 unless the final line rate is exactly 100%. CI runs the same command. macOS
 `kcov` requires extra debugger signing, so coverage remains a Linux-only gate.
+
+## Fuzzing
+
+ZigAI fuzzes every untrusted parser family: history and deferred state, JSON
+Schema output, buffered and streaming provider responses, Cassetter YAML, MCP
+JSON-RPC and SSE framing, CLI tool manifests, and HTTP retry metadata.
+
+Run a bounded local campaign with an iteration limit:
+
+```console
+./scripts/fuzz 1000
+```
+
+Use a larger suffix for longer runs, for example `10K` or `1M`. Each target
+also carries a small valid corpus, so the ordinary test suite executes stable
+parser smoke cases without fuzz instrumentation. Inputs are capped at 16 KiB;
+the production parsers apply their stricter documented limits after that.
+
+The pinned Zig 0.16.0 test runner requires error-return tracing to be disabled
+in fuzz mode. The script applies that workaround only to the fuzz compilation;
+normal checks retain the default tracing behavior. CI runs a 1,000-iteration
+bounded campaign on Linux for every push and pull request.

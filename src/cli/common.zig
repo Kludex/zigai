@@ -244,3 +244,14 @@ test "tool manifest loading enforces the CLI JSON nesting limit" {
         LoadedTools.load(std.testing.allocator, std.testing.io, path),
     );
 }
+
+fn fuzzToolManifest(_: void, smith: *std.testing.Smith) !void {
+    var buffer: [16 * 1024]u8 = undefined;
+    const value = buffer[0..smith.slice(&buffer)];
+    var loaded = LoadedTools.fromJson(std.testing.allocator, std.testing.io, value) catch return;
+    loaded.deinit();
+}
+
+test "fuzz CLI tool manifest parser" {
+    try std.testing.fuzz({}, fuzzToolManifest, .{ .corpus = &.{"\x02\x00\x00\x00[]"} });
+}

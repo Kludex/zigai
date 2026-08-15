@@ -822,3 +822,24 @@ test "Google rejects provider responses beyond the JSON nesting limit" {
     const source = "[" ** 129 ++ "0" ++ "]" ** 129;
     try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(std.testing.allocator, source));
 }
+
+fn fuzzStreamLine(_: void, smith: *std.testing.Smith) !void {
+    var buffer: [16 * 1024]u8 = undefined;
+    const value = buffer[0..smith.slice(&buffer)];
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+    };
+    var context: u8 = 0;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var state = StreamState{
+        .allocator = arena.allocator(),
+        .sink = .{ .context = &context, .eventFn = Sink.emit },
+        .status = 200,
+    };
+    StreamState.line(&state, value) catch {};
+}
+
+test "fuzz Google streaming decoder" {
+    try std.testing.fuzz({}, fuzzStreamLine, .{ .corpus = &.{"\x08\x00\x00\x00data: {}"} });
+}
