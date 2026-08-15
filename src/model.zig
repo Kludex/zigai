@@ -131,11 +131,12 @@ pub const RunControl = struct {
     }
 
     fn waitForCancellation(io: std.Io, token: *const CancellationToken) !void {
+        const poll_delay = std.Io.Timeout{ .duration = .{
+            .raw = .fromMilliseconds(5),
+            .clock = .awake,
+        } };
         while (true) {
-            try (std.Io.Timeout{ .duration = .{
-                .raw = .fromMilliseconds(5),
-                .clock = .awake,
-            } }).sleep(io);
+            try poll_delay.sleep(io);
             if (token.isCancelled()) return;
         }
     }

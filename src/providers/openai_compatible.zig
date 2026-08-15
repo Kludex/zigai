@@ -755,7 +755,7 @@ test "compatible clients forward correlation and configured idempotency headers"
     };
     _ = try client.model().request(arena.allocator(), request_value);
     const Sink = struct {
-        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {} // unreachable: the transport fails before events
     };
     try std.testing.expectError(error.ProviderConnectionError, client.model().stream(
         arena.allocator(),

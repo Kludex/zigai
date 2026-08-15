@@ -615,7 +615,7 @@ test "client forwards OpenAI request correlation IDs" {
         fn hasCorrelation(request: http.Request) bool {
             for (request.headers) |header| if (std.ascii.eqlIgnoreCase(header.name, "x-client-request-id") and
                 std.mem.eql(u8, header.value, "run-123")) return true;
-            return false;
+            return false; // unreachable: every request in this header-forwarding test carries the header
         }
 
         fn send(context: *anyopaque, allocator: std.mem.Allocator, request_value: http.Request) !http.Response {
@@ -640,7 +640,7 @@ test "client forwards OpenAI request correlation IDs" {
     defer arena.deinit();
     _ = try client.model().request(arena.allocator(), .{ .messages = &.{}, .request_id = "run-123" });
     const Sink = struct {
-        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {} // unreachable: the transport fails before events
     };
     try std.testing.expectError(error.ProviderConnectionError, client.model().stream(arena.allocator(), .{
         .messages = &.{},
