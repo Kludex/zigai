@@ -228,6 +228,7 @@ pub const Configured = struct {
                 .body = value.body,
                 .timeout_ms = value.timeout_ms,
                 .cancellation = value.cancellation,
+                .response_header_sink = value.response_header_sink,
             },
             .url = url,
             .headers = owned_headers,

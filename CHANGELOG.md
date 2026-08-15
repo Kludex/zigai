@@ -41,6 +41,11 @@
   layer. Add collision-safe multipart framing, encoded resource paths,
   provider-specific purpose and beta-header behavior, configurable upload
   limits, bounded response parsing, and exhaustive allocation-failure tests.
+- Implement Google resumable file upload, inspection, reuse, and deletion with
+  a distinct upload API root, bounded response-header capture, exact-origin
+  validation for provider-issued session URLs, URI-backed file handles, and a
+  2 GB default upload limit. Download remains explicitly unsupported because
+  the Gemini Files API does not expose stored file content.
 - Pin the official MCP `2026-07-28` conformance framework and TypeScript and
   Python reference servers in a validated test-only interoperability matrix.
 - Add a test-only Cassetter-style YAML format that replays ordered MCP

@@ -7,6 +7,7 @@ const transport = @import("../transport.zig");
 const json_limits = @import("../json.zig");
 const common = @import("common.zig");
 const http_provider = @import("http.zig");
+const security = @import("../security.zig");
 
 pub const Api = enum {
     openai,
@@ -109,6 +110,104 @@ pub fn delete(
     if (response.status < 200 or response.status >= 300) return common.statusError(response.status);
     try validateDeleteResponse(allocator, response.body, file.id, api);
 }
+
+pub fn uploadGoogle(
+    configured: *http_provider.Configured,
+    upload_configured: *http_provider.Configured,
+    allocator: std.mem.Allocator,
+    input: provider_types.FileInput,
+) !provider_types.OwnedFile {
+    if (input.purpose != null) return error.InvalidProviderFileInput;
+    const metadata_body = try std.json.Stringify.valueAlloc(allocator, .{
+        .file = .{ .display_name = input.filename },
+    }, .{});
+    defer allocator.free(metadata_body);
+    const content_length = try std.fmt.allocPrint(allocator, "{d}", .{input.bytes.len});
+    defer allocator.free(content_length);
+    const start_headers = [_]transport.Header{
+        .{ .name = "content-type", .value = "application/json" },
+        .{ .name = "x-goog-upload-protocol", .value = "resumable" },
+        .{ .name = "x-goog-upload-command", .value = "start" },
+        .{ .name = "x-goog-upload-header-content-length", .value = content_length },
+        .{ .name = "x-goog-upload-header-content-type", .value = input.media_type },
+    };
+    var capture: UploadUrlCapture = .{};
+    const start_response = upload_configured.provider().request(allocator, .{
+        .method = .POST,
+        .endpoint = "/files",
+        .headers = &start_headers,
+        .body = metadata_body,
+        .response_header_sink = .{ .context = &capture, .headerFn = UploadUrlCapture.header },
+    }) catch |failure| return common.transportError(failure);
+    defer allocator.free(start_response.body);
+    if (start_response.status < 200 or start_response.status >= 300) return common.statusError(start_response.status);
+    const upload_url = capture.value() orelse return error.ProviderResponseDecodeError;
+    try security.validateSameOrigin(upload_configured.request_policy.url_policy, upload_configured.base_url, upload_url);
+
+    const upload_headers = [_]transport.Header{
+        .{ .name = "content-length", .value = content_length },
+        .{ .name = "x-goog-upload-offset", .value = "0" },
+        .{ .name = "x-goog-upload-command", .value = "upload, finalize" },
+    };
+    const response = upload_configured.transport.send(allocator, .{
+        .method = .POST,
+        .url = upload_url,
+        .headers = &upload_headers,
+        .body = input.bytes,
+        .timeout_ms = upload_configured.request_policy.default_timeout_ms,
+    }) catch |failure| return common.transportError(failure);
+    defer allocator.free(response.body);
+    if (response.status < 200 or response.status >= 300) return common.statusError(response.status);
+    return parseGoogleDescriptor(allocator, response.body, configured.name, true);
+}
+
+pub fn inspectGoogle(
+    configured: *http_provider.Configured,
+    allocator: std.mem.Allocator,
+    file: model.UploadedFile,
+) !provider_types.OwnedFile {
+    const endpoint = try googleFileEndpoint(configured, allocator, file.id);
+    defer allocator.free(endpoint);
+    const response = configured.provider().request(allocator, .{ .method = .GET, .endpoint = endpoint }) catch |failure|
+        return common.transportError(failure);
+    defer allocator.free(response.body);
+    if (response.status < 200 or response.status >= 300) return common.statusError(response.status);
+    return parseGoogleDescriptor(allocator, response.body, configured.name, false);
+}
+
+pub fn deleteGoogle(
+    configured: *http_provider.Configured,
+    allocator: std.mem.Allocator,
+    file: model.UploadedFile,
+) !void {
+    const endpoint = try googleFileEndpoint(configured, allocator, file.id);
+    defer allocator.free(endpoint);
+    const response = configured.provider().request(allocator, .{ .method = .DELETE, .endpoint = endpoint }) catch |failure|
+        return common.transportError(failure);
+    defer allocator.free(response.body);
+    if (response.status < 200 or response.status >= 300) return common.statusError(response.status);
+}
+
+const UploadUrlCapture = struct {
+    const max_bytes = 2048;
+
+    bytes: [max_bytes]u8 = [_]u8{0} ** max_bytes,
+    length: usize = 0,
+
+    fn header(context: *anyopaque, captured_header: transport.Header) !void {
+        const self: *@This() = @ptrCast(@alignCast(context));
+        if (!std.ascii.eqlIgnoreCase(captured_header.name, "x-goog-upload-url")) return;
+        if (self.length != 0 or captured_header.value.len == 0 or captured_header.value.len > self.bytes.len)
+            return error.ProviderResponseDecodeError;
+        @memcpy(self.bytes[0..captured_header.value.len], captured_header.value);
+        self.length = captured_header.value.len;
+    }
+
+    fn value(self: *const UploadUrlCapture) ?[]const u8 {
+        if (self.length == 0) return null;
+        return self.bytes[0..self.length];
+    }
+};
 
 fn headersFor(api: Api) []const transport.Header {
     return switch (api) {
@@ -280,6 +379,75 @@ fn validateDeleteResponse(allocator: std.mem.Allocator, body: []const u8, expect
     }
 }
 
+fn parseGoogleDescriptor(
+    allocator: std.mem.Allocator,
+    body: []const u8,
+    provider_name: []const u8,
+    nested: bool,
+) !provider_types.OwnedFile {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+    const memory = arena.allocator();
+    const root = json_limits.parseLeaky(
+        std.json.Value,
+        memory,
+        body,
+        json_limits.defaults.provider_response,
+        .{ .allocate = .alloc_always },
+        error.InvalidProviderResponse,
+    ) catch |failure| return common.responseDecodeError(failure);
+    const value = if (nested) blk: {
+        const root_object = switch (root) {
+            .object => |object| object,
+            else => return error.ProviderResponseDecodeError,
+        };
+        break :blk root_object.get("file") orelse return error.ProviderResponseDecodeError;
+    } else root;
+    const object = switch (value) {
+        .object => |entry| entry,
+        else => return error.ProviderResponseDecodeError,
+    };
+    _ = common.objectString(object, "name") catch |failure| return common.responseDecodeError(failure);
+    const uri = common.objectString(object, "uri") catch |failure| return common.responseDecodeError(failure);
+    const filename = common.optionalObjectString(object, "displayName") catch |failure| return common.responseDecodeError(failure);
+    const media_type = common.optionalObjectString(object, "mimeType") catch |failure| return common.responseDecodeError(failure);
+    const size_bytes = if (common.optionalObjectString(object, "sizeBytes") catch |failure| return common.responseDecodeError(failure)) |text|
+        std.fmt.parseInt(u64, text, 10) catch return error.ProviderResponseDecodeError
+    else
+        null;
+    const owner = try memory.dupe(u8, provider_name);
+    const metadata = try std.json.Stringify.valueAlloc(memory, value, .{});
+    return .{
+        .arena = arena,
+        .value = .{
+            .id = uri,
+            .provider_name = owner,
+            .filename = filename,
+            .media_type = media_type,
+            .size_bytes = size_bytes,
+            .metadata_json = metadata,
+        },
+    };
+}
+
+fn googleFileEndpoint(configured: *http_provider.Configured, allocator: std.mem.Allocator, uri: []const u8) ![]u8 {
+    try security.validateSameOrigin(configured.request_policy.url_policy, configured.base_url, uri);
+    const parsed = std.Uri.parse(uri) catch return error.InvalidProviderFileReference;
+    const base = std.Uri.parse(configured.base_url) catch return error.InvalidProviderPolicy;
+    if (parsed.query != null or parsed.fragment != null) return error.InvalidProviderFileReference;
+    var path_buffer: [4096]u8 = undefined;
+    var base_path_buffer: [4096]u8 = undefined;
+    const path = parsed.path.toRaw(&path_buffer) catch return error.InvalidProviderFileReference;
+    const base_path = base.path.toRaw(&base_path_buffer) catch return error.InvalidProviderPolicy;
+    var prefix_buffer: [4096]u8 = undefined;
+    const prefix = std.fmt.bufPrint(&prefix_buffer, "{s}/files/", .{std.mem.trimEnd(u8, base_path, "/")}) catch
+        return error.InvalidProviderPolicy;
+    if (!std.mem.startsWith(u8, path, prefix)) return error.InvalidProviderFileReference;
+    const id = path[prefix.len..];
+    if (id.len == 0 or std.mem.indexOfAny(u8, id, "/?#") != null) return error.InvalidProviderFileReference;
+    return fileEndpoint(allocator, id, "");
+}
+
 test "multipart encoding escapes filenames and avoids payload boundaries" {
     const input = provider_types.FileInput{
         .filename = "a\\\"b.txt",
@@ -331,6 +499,104 @@ test "file lifecycle operations release every partial allocation" {
             var downloaded = try download(&configured, allocator, file, .openai);
             defer downloaded.deinit();
             try delete(&configured, allocator, file, .openai);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, State.run, .{});
+}
+
+test "Google upload capture and resource URI validation fail closed" {
+    var capture: UploadUrlCapture = .{};
+    try std.testing.expect(capture.value() == null);
+    try UploadUrlCapture.header(&capture, .{ .name = "ignored", .value = "value" });
+    try UploadUrlCapture.header(&capture, .{ .name = "x-goog-upload-url", .value = "https://api.example.test/upload" });
+    try std.testing.expectEqualStrings("https://api.example.test/upload", capture.value().?);
+    try std.testing.expectError(
+        error.ProviderResponseDecodeError,
+        UploadUrlCapture.header(&capture, .{ .name = "x-goog-upload-url", .value = "https://api.example.test/two" }),
+    );
+    var oversized: UploadUrlCapture = .{};
+    try std.testing.expectError(
+        error.ProviderResponseDecodeError,
+        UploadUrlCapture.header(&oversized, .{
+            .name = "x-goog-upload-url",
+            .value = &([_]u8{'x'} ** (UploadUrlCapture.max_bytes + 1)),
+        }),
+    );
+
+    const Stub = struct {
+        fn send(_: *anyopaque, _: std.mem.Allocator, _: transport.Request) !transport.Response {
+            return error.UnexpectedRequest;
+        }
+    };
+    var marker: u8 = 0;
+    var configured = http_provider.Configured{
+        .name = "gcp.gen_ai",
+        .base_url = "https://api.example.test/v1beta",
+        .transport = .{ .context = &marker, .sendFn = Stub.send },
+    };
+    const endpoint = try googleFileEndpoint(&configured, std.testing.allocator, "https://api.example.test/v1beta/files/abc-123");
+    defer std.testing.allocator.free(endpoint);
+    try std.testing.expectEqualStrings("/files/abc-123", endpoint);
+    try std.testing.expectError(
+        error.InvalidProviderFileReference,
+        googleFileEndpoint(&configured, std.testing.allocator, "https://api.example.test/v1beta/models/abc-123"),
+    );
+    try std.testing.expectError(
+        error.InvalidProviderFileReference,
+        googleFileEndpoint(&configured, std.testing.allocator, "https://api.example.test/v1beta/files/"),
+    );
+    try std.testing.expectError(
+        error.InvalidProviderFileReference,
+        googleFileEndpoint(&configured, std.testing.allocator, "https://api.example.test/v1beta/files/abc?x=1"),
+    );
+}
+
+test "Google file lifecycle releases every partial allocation" {
+    const State = struct {
+        step: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request_value: transport.Request) !transport.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const body = switch (self.step) {
+                0 => blk: {
+                    try request_value.response_header_sink.?.header(.{
+                        .name = "x-goog-upload-url",
+                        .value = "https://api.example.test/upload/v1beta/files/session",
+                    });
+                    break :blk "";
+                },
+                1 => "{\"file\":{\"name\":\"files/abc\",\"displayName\":\"a.txt\",\"mimeType\":\"text/plain\",\"sizeBytes\":\"1\",\"uri\":\"https://api.example.test/v1beta/files/abc\"}}",
+                2 => "{\"name\":\"files/abc\",\"displayName\":\"a.txt\",\"mimeType\":\"text/plain\",\"sizeBytes\":\"1\",\"uri\":\"https://api.example.test/v1beta/files/abc\"}",
+                3 => "{}",
+                else => return error.UnexpectedRequest,
+            };
+            self.step += 1;
+            return .{ .status = 200, .body = try allocator.dupe(u8, body) };
+        }
+
+        fn run(allocator: std.mem.Allocator) !void {
+            var state: @This() = .{};
+            const wire = transport.Transport{ .context = &state, .sendFn = send };
+            var configured = http_provider.Configured{
+                .name = "gcp.gen_ai",
+                .base_url = "https://api.example.test/v1beta",
+                .transport = wire,
+            };
+            var upload_configured = http_provider.Configured{
+                .name = "gcp.gen_ai",
+                .base_url = "https://api.example.test/upload/v1beta",
+                .transport = wire,
+            };
+            var uploaded = try uploadGoogle(&configured, &upload_configured, allocator, .{
+                .filename = "a.txt",
+                .media_type = "text/plain",
+                .bytes = "a",
+            });
+            defer uploaded.deinit();
+            const file = uploaded.value.uploadedFile();
+            var inspected = try inspectGoogle(&configured, allocator, file);
+            defer inspected.deinit();
+            try deleteGoogle(&configured, allocator, file);
         }
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, State.run, .{});

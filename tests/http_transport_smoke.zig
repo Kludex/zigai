@@ -9,9 +9,25 @@ pub fn main(init: std.process.Init) !void {
         .url_policy = .{ .allow_http = true, .allow_local_network = true },
     });
     defer http.deinit();
-    const response = try http.transport().send(init.gpa, .{ .method = .GET, .url = url });
+    const HeaderCapture = struct {
+        saw_content_type: bool = false,
+        fn header(context: *anyopaque, value: zigai.transport.Header) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (std.ascii.eqlIgnoreCase(value.name, "content-type")) {
+                if (!std.mem.eql(u8, value.value, "text/plain")) return error.UnexpectedFixtureHeader;
+                self.saw_content_type = true;
+            }
+        }
+    };
+    var header_capture: HeaderCapture = .{};
+    const response = try http.transport().send(init.gpa, .{
+        .method = .GET,
+        .url = url,
+        .response_header_sink = .{ .context = &header_capture, .headerFn = HeaderCapture.header },
+    });
     defer init.gpa.free(response.body);
-    if (response.status != 200 or !std.mem.eql(u8, response.body, "healthy")) return error.UnexpectedFixtureResponse;
+    if (response.status != 200 or !std.mem.eql(u8, response.body, "healthy") or !header_capture.saw_content_type)
+        return error.UnexpectedFixtureResponse;
 
     const delete_url = try std.fmt.allocPrint(init.gpa, "{s}/delete", .{base_url});
     defer init.gpa.free(delete_url);

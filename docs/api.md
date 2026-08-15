@@ -146,6 +146,11 @@ Provider wrappers can attach discovery and file callbacks through
 `Configured.Operations`; those callbacks remain behind the same borrowed
 provider interface.
 
+Provider requests may attach a borrowed `ResponseHeaderSink`. The standard
+transport invokes it while response-head slices are valid and retains no
+headers afterward. Callbacks must copy any selected value into their own
+bounded storage; Google uses this mechanism for its resumable upload URL.
+
 OpenAI uses that split directly. Create a stable `openai.Provider`, then pass
 its borrowed interface to the Responses API client:
 
@@ -206,6 +211,13 @@ its Files API has no corresponding field. Anthropic requests always carry the
 Files API beta header, and both providers percent-encode file IDs before using
 them in paths. `ProviderFileLimits` bounds upload bytes and multipart metadata
 before transport I/O and is configurable through provider options.
+
+Google implements resumable upload, inspection, reuse, and deletion. Its
+returned handle is the authenticated file URI required by Gemini requests.
+Upload session URLs are accepted only from the configured upload origin, and
+the default Google upload limit matches the documented 2 GB file maximum.
+`downloadFile` intentionally remains unsupported because the Gemini Files API
+does not permit clients to download stored files.
 
 `agent_spec.Owned` owns parsed configuration in an arena. It is data-only and
 does not read secrets or construct clients. `validateResolution` uses

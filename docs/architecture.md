@@ -375,6 +375,12 @@ The shared provider-files layer owns collision-safe multipart framing, path
 segment encoding, bounded JSON metadata parsing, and deletion acknowledgement
 validation. Provider modules select their own headers and field mapping rather
 than pretending every compatible endpoint has the same file contract.
+Google keeps its versioned inference and upload roots as separate authenticated
+HTTP configurations. A borrowed response-header sink captures only the
+resumable session URL while the response head is alive; the second upload is
+allowed only when that URL has the same scheme, host, and effective port as the
+configured upload root. Google does not advertise download because its API
+explicitly forbids downloading stored Gemini files.
 
 ## MCP toolsets
 

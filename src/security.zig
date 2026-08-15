@@ -21,6 +21,33 @@ pub const ValidateUrlError = error{
     UrlHostNotAllowed,
 };
 
+pub const ValidateSameOriginError = ValidateUrlError || error{
+    /// A provider-directed URL does not share the configured API origin.
+    UrlOriginNotAllowed,
+};
+
+/// Validates a provider-directed URL and requires the same scheme, host, and
+/// effective port as the configured API root.
+pub fn validateSameOrigin(policy: UrlPolicy, base_url: []const u8, target_url: []const u8) ValidateSameOriginError!void {
+    try policy.validate(target_url);
+    const base = std.Uri.parse(base_url) catch return error.InvalidUrl;
+    const target = std.Uri.parse(target_url) catch return error.InvalidUrl;
+    var base_host_buffer: [std.Io.net.HostName.max_len]u8 = undefined;
+    var target_host_buffer: [std.Io.net.HostName.max_len]u8 = undefined;
+    const base_host = (base.getHost(&base_host_buffer) catch return error.UrlMissingHost).bytes;
+    const target_host = (target.getHost(&target_host_buffer) catch return error.UrlMissingHost).bytes;
+    if (!std.ascii.eqlIgnoreCase(base.scheme, target.scheme) or
+        !std.ascii.eqlIgnoreCase(base_host, target_host) or
+        effectivePort(base) != effectivePort(target)) return error.UrlOriginNotAllowed;
+}
+
+fn effectivePort(uri: std.Uri) ?u16 {
+    if (uri.port) |port| return port;
+    if (std.ascii.eqlIgnoreCase(uri.scheme, "https")) return 443;
+    if (std.ascii.eqlIgnoreCase(uri.scheme, "http")) return 80;
+    return null;
+}
+
 /// Policy for URLs that ZigAI or a remote provider may fetch.
 pub const UrlPolicy = struct {
     /// Permit cleartext HTTP in addition to HTTPS.
@@ -151,6 +178,22 @@ test "URL policy permits public HTTPS and exact allowlisted hosts" {
     try std.testing.expectError(
         error.UrlHostNotAllowed,
         (UrlPolicy{ .allowed_hosts = &.{"other.example"} }).validate("https://api.example.com/v1"),
+    );
+}
+
+test "provider-directed URLs require the same effective origin" {
+    try validateSameOrigin(UrlPolicy{}, "https://api.example.com/v1", "https://API.EXAMPLE.COM:443/upload/one");
+    try std.testing.expectError(
+        error.UrlOriginNotAllowed,
+        validateSameOrigin(UrlPolicy{}, "https://api.example.com/v1", "https://upload.example.com/one"),
+    );
+    try std.testing.expectError(
+        error.UrlOriginNotAllowed,
+        validateSameOrigin(UrlPolicy{ .allow_http = true }, "https://api.example.com/v1", "http://api.example.com/one"),
+    );
+    try std.testing.expectError(
+        error.UrlOriginNotAllowed,
+        validateSameOrigin(UrlPolicy{}, "https://api.example.com:444/v1", "https://api.example.com/one"),
     );
 }
 

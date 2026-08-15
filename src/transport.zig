@@ -76,6 +76,18 @@ pub const Request = struct {
     body: []const u8 = "",
     timeout_ms: ?u64 = null,
     cancellation: ?*const model_types.CancellationToken = null,
+    /// Optional borrowed observer invoked for response headers before the
+    /// underlying HTTP response is released.
+    response_header_sink: ?ResponseHeaderSink = null,
+};
+
+pub const ResponseHeaderSink = struct {
+    context: *anyopaque,
+    headerFn: *const fn (context: *anyopaque, header: Header) anyerror!void,
+
+    pub fn header(self: ResponseHeaderSink, value: Header) !void {
+        return self.headerFn(self.context, value);
+    }
 };
 
 /// The response body is allocated by the allocator passed to `Transport.send`.
@@ -232,6 +244,7 @@ pub const HttpTransport = struct {
         var response = try request.receiveHead(&.{});
         const status: u16 = @intFromEnum(response.head.status);
         if (isRedirect(status) and self.redirect_policy == .reject) return error.RedirectRejected;
+        try emitResponseHeaders(request_value.response_header_sink, response.head);
         const metadata = responseMetadata(response.head);
 
         const decompress_buffer = try decompressionBuffer(allocator, response.head.content_encoding);
@@ -281,6 +294,7 @@ pub const HttpTransport = struct {
         var response = try request.receiveHead(&.{});
         const result = StreamResponse{ .status = @intFromEnum(response.head.status), .metadata = responseMetadata(response.head) };
         if (isRedirect(result.status) and self.redirect_policy == .reject) return error.RedirectRejected;
+        try emitResponseHeaders(request_value.response_header_sink, response.head);
         try sink.start(result);
         const decompress_buffer = try decompressionBuffer(allocator, response.head.content_encoding);
         defer if (decompress_buffer.len > 0) allocator.free(decompress_buffer);
@@ -442,6 +456,12 @@ fn responseMetadata(head: std.http.Client.Response.Head) ResponseMetadata {
     return metadata;
 }
 
+fn emitResponseHeaders(sink: ?ResponseHeaderSink, head: std.http.Client.Response.Head) !void {
+    const target = sink orelse return;
+    var iterator = head.iterateHeaders();
+    while (iterator.next()) |header| try target.header(.{ .name = header.name, .value = header.value });
+}
+
 fn parseRetryAfter(value: []const u8, response_date: ?[]const u8) ?u64 {
     if (std.fmt.parseInt(u64, value, 10)) |seconds| return seconds else |_| {}
     const retry_timestamp = parseHttpDate(value) orelse return null;
@@ -589,6 +609,26 @@ test "response metadata parses retry and provider rate-limit headers" {
     try std.testing.expectEqual(@as(?u64, 12), metadata.rate_limit_remaining_tokens);
     try std.testing.expectEqualStrings("req_123", metadata.requestId().?);
     try std.testing.expectEqualStrings("Bearer error=\"invalid_token\"", metadata.wwwAuthenticate().?);
+}
+
+test "response header sink observes response-head values" {
+    const Capture = struct {
+        count: usize = 0,
+        fn header(context: *anyopaque, value: Header) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (std.ascii.eqlIgnoreCase(value.name, "x-upload-url")) {
+                try std.testing.expectEqualStrings("https://upload.example/one", value.value);
+                self.count += 1;
+            }
+        }
+    };
+    const head = try std.http.Client.Response.Head.parse(
+        "HTTP/1.1 200 OK\r\nx-upload-url: https://upload.example/one\r\ncontent-length: 0\r\n\r\n",
+    );
+    var capture: Capture = .{};
+    try emitResponseHeaders(.{ .context = &capture, .headerFn = Capture.header }, head);
+    try std.testing.expectEqual(@as(usize, 1), capture.count);
+    try emitResponseHeaders(null, head);
 }
 
 test "response metadata parses HTTP-date retry delays and bounds request IDs" {

@@ -47,6 +47,7 @@ pub const Request = struct {
     body: []const u8 = "",
     timeout_ms: ?u64 = null,
     cancellation: ?*const model.CancellationToken = null,
+    response_header_sink: ?transport.ResponseHeaderSink = null,
     /// Run-scoped policy that may further restrict the provider base URL.
     url_policy: security.UrlPolicy = .{},
 };

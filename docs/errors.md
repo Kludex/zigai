@@ -127,6 +127,7 @@ or partially activate a bundle.
 | `UrlCredentialsForbidden` | The URL embeds a username or password. |
 | `LocalNetworkUrlForbidden` | The URL uses a local name or non-public literal IP. |
 | `UrlHostNotAllowed` | The URL host is absent from an explicit allowlist. |
+| `UrlOriginNotAllowed` | A provider-directed URL does not match the configured API origin. |
 
 ### MCP authorization
 

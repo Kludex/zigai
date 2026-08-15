@@ -5,11 +5,13 @@ const model_types = @import("../model.zig");
 const provider_types = @import("../provider.zig");
 const http_provider = @import("http.zig");
 const operations = @import("operations.zig");
+const files = @import("files.zig");
 const http = @import("../transport.zig");
 const common = @import("common.zig");
 const json_limits = @import("../json.zig");
 
 pub const api_base = "https://generativelanguage.googleapis.com/v1beta";
+pub const upload_api_base = "https://generativelanguage.googleapis.com/upload/v1beta";
 
 pub const Error = model_types.ProviderRequestError || error{
     /// A successful Gemini payload does not match GenerateContent.
@@ -24,13 +26,15 @@ pub const Error = model_types.ProviderRequestError || error{
 /// separate from the GenerateContent wire adapter.
 pub const Provider = struct {
     http: http_provider.Configured,
+    upload_http: http_provider.Configured,
     discovery_limits: operations.DiscoveryLimits,
 
     pub const Options = struct {
         base_url: []const u8 = api_base,
+        upload_base_url: []const u8 = upload_api_base,
         headers: []const http.Header = &.{},
         request_policy: provider_types.RequestPolicy = .{},
-        file_limits: provider_types.FileLimits = .{},
+        file_limits: provider_types.FileLimits = .{ .max_upload_bytes = 2 * 1024 * 1024 * 1024 },
         model_profiles: ?http_provider.Configured.ModelProfiles = null,
         discovery_limits: operations.DiscoveryLimits = .{},
     };
@@ -51,6 +55,15 @@ pub const Provider = struct {
                 .file_limits = options.file_limits,
                 .model_profiles = options.model_profiles,
             },
+            .upload_http = .{
+                .name = "gcp.gen_ai",
+                .base_url = options.upload_base_url,
+                .transport = transport,
+                .credential = .{ .header = .{ .name = "x-goog-api-key", .value = api_key } },
+                .headers = options.headers,
+                .request_policy = options.request_policy,
+                .file_limits = options.file_limits,
+            },
             .discovery_limits = options.discovery_limits,
         };
     }
@@ -59,6 +72,9 @@ pub const Provider = struct {
         self.http.operations = .{
             .context = self,
             .listModelsFn = listModels,
+            .uploadFileFn = uploadFile,
+            .inspectFileFn = inspectFile,
+            .deleteFileFn = deleteFile,
         };
         return self.http.provider();
     }
@@ -66,6 +82,21 @@ pub const Provider = struct {
     fn listModels(context: *anyopaque, allocator: std.mem.Allocator) !provider_types.OwnedModels {
         const self: *Provider = @ptrCast(@alignCast(context));
         return operations.listGoogleModels(&self.http, allocator, self.discovery_limits);
+    }
+
+    fn uploadFile(context: *anyopaque, allocator: std.mem.Allocator, input: provider_types.FileInput) !provider_types.OwnedFile {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        return files.uploadGoogle(&self.http, &self.upload_http, allocator, input);
+    }
+
+    fn inspectFile(context: *anyopaque, allocator: std.mem.Allocator, file: model_types.UploadedFile) !provider_types.OwnedFile {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        return files.inspectGoogle(&self.http, allocator, file);
+    }
+
+    fn deleteFile(context: *anyopaque, allocator: std.mem.Allocator, file: model_types.UploadedFile) !void {
+        const self: *Provider = @ptrCast(@alignCast(context));
+        return files.deleteGoogle(&self.http, allocator, file);
     }
 };
 
@@ -191,6 +222,80 @@ pub const Client = struct {
         };
     }
 };
+
+test "Google provider owns resumable file upload inspect and delete" {
+    const State = struct {
+        step: usize = 0,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request_value: http.Request) !http.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const body = switch (self.step) {
+                0 => blk: {
+                    try std.testing.expectEqual(http.Method.POST, request_value.method);
+                    try std.testing.expectEqualStrings("https://generativelanguage.googleapis.com/upload/v1beta/files", request_value.url);
+                    try expectHeader(request_value.headers, "x-goog-api-key", "secret");
+                    try expectHeader(request_value.headers, "x-goog-upload-command", "start");
+                    try std.testing.expect(std.mem.indexOf(u8, request_value.body, "\"display_name\":\"note.txt\"") != null);
+                    const sink = request_value.response_header_sink.?;
+                    try sink.header(.{ .name = "content-length", .value = "0" });
+                    try sink.header(.{
+                        .name = "x-goog-upload-url",
+                        .value = "https://generativelanguage.googleapis.com/upload/v1beta/files/session-1",
+                    });
+                    break :blk "";
+                },
+                1 => blk: {
+                    try std.testing.expectEqual(http.Method.POST, request_value.method);
+                    try std.testing.expectEqualStrings("https://generativelanguage.googleapis.com/upload/v1beta/files/session-1", request_value.url);
+                    try expectHeader(request_value.headers, "x-goog-upload-command", "upload, finalize");
+                    try std.testing.expectEqualStrings("hi", request_value.body);
+                    break :blk "{\"file\":{\"name\":\"files/abc-123\",\"displayName\":\"note.txt\",\"mimeType\":\"text/plain\",\"sizeBytes\":\"2\",\"uri\":\"https://generativelanguage.googleapis.com/v1beta/files/abc-123\"}}";
+                },
+                2 => blk: {
+                    try std.testing.expectEqual(http.Method.GET, request_value.method);
+                    try std.testing.expectEqualStrings("https://generativelanguage.googleapis.com/v1beta/files/abc-123", request_value.url);
+                    try expectHeader(request_value.headers, "x-goog-api-key", "secret");
+                    break :blk "{\"name\":\"files/abc-123\",\"displayName\":\"note.txt\",\"mimeType\":\"text/plain\",\"sizeBytes\":\"2\",\"uri\":\"https://generativelanguage.googleapis.com/v1beta/files/abc-123\"}";
+                },
+                3 => blk: {
+                    try std.testing.expectEqual(http.Method.DELETE, request_value.method);
+                    try std.testing.expectEqualStrings("https://generativelanguage.googleapis.com/v1beta/files/abc-123", request_value.url);
+                    try expectHeader(request_value.headers, "x-goog-api-key", "secret");
+                    break :blk "{}";
+                },
+                else => return error.UnexpectedRequest,
+            };
+            self.step += 1;
+            return .{ .status = 200, .body = try allocator.dupe(u8, body) };
+        }
+
+        fn expectHeader(headers: []const http.Header, name: []const u8, value: []const u8) !void {
+            for (headers) |header| if (std.ascii.eqlIgnoreCase(header.name, name)) {
+                try std.testing.expectEqualStrings(value, header.value);
+                return;
+            };
+            return error.TestUnexpectedResult;
+        }
+    };
+    var state: State = .{};
+    var concrete = Provider.init("secret", .{ .context = &state, .sendFn = State.send });
+    const provider = concrete.provider();
+    var uploaded = try provider.uploadFile(std.testing.allocator, .{
+        .filename = "note.txt",
+        .media_type = "text/plain",
+        .bytes = "hi",
+    });
+    defer uploaded.deinit();
+    try std.testing.expectEqualStrings("https://generativelanguage.googleapis.com/v1beta/files/abc-123", uploaded.value.id);
+    try std.testing.expectEqual(@as(?u64, 2), uploaded.value.size_bytes);
+    const file = uploaded.value.uploadedFile();
+    var inspected = try provider.inspectFile(std.testing.allocator, file);
+    defer inspected.deinit();
+    try std.testing.expectEqualStrings("note.txt", inspected.value.filename.?);
+    try std.testing.expectError(error.UnsupportedProviderOperation, provider.downloadFile(std.testing.allocator, file));
+    try provider.deleteFile(std.testing.allocator, file);
+    try std.testing.expectEqual(@as(usize, 4), state.step);
+}
 
 test "Google provider owns identity and model profile overrides" {
     const Profiles = struct {
