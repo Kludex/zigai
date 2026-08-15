@@ -69,6 +69,11 @@
   parameter policy, ZDR and data-collection controls, quantization, performance
   sorting and thresholds, price ceilings, isolated `.openrouter` extensions,
   and opt-in structured router metadata for buffered and streamed responses.
+- Add a Google Cloud Vertex AI provider that reuses the Gemini GenerateContent
+  codec without sharing Google AI Studio credentials, URLs, discovery, or file
+  operations. It owns OAuth bearer authentication and validated project,
+  location, publisher, and model resource paths, with global or regional API
+  roots and buffered or SSE streaming support.
 - Record and replay a redacted real Azure OpenAI `gpt-4o` Responses function
   tool loop, normalizing the resource endpoint and omitting authentication.
 - Record and replay a redacted real Claude Sonnet 4.6 Converse tool loop. The

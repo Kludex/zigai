@@ -179,6 +179,7 @@ authentication style, or model profile overrides.
 | `zigai.providers.openai` | OpenAI Responses |
 | `zigai.providers.anthropic` | Anthropic Messages |
 | `zigai.providers.google` | Gemini GenerateContent |
+| `zigai.providers.vertex_ai` | Gemini GenerateContent on Google Cloud Vertex AI |
 | `zigai.providers.azure_openai` | Azure OpenAI v1 Responses and Chat Completions |
 | `zigai.providers.bedrock` | Amazon Bedrock Converse; Mantle Chat Completions |
 | `zigai.providers.xai` | xAI Responses; explicit Chat Completions compatibility |
@@ -248,6 +249,10 @@ typed on `openrouter.Client.routing`. Provider order, fallbacks, data policy,
 performance preferences, and price limits never leak into the generic
 compatible client. Set `include_router_metadata` to preserve the selected
 route as structured provider details.
+
+Vertex AI reuses the Gemini client instead of copying its codec. Its provider
+owns the Google Cloud project, location, publisher path, regional API root, and
+OAuth bearer token; Google AI Studio keeps its API-key and Files API behavior.
 
 Every first-party and OpenAI-compatible provider can discover the models
 visible to the configured credential:

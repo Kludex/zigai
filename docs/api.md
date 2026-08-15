@@ -174,6 +174,41 @@ Google uses `zigai.providers.google.Provider`; it owns `x-goog-api-key` and
 keeps the stable `gcp.gen_ai` provider identity. Its client builds model-bound
 GenerateContent endpoints and encodes Gemini request and response bodies.
 
+Vertex AI deliberately reuses that Gemini client with a different provider:
+
+```zig
+const base_url = try zigai.providers.vertex_ai.regionalApiBase(
+    allocator,
+    "europe-west1",
+);
+defer allocator.free(base_url);
+
+var provider = zigai.providers.vertex_ai.Provider.initWithOptions(
+    access_token,
+    "my-project",
+    "europe-west1",
+    transport,
+    .{ .base_url = base_url },
+);
+var client = zigai.providers.vertex_ai.Client{
+    .model_name = "gemini-2.5-flash",
+    .provider = provider.provider(),
+};
+```
+
+The provider maps the codec's relative model operations onto the Vertex v1
+`projects/{project}/locations/{location}/publishers/{publisher}/models/{model}`
+resource. It accepts only `generateContent` and SSE `streamGenerateContent`,
+validates every resource segment before HTTP, and uses the stable
+`gcp.vertex_ai` identity. The default API root is Google's global Vertex
+endpoint; `regionalApiBase` returns an owned regional root. The access token is
+borrowed, so refresh it by creating a new provider after expiry.
+
+Vertex and Google AI Studio share `.google` extension bodies because the
+GenerateContent schema is the same. Credentials, resource paths, discovery,
+and file operations remain provider-owned: Vertex does not expose the AI
+Studio Files API or send `x-goog-api-key`.
+
 Amazon Bedrock uses a native regional provider and a separate Converse wire
 adapter:
 

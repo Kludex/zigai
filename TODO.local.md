@@ -125,7 +125,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   Compatibility API aliases.
 - [x] Add typed OpenRouter routing, provider-selection, and response metadata
   without leaking OpenRouter extensions into the generic OpenAI-compatible API.
-- [ ] Add a Google Cloud Vertex AI provider boundary that reuses the Gemini
+- [x] Add a Google Cloud Vertex AI provider boundary that reuses the Gemini
   GenerateContent codec without coupling Google AI Studio credentials or URLs.
 - [ ] Add focused Ollama, Crusoe, Snowflake Cortex, Z.AI, and custom-provider
   examples with provider-specific profiles and pre-I/O validation.
