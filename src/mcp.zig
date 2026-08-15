@@ -186,6 +186,7 @@ pub const StreamableHttpTransport = struct {
         if (!request.expects_response or response.body.len == 0) return response.body;
         if (response.body[0] == '{' or response.body[0] == '[') {
             try validateMcpResponse(allocator, response.body);
+            try validateHttpResponseStatus(allocator, response.status, response.body);
             return response.body;
         }
 
@@ -1148,10 +1149,61 @@ fn validateMcpDocument(allocator: std.mem.Allocator, source: []const u8, comptim
 
 fn responseResult(root: std.json.Value, expected_id: u64) !std.json.Value {
     const object = try requiredObject(root);
+    if (!std.mem.eql(u8, optionalString(object, "jsonrpc") orelse "", "2.0")) {
+        return error.InvalidMcpResponse;
+    }
     const actual = object.get("id") orelse return error.InvalidMcpResponse;
     if (actual != .integer or actual.integer != expected_id) return error.McpResponseIdMismatch;
-    if (object.get("error") != null) return error.McpRpcError;
-    return object.get("result") orelse error.InvalidMcpResponse;
+    const result = object.get("result");
+    const rpc_error = object.get("error");
+    if ((result == null) == (rpc_error == null)) return error.InvalidMcpResponse;
+    if (rpc_error) |value| {
+        try validateRpcError(value);
+        return error.McpRpcError;
+    }
+    return result.?;
+}
+
+fn validateRpcError(value: std.json.Value) !void {
+    const object = try requiredObject(value);
+    const code = switch (object.get("code") orelse return error.InvalidMcpResponse) {
+        .integer => |integer| integer,
+        else => return error.InvalidMcpResponse,
+    };
+    _ = try requiredString(object, "message");
+    if (code == error_codes.unsupported_protocol_version) {
+        const data = try requiredObject(object.get("data") orelse return error.InvalidMcpResponse);
+        try requireStringArray(data, "supported", 1, null);
+        _ = try requiredString(data, "requested");
+    } else if (code == error_codes.missing_required_client_capability) {
+        const data = try requiredObject(object.get("data") orelse return error.InvalidMcpResponse);
+        try validateClientCapabilities(
+            data.get("requiredCapabilities") orelse return error.InvalidMcpResponse,
+            error.InvalidMcpResponse,
+        );
+    }
+}
+
+fn validateHttpResponseStatus(allocator: std.mem.Allocator, status: u16, source: []const u8) !void {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const root = try parseResponse(arena.allocator(), source);
+    const object = try requiredObject(root);
+    if (object.get("result") != null) {
+        if (status != 200) return error.InvalidMcpResponse;
+        return;
+    }
+    const rpc_error = try requiredObject(object.get("error") orelse return error.InvalidMcpResponse);
+    const code = switch (rpc_error.get("code") orelse return error.InvalidMcpResponse) {
+        .integer => |integer| integer,
+        else => return error.InvalidMcpResponse,
+    };
+    if ((code == error_codes.header_mismatch or
+        code == error_codes.missing_required_client_capability or
+        code == error_codes.unsupported_protocol_version) and status != 400)
+    {
+        return error.InvalidMcpResponse;
+    }
 }
 
 fn validateMethodResult(method: []const u8, result: std.json.Value) !void {
@@ -1848,6 +1900,99 @@ test "method result validation rejects every structural boundary" {
     defer result.deinit(std.testing.allocator);
     try result.put(std.testing.allocator, "completion", .{ .object = completion });
     try std.testing.expectError(error.InvalidMcpResponse, validateMethodResult(methods.complete, .{ .object = result }));
+}
+
+test "JSON-RPC response and MCP error envelopes are exact" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const result = try responseResult(
+        try parseResponse(arena.allocator(), "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}"),
+        1,
+    );
+    try std.testing.expect(result == .object);
+    const valid_errors = [_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32601,\"message\":\"missing\",\"data\":null}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32020,\"message\":\"headers\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32022,\"message\":\"version\",\"data\":{\"supported\":[\"2026-07-28\"],\"requested\":\"old\"}}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32021,\"message\":\"capability\",\"data\":{\"requiredCapabilities\":{\"elicitation\":{}}}}}",
+    };
+    for (valid_errors) |source| try std.testing.expectError(
+        error.McpRpcError,
+        responseResult(try parseResponse(arena.allocator(), source), 1),
+    );
+
+    const invalid = [_][]const u8{
+        "[]",
+        "{\"id\":1,\"result\":{}}",
+        "{\"jsonrpc\":\"1.0\",\"id\":1,\"result\":{}}",
+        "{\"jsonrpc\":\"2.0\",\"result\":{}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{},\"error\":{\"code\":1,\"message\":\"both\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":[]}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"message\":\"missing code\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1.5,\"message\":\"float code\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1,\"message\":1}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32022,\"message\":\"version\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32022,\"message\":\"version\",\"data\":[]}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32022,\"message\":\"version\",\"data\":{\"supported\":[],\"requested\":\"old\"}}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32022,\"message\":\"version\",\"data\":{\"supported\":[1],\"requested\":\"old\"}}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32022,\"message\":\"version\",\"data\":{\"supported\":[\"v\"]}}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32021,\"message\":\"capability\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32021,\"message\":\"capability\",\"data\":[]}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32021,\"message\":\"capability\",\"data\":{}}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32021,\"message\":\"capability\",\"data\":{\"requiredCapabilities\":[]}}}",
+    };
+    for (invalid) |source| try std.testing.expectError(
+        error.InvalidMcpResponse,
+        responseResult(try parseResponse(arena.allocator(), source), 1),
+    );
+    try std.testing.expectError(
+        error.McpResponseIdMismatch,
+        responseResult(
+            try parseResponse(arena.allocator(), "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}"),
+            1,
+        ),
+    );
+}
+
+test "HTTP response statuses match MCP result and reserved error envelopes" {
+    const success = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}";
+    try validateHttpResponseStatus(std.testing.allocator, 200, success);
+    try std.testing.expectError(
+        error.InvalidMcpResponse,
+        validateHttpResponseStatus(std.testing.allocator, 400, success),
+    );
+    const generic_error = "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32602,\"message\":\"bad\"}}";
+    try validateHttpResponseStatus(std.testing.allocator, 200, generic_error);
+    const reserved = [_]i32{
+        error_codes.header_mismatch,
+        error_codes.missing_required_client_capability,
+        error_codes.unsupported_protocol_version,
+    };
+    for (reserved) |code| {
+        const source = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "{{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{{\"code\":{d},\"message\":\"bad\"}}}}",
+            .{code},
+        );
+        defer std.testing.allocator.free(source);
+        try validateHttpResponseStatus(std.testing.allocator, 400, source);
+        try std.testing.expectError(
+            error.InvalidMcpResponse,
+            validateHttpResponseStatus(std.testing.allocator, 200, source),
+        );
+    }
+    const malformed = [_][]const u8{
+        "[]",
+        "{\"jsonrpc\":\"2.0\",\"id\":1}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":[]}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":1.5}}",
+    };
+    for (malformed) |source| try std.testing.expectError(
+        error.InvalidMcpResponse,
+        validateHttpResponseStatus(std.testing.allocator, 200, source),
+    );
 }
 
 test "capability validation preserves open fields and checks known shapes" {
