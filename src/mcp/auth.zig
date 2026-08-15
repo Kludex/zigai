@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const security = @import("../security.zig");
+const json_limits = @import("../json.zig");
 
 /// Stable authorization failures raised before an MCP request is dispatched.
 pub const Error = error{
@@ -197,7 +198,12 @@ pub const ProtectedResourceMetadata = struct {
     pub fn validate(self: ProtectedResourceMetadata, url_policy: security.UrlPolicy) !void {
         try validateCanonicalResource(self.resource, url_policy);
         if (self.authorization_servers.len == 0) return error.InvalidProtectedResourceMetadata;
-        for (self.authorization_servers) |issuer| try validateIssuerUrl(issuer, url_policy);
+        for (self.authorization_servers, 0..) |issuer, index| {
+            try validateIssuerUrl(issuer, url_policy);
+            for (self.authorization_servers[0..index]) |previous| {
+                if (std.mem.eql(u8, previous, issuer)) return error.InvalidProtectedResourceMetadata;
+            }
+        }
         for (self.scopes_supported) |scope| try validateScope(scope);
         var has_header = false;
         for (self.bearer_methods_supported) |method| {
@@ -217,6 +223,128 @@ pub const ProtectedResourceMetadata = struct {
         }, .{});
     }
 };
+
+/// Owned, bounded protected-resource metadata parsed from an RFC 9728 document.
+pub const OwnedProtectedResourceMetadata = struct {
+    arena: std.heap.ArenaAllocator,
+    value: ProtectedResourceMetadata,
+
+    pub fn deinit(self: *OwnedProtectedResourceMetadata) void {
+        self.arena.deinit();
+        self.* = undefined;
+    }
+};
+
+/// Parses an extensible RFC 9728 document while enforcing MCP's required fields.
+pub fn parseProtectedResourceMetadata(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    url_policy: security.UrlPolicy,
+) !OwnedProtectedResourceMetadata {
+    const Wire = struct {
+        resource: []const u8,
+        authorization_servers: []const []const u8,
+        scopes_supported: []const []const u8 = &.{},
+        bearer_methods_supported: []const []const u8 = &.{"header"},
+    };
+    var result = OwnedProtectedResourceMetadata{
+        .arena = .init(allocator),
+        .value = undefined,
+    };
+    errdefer result.arena.deinit();
+    const wire = try json_limits.parseLeaky(
+        Wire,
+        result.arena.allocator(),
+        source,
+        json_limits.defaults.mcp_message,
+        .{ .ignore_unknown_fields = true },
+        error.InvalidProtectedResourceMetadata,
+    );
+    result.value = .{
+        .resource = wire.resource,
+        .authorization_servers = wire.authorization_servers,
+        .scopes_supported = wire.scopes_supported,
+        .bearer_methods_supported = wire.bearer_methods_supported,
+    };
+    try result.value.validate(url_policy);
+    return result;
+}
+
+/// Ordered, owned well-known URLs attempted during OAuth discovery.
+pub const DiscoveryUrls = struct {
+    values: [][]u8,
+
+    pub fn deinit(self: DiscoveryUrls, allocator: std.mem.Allocator) void {
+        for (self.values) |value| allocator.free(value);
+        allocator.free(self.values);
+    }
+};
+
+/// RFC 9728 discovery order: endpoint-path metadata, then root metadata.
+pub fn protectedResourceDiscoveryUrls(
+    allocator: std.mem.Allocator,
+    resource: []const u8,
+    url_policy: security.UrlPolicy,
+) !DiscoveryUrls {
+    try validateCanonicalResource(resource, url_policy);
+    const parts = try splitUrl(resource);
+    var urls: std.ArrayList([]u8) = .empty;
+    errdefer deinitUrlList(allocator, &urls);
+    if (parts.path.len > 0 and !std.mem.eql(u8, parts.path, "/")) {
+        try appendUrl(allocator, &urls, try std.fmt.allocPrint(
+            allocator,
+            "{s}/.well-known/oauth-protected-resource{s}",
+            .{ parts.origin, parts.path },
+        ));
+    }
+    try appendUrl(allocator, &urls, try std.fmt.allocPrint(
+        allocator,
+        "{s}/.well-known/oauth-protected-resource",
+        .{parts.origin},
+    ));
+    return .{ .values = try urls.toOwnedSlice(allocator) };
+}
+
+/// RFC 8414/OIDC discovery order for one selected authorization-server issuer.
+pub fn authorizationServerDiscoveryUrls(
+    allocator: std.mem.Allocator,
+    issuer: []const u8,
+    url_policy: security.UrlPolicy,
+) !DiscoveryUrls {
+    try validateIssuerUrl(issuer, url_policy);
+    const parts = try splitUrl(issuer);
+    var urls: std.ArrayList([]u8) = .empty;
+    errdefer deinitUrlList(allocator, &urls);
+    if (parts.path.len > 0 and !std.mem.eql(u8, parts.path, "/")) {
+        try appendUrl(allocator, &urls, try std.fmt.allocPrint(
+            allocator,
+            "{s}/.well-known/oauth-authorization-server{s}",
+            .{ parts.origin, parts.path },
+        ));
+        try appendUrl(allocator, &urls, try std.fmt.allocPrint(
+            allocator,
+            "{s}/.well-known/openid-configuration{s}",
+            .{ parts.origin, parts.path },
+        ));
+        try appendUrl(allocator, &urls, try std.fmt.allocPrint(
+            allocator,
+            "{s}/.well-known/openid-configuration",
+            .{issuer},
+        ));
+    } else {
+        try appendUrl(allocator, &urls, try std.fmt.allocPrint(
+            allocator,
+            "{s}/.well-known/oauth-authorization-server",
+            .{parts.origin},
+        ));
+        try appendUrl(allocator, &urls, try std.fmt.allocPrint(
+            allocator,
+            "{s}/.well-known/openid-configuration",
+            .{parts.origin},
+        ));
+    }
+    return .{ .values = try urls.toOwnedSlice(allocator) };
+}
 
 /// Server authorization and browser-origin policy for one MCP endpoint.
 pub const ServerPolicy = struct {
@@ -360,6 +488,32 @@ fn appendScope(allocator: std.mem.Allocator, scopes: *std.ArrayList([]u8), scope
     const owned = try allocator.dupe(u8, scope);
     errdefer allocator.free(owned);
     try scopes.append(allocator, owned);
+}
+
+const UrlParts = struct {
+    origin: []const u8,
+    path: []const u8,
+};
+
+fn splitUrl(value: []const u8) Error!UrlParts {
+    const scheme = std.mem.indexOf(u8, value, "://") orelse return error.InvalidResourceUri;
+    const authority_start = scheme + 3;
+    const path_start = std.mem.indexOfScalarPos(u8, value, authority_start, '/') orelse value.len;
+    return .{ .origin = value[0..path_start], .path = value[path_start..] };
+}
+
+fn appendUrl(
+    allocator: std.mem.Allocator,
+    urls: *std.ArrayList([]u8),
+    owned: []u8,
+) !void {
+    errdefer allocator.free(owned);
+    try urls.append(allocator, owned);
+}
+
+fn deinitUrlList(allocator: std.mem.Allocator, urls: *std.ArrayList([]u8)) void {
+    for (urls.items) |url| allocator.free(url);
+    urls.deinit(allocator);
 }
 
 fn parseChallengeValueAlloc(
@@ -514,6 +668,71 @@ test "protected resource metadata validates and serializes" {
             .bearer_methods_supported = &.{"body"},
         }).validate(.{}),
     );
+
+    var parsed = try parseProtectedResourceMetadata(
+        std.testing.allocator,
+        "{\"resource\":\"https://mcp.example.com/mcp\"," ++
+            "\"authorization_servers\":[\"https://auth.example.com/tenant\"]," ++
+            "\"scopes_supported\":[\"tools:read\"],\"extension\":true}",
+        .{},
+    );
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings(metadata.resource, parsed.value.resource);
+    try std.testing.expectEqualStrings("tools:read", parsed.value.scopes_supported[0]);
+    try std.testing.expectError(
+        error.InvalidProtectedResourceMetadata,
+        parseProtectedResourceMetadata(
+            std.testing.allocator,
+            "{\"resource\":\"https://mcp.example.com\",\"authorization_servers\":[]}",
+            .{},
+        ),
+    );
+}
+
+test "OAuth discovery URLs follow endpoint and issuer path ordering" {
+    const resources = try protectedResourceDiscoveryUrls(
+        std.testing.allocator,
+        "https://mcp.example.com/public/mcp",
+        .{},
+    );
+    defer resources.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), resources.values.len);
+    try std.testing.expectEqualStrings(
+        "https://mcp.example.com/.well-known/oauth-protected-resource/public/mcp",
+        resources.values[0],
+    );
+    try std.testing.expectEqualStrings(
+        "https://mcp.example.com/.well-known/oauth-protected-resource",
+        resources.values[1],
+    );
+
+    const issuers = try authorizationServerDiscoveryUrls(
+        std.testing.allocator,
+        "https://auth.example.com/tenant1",
+        .{},
+    );
+    defer issuers.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 3), issuers.values.len);
+    try std.testing.expectEqualStrings(
+        "https://auth.example.com/.well-known/oauth-authorization-server/tenant1",
+        issuers.values[0],
+    );
+    try std.testing.expectEqualStrings(
+        "https://auth.example.com/.well-known/openid-configuration/tenant1",
+        issuers.values[1],
+    );
+    try std.testing.expectEqualStrings(
+        "https://auth.example.com/tenant1/.well-known/openid-configuration",
+        issuers.values[2],
+    );
+
+    const root = try authorizationServerDiscoveryUrls(
+        std.testing.allocator,
+        "https://auth.example.com",
+        .{},
+    );
+    defer root.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 2), root.values.len);
 }
 
 test "deployment policy validates TLS browser origins and request hosts" {
