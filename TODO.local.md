@@ -60,7 +60,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   indexes, and validated structured-output snapshots without duplicate finals.
 - [x] Add pending message injection during a run with deterministic ordering,
   cancellation semantics, history persistence, and lifecycle/stream events.
-- [ ] Add complete usage accounting: cached input, cache writes, reasoning,
+- [x] Add complete usage accounting: cached input, cache writes, reasoning,
   audio, provider-native details, request/tool counts, latency, and optional
   price-table cost estimation with a versioned data source.
 - [ ] Complete model settings and profiles. Support `top_p`, `top_k`, penalties,
