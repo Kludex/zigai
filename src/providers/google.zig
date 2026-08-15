@@ -295,6 +295,7 @@ test "Google provider owns resumable file upload inspect and delete" {
     try std.testing.expectError(error.UnsupportedProviderOperation, provider.downloadFile(std.testing.allocator, file));
     try provider.deleteFile(std.testing.allocator, file);
     try std.testing.expectEqual(@as(usize, 4), state.step);
+    try std.testing.expectError(error.TestUnexpectedResult, State.expectHeader(&.{}, "x-goog-api-key", "secret"));
 }
 
 test "Google provider owns identity and model profile overrides" {

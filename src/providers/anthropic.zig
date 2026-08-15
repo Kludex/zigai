@@ -302,6 +302,7 @@ test "Anthropic provider owns the complete beta file lifecycle" {
     try std.testing.expectEqualStrings("hi", downloaded.value.bytes);
     try provider.deleteFile(std.testing.allocator, file);
     try std.testing.expectEqual(@as(usize, 4), state.step);
+    try std.testing.expectError(error.TestUnexpectedResult, State.expectHeader(&.{}, "x-api-key", "secret"));
 
     try std.testing.expectError(error.InvalidProviderFileInput, provider.uploadFile(std.testing.allocator, .{
         .filename = "note.txt",

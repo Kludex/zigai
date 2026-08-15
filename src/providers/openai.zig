@@ -280,6 +280,8 @@ test "OpenAI provider owns the complete file lifecycle" {
     try std.testing.expectEqualStrings("hi", downloaded.value.bytes);
     try provider.deleteFile(std.testing.allocator, file);
     try std.testing.expectEqual(@as(usize, 4), state.step);
+    try std.testing.expectError(error.TestUnexpectedResult, State.expectHeader(&.{}, "authorization", "Bearer secret"));
+    try std.testing.expectError(error.TestUnexpectedResult, State.expectHeaderPrefix(&.{}, "content-type", "multipart/form-data"));
 }
 
 test "OpenAI provider owns identity and model profile overrides" {

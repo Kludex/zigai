@@ -183,6 +183,9 @@ test "URL policy permits public HTTPS and exact allowlisted hosts" {
 
 test "provider-directed URLs require the same effective origin" {
     try validateSameOrigin(UrlPolicy{}, "https://api.example.com/v1", "https://API.EXAMPLE.COM:443/upload/one");
+    try validateSameOrigin(UrlPolicy{ .allow_http = true }, "http://api.example.com/v1", "http://API.EXAMPLE.COM:80/upload/one");
+    try std.testing.expectEqual(@as(?u16, 80), effectivePort(try std.Uri.parse("http://api.example.com/v1")));
+    try std.testing.expectEqual(@as(?u16, null), effectivePort(try std.Uri.parse("ftp://api.example.com/v1")));
     try std.testing.expectError(
         error.UrlOriginNotAllowed,
         validateSameOrigin(UrlPolicy{}, "https://api.example.com/v1", "https://upload.example.com/one"),

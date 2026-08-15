@@ -549,6 +549,7 @@ test "provider rejects invalid policy and absent optional operations" {
     try std.testing.expectError(error.InvalidProviderFileReference, wrong_owner.inspectFile(std.testing.allocator, .{ .id = "", .provider_name = "test" }));
     try std.testing.expectError(error.InvalidProviderFileOwner, wrong_owner.deleteFile(std.testing.allocator, .{ .id = "file", .provider_name = "other" }));
     try std.testing.expectError(error.InvalidProviderFileReference, wrong_owner.deleteFile(std.testing.allocator, .{ .id = "", .provider_name = "test" }));
+    try std.testing.expectError(error.UnexpectedRequest, wrong_owner.deleteFile(std.testing.allocator, owned));
 
     const WrongReference = struct {
         fn file(_: *anyopaque, allocator: std.mem.Allocator, _: model.UploadedFile) !OwnedFile {

@@ -234,7 +234,16 @@ fn encodeMultipart(allocator: std.mem.Allocator, input: provider_types.FileInput
 }
 
 fn encodeMultipartFallible(allocator: std.mem.Allocator, input: provider_types.FileInput, purpose: ?[]const u8) !Multipart {
-    var salt = std.hash.Wyhash.hash(0, input.bytes);
+    return encodeMultipartWithSalt(allocator, input, purpose, std.hash.Wyhash.hash(0, input.bytes));
+}
+
+fn encodeMultipartWithSalt(
+    allocator: std.mem.Allocator,
+    input: provider_types.FileInput,
+    purpose: ?[]const u8,
+    initial_salt: u64,
+) !Multipart {
+    var salt = initial_salt;
     var boundary_buffer: [48]u8 = undefined;
     const boundary = while (true) {
         const candidate = try std.fmt.bufPrint(&boundary_buffer, "zigai-{x}", .{salt});
@@ -460,6 +469,14 @@ test "multipart encoding escapes filenames and avoids payload boundaries" {
     try std.testing.expect(std.mem.indexOf(u8, encoded.body, "name=\"purpose\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, encoded.body, "filename=\"a\\\\\\\"b.txt\"") != null);
     try std.testing.expect(std.mem.endsWith(u8, encoded.body, "--\r\n"));
+
+    var collision_safe = try encodeMultipartWithSalt(std.testing.allocator, .{
+        .filename = "collision.txt",
+        .media_type = "text/plain",
+        .bytes = "contains zigai-0",
+    }, null, 0);
+    defer collision_safe.deinit(std.testing.allocator);
+    try std.testing.expectEqualStrings("multipart/form-data; boundary=zigai-1", collision_safe.content_type);
 }
 
 test "file endpoints percent encode identifiers" {
@@ -529,6 +546,7 @@ test "Google upload capture and resource URI validation fail closed" {
         }
     };
     var marker: u8 = 0;
+    try std.testing.expectError(error.UnexpectedRequest, Stub.send(&marker, std.testing.allocator, undefined));
     var configured = http_provider.Configured{
         .name = "gcp.gen_ai",
         .base_url = "https://api.example.test/v1beta",
@@ -548,6 +566,21 @@ test "Google upload capture and resource URI validation fail closed" {
     try std.testing.expectError(
         error.InvalidProviderFileReference,
         googleFileEndpoint(&configured, std.testing.allocator, "https://api.example.test/v1beta/files/abc?x=1"),
+    );
+}
+
+test "file response decoders reject invalid descriptor shapes" {
+    try std.testing.expectError(
+        error.ProviderResponseDecodeError,
+        parseDescriptor(std.testing.allocator, "[]", "openai", .openai),
+    );
+    try std.testing.expectError(
+        error.ProviderResponseDecodeError,
+        parseDescriptor(std.testing.allocator, "{\"id\":\"file_1\",\"bytes\":\"two\"}", "openai", .openai),
+    );
+    try std.testing.expectError(
+        error.ProviderResponseDecodeError,
+        parseGoogleDescriptor(std.testing.allocator, "{\"file\":[]}", "gcp.gen_ai", true),
     );
 }
 
