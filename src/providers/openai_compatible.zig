@@ -146,6 +146,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
                     response.body,
                     response.metadata,
                     value.error_policy,
+                    &.{self.api_key},
                 );
                 return common.statusError(response.status);
             }
@@ -199,6 +200,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
                     state.error_body.items,
                     response.metadata,
                     value.error_policy,
+                    &.{self.api_key},
                 );
                 return common.statusError(response.status);
             }

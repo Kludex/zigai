@@ -75,7 +75,16 @@ pub const Client = struct {
         }) catch |failure| return common.transportError(failure);
         defer allocator.free(response.body);
         if (response.status < 200 or response.status >= 300) {
-            common.notifyProviderError(allocator, value.error_observer, "google", response.status, response.body, response.metadata, value.error_policy);
+            common.notifyProviderError(
+                allocator,
+                value.error_observer,
+                "google",
+                response.status,
+                response.body,
+                response.metadata,
+                value.error_policy,
+                &.{self.api_key},
+            );
             return common.statusError(response.status);
         }
         return decodeResponse(allocator, response.body) catch |failure| return common.responseDecodeError(failure);
@@ -103,7 +112,16 @@ pub const Client = struct {
             .cancellation = value.cancellation,
         }, state.lineSink()) catch |failure| return common.transportError(failure);
         if (response.status < 200 or response.status >= 300) {
-            common.notifyProviderError(allocator, value.error_observer, "google", response.status, state.error_body.items, response.metadata, value.error_policy);
+            common.notifyProviderError(
+                allocator,
+                value.error_observer,
+                "google",
+                response.status,
+                state.error_body.items,
+                response.metadata,
+                value.error_policy,
+                &.{self.api_key},
+            );
             return common.statusError(response.status);
         }
         return .{

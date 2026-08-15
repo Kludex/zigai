@@ -10,6 +10,8 @@
   never-followed redirect handling, with local endpoint opt-in for the CLI.
 - Agent, provider, rich-content, and MCP endpoint enforcement of the same URL
   policy, including validation before custom transport callbacks.
+- Mandatory suppression of configured API keys from provider-error observer
+  bodies, messages, and codes, with an explicit redaction indicator.
 - Configurable post-decompression HTTP body and streaming-line limits with
   stable oversized-response errors.
 - Shared pre-allocation JSON validation with documented limits for history,

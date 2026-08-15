@@ -53,6 +53,7 @@ pub fn notifyProviderError(
     body: []const u8,
     metadata: http.ResponseMetadata,
     policy: model_types.ProviderErrorPolicy,
+    sensitive_values: []const []const u8,
 ) void {
     const target = observer orelse return;
     const Envelope = struct {
@@ -71,7 +72,7 @@ pub fn notifyProviderError(
         .{ .ignore_unknown_fields = true },
         error.InvalidProviderResponse,
     ) catch {
-        observeRawProviderError(target, provider, status, body, metadata, policy);
+        observeRawProviderError(target, provider, status, body, metadata, policy, sensitive_values);
         return;
     };
     defer parsed.deinit();
@@ -88,13 +89,21 @@ pub fn notifyProviderError(
     const captured_body = capturedBody(body, policy);
     const provider_message = parsed.value.@"error".message orelse "Provider request failed";
     const provider_code = code orelse parsed.value.@"error".type orelse parsed.value.@"error".status;
+    const safe_body = redactSensitiveValue(captured_body, sensitive_values);
+    const safe_message = redactSensitiveValue(bounded(provider_message, policy.max_message_bytes), sensitive_values);
+    const safe_code = if (provider_code) |value|
+        redactSensitiveValue(bounded(value, policy.max_code_bytes), sensitive_values)
+    else
+        null;
     target.observe(.{
         .provider = provider,
         .status = status,
-        .code = if (provider_code) |value| bounded(value, policy.max_code_bytes) else null,
-        .message = bounded(provider_message, policy.max_message_bytes),
-        .body = captured_body,
+        .code = if (safe_code) |value| value.value else null,
+        .message = safe_message.value,
+        .body = safe_body.value,
         .body_truncated = policy.capture_body and captured_body.len < body.len,
+        .sensitive_data_redacted = safe_body.redacted or safe_message.redacted or
+            (if (safe_code) |value| value.redacted else false),
         .request_id = metadata.requestId(),
         .retry_after_seconds = metadata.retry_after_seconds,
         .rate_limit_remaining_requests = metadata.rate_limit_remaining_requests,
@@ -109,22 +118,39 @@ fn observeRawProviderError(
     body: []const u8,
     metadata: http.ResponseMetadata,
     policy: model_types.ProviderErrorPolicy,
+    sensitive_values: []const []const u8,
 ) void {
     const captured_body = capturedBody(body, policy);
+    const safe_body = redactSensitiveValue(captured_body, sensitive_values);
     observer.observe(.{
         .provider = provider,
         .status = status,
         .message = if (policy.capture_body)
-            captured_body
+            safe_body.value
         else
             "Provider request failed",
-        .body = captured_body,
+        .body = safe_body.value,
         .body_truncated = policy.capture_body and captured_body.len < body.len,
+        .sensitive_data_redacted = safe_body.redacted,
         .request_id = metadata.requestId(),
         .retry_after_seconds = metadata.retry_after_seconds,
         .rate_limit_remaining_requests = metadata.rate_limit_remaining_requests,
         .rate_limit_remaining_tokens = metadata.rate_limit_remaining_tokens,
     });
+}
+
+const RedactedValue = struct {
+    value: []const u8,
+    redacted: bool,
+};
+
+fn redactSensitiveValue(value: []const u8, sensitive_values: []const []const u8) RedactedValue {
+    for (sensitive_values) |sensitive| {
+        if (sensitive.len > 0 and std.mem.indexOf(u8, value, sensitive) != null) {
+            return .{ .value = "[REDACTED]", .redacted = true };
+        }
+    }
+    return .{ .value = value, .redacted = false };
 }
 
 fn capturedBody(body: []const u8, policy: model_types.ProviderErrorPolicy) []const u8 {
@@ -268,6 +294,7 @@ test "provider error observer receives parsed and fallback details" {
             .provider_request_id = http.MetadataText.init("req_test"),
         },
         .{},
+        &.{},
     );
     try std.testing.expectEqual(@as(usize, 1), capture.calls);
     try std.testing.expectEqual(@as(u16, 429), capture.status);
@@ -277,7 +304,7 @@ test "provider error observer receives parsed and fallback details" {
     try std.testing.expect(capture.saw_request_id);
     try std.testing.expect(capture.body_hidden);
 
-    notifyProviderError(std.testing.allocator, observer, "test", 500, "not-json", .{}, .{});
+    notifyProviderError(std.testing.allocator, observer, "test", 500, "not-json", .{}, .{}, &.{});
     try std.testing.expectEqual(@as(usize, 2), capture.calls);
 }
 
@@ -309,6 +336,7 @@ test "provider error bodies require opt in and obey exact limits" {
         "{\"error\":{\"code\":\"abcdef\",\"message\":\"message\"}}",
         .{},
         .{ .capture_body = true, .max_body_bytes = 3, .max_message_bytes = 3, .max_code_bytes = 2 },
+        &.{},
     );
     notifyProviderError(
         std.testing.allocator,
@@ -318,9 +346,55 @@ test "provider error bodies require opt in and obey exact limits" {
         "raw",
         .{},
         .{ .capture_body = true, .max_body_bytes = 3 },
+        &.{},
     );
     try std.testing.expect(capture.bounded);
     try std.testing.expect(capture.exact);
+}
+
+test "provider error observers suppress configured credentials" {
+    const Capture = struct {
+        parsed: bool = false,
+        raw: bool = false,
+
+        fn observe(context: *anyopaque, value: model_types.ProviderError) void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const safe = std.mem.eql(u8, value.message, "[REDACTED]") and
+                std.mem.eql(u8, value.body, "[REDACTED]") and
+                (value.status != 401 or std.mem.eql(u8, value.code orelse "", "[REDACTED]")) and
+                value.sensitive_data_redacted;
+            if (value.status == 401) self.parsed = safe else self.raw = safe;
+        }
+    };
+    var capture: Capture = .{};
+    const observer = model_types.ProviderErrorObserver{ .context = &capture, .observeFn = Capture.observe };
+    const secret = "api-key-private";
+    notifyProviderError(
+        std.testing.allocator,
+        observer,
+        "test",
+        401,
+        "{\"error\":{\"code\":\"api-key-private\",\"message\":\"api-key-private\"}}",
+        .{},
+        .{ .capture_body = true },
+        &.{secret},
+    );
+    notifyProviderError(
+        std.testing.allocator,
+        observer,
+        "test",
+        500,
+        "raw api-key-private response",
+        .{},
+        .{ .capture_body = true },
+        &.{ secret, "" },
+    );
+    try std.testing.expect(capture.parsed);
+    try std.testing.expect(capture.raw);
+
+    const visible = redactSensitiveValue("visible", &.{ "", secret });
+    try std.testing.expectEqualStrings("visible", visible.value);
+    try std.testing.expect(!visible.redacted);
 }
 
 test "provider error observer accepts numeric codes and status names" {
@@ -338,8 +412,8 @@ test "provider error observer accepts numeric codes and status names" {
     };
     var capture: Capture = .{};
     const observer = model_types.ProviderErrorObserver{ .context = &capture, .observeFn = Capture.observe };
-    notifyProviderError(std.testing.allocator, observer, "google", 503, "{\"error\":{\"code\":503,\"message\":\"down\"}}", .{}, .{});
-    notifyProviderError(std.testing.allocator, observer, "google", 503, "{\"error\":{\"status\":\"UNAVAILABLE\",\"message\":\"down\"}}", .{}, .{});
+    notifyProviderError(std.testing.allocator, observer, "google", 503, "{\"error\":{\"code\":503,\"message\":\"down\"}}", .{}, .{}, &.{});
+    notifyProviderError(std.testing.allocator, observer, "google", 503, "{\"error\":{\"status\":\"UNAVAILABLE\",\"message\":\"down\"}}", .{}, .{}, &.{});
     try std.testing.expect(capture.numeric);
     try std.testing.expect(capture.status_name);
 }

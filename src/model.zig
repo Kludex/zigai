@@ -473,6 +473,8 @@ pub const ProviderError = struct {
     /// Empty unless `ProviderErrorPolicy.capture_body` is enabled.
     body: []const u8,
     body_truncated: bool = false,
+    /// A configured credential appeared in observer-visible details and was suppressed.
+    sensitive_data_redacted: bool = false,
     /// Borrowed provider correlation ID, when supplied in response headers.
     request_id: ?[]const u8 = null,
     retry_after_seconds: ?u64 = null,
