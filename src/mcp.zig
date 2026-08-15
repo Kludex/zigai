@@ -1731,10 +1731,9 @@ fn validateRequestMeta(object: std.json.ObjectMap, comptime invalid_error: anyty
         invalid_error,
     );
     if (version.len == 0) return invalid_error;
-    _ = try capabilityObject(
-        object.get("io.modelcontextprotocol/clientCapabilities") orelse return invalid_error,
-        invalid_error,
-    );
+    if (object.get("io.modelcontextprotocol/clientCapabilities")) |capabilities| {
+        _ = try capabilityObject(capabilities, invalid_error);
+    }
     if (object.get("io.modelcontextprotocol/clientInfo")) |client_info| {
         try validateImplementation(client_info, invalid_error);
     }
@@ -2770,7 +2769,7 @@ test "nested MCP result content matches every core schema family" {
         .{ methods.list_resource_templates, "{\"resourceTemplates\":[{\"name\":\"source\",\"uriTemplate\":\"file:///{path}\",\"description\":\"Source\",\"mimeType\":\"text/plain\"}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
         .{ methods.read_resource, "{\"contents\":[{\"uri\":\"file:///a\",\"text\":\"hello\"},{\"uri\":\"file:///b\",\"mimeType\":\"image/png\",\"blob\":\"AA==\"}],\"ttlMs\":0,\"cacheScope\":\"private\"}" },
         .{ methods.get_prompt, "{\"description\":\"Prompt\",\"messages\":[{\"role\":\"user\",\"content\":{\"type\":\"text\",\"text\":\"hello\"}},{\"role\":\"assistant\",\"content\":{\"type\":\"image\",\"data\":\"AA==\",\"mimeType\":\"image/png\"}},{\"role\":\"user\",\"content\":{\"type\":\"audio\",\"data\":\"AA==\",\"mimeType\":\"audio/wav\"}},{\"role\":\"assistant\",\"content\":{\"type\":\"resource_link\",\"name\":\"source\",\"uri\":\"file:///a\"}},{\"role\":\"user\",\"content\":{\"type\":\"resource\",\"resource\":{\"uri\":\"file:///a\",\"text\":\"source\"}}}]}" },
-        .{ methods.call_tool, "{\"content\":[{\"type\":\"text\",\"text\":\"done\",\"annotations\":{\"priority\":1}}],\"isError\":false,\"structuredContent\":{\"ok\":true}}" },
+        .{ methods.call_tool, "{\"content\":[{\"type\":\"text\",\"text\":\"done\",\"annotations\":{\"priority\":1},\"_meta\":{\"com.example/source\":true}}],\"isError\":false,\"structuredContent\":{\"ok\":true}}" },
         .{ methods.complete, "{\"completion\":{\"values\":[\"zig\"],\"total\":1.5,\"hasMore\":true}}" },
     };
     for (valid) |case| try testValidateMethodResult(case[0], case[1]);
@@ -2821,6 +2820,8 @@ test "nested MCP result content rejects malformed items" {
         .{ methods.call_tool, "{\"content\":[{\"type\":\"text\",\"text\":\"x\",\"annotations\":{\"audience\":[\"system\"]}}]}" },
         .{ methods.call_tool, "{\"content\":[{\"type\":\"text\",\"text\":\"x\",\"annotations\":{\"priority\":2}}]}" },
         .{ methods.call_tool, "{\"content\":[{\"type\":\"text\",\"text\":\"x\",\"annotations\":{\"priority\":true}}]}" },
+        .{ methods.call_tool, "{\"content\":[{\"type\":\"text\",\"text\":\"x\",\"_meta\":[]}]}" },
+        .{ methods.call_tool, "{\"content\":[{\"type\":\"text\",\"text\":\"x\",\"_meta\":{\"bad key\":true}}]}" },
         .{ methods.complete, "{\"completion\":{\"values\":[],\"total\":true}}" },
         .{ methods.complete, "{\"completion\":{\"values\":[],\"hasMore\":1}}" },
     };
@@ -2872,6 +2873,7 @@ test "MRTR rejects malformed request and callback response boundaries" {
         "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"object\"}}}",
         "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"x\":[]}}}}",
         "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"future\"}}}}}",
+        "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{\"x\":{\"type\":\"array\",\"items\":{\"enum\":[\"a\"]}}}}}}",
         "{\"method\":\"elicitation/create\",\"params\":{\"message\":\"x\",\"requestedSchema\":{\"type\":\"object\",\"properties\":{},\"required\":{}}}}",
         "{\"method\":\"sampling/createMessage\",\"params\":{}}",
         "{\"method\":\"sampling/createMessage\",\"params\":{\"messages\":{},\"maxTokens\":1}}",
@@ -3016,6 +3018,26 @@ test "HTTP response statuses match MCP result and reserved error envelopes" {
         error.InvalidMcpResponse,
         validateHttpResponseStatus(std.testing.allocator, 200, source),
     );
+}
+
+test "compatibility classifiers preserve allocation failures" {
+    const Check = struct {
+        fn stdio(allocator: std.mem.Allocator) !void {
+            _ = try classifyStdioCompatibility(
+                allocator,
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"supportedVersions\":[\"2026-07-28\"],\"capabilities\":{},\"ttlMs\":0,\"cacheScope\":\"public\"}}",
+            );
+        }
+        fn http(allocator: std.mem.Allocator) !void {
+            _ = try classifyHttpCompatibility(
+                allocator,
+                200,
+                "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}",
+            );
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.stdio, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.http, .{});
 }
 
 test "capability validation preserves open fields and checks known shapes" {
@@ -4070,6 +4092,10 @@ test "generic client helpers cover every core request shape" {
         error.InvalidMcpMessage,
         client.notify(std.testing.allocator, "bad", "{"),
     );
+    try std.testing.expectError(
+        error.InvalidMcpMessage,
+        client.notify(std.testing.allocator, "bad", "[]"),
+    );
     try Stub.event(&stub, "{}");
 
     var no_handler = Client{ .transport = .{ .context = &stub, .sendFn = struct {
@@ -4188,6 +4214,36 @@ test "tool pagination rejects cursor cycles and page exhaustion" {
     try std.testing.expectEqual(@as(usize, 0), disabled_stub.calls);
 }
 
+test "tool pagination releases every partial allocation" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const Stub = struct {
+                calls: usize = 0,
+                fn send(context: *anyopaque, inner: std.mem.Allocator, _: WireRequest) ![]const u8 {
+                    const self: *@This() = @ptrCast(@alignCast(context));
+                    self.calls += 1;
+                    return std.fmt.allocPrint(
+                        inner,
+                        "{{\"jsonrpc\":\"2.0\",\"id\":{d},\"result\":{{\"tools\":[],{s}" ++
+                            "\"ttlMs\":0,\"cacheScope\":\"private\"}}}}",
+                        .{ self.calls, if (self.calls == 1) "\"nextCursor\":\"two\"," else "" },
+                    );
+                }
+            };
+            var stub: Stub = .{};
+            var client = Client{ .transport = .{ .context = &stub, .sendFn = Stub.send } };
+            const tools = try client.toolset().prepare(allocator, .{
+                .messages = &.{},
+                .usage = .{},
+                .model_requests = 0,
+                .dependencies = null,
+            });
+            allocator.free(tools);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
 test "server returns specified errors and validates tool parameter headers" {
     const Handler = struct {
         fail: bool = false,
@@ -4216,6 +4272,29 @@ test "server returns specified errors and validates tool parameter headers" {
     const missing_meta = try server.handle(std.testing.allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"x\",\"params\":{}}", null);
     defer missing_meta.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 400), missing_meta.status);
+    const invalid_request_params = try server.handle(
+        std.testing.allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"x\",\"params\":[]}",
+        null,
+    );
+    defer invalid_request_params.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 400), invalid_request_params.status);
+    const invalid_meta = try server.handle(
+        std.testing.allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"x\",\"params\":{\"_meta\":{" ++
+            "\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\",\"bad key\":true}}}",
+        null,
+    );
+    defer invalid_meta.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, invalid_meta.body.?, "Invalid request metadata") != null);
+    const missing_capabilities = try server.handle(
+        std.testing.allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"x\",\"params\":{\"_meta\":{" ++
+            "\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\"}}}",
+        null,
+    );
+    defer missing_capabilities.deinit(std.testing.allocator);
+    try std.testing.expect(std.mem.indexOf(u8, missing_capabilities.body.?, "Missing client capabilities") != null);
     const legacy_initialize = try server.handle(
         std.testing.allocator,
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}",
@@ -4408,6 +4487,39 @@ test "stdio transport filters interleaved modern and legacy messages" {
     });
     defer std.testing.allocator.free(response);
     try std.testing.expectEqual(@as(usize, 1), events.count);
+}
+
+test "stdio subscription filters invalid and pre-acknowledgement events" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const script =
+        \\read -r line
+        \\printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/progress","params":{}}'
+        \\printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/tools/list_changed","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":1}}}'
+        \\printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/subscriptions/acknowledged","params":{"notifications":{"toolsListChanged":true},"_meta":{"io.modelcontextprotocol/subscriptionId":1}}}'
+        \\printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/prompts/list_changed","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":1}}}'
+        \\printf '%s\n' '{"jsonrpc":"2.0","method":"notifications/tools/list_changed","params":{"_meta":{"io.modelcontextprotocol/subscriptionId":1}}}'
+        \\printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","_meta":{"io.modelcontextprotocol/subscriptionId":1}}}'
+    ;
+    const Events = struct {
+        count: usize = 0,
+        fn emit(context: *anyopaque, _: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.count += 1;
+        }
+    };
+    var events: Events = .{};
+    var stdio = try StdioTransport.init(std.testing.io, &.{ "/bin/sh", "-c", script });
+    defer stdio.deinit();
+    const response = try stdio.transport().send(std.testing.allocator, .{
+        .message = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"subscriptions/listen\",\"params\":{" ++
+            "\"notifications\":{\"toolsListChanged\":true},\"_meta\":{" ++
+            "\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\"," ++
+            "\"io.modelcontextprotocol/clientCapabilities\":{}}}}",
+        .method = methods.listen,
+        .events = .{ .context = &events, .eventFn = Events.emit },
+    });
+    defer std.testing.allocator.free(response);
+    try std.testing.expectEqual(@as(usize, 2), events.count);
 }
 
 test "stdio transport releases malformed and partial messages" {

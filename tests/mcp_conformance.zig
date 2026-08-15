@@ -154,4 +154,12 @@ test "MCP modern legacy and dual-era probes follow transport rules" {
         zigai.mcp.CompatibilityEra.indeterminate,
         try zigai.mcp.classifyHttpCompatibility(std.testing.allocator, 200, legacy_error),
     );
+    try std.testing.expectEqual(
+        zigai.mcp.CompatibilityEra.legacy,
+        try zigai.mcp.classifyHttpCompatibility(
+            std.testing.allocator,
+            400,
+            "{\"jsonrpc\":\"2.0\",\"id\":1}",
+        ),
+    );
 }
