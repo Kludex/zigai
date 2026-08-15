@@ -126,7 +126,29 @@ pub const Client = struct {
         value: model_types.ModelRequest,
     ) !model_types.ModelResponse {
         const self: *Client = @ptrCast(@alignCast(context));
-        const body = try encodeRequest(allocator, self.model_name, value, self.managed_tools);
+        return self.sendBuffered(allocator, value, false);
+    }
+
+    /// Starts a stored conversation and returns its first response. The
+    /// returned `conversation_id` can be passed to `Session.init`.
+    pub fn start(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        value: model_types.ModelRequest,
+    ) !model_types.ModelResponse {
+        return self.sendBuffered(allocator, value, true);
+    }
+
+    fn sendBuffered(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        value: model_types.ModelRequest,
+        store: bool,
+    ) !model_types.ModelResponse {
+        const body = if (store)
+            try encodeStoredRequest(allocator, self.model_name, value, self.managed_tools)
+        else
+            try encodeRequest(allocator, self.model_name, value, self.managed_tools);
         defer allocator.free(body);
         var headers: std.ArrayList(transport.Header) = .empty;
         defer headers.deinit(allocator);
@@ -210,7 +232,17 @@ pub fn encodeRequest(
     request: model_types.ModelRequest,
     managed_tools: []const ManagedTool,
 ) ![]u8 {
-    return encodeRequestMode(allocator, model_name, request, managed_tools, false);
+    return encodeRequestMode(allocator, model_name, request, managed_tools, false, false);
+}
+
+/// Encodes the first request of an explicitly stored conversation.
+pub fn encodeStoredRequest(
+    allocator: std.mem.Allocator,
+    model_name: []const u8,
+    request: model_types.ModelRequest,
+    managed_tools: []const ManagedTool,
+) ![]u8 {
+    return encodeRequestMode(allocator, model_name, request, managed_tools, true, false);
 }
 
 /// Encodes one stateless streaming Conversations request.
@@ -220,7 +252,7 @@ pub fn encodeStreamingRequest(
     request: model_types.ModelRequest,
     managed_tools: []const ManagedTool,
 ) ![]u8 {
-    return encodeRequestMode(allocator, model_name, request, managed_tools, true);
+    return encodeRequestMode(allocator, model_name, request, managed_tools, false, true);
 }
 
 fn encodeRequestMode(
@@ -228,6 +260,7 @@ fn encodeRequestMode(
     model_name: []const u8,
     request: model_types.ModelRequest,
     managed_tools: []const ManagedTool,
+    store: bool,
     streaming: bool,
 ) ![]u8 {
     request.settings.validate() catch return error.InvalidRequestEncoding;
@@ -252,7 +285,7 @@ fn encodeRequestMode(
     try writeTools(allocator, &json, request, managed_tools);
     try writeCompletionArgs(allocator, &json, request);
     try json.objectField("store");
-    try json.write(false);
+    try json.write(store);
     try json.objectField("stream");
     try json.write(streaming);
     try common.writeExtraBodyFields(
@@ -261,6 +294,40 @@ fn encodeRequestMode(
         request.settings.extra_body,
         .mistral,
         &.{ "model", "inputs", "instructions", "tools", "completion_args", "store", "stream" },
+    );
+    try json.endObject();
+    return output.toOwnedSlice();
+}
+
+/// Encodes entries appended to a stored conversation. Conversation-level
+/// instructions and tool declarations belong to the initial request.
+pub fn encodeAppendRequest(allocator: std.mem.Allocator, request: model_types.ModelRequest) ![]u8 {
+    request.settings.validate() catch return error.InvalidRequestEncoding;
+    try validateSettings(request.settings);
+    if (request.instructions.len > 0 or request.tools.len > 0 or request.builtin_tools.len > 0)
+        return error.InvalidRequestEncoding;
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    var json: std.json.Stringify = .{ .writer = &output.writer };
+    try json.beginObject();
+    try json.objectField("inputs");
+    try json.beginArray();
+    for (request.messages) |message| switch (message) {
+        .request => |value| try writeRequestMessage(allocator, &json, value),
+        .response => |value| try writeResponseMessage(allocator, &json, value),
+    };
+    try json.endArray();
+    try writeCompletionArgs(allocator, &json, request);
+    try json.objectField("store");
+    try json.write(true);
+    try json.objectField("stream");
+    try json.write(false);
+    try common.writeExtraBodyFields(
+        allocator,
+        &json,
+        request.settings.extra_body,
+        .mistral,
+        &.{ "inputs", "completion_args", "store", "stream" },
     );
     try json.endObject();
     return output.toOwnedSlice();

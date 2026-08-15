@@ -6,6 +6,7 @@
 
 pub const chat = @import("chat.zig");
 pub const conversations = @import("conversations.zig");
+pub const session = @import("session.zig");
 
 pub const api_base = chat.api_base;
 pub const api_key_env = chat.api_key_env;
@@ -28,8 +29,13 @@ pub const ConversationsError = conversations.Error;
 pub const ManagedTool = conversations.ManagedTool;
 pub const ToolConfiguration = conversations.ToolConfiguration;
 pub const ConnectorAuthorization = conversations.ConnectorAuthorization;
+pub const Session = session.Session;
+pub const ConversationHistory = session.History;
+pub const ConversationEntry = session.Entry;
+pub const ConversationEntryKind = session.EntryKind;
 
 test {
     _ = chat;
     _ = conversations;
+    _ = session;
 }
