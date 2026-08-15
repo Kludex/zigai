@@ -2,6 +2,7 @@
 
 pub const model = @import("model.zig");
 pub const messages = @import("messages.zig");
+pub const security = @import("security.zig");
 pub const agent = @import("agent.zig");
 pub const testing = @import("testing.zig");
 pub const transport = @import("transport.zig");

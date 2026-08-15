@@ -4,6 +4,8 @@
 
 - Separate provider-neutral conversation types into the public `messages`
   module while preserving the existing root and `model` aliases.
+- Allocation-free outbound URL policy with HTTPS-by-default validation,
+  local-network protection, host allowlists, and conventional header redaction.
 - Configurable post-decompression HTTP body and streaming-line limits with
   stable oversized-response errors.
 - Shared pre-allocation JSON validation with documented limits for history,
