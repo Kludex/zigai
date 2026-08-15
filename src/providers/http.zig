@@ -325,11 +325,21 @@ test "configured HTTP provider forwards non-inference operations" {
             return .{ .arena = arena, .items = items };
         }
 
+        fn checkModelsAllocation(allocator: std.mem.Allocator) !void {
+            var result = try models(undefined, allocator);
+            result.deinit();
+        }
+
         fn file(_: *anyopaque, allocator: std.mem.Allocator, id: []const u8) !provider_types.OwnedFile {
             var arena = std.heap.ArenaAllocator.init(allocator);
             errdefer arena.deinit();
             const owned_id = try arena.allocator().dupe(u8, id);
             return .{ .arena = arena, .value = .{ .id = owned_id } };
+        }
+
+        fn checkFileAllocation(allocator: std.mem.Allocator) !void {
+            var result = try file(undefined, allocator, "file");
+            result.deinit();
         }
 
         fn upload(context: *anyopaque, allocator: std.mem.Allocator, input: provider_types.FileInput) !provider_types.OwnedFile {
@@ -376,6 +386,8 @@ test "configured HTTP provider forwards non-inference operations" {
     configured.operations = .{ .context = &state };
     const unsupported = configured.provider();
     try std.testing.expectError(error.UnsupportedProviderOperation, unsupported.listModels(std.testing.allocator));
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, State.checkModelsAllocation, .{});
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, State.checkFileAllocation, .{});
 }
 
 test "configured HTTP provider profiles redact credentials and reject conflicts" {
