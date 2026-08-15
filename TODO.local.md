@@ -139,7 +139,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   endpoint, profile, and pre-I/O validation contract.
 - [x] Add typed Snowflake Cortex Claude reasoning controls, including the
   `reasoning` object and required temperature invariant.
-- [ ] Add a native Z.AI thinking boundary that decodes and streams
+- [x] Add a native Z.AI thinking boundary that decodes and streams
   `reasoning_content`, preserves it across tool turns, and types `thinking` and
   `clear_thinking` without leaking those fields into generic compatibility.
 - [x] Add provider file lifecycle APIs: upload, inspect, reuse, download where

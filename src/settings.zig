@@ -63,6 +63,7 @@ pub const ExtraBodyKind = enum {
     cohere,
     openrouter,
     snowflake,
+    zai,
 };
 
 /// A bounded JSON object for fields unavailable in the portable settings API.
@@ -79,6 +80,7 @@ pub const ProviderExtraBody = union(ExtraBodyKind) {
     cohere: []const u8,
     openrouter: []const u8,
     snowflake: []const u8,
+    zai: []const u8,
 
     pub fn kind(self: ProviderExtraBody) ExtraBodyKind {
         return std.meta.activeTag(self);

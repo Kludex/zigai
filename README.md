@@ -276,8 +276,20 @@ before transport. Raw Snowflake extensions use the isolated `.snowflake` tag
 and cannot replace the typed `reasoning` object.
 
 Z.AI uses bearer authentication from `ZAI_API_KEY` and defaults the compiled
-example to `glm-5.1`. GLM 5.2 reasoning-effort settings and JSON-object output
-are profiled explicitly; unknown model IDs remain fail-closed.
+example to `glm-5.1`. Its client types deep-thinking controls and preserves
+`reasoning_content` across buffered, streamed, and tool-turn messages:
+
+```zig
+var client = zigai.providers.zai.Client{
+    .model_name = "glm-5.1",
+    .provider = provider.provider(),
+    .thinking = .{},
+    .clear_thinking = false,
+};
+```
+
+Unknown model IDs remain fail-closed. Use `CompatibilityClient` only when the
+portable Chat Completions surface is sufficient.
 
 For another Chat Completions-compatible server, start from
 `examples/custom_provider.zig`. It keeps the runtime endpoint, authentication

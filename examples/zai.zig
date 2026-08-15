@@ -10,6 +10,8 @@ pub fn main(init: std.process.Init) !void {
     var client = zigai.providers.zai.Client{
         .model_name = model_name,
         .provider = provider.provider(),
+        .thinking = .{},
+        .clear_thinking = false,
     };
     var result = try (zigai.Agent{
         .model = client.model(),

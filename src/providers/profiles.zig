@@ -264,6 +264,12 @@ pub fn zAI(model_name: []const u8) ?model.ModelProfile {
     if (!startsWith(model_name, "glm-")) return null;
     var profile = familyProfile(.zai, model_name);
     profile.supports_json_object_output = true;
+    if (startsWith(model_name, "glm-5") or startsWith(model_name, "glm-4.7") or
+        startsWith(model_name, "glm-4.6") or startsWith(model_name, "glm-4.5"))
+    {
+        profile.supports_thinking = true;
+        profile.content_types = model.ModelProfile.ContentTypeSet.initMany(&.{.thinking});
+    }
     if (startsWith(model_name, "glm-5.2")) profile.reasoning_efforts = reasoningEfforts();
     return profile;
 }
@@ -579,6 +585,11 @@ test "named compatible providers resolve known families and reject unknown ones"
     try std.testing.expect(snowflake("private-model") == null);
 
     try std.testing.expect(zAI("glm-5.1").?.supports_json_object_output);
+    try std.testing.expect(zAI("glm-5.1").?.supports_thinking);
+    try std.testing.expect(zAI("glm-4.7").?.supportsContentType(.thinking));
+    try std.testing.expect(zAI("glm-4.6v").?.supports_thinking);
+    try std.testing.expect(zAI("glm-4.5-air").?.supports_thinking);
+    try std.testing.expect(!zAI("glm-4-32b").?.supports_thinking);
     try std.testing.expect(!zAI("glm-5.1").?.supportsReasoningEffort(.high));
     try std.testing.expect(zAI("glm-5.2").?.supportsReasoningEffort(.low));
     try std.testing.expect(zAI("private-model") == null);

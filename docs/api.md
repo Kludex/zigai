@@ -408,11 +408,13 @@ Chat Completions codec after this typed preparation. Snowflake-only raw fields
 use `ProviderExtraBody.snowflake`; `reasoning` is reserved to the typed API.
 
 Z.AI's named provider uses the general `/api/paas/v4` Chat Completions root and
-native `glm-*` model IDs. The compatibility client supports the portable GLM
-surface, including JSON-object output and GLM 5.2 reasoning effort. Z.AI's
-`thinking` request object and `reasoning_content` replay require the separate
-native adapter tracked on the production roadmap; the generic codec does not
-claim to preserve them.
+native `glm-*` model IDs. `zai.Client` adds typed `thinking` and
+`clear_thinking` controls. It decodes buffered and streamed
+`reasoning_content` into provider-owned thinking parts and replays that content
+unchanged on later tool turns. Unsupported GLM families and lossy thinking
+parts fail before transport. `zai.CompatibilityClient` exposes only the
+portable Chat Completions surface; Z.AI fields do not enter the generic public
+codec or extension tag.
 
 The compiled custom-provider example demonstrates the runtime extension path.
 It validates a public HTTPS API root, configures bearer authentication, assigns

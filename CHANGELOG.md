@@ -15,6 +15,9 @@
 - Add typed Snowflake Cortex Claude reasoning controls for buffered and
   streaming requests, with exclusive effort/token modes and the required
   temperature invariant enforced before I/O.
+- Add native Z.AI thinking controls and preserve `reasoning_content` through
+  buffered, streaming, and tool-turn history without widening the generic
+  OpenAI-compatible surface.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

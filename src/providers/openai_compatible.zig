@@ -43,6 +43,8 @@ pub const ClientDefaults = struct {
     include_stream_usage: bool = true,
     extra_body_kind: model_types.ExtraBodyKind = .openai_compatible,
     provider_details_field: ?[]const u8 = null,
+    /// Non-standard assistant/delta field containing replayable reasoning.
+    thinking_field: ?[]const u8 = null,
 };
 
 /// Defines provider state for an OpenAI-compatible API while retaining
@@ -175,7 +177,13 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
             value: model_types.ModelRequest,
         ) !model_types.ModelResponse {
             const self: *Self = @ptrCast(@alignCast(context));
-            const body = try encodeRequestFor(allocator, self.model_name, value, defaults.extra_body_kind);
+            const body = try encodeRequestFor(
+                allocator,
+                self.model_name,
+                value,
+                defaults.extra_body_kind,
+                defaults.thinking_field,
+            );
             defer allocator.free(body);
             var headers: std.ArrayList(http.Header) = .empty;
             defer headers.deinit(allocator);
@@ -205,7 +213,13 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
                 );
                 return common.statusError(response.status);
             }
-            return decodeResponseFor(allocator, response.body, defaults.provider_details_field) catch |failure| return common.responseDecodeError(failure);
+            return decodeResponseConfigured(
+                allocator,
+                response.body,
+                defaults.provider_details_field,
+                defaults.thinking_field,
+                defaults.provider_name,
+            ) catch |failure| return common.responseDecodeError(failure);
         }
 
         fn stream(
@@ -215,7 +229,14 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
             sink: model_types.ModelStreamSink,
         ) !model_types.ModelResponse {
             const self: *Self = @ptrCast(@alignCast(context));
-            const body = try encodeStreamingRequestFor(allocator, self.model_name, value, self.include_stream_usage, defaults.extra_body_kind);
+            const body = try encodeStreamingRequestFor(
+                allocator,
+                self.model_name,
+                value,
+                self.include_stream_usage,
+                defaults.extra_body_kind,
+                defaults.thinking_field,
+            );
             defer allocator.free(body);
             var headers: std.ArrayList(http.Header) = .empty;
             defer headers.deinit(allocator);
@@ -228,6 +249,8 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
                 .allocator = allocator,
                 .sink = sink,
                 .provider_details_field = defaults.provider_details_field,
+                .thinking_field = defaults.thinking_field,
+                .provider_name = defaults.provider_name,
             };
             defer state.deinit();
             const response = self.provider.streamLines(allocator, .{
@@ -251,10 +274,11 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
                 return common.statusError(response.status);
             }
             try state.finalizeCalls();
+            const thinking_index = state.thinking_index;
+            const text_index = state.text_index;
+            try state.finishThinking();
             try state.finishText();
-            if (state.text.items.len > 0) {
-                try state.parts.insert(allocator, 0, .{ .text = try state.text.toOwnedSlice(allocator) });
-            }
+            try state.insertAccumulatedParts(thinking_index, text_index);
             return .{
                 .parts = try state.parts.toOwnedSlice(allocator), // kcov-ignore
                 .usage = state.usage,
@@ -268,7 +292,7 @@ pub fn ClientWithDefaults(comptime defaults: ClientDefaults) type {
 pub const Client = ClientWithDefaults(.{});
 
 pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {
-    return encodeRequestFor(allocator, model_name, request, .openai_compatible);
+    return encodeRequestFor(allocator, model_name, request, .openai_compatible, null);
 }
 
 fn encodeRequestFor(
@@ -276,6 +300,7 @@ fn encodeRequestFor(
     model_name: []const u8,
     request: model_types.ModelRequest,
     extra_body_kind: model_types.ExtraBodyKind,
+    thinking_field: ?[]const u8,
 ) ![]u8 {
     request.settings.validate() catch return error.InvalidRequestEncoding;
     try common.validateToolChoice(request.tools, request.builtin_tools.len, request.settings.tool_choice);
@@ -324,7 +349,7 @@ fn encodeRequestFor(
             .capability_load_return => |result| try writeToolResult(&json, common.capabilityLoadToolResult(result)),
             .tool_search_return, .tool_availability_delta => return error.InvalidRequestEncoding,
         },
-        .response => |response| try writeResponseMessage(allocator, &json, response),
+        .response => |response| try writeResponseMessage(allocator, &json, response, thinking_field),
     };
     try json.endArray();
     if (request.tools.len > 0) {
@@ -472,7 +497,7 @@ fn writeToolChoice(json: *std.json.Stringify, choice: model_types.ToolChoice) !v
 }
 
 pub fn encodeStreamingRequest(allocator: std.mem.Allocator, model_name: []const u8, request: model_types.ModelRequest, include_usage: bool) ![]u8 {
-    return encodeStreamingRequestFor(allocator, model_name, request, include_usage, .openai_compatible);
+    return encodeStreamingRequestFor(allocator, model_name, request, include_usage, .openai_compatible, null);
 }
 
 fn encodeStreamingRequestFor(
@@ -481,8 +506,9 @@ fn encodeStreamingRequestFor(
     request: model_types.ModelRequest,
     include_usage: bool,
     extra_body_kind: model_types.ExtraBodyKind,
+    thinking_field: ?[]const u8,
 ) ![]u8 {
-    const buffered = try encodeRequestFor(allocator, model_name, request, extra_body_kind);
+    const buffered = try encodeRequestFor(allocator, model_name, request, extra_body_kind, thinking_field);
     defer allocator.free(buffered);
     if (buffered.len == 0 or buffered[buffered.len - 1] != '}') return error.InvalidRequestEncoding;
     if (include_usage) return std.fmt.allocPrint(
@@ -493,10 +519,20 @@ fn encodeStreamingRequestFor(
     return std.fmt.allocPrint(allocator, "{s},\"stream\":true}}", .{buffered[0 .. buffered.len - 1]});
 }
 
-fn writeResponseMessage(allocator: std.mem.Allocator, json: *std.json.Stringify, message: model_types.ResponseMessage) !void {
+fn writeResponseMessage(
+    allocator: std.mem.Allocator,
+    json: *std.json.Stringify,
+    message: model_types.ResponseMessage,
+    thinking_field: ?[]const u8,
+) !void {
     for (message.parts) |part| switch (part) {
         .text => {},
         .text_part => |text| try ensureProviderPartReplayable(text.provider),
+        .thinking => |thinking| {
+            if (thinking_field == null or thinking.signature != null or thinking.metadata.len != 0)
+                return error.InvalidRequestEncoding;
+            try ensureProviderPartReplayable(thinking.provider);
+        },
         .tool_call => |call| {
             try ensureProviderPartReplayable(call.provider);
             if (call.thought_signature != null) return error.InvalidRequestEncoding;
@@ -515,6 +551,14 @@ fn writeResponseMessage(allocator: std.mem.Allocator, json: *std.json.Stringify,
     try json.write("assistant");
     try json.objectField("content");
     if (text.len > 0) try json.write(text) else try json.write(null);
+    if (thinking_field) |field| {
+        const thinking = try collectThinking(allocator, message.parts);
+        defer allocator.free(thinking);
+        if (thinking.len > 0) {
+            try json.objectField(field);
+            try json.write(thinking);
+        }
+    }
     var has_calls = false;
     for (message.parts) |part| if (part == .tool_call or part == .capability_load_call) {
         has_calls = true;
@@ -595,6 +639,15 @@ fn collectText(allocator: std.mem.Allocator, parts: []const model_types.Part) ![
     return text.toOwnedSlice(allocator);
 }
 
+fn collectThinking(allocator: std.mem.Allocator, parts: []const model_types.Part) ![]u8 {
+    var content: std.ArrayList(u8) = .empty;
+    for (parts) |part| switch (part) {
+        .thinking => |value| try content.appendSlice(allocator, value.content),
+        else => {},
+    };
+    return content.toOwnedSlice(allocator);
+}
+
 fn ensureProviderPartReplayable(provider: model_types.ProviderPart) !void {
     if (provider.requiresReplay()) return error.InvalidRequestEncoding;
 }
@@ -607,6 +660,16 @@ fn decodeResponseFor(
     allocator: std.mem.Allocator,
     body: []const u8,
     provider_details_field: ?[]const u8,
+) !model_types.ModelResponse {
+    return decodeResponseConfigured(allocator, body, provider_details_field, null, "openai-compatible");
+}
+
+fn decodeResponseConfigured(
+    allocator: std.mem.Allocator,
+    body: []const u8,
+    provider_details_field: ?[]const u8,
+    thinking_field: ?[]const u8,
+    provider_name: []const u8,
 ) !model_types.ModelResponse {
     const root = try json_limits.parseLeaky(
         std.json.Value,
@@ -632,6 +695,14 @@ fn decodeResponseFor(
     else
         null;
     var parts: std.ArrayList(model_types.Part) = .empty;
+    if (thinking_field) |field| if (message.get(field)) |thinking| switch (thinking) {
+        .string => |content| if (content.len > 0) try parts.append(allocator, .{ .thinking = .{
+            .content = content,
+            .provider = .{ .provider_name = provider_name },
+        } }),
+        .null => {},
+        else => return error.InvalidProviderResponse,
+    };
     if (message.get("content")) |content| switch (content) {
         .string => |text| if (text.len > 0) try parts.append(allocator, .{ .text = text }),
         .null => {},
@@ -778,6 +849,7 @@ const StreamState = struct {
     allocator: std.mem.Allocator,
     sink: model_types.ModelStreamSink,
     status: u16 = 0,
+    thinking: std.ArrayList(u8) = .empty,
     text: std.ArrayList(u8) = .empty,
     parts: std.ArrayList(model_types.Part) = .empty,
     pending: std.ArrayList(PendingCall) = .empty,
@@ -786,10 +858,14 @@ const StreamState = struct {
     finish_reason: ?model_types.FinishReason = null,
     provider_details_field: ?[]const u8 = null,
     provider_details: ?model_types.ProviderDetails = null,
+    thinking_field: ?[]const u8 = null,
+    provider_name: []const u8 = "openai-compatible",
+    thinking_index: ?usize = null,
     text_index: ?usize = null,
     next_part_index: usize = 0,
 
     fn deinit(self: *StreamState) void {
+        self.thinking.deinit(self.allocator);
         self.text.deinit(self.allocator);
         self.parts.deinit(self.allocator);
         for (self.pending.items) |*call| call.deinit(self.allocator);
@@ -844,6 +920,18 @@ const StreamState = struct {
             else => return error.InvalidProviderResponse,
         };
         const delta = try common.requiredObject(.{ .object = choice }, "delta");
+        if (self.thinking_field) |field| if (delta.get(field)) |thinking| switch (thinking) {
+            .string => |content| if (content.len > 0) {
+                const index = try self.ensureThinkingPart();
+                try self.thinking.appendSlice(self.allocator, content);
+                try self.sink.emit(.{ .part_delta = .{
+                    .index = index,
+                    .delta = .{ .thinking = .{ .content_delta = content } },
+                } });
+            },
+            .null => {},
+            else => return error.InvalidProviderResponse,
+        };
         if (delta.get("content")) |content| switch (content) {
             .string => |text| if (text.len > 0) {
                 const index = try self.ensureTextPart();
@@ -955,12 +1043,93 @@ const StreamState = struct {
         return index;
     }
 
+    fn ensureThinkingPart(self: *StreamState) !usize {
+        if (self.thinking_index) |index| return index;
+        const index = self.next_part_index;
+        self.next_part_index += 1;
+        self.thinking_index = index;
+        try self.sink.emit(.{ .part_start = .{ .index = index, .part = .{ .thinking = .{
+            .content = "",
+            .provider = .{ .provider_name = self.provider_name },
+        } } } });
+        return index;
+    }
+
+    fn finishThinking(self: *StreamState) !void {
+        const index = self.thinking_index orelse return;
+        try self.sink.emit(.{ .part_end = .{ .index = index, .part = .{ .thinking = .{
+            .content = self.thinking.items,
+            .provider = .{ .provider_name = self.provider_name },
+        } } } });
+        self.thinking_index = null;
+    }
+
     fn finishText(self: *StreamState) !void {
         const index = self.text_index orelse return;
         try self.sink.emit(.{ .part_end = .{ .index = index, .part = .{ .text = self.text.items } } });
         self.text_index = null;
     }
+
+    fn insertAccumulatedParts(
+        self: *StreamState,
+        thinking_index: ?usize,
+        text_index: ?usize,
+    ) !void {
+        const part_count = @as(usize, @intFromBool(self.thinking.items.len > 0)) +
+            @as(usize, @intFromBool(self.text.items.len > 0));
+        try self.parts.ensureUnusedCapacity(self.allocator, part_count);
+        var thinking_content: ?[]u8 = null;
+        errdefer if (thinking_content) |content| self.allocator.free(content);
+        var text_content: ?[]u8 = null;
+        if (self.thinking.items.len > 0)
+            thinking_content = try self.thinking.toOwnedSlice(self.allocator);
+        if (self.text.items.len > 0)
+            text_content = try self.text.toOwnedSlice(self.allocator);
+        const thinking_part = if (thinking_content) |content| model_types.Part{ .thinking = .{
+            .content = content,
+            .provider = .{ .provider_name = self.provider_name },
+        } } else null;
+        const text_part = if (text_content) |content| model_types.Part{ .text = content } else null;
+        if (thinking_index != null and text_index != null and text_index.? < thinking_index.?) {
+            if (text_part) |part| self.parts.insertAssumeCapacity(text_index.?, part);
+            if (thinking_part) |part| self.parts.insertAssumeCapacity(thinking_index.?, part);
+        } else {
+            if (thinking_part) |part| self.parts.insertAssumeCapacity(thinking_index.?, part);
+            if (text_part) |part| self.parts.insertAssumeCapacity(text_index.?, part);
+        }
+    }
 };
+
+fn exerciseAccumulatedPartAllocation(allocator: std.mem.Allocator) !void {
+    const Sink = struct {
+        fn emit(_: *anyopaque, _: model_types.ModelStreamEvent) !void {}
+    };
+    var marker: u8 = 0;
+    var state = StreamState{
+        .allocator = allocator,
+        .sink = .{ .context = &marker, .eventFn = Sink.emit },
+    };
+    try state.sink.emit(.{ .part_start = .{ .index = 0, .part = .{ .text = "" } } });
+    defer {
+        for (state.parts.items) |part| switch (part) {
+            .thinking => |thinking| allocator.free(thinking.content),
+            .text => |content| allocator.free(content),
+            else => {},
+        };
+        state.deinit();
+    }
+    try state.thinking.appendSlice(allocator, "thought");
+    try state.text.appendSlice(allocator, "answer");
+    try state.insertAccumulatedParts(0, 1);
+}
+
+test "compatible stream part assembly releases intermediate allocations" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        exerciseAccumulatedPartAllocation,
+        .{},
+    );
+}
 
 fn optionalString(object: std.json.ObjectMap, field: []const u8) ?[]const u8 {
     const value = object.get(field) orelse return null;
