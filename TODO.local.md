@@ -110,7 +110,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Introduce a provider abstraction for credentials, base URL, headers,
   model discovery, file APIs, profile lookup, request policy, and capability
   overrides while keeping model wire adapters separate.
-- [ ] Replace generic OpenAI-compatible defaults with tested provider-specific
+- [x] Replace generic OpenAI-compatible defaults with tested provider-specific
   profiles for every exported provider and model family; reject unsupported
   settings/tools/content before network I/O.
 - [ ] Add native adapters where compatibility APIs lose features: Bedrock
