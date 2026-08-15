@@ -1196,6 +1196,7 @@ test "partial JSON repair covers completed containers tokens and bounded failure
         .schema = "{\"type\":\"array\"}",
     } };
     try std.testing.expectEqualStrings("[]", (try validatePartial(allocator, array_format, "[]")).?.json);
+    try std.testing.expectEqualStrings("[1]", (try validatePartial(allocator, array_format, "[1]")).?.json);
     try std.testing.expect((try validatePartial(allocator, .json_object, "x")) == null);
 
     const string_format: model_types.OutputFormat = .{ .json_schema = .{
