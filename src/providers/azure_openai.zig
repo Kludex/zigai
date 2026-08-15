@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const compatible = @import("openai_compatible.zig");
+const profiles = @import("profiles.zig");
 
 pub const api_key_env = "AZURE_OPENAI_API_KEY";
 pub const endpoint_env = "AZURE_OPENAI_ENDPOINT";
@@ -9,6 +10,8 @@ pub const endpoint_env = "AZURE_OPENAI_ENDPOINT";
 const defaults: compatible.ClientDefaults = .{
     .base_url = "",
     .provider_name = "azure-openai",
+    .profile = profiles.openai_compatible.unknown,
+    .model_profile_lookup = profiles.azureOpenAI,
     .authentication = .{ .header = "api-key", .prefix = "" },
 };
 

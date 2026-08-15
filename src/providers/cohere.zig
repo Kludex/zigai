@@ -1,6 +1,7 @@
 //! Cohere client using its OpenAI compatibility API.
 
 const compatible = @import("openai_compatible.zig");
+const profiles = @import("profiles.zig");
 
 pub const api_base = "https://api.cohere.ai/compatibility/v1";
 pub const api_key_env = "CO_API_KEY";
@@ -8,6 +9,8 @@ pub const api_key_env = "CO_API_KEY";
 const defaults: compatible.ClientDefaults = .{
     .base_url = api_base,
     .provider_name = "cohere",
+    .profile = profiles.openai_compatible.unknown,
+    .model_profile_lookup = profiles.cohere,
 };
 
 pub const Provider = compatible.ProviderWithDefaults(defaults);

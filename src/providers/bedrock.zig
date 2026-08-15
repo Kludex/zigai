@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const compatible = @import("openai_compatible.zig");
+const profiles = @import("profiles.zig");
 
 pub const api_key_env = "AWS_BEARER_TOKEN_BEDROCK";
 pub const region_env = "AWS_DEFAULT_REGION";
@@ -9,6 +10,8 @@ pub const region_env = "AWS_DEFAULT_REGION";
 const defaults: compatible.ClientDefaults = .{
     .base_url = "",
     .provider_name = "bedrock",
+    .profile = profiles.openai_compatible.unknown,
+    .model_profile_lookup = profiles.bedrock,
 };
 
 pub const Provider = compatible.ProviderWithDefaults(defaults);

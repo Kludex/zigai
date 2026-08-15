@@ -4,6 +4,11 @@
 //! Model clients own wire encoding and expose the provider-neutral `Model`
 //! consumed by `Agent`.
 
+const std = @import("std");
+const agent = @import("agent.zig");
+const model = @import("model.zig");
+const transport = @import("transport.zig");
+
 pub const openai = @import("providers/openai.zig");
 pub const http = @import("providers/http.zig");
 pub const profiles = @import("providers/profiles.zig");
@@ -44,4 +49,102 @@ test {
     _ = ovhcloud;
     _ = pydantic_gateway;
     _ = together;
+}
+
+fn namedCompatibleProfile(comptime ProviderType: type, comptime ClientType: type, model_name: []const u8) model.ModelProfile {
+    const Stub = struct {
+        fn send(_: *anyopaque, _: std.mem.Allocator, _: transport.Request) !transport.Response {
+            return error.UnexpectedRequest;
+        }
+    };
+    var marker: u8 = 0;
+    var provider_state = ProviderType.init("unused", .{ .context = &marker, .sendFn = Stub.send });
+    var client = ClientType{
+        .model_name = model_name,
+        .provider = provider_state.provider(),
+    };
+    return client.model().profile;
+}
+
+test "named compatible clients use their provider model profiles" {
+    try std.testing.expect(namedCompatibleProfile(azure_openai.Provider, azure_openai.Client, "gpt-4o").supports_json_schema_output);
+    try std.testing.expect(namedCompatibleProfile(bedrock.Provider, bedrock.Client, "openai.gpt-oss-20b").supportsReasoningEffort(.medium));
+    try std.testing.expect(!namedCompatibleProfile(cerebras.Provider, cerebras.Client, "gpt-oss-120b").supports_parallel_tool_calls);
+    try std.testing.expect(namedCompatibleProfile(cohere.Provider, cohere.Client, "command-a-plus").supports_tools);
+    try std.testing.expect(!namedCompatibleProfile(deepseek.Provider, deepseek.Client, "deepseek-v4-flash").supports_temperature);
+    try std.testing.expect(namedCompatibleProfile(doubleword.Provider, doubleword.Client, "openai/gpt-oss-20b").supportsReasoningEffort(.high));
+    try std.testing.expect(!namedCompatibleProfile(groq.Provider, groq.Client, "openai/gpt-oss-20b").supports_logprobs);
+    try std.testing.expect(namedCompatibleProfile(huggingface.Provider, huggingface.Client, "CohereLabs/c4ai-command-r7b").supports_tools);
+    try std.testing.expect(namedCompatibleProfile(mistral.Provider, mistral.Client, "mistral-small-latest").supports_tools);
+    try std.testing.expect(namedCompatibleProfile(openrouter.Provider, openrouter.Client, "openai/gpt-4o-mini").supports_json_schema_output);
+    try std.testing.expect(namedCompatibleProfile(ovhcloud.Provider, ovhcloud.Client, "qwen-3").supports_tools);
+    try std.testing.expect(namedCompatibleProfile(pydantic_gateway.Provider, pydantic_gateway.Client, "openai:gpt-4o").supports_json_object_output);
+    try std.testing.expect(namedCompatibleProfile(together.Provider, together.Client, "openai/gpt-oss-20b").supportsReasoningEffort(.low));
+
+    const unknown = namedCompatibleProfile(groq.Provider, groq.Client, "future-model");
+    try std.testing.expect(!unknown.supports_tools);
+    try std.testing.expect(!unknown.supports_temperature);
+}
+
+test "named compatible profiles reject unsupported requests before transport" {
+    const CountingTransport = struct {
+        calls: usize = 0,
+
+        fn send(context: *anyopaque, _: std.mem.Allocator, _: transport.Request) !transport.Response {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            return error.UnexpectedRequest;
+        }
+    };
+    const Tool = struct {
+        fn execute(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]const u8 {
+            return allocator.dupe(u8, "ok");
+        }
+    };
+
+    var transport_state: CountingTransport = .{};
+    const counting_transport = transport.Transport{ .context = &transport_state, .sendFn = CountingTransport.send };
+    var deepseek_provider = deepseek.Provider.init("unused", counting_transport);
+    var deepseek_client = deepseek.Client{
+        .model_name = "deepseek-v4-flash",
+        .provider = deepseek_provider.provider(),
+    };
+    try std.testing.expectError(agent.Agent.Error.ModelDoesNotSupportTemperature, (agent.Agent{
+        .model = deepseek_client.model(),
+        .model_settings = .{ .temperature = 0.2 },
+    }).run(std.testing.allocator, "hello"));
+
+    var groq_provider = groq.Provider.init("unused", counting_transport);
+    var groq_client = groq.Client{
+        .model_name = "future-model",
+        .provider = groq_provider.provider(),
+    };
+    var tool_marker: u8 = 0;
+    const tool = model.Tool{
+        .definition = .{
+            .name = "lookup",
+            .description = "Look up a value.",
+            .parameters_json_schema = "{\"type\":\"object\"}",
+        },
+        .context = &tool_marker,
+        .executeFn = Tool.execute,
+    };
+    try std.testing.expectError(agent.Agent.Error.ModelDoesNotSupportTools, (agent.Agent{
+        .model = groq_client.model(),
+        .tools = &.{tool},
+    }).run(std.testing.allocator, "hello"));
+
+    var azure_provider = azure_openai.Provider.init("unused", counting_transport);
+    var azure_client = azure_openai.Client{
+        .model_name = "gpt-4o",
+        .provider = azure_provider.provider(),
+    };
+    const image = model.PromptPart{ .image = .{
+        .source = .{ .bytes = "not-an-image" },
+        .media_type = "image/png",
+    } };
+    try std.testing.expectError(agent.Agent.Error.ModelDoesNotSupportImages, (agent.Agent{
+        .model = azure_client.model(),
+    }).runWithOptions(std.testing.allocator, "hello", .{ .prompt_parts = &.{image} }));
+    try std.testing.expectEqual(@as(usize, 0), transport_state.calls);
 }
