@@ -88,6 +88,10 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_fuzz_tests = b.addRunArtifact(fuzz_tests);
+    const fuzz_step = b.step("fuzz", "Run parser and protocol fuzz targets");
+    fuzz_step.dependOn(&run_tests.step);
+    fuzz_step.dependOn(&run_cli_common_tests.step);
+    fuzz_step.dependOn(&run_fuzz_tests.step);
     const test_step = b.step("test", "Run the complete test suite");
     test_step.dependOn(&run_tests.step);
     test_step.dependOn(&run_integration_tests.step);
