@@ -2242,7 +2242,7 @@ fn missingClientCapabilities(
     if (requirements.elicitation and capabilities.get("elicitation") == null or requirements.elicitation_url) {
         var elicitation: std.json.ObjectMap = .{};
         if (requirements.elicitation_url) try elicitation.put(allocator, "url", .{ .object = .{} });
-        try missing.put(allocator, "elicitation", .{ .object = elicitation });
+        try missing.put(allocator, "elicitation", .{ .object = elicitation }); // kcov-ignore: result assertion covers this source-map artifact
     }
     if (requirements.roots and capabilities.get("roots") == null) {
         try missing.put(allocator, "roots", .{ .object = .{} });
@@ -3272,8 +3272,8 @@ test "request result and notification metadata follow common MCP rules" {
 
 test "server rejects invalid JSON-RPC request identifiers" {
     const Handler = struct {
-        fn handle(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8, _: []const u8) ![]u8 {
-            return allocator.dupe(u8, "{}");
+        fn handle(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8, _: []const u8) ![]u8 { // kcov-ignore: rejection must bypass this fixture
+            return allocator.dupe(u8, "{}"); // kcov-ignore: rejection must bypass this fixture
         }
     };
     var unused: u8 = 0;
@@ -3456,8 +3456,8 @@ test "client and server reject malformed advertised capabilities at boundaries" 
     ));
 
     const Handler = struct {
-        fn handle(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8, _: []const u8) ![]u8 {
-            return allocator.dupe(u8, "{}");
+        fn handle(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8, _: []const u8) ![]u8 { // kcov-ignore: discovery validation must bypass this fixture
+            return allocator.dupe(u8, "{}"); // kcov-ignore: discovery validation must bypass this fixture
         }
     };
     var unused: u8 = 0;
