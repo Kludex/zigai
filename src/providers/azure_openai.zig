@@ -46,6 +46,7 @@ test "Responses client reuses the native wire contract through Azure provider st
             try std.testing.expectEqual(transport.Method.POST, request.method);
             try std.testing.expectEqualStrings("https://example.openai.azure.com/openai/v1/responses", request.url);
             try std.testing.expect(std.mem.indexOf(u8, request.body, "\"model\":\"gpt-4.1-nano\"") != null);
+            try std.testing.expect(std.mem.indexOf(u8, request.body, "\"azure_extension\":true") != null);
             var authenticated = false;
             for (request.headers) |header| {
                 if (std.ascii.eqlIgnoreCase(header.name, "api-key") and std.mem.eql(u8, header.value, "secret"))
@@ -70,7 +71,9 @@ test "Responses client reuses the native wire contract through Azure provider st
     defer arena.deinit();
     const response = try client.model().request(arena.allocator(), .{
         .messages = &.{.{ .request = .{ .parts = &.{.{ .user_prompt = .{ .text = "ping" } }} } }},
+        .settings = .{ .extra_body = .{ .openai = "{\"azure_extension\":true}" } },
     });
+    try std.testing.expectEqual(.openai, client.model().profile.extra_body_kind.?);
     try std.testing.expectEqualStrings("azure-openai", response.provider_name.?);
     try std.testing.expectEqualStrings("pong", response.parts[0].text);
 }

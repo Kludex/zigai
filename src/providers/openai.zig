@@ -124,9 +124,11 @@ pub const Client = struct {
     },
 
     pub fn model(self: *Client) model_types.Model {
+        var resolved_profile = self.provider.modelProfile(self.model_name, self.profile);
+        resolved_profile.extra_body_kind = .openai;
         return .{
             .context = self,
-            .profile = self.provider.modelProfile(self.model_name, self.profile),
+            .profile = resolved_profile,
             .provider_name = self.provider.name,
             .model_name = self.model_name,
             .settings = self.settings,
