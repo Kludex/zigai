@@ -25,7 +25,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Harden retries. Add full-jitter exponential backoff, HTTP-date
   `Retry-After`, provider request IDs, idempotency keys where supported, a retry
   budget, and explicit retry classification for connection and decode failures.
-- [ ] Add context-budget controls. Estimate provider tokens before requests,
+- [x] Add context-budget controls. Estimate provider tokens before requests,
   cap prompt/tool/schema/media bytes, reserve output tokens, and expose a hook
   that compacts or rejects history before the provider rejects it.
 - [ ] Stabilize the public error taxonomy. Replace public `anyerror` callbacks
