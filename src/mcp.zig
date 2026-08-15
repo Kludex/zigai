@@ -807,11 +807,13 @@ pub const Server = struct {
                 200,
             );
         }
-        const params_value = object.get("params") orelse std.json.Value{ .object = .{} };
-        const params = requiredObject(params_value) catch
-            return self.errorResponse(allocator, id, error_codes.invalid_params, "Params must be an object", 400);
-
         const is_notification = object.get("id") == null;
+        const params_value = object.get("params") orelse std.json.Value{ .object = .{} };
+        const params = requiredObject(params_value) catch return if (is_notification)
+            .{ .status = 202, .body = null }
+        else
+            self.errorResponse(allocator, id, error_codes.invalid_params, "Params must be an object", 400);
+
         var request_client_capabilities: ?std.json.Value = null;
         if (!is_notification) {
             const meta = params.get("_meta") orelse
@@ -846,16 +848,11 @@ pub const Server = struct {
                 return self.errorResponse(allocator, id, error_codes.invalid_params, "Invalid method params", 400);
         } else {
             validateNotificationMethodParams(method, params, error.InvalidMcpMessage) catch
-                return self.errorResponse(
-                    allocator,
-                    id,
-                    error_codes.invalid_params,
-                    "Invalid notification params",
-                    400,
-                );
+                return .{ .status = 202, .body = null };
         }
         if (metadata) |http_metadata| {
             if (!validateStandardHeaders(http_metadata.headers, method, params)) {
+                if (is_notification) return .{ .status = 400, .body = null };
                 return self.errorResponse(allocator, id, error_codes.header_mismatch, "MCP headers do not match", 400);
             }
             if (self.tool_schemas) |schemas| {
@@ -4264,6 +4261,30 @@ test "server returns specified errors and validates tool parameter headers" {
     const accepted = try server.handle(std.testing.allocator, notification, null);
     defer accepted.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(u16, 202), accepted.status);
+    const invalid_notification = try server.handle(
+        std.testing.allocator,
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{}}",
+        null,
+    );
+    defer invalid_notification.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 202), invalid_notification.status);
+    try std.testing.expect(invalid_notification.body == null);
+    const invalid_notification_params = try server.handle(
+        std.testing.allocator,
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":[]}",
+        null,
+    );
+    defer invalid_notification_params.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 202), invalid_notification_params.status);
+    try std.testing.expect(invalid_notification_params.body == null);
+    const invalid_notification_headers = try server.handle(
+        std.testing.allocator,
+        notification,
+        .{ .headers = &.{} },
+    );
+    defer invalid_notification_headers.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 400), invalid_notification_headers.status);
+    try std.testing.expect(invalid_notification_headers.body == null);
     handler.fail = true;
     const ignored_failure = try server.handle(std.testing.allocator, notification, null);
     defer ignored_failure.deinit(std.testing.allocator);
