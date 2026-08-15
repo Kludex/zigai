@@ -245,6 +245,10 @@ until `deinit`. Paginated providers enforce configurable page and model limits.
 Each model exposes a `ModelProfile`. The profile tells the agent which
 capabilities are supported before it sends a paid request.
 
+Named OpenAI-compatible providers resolve profiles by provider and upstream
+model family. Unknown families use a fail-closed profile; application lookups
+can replace built-ins, and application overrides run last.
+
 Provider-managed tools use the same agent API:
 
 ```zig

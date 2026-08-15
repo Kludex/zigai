@@ -570,9 +570,11 @@ thinking-model tool loops retain their reasoning state.
 
 `zopenai_compatible` maps the same contract to Chat Completions. Its provider
 owns the base URL, provider label, authentication style, headers, transport,
-policy, and profile overrides. Its model adapter retains the conservative
-profile presets, wire behavior, and stream-usage toggle. Named compatible
-modules export provider/client pairs from the same compile-time defaults, so
+policy, and profile overrides. Provider and upstream-model capability rules
+live in a separate profile module; the adapter retains only wire behavior and
+the stream-usage toggle. Named compatible modules use fail-closed unknown
+profiles and layer application lookup and overrides around their built-ins.
+They export provider/client pairs from the same compile-time defaults, so
 gateways and local servers do not need a second configuration pattern.
 
 The default `HttpTransport` uses only Zig's standard library.

@@ -184,6 +184,17 @@ gateway-specific idempotency header. Use
 selected at runtime; Azure OpenAI and Bedrock expose `apiBase` helpers for
 deployment-specific roots.
 
+Named compatible providers resolve model capabilities in four layers:
+
+1. An application `ModelProfiles.lookupFn`, when it recognizes the model.
+2. The provider's built-in upstream-family profile.
+3. The client's fallback profile when neither lookup recognizes the model.
+4. An application `ModelProfiles.overrideFn`, applied to the resolved result.
+
+Named clients use a fail-closed fallback for unknown families. The generic
+`openai_compatible.Client` retains its configurable compatibility presets
+because an arbitrary endpoint has no provider identity to resolve against.
+
 `Provider.listModels` is implemented by OpenAI, Anthropic, Google, and
 OpenAI-compatible provider objects. It authenticates through the provider
 boundary and returns `OwnedProviderModels`; call `deinit` after consuming its

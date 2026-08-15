@@ -83,6 +83,7 @@ const Family = enum {
     cohere,
     deepseek,
     google,
+    grok,
     harmony,
     meta,
     mistral,
@@ -110,7 +111,7 @@ const hosted_routes = [_]Route{
     .{ .prefix = "moonshotai", .family = .moonshot },
     .{ .prefix = "openai", .family = .openai },
     .{ .prefix = "qwen", .family = .qwen },
-    .{ .prefix = "x-ai", .family = .zai },
+    .{ .prefix = "x-ai", .family = .grok },
 };
 
 fn startsWith(value: []const u8, prefix: []const u8) bool {
@@ -189,7 +190,7 @@ fn familyProfile(family: Family, model_name: []const u8) model.ModelProfile {
         .mistral => {
             profile.supports_logprobs = false;
         },
-        .amazon, .moonshot => {
+        .amazon, .grok, .moonshot => {
             profile.supports_seed = false;
             profile.supports_presence_penalty = false;
             profile.supports_frequency_penalty = false;
@@ -219,7 +220,7 @@ pub fn azureOpenAI(model_name: []const u8) ?model.ModelProfile {
     if (startsWith(model_name, "mistral") or startsWith(model_name, "ministral") or startsWith(model_name, "magistral"))
         return familyProfile(.mistral, model_name);
     if (startsWith(model_name, "cohere-")) return familyProfile(.cohere, model_name);
-    if (startsWith(model_name, "grok")) return familyProfile(.zai, model_name);
+    if (startsWith(model_name, "grok")) return familyProfile(.grok, model_name);
     if (startsWith(model_name, "gpt-") or startsWith(model_name, "chatgpt-") or
         startsWith(model_name, "o1") or startsWith(model_name, "o3") or startsWith(model_name, "o4"))
         return familyProfile(.openai, model_name);

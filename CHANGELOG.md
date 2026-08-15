@@ -27,6 +27,11 @@
   provider/client pairs; credentials, API roots, provider identity, headers,
   request policy, transport, authentication style, and profile callbacks stay
   on the provider side of the boundary.
+- Add centralized, provider-specific model profiles for every named
+  OpenAI-compatible module. Upstream-family resolution uses a fail-closed
+  unknown fallback, application lookups take precedence over built-ins, and
+  application overrides run last so unsupported tools, settings, and content
+  fail before transport.
 - Add bounded, arena-owned model discovery for OpenAI, Anthropic, Google, and
   every OpenAI-compatible provider through the provider operations interface.
   Paginated APIs have explicit page and model limits, identifiers are
