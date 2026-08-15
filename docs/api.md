@@ -393,6 +393,13 @@ Z.AI families. Crusoe's guided decoding enables both structured-output modes;
 unknown deployment aliases remain fail-closed unless the application supplies
 an explicit profile.
 
+Snowflake Cortex has an account-scoped Chat Completions root. Build it with
+`snowflake.apiBase`, which accepts a bare account identifier or canonical
+Snowflake account hostname and rejects schemes, paths, ports, and malformed
+labels before authentication. Cortex profiles distinguish OpenAI, Claude, and
+text-only families so ignored or rejected tool and structured-output fields do
+not reach the network. Unknown models remain fail-closed.
+
 `Provider.listModels` is implemented by OpenAI, Anthropic, Google, and
 OpenAI-compatible provider objects. It authenticates through the provider
 boundary and returns `OwnedProviderModels`; call `deinit` after consuming its

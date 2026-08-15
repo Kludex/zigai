@@ -473,6 +473,42 @@ pub fn pydanticGateway(model_name: []const u8) ?model.ModelProfile {
     return routedProfile(model_name, ':') orelse routedProfile(model_name, '/');
 }
 
+/// Bare model families exposed by Snowflake Cortex Chat Completions.
+pub fn snowflake(model_name: []const u8) ?model.ModelProfile {
+    const family: Family = if (startsWith(model_name, "claude"))
+        .anthropic
+    else if (startsWith(model_name, "openai-"))
+        .openai
+    else if (startsWith(model_name, "snowflake-llama") or startsWith(model_name, "llama"))
+        .meta
+    else if (startsWith(model_name, "mistral") or startsWith(model_name, "mixtral"))
+        .mistral
+    else if (startsWith(model_name, "deepseek"))
+        .deepseek
+    else if (startsWith(model_name, "snowflake-"))
+        .amazon
+    else
+        return null;
+    const family_name = if (family == .openai) model_name["openai-".len..] else model_name;
+    var profile = familyProfile(family, family_name);
+    if (family == .anthropic) {
+        profile.supports_json_schema_output = true;
+        profile.supports_json_object_output = false;
+        profile.supports_parallel_tool_calls = false;
+        profile.supports_parallel_tool_call_setting = false;
+        profile.supports_stop_sequences = false;
+        profile.reasoning_efforts = model.ModelProfile.ReasoningEffortSet.initEmpty();
+    } else if (family != .openai) {
+        profile.supports_tools = false;
+        profile.supports_parallel_tool_calls = false;
+        profile.supports_json_schema_output = false;
+        profile.supports_json_object_output = false;
+        profile.supports_tool_choice = false;
+        profile.supports_parallel_tool_call_setting = false;
+    }
+    return profile;
+}
+
 pub fn together(model_name: []const u8) ?model.ModelProfile {
     const routed = routedProfile(model_name, '/') orelse return null;
     if (startsWith(model_name, "openai/gpt-oss")) return familyProfile(.harmony, model_name["openai/".len..]);
@@ -521,6 +557,17 @@ test "named compatible providers resolve known families and reject unknown ones"
     try std.testing.expect(crusoe("moonshotai/kimi-k2").?.supports_tools);
     try std.testing.expect(crusoe("zai/glm-4.5").?.supports_tools);
     try std.testing.expect(crusoe("private/deployment") == null);
+
+    try std.testing.expect(snowflake("claude-sonnet-4-5").?.supports_json_schema_output);
+    try std.testing.expect(!snowflake("claude-sonnet-4-5").?.supports_json_object_output);
+    try std.testing.expect(snowflake("openai-gpt-5").?.supports_tools);
+    try std.testing.expect(!snowflake("snowflake-llama-3.1").?.supports_tools);
+    try std.testing.expect(!snowflake("llama3.3").?.supports_tools);
+    try std.testing.expect(!snowflake("mistral-large").?.supports_tools);
+    try std.testing.expect(!snowflake("mixtral-8x7b").?.supports_tools);
+    try std.testing.expect(!snowflake("deepseek-r1").?.supports_tools);
+    try std.testing.expect(!snowflake("snowflake-arctic").?.supports_tools);
+    try std.testing.expect(snowflake("private-model") == null);
 
     try std.testing.expect(bedrock("openai.gpt-oss-20b").?.supportsReasoningEffort(.medium));
     try std.testing.expect(bedrock("openai.gpt-5.4").?.supportsReasoningEffort(.high));

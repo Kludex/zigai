@@ -195,6 +195,7 @@ authentication style, or model profile overrides.
 | `zigai.providers.openrouter` | OpenRouter |
 | `zigai.providers.ovhcloud` | OVHcloud AI Endpoints |
 | `zigai.providers.pydantic_gateway` | Pydantic AI Gateway |
+| `zigai.providers.snowflake` | Snowflake Cortex Chat Completions |
 | `zigai.providers.together` | Together AI |
 | `zigai.providers.openai_compatible` | Chat Completions-compatible servers |
 
@@ -252,6 +253,11 @@ var result = try (zigai.Agent{
 Crusoe uses the same client boundary with bearer authentication. Set
 `CRUSOE_API_KEY`; `CRUSOE_MODEL` optionally selects a vendor-qualified model or
 deployment alias. The compiled example is available as `examples/crusoe.zig`.
+
+Snowflake Cortex derives its API root from `SNOWFLAKE_ACCOUNT` and authenticates
+with `SNOWFLAKE_TOKEN`. Use `snowflake.apiBase` rather than assembling an
+account hostname manually; it validates the identifier before the token can be
+sent. `SNOWFLAKE_MODEL` optionally selects the Cortex model.
 
 Use `azure_openai.ChatClient` (or its backwards-compatible `Client` alias) only
 when a deployment requires Chat Completions.

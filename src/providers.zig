@@ -29,6 +29,7 @@ pub const ollama = @import("providers/ollama.zig");
 pub const openrouter = @import("providers/openrouter.zig");
 pub const ovhcloud = @import("providers/ovhcloud.zig");
 pub const pydantic_gateway = @import("providers/pydantic_gateway.zig");
+pub const snowflake = @import("providers/snowflake.zig");
 pub const together = @import("providers/together.zig");
 pub const vertex_ai = @import("providers/vertex_ai.zig");
 pub const xai = @import("providers/xai.zig");
@@ -64,6 +65,7 @@ test {
     _ = openrouter;
     _ = ovhcloud;
     _ = pydantic_gateway;
+    _ = snowflake;
     _ = together;
     _ = vertex_ai;
     _ = xai;
@@ -93,6 +95,7 @@ test "named compatible clients use their provider model profiles" {
     try std.testing.expect(namedCompatibleProfile(openrouter.Provider, openrouter.Client, "openai/gpt-4o-mini").supports_json_schema_output);
     try std.testing.expect(namedCompatibleProfile(ovhcloud.Provider, ovhcloud.Client, "qwen-3").supports_tools);
     try std.testing.expect(namedCompatibleProfile(pydantic_gateway.Provider, pydantic_gateway.Client, "openai:gpt-4o").supports_json_object_output);
+    try std.testing.expect(namedCompatibleProfile(snowflake.Provider, snowflake.Client, "claude-sonnet-4-5").supports_json_schema_output);
     try std.testing.expect(namedCompatibleProfile(together.Provider, together.Client, "openai/gpt-oss-20b").supportsReasoningEffort(.low));
     try std.testing.expect(namedCompatibleProfile(xai.ChatProvider, xai.ChatClient, "grok-4.6").supports_tools);
 
@@ -154,6 +157,19 @@ test "named compatible profiles reject unsupported requests before transport" {
     const tool_output = try tool.execute(std.testing.allocator, "{}");
     defer std.testing.allocator.free(tool_output);
     try std.testing.expectEqualStrings("ok", tool_output);
+
+    var snowflake_provider = snowflake.Provider.initWithOptions("unused", counting_transport, .{
+        .base_url = "https://myorg-myaccount.snowflakecomputing.com/api/v2/cortex/v1",
+    });
+    var snowflake_client = snowflake.Client{
+        .model_name = "private-model",
+        .provider = snowflake_provider.provider(),
+    };
+    try std.testing.expectError(agent.Agent.Error.ModelDoesNotSupportTools, (agent.Agent{
+        .model = snowflake_client.model(),
+        .tools = &.{tool},
+    }).run(std.testing.allocator, "hello"));
+
     try std.testing.expectError(agent.Agent.Error.ModelDoesNotSupportTools, (agent.Agent{
         .model = groq_client.model(),
         .tools = &.{tool},

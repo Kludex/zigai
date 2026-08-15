@@ -131,7 +131,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   provider-specific profiles, and pre-I/O validation.
 - [x] Add a focused Crusoe example with provider-specific profiles and pre-I/O
   validation.
-- [ ] Add a focused Snowflake Cortex example with provider-specific profiles
+- [x] Add a focused Snowflake Cortex example with provider-specific profiles
   and pre-I/O validation.
 - [ ] Add a focused Z.AI example with provider-specific profiles and pre-I/O
   validation.
