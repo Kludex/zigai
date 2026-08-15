@@ -763,6 +763,11 @@ pub const Server = struct {
         const object = requiredObject(root) catch
             return self.errorResponse(allocator, .null, error_codes.invalid_request, "Invalid JSON-RPC request", 400);
         const id = object.get("id") orelse .null;
+        if (object.get("id")) |request_id| {
+            if (request_id != .integer and request_id != .string) {
+                return self.errorResponse(allocator, .null, error_codes.invalid_request, "Invalid request ID", 400);
+            }
+        }
         if (!std.mem.eql(u8, optionalString(object, "jsonrpc") orelse "", "2.0")) {
             return self.errorResponse(allocator, id, error_codes.invalid_request, "Invalid JSON-RPC version", 400);
         }
@@ -787,6 +792,8 @@ pub const Server = struct {
             const meta = params.get("_meta") orelse
                 return self.errorResponse(allocator, id, error_codes.invalid_params, "Missing request metadata", 400);
             const meta_object = requiredObject(meta) catch
+                return self.errorResponse(allocator, id, error_codes.invalid_params, "Invalid request metadata", 400);
+            validateRequestMeta(meta_object, error.InvalidMcpMessage) catch
                 return self.errorResponse(allocator, id, error_codes.invalid_params, "Invalid request metadata", 400);
             const requested = optionalString(meta_object, "io.modelcontextprotocol/protocolVersion") orelse "";
             if (!std.mem.eql(u8, requested, protocol_version)) {
@@ -1064,6 +1071,7 @@ fn buildRequest(
     try meta.put(memory, "io.modelcontextprotocol/protocolVersion", .{ .string = protocol_version });
     try meta.put(memory, "io.modelcontextprotocol/clientInfo", .{ .object = client_info });
     try meta.put(memory, "io.modelcontextprotocol/clientCapabilities", capabilities);
+    try validateRequestMeta(meta, error.InvalidMcpMessage);
     try params.put(memory, "_meta", .{ .object = meta });
     params_value = .{ .object = params };
     return std.json.Stringify.valueAlloc(allocator, .{
@@ -1394,6 +1402,13 @@ fn validateHttpResponseStatus(allocator: std.mem.Allocator, status: u16, source:
 
 fn validateMethodResult(method: []const u8, result: std.json.Value) !void {
     const object = try requiredObject(result);
+    if (object.get("_meta")) |meta_value| {
+        const meta = try requiredObject(meta_value);
+        try validateMetaKeys(meta, error.InvalidMcpResponse);
+        if (meta.get("io.modelcontextprotocol/serverInfo")) |server_info| {
+            try validateImplementation(server_info, error.InvalidMcpResponse);
+        }
+    }
     const result_type = if (object.get("resultType")) |value|
         switch (value) {
             .string => |string| string,
@@ -1510,6 +1525,7 @@ fn validateNotificationMethodParams(
     }
     if (params.get("_meta")) |meta_value| {
         const meta = try capabilityObject(meta_value, invalid_error);
+        try validateMetaKeys(meta, invalid_error);
         if (meta.get("io.modelcontextprotocol/subscriptionId")) |id| {
             try validateRequestId(id, invalid_error);
         }
@@ -1685,6 +1701,72 @@ fn validLoggingLevel(value: []const u8) bool {
     return false;
 }
 
+fn validateRequestMeta(object: std.json.ObjectMap, comptime invalid_error: anytype) !void {
+    try validateMetaKeys(object, invalid_error);
+    const version = try requireCapabilityString(
+        object,
+        "io.modelcontextprotocol/protocolVersion",
+        invalid_error,
+    );
+    if (version.len == 0) return invalid_error;
+    _ = try capabilityObject(
+        object.get("io.modelcontextprotocol/clientCapabilities") orelse return invalid_error,
+        invalid_error,
+    );
+    if (object.get("io.modelcontextprotocol/clientInfo")) |client_info| {
+        try validateImplementation(client_info, invalid_error);
+    }
+    if (object.get("progressToken")) |token| try validateRequestId(token, invalid_error);
+    if (object.get("io.modelcontextprotocol/logLevel")) |level_value| {
+        const level = switch (level_value) {
+            .string => |string| string,
+            else => return invalid_error,
+        };
+        if (!validLoggingLevel(level)) return invalid_error;
+    }
+}
+
+fn validateImplementation(value: std.json.Value, comptime invalid_error: anytype) !void {
+    const implementation = try capabilityObject(value, invalid_error);
+    _ = try requireCapabilityString(implementation, "name", invalid_error);
+    _ = try requireCapabilityString(implementation, "version", invalid_error);
+    try validateOptionalString(implementation, "title", invalid_error);
+    try validateOptionalString(implementation, "description", invalid_error);
+    try validateOptionalString(implementation, "websiteUrl", invalid_error);
+    if (implementation.get("icons")) |icons_value| {
+        const icons = switch (icons_value) {
+            .array => |array| array,
+            else => return invalid_error,
+        };
+        for (icons.items) |icon_value| {
+            const icon = try capabilityObject(icon_value, invalid_error);
+            _ = try requireCapabilityString(icon, "src", invalid_error);
+            try validateOptionalString(icon, "mimeType", invalid_error);
+            if (icon.get("sizes")) |sizes_value| {
+                const sizes = switch (sizes_value) {
+                    .array => |array| array,
+                    else => return invalid_error,
+                };
+                for (sizes.items) |size| if (size != .string) return invalid_error;
+            }
+            if (icon.get("theme")) |theme_value| {
+                const theme = switch (theme_value) {
+                    .string => |string| string,
+                    else => return invalid_error,
+                };
+                if (!std.mem.eql(u8, theme, "light") and !std.mem.eql(u8, theme, "dark")) {
+                    return invalid_error;
+                }
+            }
+        }
+    }
+}
+
+fn validateMetaKeys(object: std.json.ObjectMap, comptime invalid_error: anytype) !void {
+    var iterator = object.iterator();
+    while (iterator.next()) |entry| if (!validMetaKey(entry.key_ptr.*, false)) return invalid_error;
+}
+
 fn validateClientCapabilities(value: std.json.Value, comptime invalid_error: anytype) !void {
     const capabilities = switch (value) {
         .object => |object| object,
@@ -1780,19 +1862,28 @@ fn capabilityObject(value: std.json.Value, comptime invalid_error: anytype) !std
 }
 
 fn validPrefixedMetaKey(key: []const u8) bool {
-    const slash = std.mem.indexOfScalar(u8, key, '/') orelse return false;
-    if (slash == 0 or std.mem.indexOfScalarPos(u8, key, slash + 1, '/') != null) return false;
-    var labels = std.mem.splitScalar(u8, key[0..slash], '.');
-    while (labels.next()) |label| {
-        if (label.len == 0 or !std.ascii.isAlphabetic(label[0]) or
-            !std.ascii.isAlphanumeric(label[label.len - 1])) return false;
-        if (label.len > 2) {
-            for (label[1 .. label.len - 1]) |character| {
-                if (!std.ascii.isAlphanumeric(character) and character != '-') return false;
+    return validMetaKey(key, true);
+}
+
+fn validMetaKey(key: []const u8, require_prefix: bool) bool {
+    const slash = std.mem.indexOfScalar(u8, key, '/');
+    const name = if (slash) |separator| blk: {
+        if (separator == 0 or std.mem.indexOfScalarPos(u8, key, separator + 1, '/') != null) return false;
+        var labels = std.mem.splitScalar(u8, key[0..separator], '.');
+        while (labels.next()) |label| {
+            if (label.len == 0 or !std.ascii.isAlphabetic(label[0]) or
+                !std.ascii.isAlphanumeric(label[label.len - 1])) return false;
+            if (label.len > 2) {
+                for (label[1 .. label.len - 1]) |character| {
+                    if (!std.ascii.isAlphanumeric(character) and character != '-') return false;
+                }
             }
         }
-    }
-    const name = key[slash + 1 ..];
+        break :blk key[separator + 1 ..];
+    } else blk: {
+        if (require_prefix) return false;
+        break :blk key;
+    };
     if (name.len == 0) return true;
     if (!std.ascii.isAlphanumeric(name[0]) or !std.ascii.isAlphanumeric(name[name.len - 1])) return false;
     if (name.len > 2) {
@@ -2044,6 +2135,7 @@ fn validateSamplingContent(value: std.json.Value) !void {
         for (try responseArray(content, "content")) |item| try validateContentBlock(item);
         if (content.get("isError")) |is_error| if (is_error != .bool) return error.InvalidMcpResponse;
     } else return error.InvalidMcpResponse;
+    try validateOptionalMeta(content);
 }
 
 const ClientCapabilityRequirements = struct {
@@ -2240,6 +2332,7 @@ fn validateResourceContents(value: std.json.Value) !void {
     if (text == null and blob == null) return error.InvalidMcpResponse;
     if (text) |item| if (item != .string) return error.InvalidMcpResponse;
     if (blob) |item| if (item != .string) return error.InvalidMcpResponse;
+    try validateOptionalMeta(content);
 }
 
 fn validateContentBlock(value: std.json.Value) !void {
@@ -2256,6 +2349,7 @@ fn validateContentBlock(value: std.json.Value) !void {
         try validateResourceContents(content.get("resource") orelse return error.InvalidMcpResponse);
     } else return error.InvalidMcpResponse;
     try validateOptionalAnnotations(content);
+    try validateOptionalMeta(content);
 }
 
 fn validateBaseMetadata(object: std.json.ObjectMap) !void {
@@ -2284,6 +2378,13 @@ fn validateBaseMetadata(object: std.json.ObjectMap) !void {
             } else if (icon.get("theme") != null) return error.InvalidMcpResponse;
         }
     }
+    try validateOptionalMeta(object);
+}
+
+fn validateOptionalMeta(object: std.json.ObjectMap) !void {
+    const meta_value = object.get("_meta") orelse return;
+    const meta = try requiredObject(meta_value);
+    try validateMetaKeys(meta, error.InvalidMcpResponse);
 }
 
 fn validateOptionalAnnotations(object: std.json.ObjectMap) !void {
@@ -2980,6 +3081,85 @@ test "extension capability identifiers follow prefixed metadata syntax" {
         "example/feat@ure",
     };
     for (invalid) |key| try std.testing.expect(!validPrefixedMetaKey(key));
+
+    const valid_unprefixed = [_][]const u8{ "", "progressToken", "name.with_parts-1" };
+    for (valid_unprefixed) |key| try std.testing.expect(validMetaKey(key, false));
+    try std.testing.expect(!validMetaKey("bad name", false));
+}
+
+test "request result and notification metadata follow common MCP rules" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const valid_meta = try requiredObject(try parseResponse(
+        arena.allocator(),
+        "{\"io.modelcontextprotocol/protocolVersion\":\"2026-07-28\"," ++
+            "\"io.modelcontextprotocol/clientCapabilities\":{},\"progressToken\":\"p\"," ++
+            "\"io.modelcontextprotocol/logLevel\":\"info\"," ++
+            "\"io.modelcontextprotocol/clientInfo\":{\"name\":\"client\",\"version\":\"1\"," ++
+            "\"title\":\"Client\",\"description\":\"Test\",\"websiteUrl\":\"https://example.test\"," ++
+            "\"icons\":[{\"src\":\"https://example.test/icon.png\",\"mimeType\":\"image/png\"," ++
+            "\"sizes\":[\"48x48\"],\"theme\":\"dark\"}]},\"com.example/custom\":true}",
+    ));
+    try validateRequestMeta(valid_meta, error.InvalidMcpMessage);
+    const invalid_meta = [_][]const u8{
+        "{}",
+        "{\"io.modelcontextprotocol/protocolVersion\":\"\",\"io.modelcontextprotocol/clientCapabilities\":{}}",
+        "{\"io.modelcontextprotocol/protocolVersion\":\"v\",\"io.modelcontextprotocol/clientCapabilities\":[]}",
+        "{\"io.modelcontextprotocol/protocolVersion\":\"v\",\"io.modelcontextprotocol/clientCapabilities\":{},\"bad key\":1}",
+        "{\"io.modelcontextprotocol/protocolVersion\":\"v\",\"io.modelcontextprotocol/clientCapabilities\":{},\"progressToken\":true}",
+        "{\"io.modelcontextprotocol/protocolVersion\":\"v\",\"io.modelcontextprotocol/clientCapabilities\":{},\"io.modelcontextprotocol/logLevel\":\"verbose\"}",
+        "{\"io.modelcontextprotocol/protocolVersion\":\"v\",\"io.modelcontextprotocol/clientCapabilities\":{},\"io.modelcontextprotocol/clientInfo\":{\"name\":\"x\"}}",
+        "{\"io.modelcontextprotocol/protocolVersion\":\"v\",\"io.modelcontextprotocol/clientCapabilities\":{},\"io.modelcontextprotocol/clientInfo\":{\"name\":\"x\",\"version\":\"1\",\"icons\":{}}}",
+        "{\"io.modelcontextprotocol/protocolVersion\":\"v\",\"io.modelcontextprotocol/clientCapabilities\":{},\"io.modelcontextprotocol/clientInfo\":{\"name\":\"x\",\"version\":\"1\",\"icons\":[{\"src\":\"x\",\"theme\":\"color\"}]}}",
+    };
+    for (invalid_meta) |source| try std.testing.expectError(
+        error.InvalidMcpMessage,
+        validateRequestMeta(
+            try requiredObject(try parseResponse(arena.allocator(), source)),
+            error.InvalidMcpMessage,
+        ),
+    );
+
+    try std.testing.expectError(
+        error.InvalidMcpResponse,
+        testValidateMethodResult(
+            "extension/custom",
+            "{\"_meta\":{\"bad key\":true}}",
+        ),
+    );
+    try std.testing.expectError(
+        error.InvalidMcpResponse,
+        testValidateMethodResult(
+            "extension/custom",
+            "{\"_meta\":{\"io.modelcontextprotocol/serverInfo\":{\"name\":\"server\"}}}",
+        ),
+    );
+    try std.testing.expectError(
+        error.InvalidMcpMessage,
+        validateNotificationMethodParams(
+            methods.tool_list_changed,
+            try requiredObject(try parseResponse(arena.allocator(), "{\"_meta\":{\"bad key\":1}}")),
+            error.InvalidMcpMessage,
+        ),
+    );
+}
+
+test "server rejects invalid JSON-RPC request identifiers" {
+    const Handler = struct {
+        fn handle(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8, _: []const u8) ![]u8 {
+            return allocator.dupe(u8, "{}");
+        }
+    };
+    var unused: u8 = 0;
+    var server = Server{ .handler = .{ .context = &unused, .handleFn = Handler.handle } };
+    const response = try server.handle(
+        std.testing.allocator,
+        "{\"jsonrpc\":\"2.0\",\"id\":true,\"method\":\"server/discover\",\"params\":{}}",
+        null,
+    );
+    defer response.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 400), response.status);
+    try std.testing.expect(std.mem.indexOf(u8, response.body.?, "Invalid request ID") != null);
 }
 
 test "core request params cover every standardized method shape" {
