@@ -31,7 +31,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Stabilize the public error taxonomy. Replace public `anyerror` callbacks
   where practical, document every discriminable error, preserve provider error
   bodies only behind an opt-in bounded policy, and test error mapping end to end.
-- [ ] Add security policy controls. Redact credentials and sensitive headers
+- [x] Add security policy controls. Redact credentials and sensitive headers
   from all callbacks/telemetry, validate provider-file ownership, define URL and
   redirect policy, prevent accidental local-network fetching, and document the
   trust boundary for prompts, tools, MCP servers, and persisted state.
