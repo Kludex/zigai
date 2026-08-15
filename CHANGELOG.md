@@ -46,6 +46,10 @@
   validation for provider-issued session URLs, URI-backed file handles, and a
   2 GB default upload limit. Download remains explicitly unsupported because
   the Gemini Files API does not expose stored file content.
+- Add test-only cassette request normalization and opt-in safe response-header
+  capture. Recording and replay now share URL and body filters, multipart file
+  content and boundaries can be deterministically redacted, resumable-upload
+  URLs can be replaced, and sensitive headers remain impossible to serialize.
 - Pin the official MCP `2026-07-28` conformance framework and TypeScript and
   Python reference servers in a validated test-only interoperability matrix.
 - Add a test-only Cassetter-style YAML format that replays ordered MCP

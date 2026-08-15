@@ -24,6 +24,7 @@ pub const RecordedResponse = struct {
     status: u16,
     body: []const u8,
     metadata: http.ResponseMetadata = .{},
+    headers: []const http.Header = &.{},
 };
 
 pub const ParsedCassette = struct {
@@ -82,7 +83,7 @@ pub fn stringify(allocator: std.mem.Allocator, cassette: Cassette) ![]u8 {
         try writer.writeAll("\n    headers: {}\n    body:\n");
         try writeBody(allocator, writer, interaction.request.body, 6);
         try writer.print("  response:\n    status: {d}\n", .{interaction.response.status});
-        try writeMetadata(writer, interaction.response.metadata);
+        try writeResponseHeaders(writer, interaction.response.metadata, interaction.response.headers);
         try writer.writeAll("    body:\n");
         try writeBody(allocator, writer, interaction.response.body, 6);
     }
@@ -101,10 +102,12 @@ fn parseRequest(allocator: std.mem.Allocator, node: *const yaml.Node) !RecordedR
 
 fn parseResponse(allocator: std.mem.Allocator, node: *const yaml.Node) !RecordedResponse {
     const response = try requireMapping(node);
+    const headers = if (field(response, "headers")) |value| try parseResponseHeaders(allocator, value) else ParsedHeaders{};
     return .{
         .status = try integerAs(u16, try requireField(response, "status")),
         .body = try parseBody(allocator, try requireField(response, "body")),
-        .metadata = if (field(response, "headers")) |headers| try parseMetadata(headers) else .{},
+        .metadata = headers.metadata,
+        .headers = headers.values,
     };
 }
 
@@ -123,14 +126,51 @@ pub fn parseBody(allocator: std.mem.Allocator, node: *const yaml.Node) ![]const 
     return output.toOwnedSlice();
 }
 
-fn parseMetadata(node: *const yaml.Node) !http.ResponseMetadata {
+const ParsedHeaders = struct {
+    metadata: http.ResponseMetadata = .{},
+    values: []const http.Header = &.{},
+};
+
+fn parseResponseHeaders(allocator: std.mem.Allocator, node: *const yaml.Node) !ParsedHeaders {
     const headers = try requireMapping(node);
+    var count: usize = 0;
+    for (headers.pairs) |pair| {
+        const name = try requireScalar(pair.key);
+        if (isMetadataHeader(name)) continue;
+        const values = try requireSequence(pair.value);
+        count = std.math.add(usize, count, values.items.len) catch return error.InvalidCassette;
+    }
+    const recorded = try allocator.alloc(http.Header, count);
+    var index: usize = 0;
+    for (headers.pairs) |pair| {
+        const name = try requireScalar(pair.key);
+        if (isMetadataHeader(name)) continue;
+        if ((http.Header{ .name = name, .value = "" }).isSensitive()) return error.InvalidCassette;
+        const values = try requireSequence(pair.value);
+        for (values.items) |value| {
+            recorded[index] = .{
+                .name = try allocator.dupe(u8, name),
+                .value = try allocator.dupe(u8, try requireScalar(value)),
+            };
+            index += 1;
+        }
+    }
     return .{
-        .retry_after_seconds = try optionalHeaderInteger(headers, "retry-after"),
-        .rate_limit_remaining_requests = try optionalHeaderInteger(headers, "x-ratelimit-remaining-requests"),
-        .rate_limit_remaining_tokens = try optionalHeaderInteger(headers, "x-ratelimit-remaining-tokens"),
-        .provider_request_id = try optionalHeaderText(headers, "x-request-id"),
+        .metadata = .{
+            .retry_after_seconds = try optionalHeaderInteger(headers, "retry-after"),
+            .rate_limit_remaining_requests = try optionalHeaderInteger(headers, "x-ratelimit-remaining-requests"),
+            .rate_limit_remaining_tokens = try optionalHeaderInteger(headers, "x-ratelimit-remaining-tokens"),
+            .provider_request_id = try optionalHeaderText(headers, "x-request-id"),
+        },
+        .values = recorded,
     };
+}
+
+fn isMetadataHeader(name: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(name, "retry-after") or
+        std.ascii.eqlIgnoreCase(name, "x-ratelimit-remaining-requests") or
+        std.ascii.eqlIgnoreCase(name, "x-ratelimit-remaining-tokens") or
+        std.ascii.eqlIgnoreCase(name, "x-request-id");
 }
 
 fn optionalHeaderText(headers: yaml.MappingNode, name: []const u8) !?http.MetadataText {
@@ -152,11 +192,12 @@ fn optionalHeaderInteger(headers: yaml.MappingNode, name: []const u8) !?u64 {
     };
 }
 
-fn writeMetadata(writer: *std.Io.Writer, metadata: http.ResponseMetadata) !void {
+fn writeResponseHeaders(writer: *std.Io.Writer, metadata: http.ResponseMetadata, headers: []const http.Header) !void {
     if (metadata.retry_after_seconds == null and
         metadata.rate_limit_remaining_requests == null and
         metadata.rate_limit_remaining_tokens == null and
-        metadata.provider_request_id == null)
+        metadata.provider_request_id == null and
+        headers.len == 0)
     {
         return writer.writeAll("    headers: {}\n");
     }
@@ -168,6 +209,25 @@ fn writeMetadata(writer: *std.Io.Writer, metadata: http.ResponseMetadata) !void 
         try writer.writeAll("      x-request-id:\n      - ");
         try writeQuoted(writer, request_id);
         try writer.writeByte('\n');
+    }
+    for (headers, 0..) |header, index| {
+        if (header.isSensitive() or isMetadataHeader(header.name)) return error.InvalidCassette;
+        var duplicate = false;
+        for (headers[0..index]) |previous| {
+            if (std.ascii.eqlIgnoreCase(previous.name, header.name)) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) continue;
+        try writer.writeAll("      ");
+        try writeYamlKey(writer, header.name);
+        try writer.writeAll(":\n");
+        for (headers) |value| if (std.ascii.eqlIgnoreCase(value.name, header.name)) {
+            try writer.writeAll("      - ");
+            try writeQuoted(writer, value.value);
+            try writer.writeByte('\n');
+        };
     }
 }
 

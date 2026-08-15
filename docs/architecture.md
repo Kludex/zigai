@@ -599,5 +599,13 @@ The test-only `RecordingTransport` captures successful request and response
 bodies. Optional filters run only on recorded copies; the JSON field filter
 recursively omits configured volatile keys.
 
+Recording and replay share request URL and body filters, so sanitized fixtures
+remain strict without requiring secrets at replay time. File tests normalize
+multipart boundaries, replace payload bytes, and map resumable-upload session
+URLs to deterministic values. Response headers are absent by default and can be
+captured only through an explicit safe-header filter; conventional sensitive
+headers are rejected. Production transports and provider code do not depend on
+these policies.
+
 Strict body matching is a feature. A provider wire-format change should be an
 intentional cassette update, not an invisible test success.

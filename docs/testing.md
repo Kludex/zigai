@@ -85,6 +85,14 @@ responses use literal text blocks, and binary bodies are explicit. Headers are
 omitted by default. Review request and response content before committing a new
 cassette.
 
+File recordings use the same request filters during recording and replay.
+Multipart boundaries are normalized, uploaded bytes are replaced with an
+explicit redaction marker, and provider-issued upload URLs are mapped to stable
+fixture URLs. Response headers remain opt-in: an allowlist can retain a safe
+value or replace it, while sensitive header names are rejected even when a rule
+selects them. The live caller still receives the original provider header; only
+the recorded copy is sanitized.
+
 ## Coverage policy
 
 The gate is 100% line coverage for every executable Zig line under `src/`,

@@ -21,6 +21,105 @@ pub const BodyFilter = struct {
     }
 };
 
+pub const RequestFilters = struct {
+    url: ?BodyFilter = null,
+    body: ?BodyFilter = null,
+};
+
+pub const ResponseHeaderFilter = struct {
+    context: *const anyopaque,
+    filterFn: *const fn (context: *const anyopaque, header: http.Header) anyerror!?http.Header,
+
+    pub fn apply(self: ResponseHeaderFilter, header: http.Header) !?http.Header {
+        return self.filterFn(self.context, header);
+    }
+};
+
+pub const HeaderRule = struct {
+    name: []const u8,
+    replacement: ?[]const u8 = null,
+};
+
+/// Opt-in response-header allowlist. A rule may retain a safe value or replace
+/// it with a deterministic fixture value. Sensitive headers are always rejected.
+pub const ResponseHeaderRules = struct {
+    rules: []const HeaderRule,
+
+    pub fn filter(self: *const ResponseHeaderRules) ResponseHeaderFilter {
+        return .{ .context = self, .filterFn = apply };
+    }
+
+    fn apply(context: *const anyopaque, header: http.Header) !?http.Header {
+        const self: *const ResponseHeaderRules = @ptrCast(@alignCast(context));
+        for (self.rules) |rule| if (std.ascii.eqlIgnoreCase(rule.name, header.name)) {
+            if (header.isSensitive()) return error.SensitiveCassetteHeader;
+            return .{ .name = rule.name, .value = rule.replacement orelse header.value };
+        };
+        return null;
+    }
+};
+
+pub const PrefixRedactionFilter = struct {
+    prefix: []const u8,
+    replacement: []const u8,
+
+    pub fn bodyFilter(self: *const PrefixRedactionFilter) BodyFilter {
+        return .{ .context = self, .filterFn = apply };
+    }
+
+    fn apply(context: *const anyopaque, allocator: std.mem.Allocator, value: []const u8) ![]u8 {
+        const self: *const PrefixRedactionFilter = @ptrCast(@alignCast(context));
+        return allocator.dupe(u8, if (std.mem.startsWith(u8, value, self.prefix)) self.replacement else value);
+    }
+};
+
+/// Normalizes multipart boundaries and replaces the uploaded file payload.
+/// It targets the standard final `name="file"` part emitted by ZigAI providers.
+pub const MultipartFileFilter = struct {
+    replacement: []const u8 = "[REDACTED FILE CONTENT]",
+
+    pub fn bodyFilter(self: *const MultipartFileFilter) BodyFilter {
+        return .{ .context = self, .filterFn = apply };
+    }
+
+    fn apply(context: *const anyopaque, allocator: std.mem.Allocator, body: []const u8) ![]u8 {
+        const self: *const MultipartFileFilter = @ptrCast(@alignCast(context));
+        if (!std.mem.startsWith(u8, body, "--")) return error.InvalidMultipartCassetteBody;
+        const boundary_end = std.mem.indexOf(u8, body, "\r\n") orelse return error.InvalidMultipartCassetteBody;
+        const boundary = body[2..boundary_end];
+        if (boundary.len == 0) return error.InvalidMultipartCassetteBody;
+        const file_marker = "Content-Disposition: form-data; name=\"file\"; filename=\"";
+        const file_header = std.mem.indexOf(u8, body, file_marker) orelse return error.InvalidMultipartCassetteBody;
+        const content_offset = std.mem.indexOfPos(u8, body, file_header, "\r\n\r\n") orelse return error.InvalidMultipartCassetteBody;
+        const content_start = content_offset + 4;
+        const closing = try std.fmt.allocPrint(allocator, "\r\n--{s}--", .{boundary});
+        defer allocator.free(closing);
+        const content_end = std.mem.indexOfPos(u8, body, content_start, closing) orelse return error.InvalidMultipartCassetteBody;
+
+        var output: std.Io.Writer.Allocating = .init(allocator);
+        defer output.deinit();
+        try replaceAll(&output.writer, body[0..content_start], boundary, "zigai-redacted-boundary");
+        try output.writer.writeAll(self.replacement);
+        try replaceAll(&output.writer, body[content_end..], boundary, "zigai-redacted-boundary");
+        const redacted = try output.toOwnedSlice();
+        defer allocator.free(redacted);
+        var normalized: std.Io.Writer.Allocating = .init(allocator);
+        defer normalized.deinit();
+        try replaceAll(&normalized.writer, redacted, "\r\n", "\n");
+        return normalized.toOwnedSlice();
+    }
+};
+
+fn replaceAll(writer: *std.Io.Writer, value: []const u8, needle: []const u8, replacement: []const u8) !void {
+    var remaining = value;
+    while (std.mem.indexOf(u8, remaining, needle)) |index| {
+        try writer.writeAll(remaining[0..index]);
+        try writer.writeAll(replacement);
+        remaining = remaining[index + needle.len ..];
+    }
+    try writer.writeAll(remaining);
+}
+
 /// Removes matching object fields recursively while preserving array order and
 /// every non-matching value. The filter owns no memory and must outlive a
 /// recorder that references it.
@@ -73,9 +172,14 @@ fn containsField(field_names: []const []const u8, candidate: []const u8) bool {
 pub const ReplayTransport = struct {
     parsed: format.ParsedCassette,
     next_interaction: usize = 0,
+    request_filters: RequestFilters = .{},
 
     pub fn init(allocator: std.mem.Allocator, cassette_yaml: []const u8) !ReplayTransport {
         return .{ .parsed = try format.parse(allocator, cassette_yaml) };
+    }
+
+    pub fn initWithRequestFilters(allocator: std.mem.Allocator, cassette_yaml: []const u8, filters: RequestFilters) !ReplayTransport {
+        return .{ .parsed = try format.parse(allocator, cassette_yaml), .request_filters = filters };
     }
 
     pub fn deinit(self: *ReplayTransport) void {
@@ -95,12 +199,17 @@ pub const ReplayTransport = struct {
         const self: *ReplayTransport = @ptrCast(@alignCast(context));
         if (self.next_interaction >= self.parsed.value.interactions.len) return error.CassetteExhausted;
         const interaction = self.parsed.value.interactions[self.next_interaction];
+        const filtered_url = if (self.request_filters.url) |filter| try filter.apply(allocator, request.url) else null;
+        defer if (filtered_url) |value| allocator.free(value);
+        const filtered_body = if (self.request_filters.body) |filter| try filter.apply(allocator, request.body) else null;
+        defer if (filtered_body) |value| allocator.free(value);
         if (interaction.request.method != request.method or
-            !std.mem.eql(u8, interaction.request.url, request.url) or
-            !std.mem.eql(u8, interaction.request.body, request.body))
+            !std.mem.eql(u8, interaction.request.url, filtered_url orelse request.url) or
+            !std.mem.eql(u8, interaction.request.body, filtered_body orelse request.body))
         {
             return error.CassetteMismatch;
         }
+        if (request.response_header_sink) |sink| for (interaction.response.headers) |header| try sink.header(header);
         self.next_interaction += 1;
         const status = interaction.response.status;
         return .{
@@ -110,13 +219,18 @@ pub const ReplayTransport = struct {
         };
     }
 
-    fn streamLines(context: *anyopaque, _: std.mem.Allocator, request: http.Request, sink: http.LineSink) !http.StreamResponse {
+    fn streamLines(context: *anyopaque, allocator: std.mem.Allocator, request: http.Request, sink: http.LineSink) !http.StreamResponse {
         const self: *ReplayTransport = @ptrCast(@alignCast(context));
         if (self.next_interaction >= self.parsed.value.interactions.len) return error.CassetteExhausted;
         const interaction = self.parsed.value.interactions[self.next_interaction];
+        const filtered_url = if (self.request_filters.url) |filter| try filter.apply(allocator, request.url) else null;
+        defer if (filtered_url) |value| allocator.free(value);
+        const filtered_body = if (self.request_filters.body) |filter| try filter.apply(allocator, request.body) else null;
+        defer if (filtered_body) |value| allocator.free(value);
         if (interaction.request.method != request.method or
-            !std.mem.eql(u8, interaction.request.url, request.url) or
-            !std.mem.eql(u8, interaction.request.body, request.body)) return error.CassetteMismatch;
+            !std.mem.eql(u8, interaction.request.url, filtered_url orelse request.url) or
+            !std.mem.eql(u8, interaction.request.body, filtered_body orelse request.body)) return error.CassetteMismatch;
+        if (request.response_header_sink) |header_sink| for (interaction.response.headers) |header| try header_sink.header(header);
         self.next_interaction += 1;
         const result = http.StreamResponse{ .status = interaction.response.status, .metadata = interaction.response.metadata };
         try sink.start(result);
@@ -132,19 +246,34 @@ pub const RecordingTransport = struct {
     allocator: std.mem.Allocator,
     inner: http.Transport,
     interactions: std.ArrayList(Interaction) = .empty,
-    request_filter: ?BodyFilter = null,
+    request_filters: RequestFilters = .{},
     response_filter: ?BodyFilter = null,
+    response_header_filter: ?ResponseHeaderFilter = null,
+
+    pub const Options = struct {
+        request_filters: RequestFilters = .{},
+        response_body_filter: ?BodyFilter = null,
+        response_header_filter: ?ResponseHeaderFilter = null,
+    };
 
     pub fn init(allocator: std.mem.Allocator, inner: http.Transport) RecordingTransport {
         return .{ .allocator = allocator, .inner = inner };
     }
 
     pub fn initWithFilters(allocator: std.mem.Allocator, inner: http.Transport, request_filter: ?BodyFilter, response_filter: ?BodyFilter) RecordingTransport {
+        return initWithOptions(allocator, inner, .{
+            .request_filters = .{ .body = request_filter },
+            .response_body_filter = response_filter,
+        });
+    }
+
+    pub fn initWithOptions(allocator: std.mem.Allocator, inner: http.Transport, options: Options) RecordingTransport {
         return .{
             .allocator = allocator,
             .inner = inner,
-            .request_filter = request_filter,
-            .response_filter = response_filter,
+            .request_filters = options.request_filters,
+            .response_filter = options.response_body_filter,
+            .response_header_filter = options.response_header_filter,
         };
     }
 
@@ -153,6 +282,7 @@ pub const RecordingTransport = struct {
             self.allocator.free(interaction.request.url);
             self.allocator.free(interaction.request.body);
             self.allocator.free(interaction.response.body);
+            freeHeaders(self.allocator, interaction.response.headers);
         }
         self.interactions.deinit(self.allocator);
         self.* = undefined;
@@ -186,12 +316,23 @@ pub const RecordingTransport = struct {
 
     fn send(context: *anyopaque, allocator: std.mem.Allocator, request: http.Request) !http.Response {
         const self: *RecordingTransport = @ptrCast(@alignCast(context));
-        const response = try self.inner.send(allocator, request);
+        var header_capture = ResponseHeaderCapture{
+            .allocator = self.allocator,
+            .downstream = request.response_header_sink,
+            .filter = self.response_header_filter,
+        };
+        defer header_capture.deinit();
+        var forwarded = request;
+        forwarded.response_header_sink = header_capture.sink();
+        const response = try self.inner.send(allocator, forwarded);
         errdefer allocator.free(response.body);
 
-        const url = try self.allocator.dupe(u8, request.url);
+        const url = if (self.request_filters.url) |filter|
+            try filter.apply(self.allocator, request.url)
+        else
+            try self.allocator.dupe(u8, request.url);
         errdefer self.allocator.free(url);
-        const request_body = if (self.request_filter) |filter|
+        const request_body = if (self.request_filters.body) |filter|
             try filter.apply(self.allocator, request.body)
         else
             try self.allocator.dupe(u8, request.body);
@@ -201,6 +342,8 @@ pub const RecordingTransport = struct {
         else
             try self.allocator.dupe(u8, response.body);
         errdefer self.allocator.free(response_body);
+        const response_headers = try header_capture.take();
+        errdefer freeHeaders(self.allocator, response_headers);
 
         try self.interactions.append(self.allocator, .{
             .request = .{
@@ -212,6 +355,7 @@ pub const RecordingTransport = struct {
                 .status = response.status,
                 .body = response_body,
                 .metadata = response.metadata,
+                .headers = response_headers,
             },
         });
         return response;
@@ -221,10 +365,21 @@ pub const RecordingTransport = struct {
         const self: *RecordingTransport = @ptrCast(@alignCast(context));
         var capture = StreamCapture{ .allocator = allocator, .sink = sink };
         defer capture.body.deinit(allocator);
-        const response = try self.inner.streamLines(allocator, request, capture.lineSink());
-        const url = try self.allocator.dupe(u8, request.url);
+        var header_capture = ResponseHeaderCapture{
+            .allocator = self.allocator,
+            .downstream = request.response_header_sink,
+            .filter = self.response_header_filter,
+        };
+        defer header_capture.deinit();
+        var forwarded = request;
+        forwarded.response_header_sink = header_capture.sink();
+        const response = try self.inner.streamLines(allocator, forwarded, capture.lineSink());
+        const url = if (self.request_filters.url) |filter|
+            try filter.apply(self.allocator, request.url)
+        else
+            try self.allocator.dupe(u8, request.url);
         errdefer self.allocator.free(url);
-        const request_body = if (self.request_filter) |filter|
+        const request_body = if (self.request_filters.body) |filter|
             try filter.apply(self.allocator, request.body)
         else
             try self.allocator.dupe(u8, request.body);
@@ -234,13 +389,58 @@ pub const RecordingTransport = struct {
         else
             try self.allocator.dupe(u8, capture.body.items);
         errdefer self.allocator.free(response_body);
+        const response_headers = try header_capture.take();
+        errdefer freeHeaders(self.allocator, response_headers);
         try self.interactions.append(self.allocator, .{
             .request = .{ .method = request.method, .url = url, .body = request_body },
-            .response = .{ .status = response.status, .body = response_body, .metadata = response.metadata },
+            .response = .{ .status = response.status, .body = response_body, .metadata = response.metadata, .headers = response_headers },
         });
         return response;
     }
 };
+
+const ResponseHeaderCapture = struct {
+    allocator: std.mem.Allocator,
+    downstream: ?http.ResponseHeaderSink,
+    filter: ?ResponseHeaderFilter,
+    headers: std.ArrayList(http.Header) = .empty,
+
+    fn sink(self: *ResponseHeaderCapture) http.ResponseHeaderSink {
+        return .{ .context = self, .headerFn = header };
+    }
+
+    fn header(context: *anyopaque, value: http.Header) !void {
+        const self: *ResponseHeaderCapture = @ptrCast(@alignCast(context));
+        if (self.downstream) |downstream| try downstream.header(value);
+        const filtered = if (self.filter) |filter| try filter.apply(value) else null;
+        if (filtered) |recorded| {
+            if (recorded.isSensitive()) return error.SensitiveCassetteHeader;
+            const name = try self.allocator.dupe(u8, recorded.name);
+            errdefer self.allocator.free(name);
+            const header_value = try self.allocator.dupe(u8, recorded.value);
+            errdefer self.allocator.free(header_value);
+            try self.headers.append(self.allocator, .{ .name = name, .value = header_value });
+        }
+    }
+
+    fn take(self: *ResponseHeaderCapture) ![]const http.Header {
+        return self.headers.toOwnedSlice(self.allocator);
+    }
+
+    fn deinit(self: *ResponseHeaderCapture) void {
+        freeHeaders(self.allocator, self.headers.items);
+        self.headers.deinit(self.allocator);
+    }
+};
+
+fn freeHeaders(allocator: std.mem.Allocator, headers: []const http.Header) void {
+    if (headers.len == 0) return;
+    for (headers) |header| {
+        allocator.free(header.name);
+        allocator.free(header.value);
+    }
+    allocator.free(headers);
+}
 
 const StreamCapture = struct {
     allocator: std.mem.Allocator,
@@ -354,6 +554,10 @@ test "cassette YAML preserves retry metadata and provider request IDs" {
                 .rate_limit_remaining_requests = 0,
                 .rate_limit_remaining_tokens = 12,
                 .provider_request_id = http.MetadataText.init("req_123"),
+            }, .headers = &.{
+                .{ .name = "x-goog-upload-url", .value = "https://example.test/upload/REDACTED" },
+                .{ .name = "x-extra", .value = "one" },
+                .{ .name = "X-Extra", .value = "two" },
             } },
         }},
     });
@@ -365,6 +569,47 @@ test "cassette YAML preserves retry metadata and provider request IDs" {
     try std.testing.expectEqual(@as(?u64, 0), metadata.rate_limit_remaining_requests);
     try std.testing.expectEqual(@as(?u64, 12), metadata.rate_limit_remaining_tokens);
     try std.testing.expectEqualStrings("req_123", metadata.requestId().?);
+    const headers = parsed.value.interactions[0].response.headers;
+    try std.testing.expectEqual(@as(usize, 3), headers.len);
+    try std.testing.expectEqualStrings("https://example.test/upload/REDACTED", headers[0].value);
+    try std.testing.expectEqualStrings("one", headers[1].value);
+    try std.testing.expectEqualStrings("two", headers[2].value);
+}
+
+test "cassette response headers replay through the borrowed sink" {
+    const cassette =
+        \\version: 1
+        \\interactions:
+        \\- request:
+        \\    method: POST
+        \\    uri: https://example.test
+        \\    body:
+        \\      type: none
+        \\  response:
+        \\    status: 200
+        \\    headers:
+        \\      x-upload-url:
+        \\      - https://example.test/upload/REDACTED
+        \\    body:
+        \\      type: none
+    ;
+    const Capture = struct {
+        value: ?[]const u8 = null,
+        fn header(context: *anyopaque, value: http.Header) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.value = value.value;
+        }
+    };
+    var replay = try ReplayTransport.init(std.testing.allocator, cassette);
+    defer replay.deinit();
+    var capture: Capture = .{};
+    const response = try replay.transport().send(std.testing.allocator, .{
+        .method = .POST,
+        .url = "https://example.test",
+        .response_header_sink = .{ .context = &capture, .headerFn = Capture.header },
+    });
+    defer std.testing.allocator.free(response.body);
+    try std.testing.expectEqualStrings("https://example.test/upload/REDACTED", capture.value.?);
 }
 
 test "cassette streaming replay and recording preserve lines" {
@@ -453,6 +698,102 @@ test "recorder creates a replayable cassette without headers" {
     defer std.testing.allocator.free(replayed.body);
     try std.testing.expectEqualStrings("response", replayed.body);
     try std.testing.expectEqual(@as(?u64, 4), replayed.metadata.rate_limit_remaining_requests);
+}
+
+test "recorder and replay share safe file request normalization" {
+    const original_url = "https://upload.test/session/private-token";
+    const redacted_url = "https://upload.test/session/REDACTED";
+    const multipart =
+        "--private-boundary\r\n" ++
+        "Content-Disposition: form-data; name=\"file\"; filename=\"note.txt\"\r\n" ++
+        "Content-Type: text/plain\r\n\r\n" ++
+        "private file bytes\r\n" ++
+        "--private-boundary--\r\n";
+    const Stub = struct {
+        fn send(_: *anyopaque, allocator: std.mem.Allocator, request: http.Request) !http.Response {
+            try request.response_header_sink.?.header(.{
+                .name = "x-upload-url",
+                .value = original_url,
+            });
+            return .{ .status = 200, .body = try allocator.dupe(u8, "ok") };
+        }
+    };
+    const Capture = struct {
+        value: ?[]const u8 = null,
+        fn header(context: *anyopaque, value: http.Header) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.value = value.value;
+        }
+    };
+    const url_filter = PrefixRedactionFilter{
+        .prefix = "https://upload.test/session/",
+        .replacement = redacted_url,
+    };
+    const multipart_filter = MultipartFileFilter{};
+    const header_rules = ResponseHeaderRules{ .rules = &.{.{
+        .name = "x-upload-url",
+        .replacement = redacted_url,
+    }} };
+    var unused: u8 = 0;
+    var recorder = RecordingTransport.initWithOptions(std.testing.allocator, .{
+        .context = &unused,
+        .sendFn = Stub.send,
+    }, .{
+        .request_filters = .{
+            .url = url_filter.bodyFilter(),
+            .body = multipart_filter.bodyFilter(),
+        },
+        .response_header_filter = header_rules.filter(),
+    });
+    defer recorder.deinit();
+    var live_capture: Capture = .{};
+    const response = try recorder.transport().send(std.testing.allocator, .{
+        .method = .POST,
+        .url = original_url,
+        .headers = &.{.{ .name = "authorization", .value = "private-api-key" }},
+        .body = multipart,
+        .response_header_sink = .{ .context = &live_capture, .headerFn = Capture.header },
+    });
+    defer std.testing.allocator.free(response.body);
+    try std.testing.expectEqualStrings(original_url, live_capture.value.?);
+
+    const yaml = try recorder.cassetteYaml(std.testing.allocator);
+    defer std.testing.allocator.free(yaml);
+    try std.testing.expect(std.mem.indexOf(u8, yaml, "private-api-key") == null);
+    try std.testing.expect(std.mem.indexOf(u8, yaml, "private-token") == null);
+    try std.testing.expect(std.mem.indexOf(u8, yaml, "private file bytes") == null);
+    try std.testing.expect(std.mem.indexOf(u8, yaml, "private-boundary") == null);
+    try std.testing.expect(std.mem.indexOf(u8, yaml, redacted_url) != null);
+    try std.testing.expect(std.mem.indexOf(u8, yaml, "[REDACTED FILE CONTENT]") != null);
+
+    var replay = try ReplayTransport.initWithRequestFilters(std.testing.allocator, yaml, .{
+        .url = url_filter.bodyFilter(),
+        .body = multipart_filter.bodyFilter(),
+    });
+    defer replay.deinit();
+    var replay_capture: Capture = .{};
+    const replayed = try replay.transport().send(std.testing.allocator, .{
+        .method = .POST,
+        .url = original_url,
+        .body = multipart,
+        .response_header_sink = .{ .context = &replay_capture, .headerFn = Capture.header },
+    });
+    defer std.testing.allocator.free(replayed.body);
+    try std.testing.expectEqualStrings(redacted_url, replay_capture.value.?);
+    try std.testing.expectEqual(@as(usize, 0), replay.remaining());
+
+    const sensitive_rules = ResponseHeaderRules{ .rules = &.{.{ .name = "set-cookie" }} };
+    try std.testing.expectError(
+        error.SensitiveCassetteHeader,
+        ResponseHeaderRules.apply(&sensitive_rules, .{ .name = "set-cookie", .value = "private" }),
+    );
+    try std.testing.expect((try ResponseHeaderRules.apply(
+        &header_rules,
+        .{ .name = "content-type", .value = "text/plain" },
+    )) == null);
+    const unchanged_url = try PrefixRedactionFilter.apply(&url_filter, std.testing.allocator, "https://example.test/other");
+    defer std.testing.allocator.free(unchanged_url);
+    try std.testing.expectEqualStrings("https://example.test/other", unchanged_url);
 }
 
 test "JSON field filters remove volatile fields recursively" {
