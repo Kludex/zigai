@@ -93,7 +93,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   progress, cancellation, deprecated sampling/elicitation compatibility, and
   capability negotiation. Deliberately omit removed ping and legacy resource
   subscription RPCs.
-- [ ] Complete the SEP-2663 MCP Tasks extension: server-directed task creation,
+- [x] Complete the SEP-2663 MCP Tasks extension: server-directed task creation,
   polling, input updates, cooperative cancellation, TTL, status subscriptions,
   routing headers, and durable resume across process restarts.
 - [ ] Harden MCP transports. Add Streamable HTTP reconnection/resumption,
