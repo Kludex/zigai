@@ -11,6 +11,7 @@ const json_limits = @import("../json.zig");
 /// Stable authorization failures raised before an MCP request is dispatched.
 pub const Error = error{
     InvalidAuthorizationIssuer,
+    InvalidAuthorizationServerMetadata,
     InvalidBearerChallenge,
     MissingAuthorizationIssuer,
     InvalidBearerToken,
@@ -19,6 +20,7 @@ pub const Error = error{
     InsecureHttpTransport,
     InvalidProtectedResourceMetadata,
     InvalidResourceUri,
+    PkceUnsupported,
 };
 
 /// HTTP deployment checks performed before parsing or dispatching JSON-RPC.
@@ -212,6 +214,17 @@ pub const ProtectedResourceMetadata = struct {
         if (!has_header) return error.InvalidProtectedResourceMetadata;
     }
 
+    pub fn validateFor(
+        self: ProtectedResourceMetadata,
+        expected_resource: []const u8,
+        url_policy: security.UrlPolicy,
+    ) !void {
+        try self.validate(url_policy);
+        if (!std.mem.eql(u8, self.resource, expected_resource)) {
+            return error.InvalidProtectedResourceMetadata;
+        }
+    }
+
     /// Serializes a standards-shaped metadata document. The caller owns it.
     pub fn stringifyAlloc(self: ProtectedResourceMetadata, allocator: std.mem.Allocator) ![]u8 {
         try self.validate(.{});
@@ -223,6 +236,89 @@ pub const ProtectedResourceMetadata = struct {
         }, .{});
     }
 };
+
+/// Borrowed authorization-server metadata needed by the MCP OAuth flow.
+pub const AuthorizationServerMetadata = struct {
+    issuer: []const u8,
+    authorization_endpoint: []const u8,
+    token_endpoint: []const u8,
+    registration_endpoint: ?[]const u8 = null,
+    code_challenge_methods_supported: []const []const u8,
+    authorization_response_iss_parameter_supported: bool = false,
+
+    pub fn validateFor(
+        self: AuthorizationServerMetadata,
+        expected_issuer: []const u8,
+        url_policy: security.UrlPolicy,
+    ) !void {
+        if (!std.mem.eql(u8, self.issuer, expected_issuer)) {
+            return error.InvalidAuthorizationIssuer;
+        }
+        try validateIssuerUrl(self.issuer, url_policy);
+        validateOAuthEndpoint(self.authorization_endpoint, url_policy) catch
+            return error.InvalidAuthorizationServerMetadata;
+        validateOAuthEndpoint(self.token_endpoint, url_policy) catch
+            return error.InvalidAuthorizationServerMetadata;
+        if (self.registration_endpoint) |endpoint| {
+            validateOAuthEndpoint(endpoint, url_policy) catch
+                return error.InvalidAuthorizationServerMetadata;
+        }
+        for (self.code_challenge_methods_supported) |method| {
+            if (std.mem.eql(u8, method, "S256")) return;
+        }
+        return error.PkceUnsupported;
+    }
+};
+
+pub const OwnedAuthorizationServerMetadata = struct {
+    arena: std.heap.ArenaAllocator,
+    value: AuthorizationServerMetadata,
+
+    pub fn deinit(self: *OwnedAuthorizationServerMetadata) void {
+        self.arena.deinit();
+        self.* = undefined;
+    }
+};
+
+/// Parses and validates RFC 8414 or OIDC discovery metadata for one issuer.
+pub fn parseAuthorizationServerMetadata(
+    allocator: std.mem.Allocator,
+    source: []const u8,
+    expected_issuer: []const u8,
+    url_policy: security.UrlPolicy,
+) !OwnedAuthorizationServerMetadata {
+    const Wire = struct {
+        issuer: []const u8,
+        authorization_endpoint: []const u8,
+        token_endpoint: []const u8,
+        registration_endpoint: ?[]const u8 = null,
+        code_challenge_methods_supported: []const []const u8,
+        authorization_response_iss_parameter_supported: bool = false,
+    };
+    var result = OwnedAuthorizationServerMetadata{
+        .arena = .init(allocator),
+        .value = undefined,
+    };
+    errdefer result.arena.deinit();
+    const wire = try json_limits.parseLeaky(
+        Wire,
+        result.arena.allocator(),
+        source,
+        json_limits.defaults.mcp_message,
+        .{ .ignore_unknown_fields = true },
+        error.InvalidAuthorizationServerMetadata,
+    );
+    result.value = .{
+        .issuer = wire.issuer,
+        .authorization_endpoint = wire.authorization_endpoint,
+        .token_endpoint = wire.token_endpoint,
+        .registration_endpoint = wire.registration_endpoint,
+        .code_challenge_methods_supported = wire.code_challenge_methods_supported,
+        .authorization_response_iss_parameter_supported = wire.authorization_response_iss_parameter_supported,
+    };
+    try result.value.validateFor(expected_issuer, url_policy);
+    return result;
+}
 
 /// Owned, bounded protected-resource metadata parsed from an RFC 9728 document.
 pub const OwnedProtectedResourceMetadata = struct {
@@ -572,6 +668,14 @@ fn validateIssuerUrl(value: []const u8, policy: security.UrlPolicy) !void {
     if (uri.query != null or uri.fragment != null) return error.InvalidAuthorizationIssuer;
 }
 
+fn validateOAuthEndpoint(value: []const u8, policy: security.UrlPolicy) !void {
+    policy.validate(value) catch return error.InvalidAuthorizationServerMetadata;
+    const uri = std.Uri.parse(value) catch return error.InvalidAuthorizationServerMetadata;
+    if (uri.fragment != null or uri.user != null or uri.password != null) {
+        return error.InvalidAuthorizationServerMetadata;
+    }
+}
+
 fn validateOrigin(value: []const u8) Error!void {
     if (value.len == 0 or std.mem.eql(u8, value, "null") or containsInvalidHeaderByte(value)) {
         return error.InvalidOrigin;
@@ -679,6 +783,11 @@ test "protected resource metadata validates and serializes" {
     defer parsed.deinit();
     try std.testing.expectEqualStrings(metadata.resource, parsed.value.resource);
     try std.testing.expectEqualStrings("tools:read", parsed.value.scopes_supported[0]);
+    try parsed.value.validateFor(metadata.resource, .{});
+    try std.testing.expectError(
+        error.InvalidProtectedResourceMetadata,
+        parsed.value.validateFor("https://other.example.com/mcp", .{}),
+    );
     try std.testing.expectError(
         error.InvalidProtectedResourceMetadata,
         parseProtectedResourceMetadata(
@@ -733,6 +842,57 @@ test "OAuth discovery URLs follow endpoint and issuer path ordering" {
     );
     defer root.deinit(std.testing.allocator);
     try std.testing.expectEqual(@as(usize, 2), root.values.len);
+}
+
+test "authorization server metadata is issuer-bound HTTPS and PKCE-capable" {
+    const source =
+        "{\"issuer\":\"https://auth.example.com/tenant\"," ++
+        "\"authorization_endpoint\":\"https://auth.example.com/tenant/authorize\"," ++
+        "\"token_endpoint\":\"https://auth.example.com/tenant/token\"," ++
+        "\"registration_endpoint\":\"https://auth.example.com/tenant/register\"," ++
+        "\"code_challenge_methods_supported\":[\"S256\"]," ++
+        "\"authorization_response_iss_parameter_supported\":true," ++
+        "\"extension\":true}";
+    var metadata = try parseAuthorizationServerMetadata(
+        std.testing.allocator,
+        source,
+        "https://auth.example.com/tenant",
+        .{},
+    );
+    defer metadata.deinit();
+    try std.testing.expect(metadata.value.authorization_response_iss_parameter_supported);
+    try std.testing.expectEqualStrings(
+        "https://auth.example.com/tenant/token",
+        metadata.value.token_endpoint,
+    );
+
+    try std.testing.expectError(
+        error.InvalidAuthorizationIssuer,
+        parseAuthorizationServerMetadata(
+            std.testing.allocator,
+            source,
+            "https://other.example.com",
+            .{},
+        ),
+    );
+    try std.testing.expectError(
+        error.PkceUnsupported,
+        (AuthorizationServerMetadata{
+            .issuer = "https://auth.example.com",
+            .authorization_endpoint = "https://auth.example.com/authorize",
+            .token_endpoint = "https://auth.example.com/token",
+            .code_challenge_methods_supported = &.{"plain"},
+        }).validateFor("https://auth.example.com", .{}),
+    );
+    try std.testing.expectError(
+        error.InvalidAuthorizationServerMetadata,
+        (AuthorizationServerMetadata{
+            .issuer = "https://auth.example.com",
+            .authorization_endpoint = "http://auth.example.com/authorize",
+            .token_endpoint = "https://auth.example.com/token",
+            .code_challenge_methods_supported = &.{"S256"},
+        }).validateFor("https://auth.example.com", .{}),
+    );
 }
 
 test "deployment policy validates TLS browser origins and request hosts" {
