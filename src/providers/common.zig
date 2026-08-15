@@ -3,6 +3,44 @@ const model_types = @import("../model.zig");
 const http = @import("../transport.zig");
 const json_limits = @import("../json.zig");
 
+/// Portable function name used to replay typed capability-load messages.
+pub const capability_load_tool_name = "load_capability";
+
+const CapabilityLoadArguments = struct {
+    id: []const u8,
+};
+
+/// Converts a typed capability-load call to the portable function-call form.
+/// The caller owns the returned call's `arguments_json` allocation.
+pub fn capabilityLoadToolCall(
+    allocator: std.mem.Allocator,
+    call: model_types.CapabilityLoadCall,
+) !model_types.ToolCall {
+    return .{
+        .id = call.call_id,
+        .name = capability_load_tool_name,
+        .arguments_json = try std.json.Stringify.valueAlloc(
+            allocator,
+            CapabilityLoadArguments{ .id = call.capability_id },
+            .{},
+        ),
+        .tool_kind = .capability_load,
+    };
+}
+
+/// Converts a typed capability-load result to the portable function result.
+pub fn capabilityLoadToolResult(result: model_types.CapabilityLoadResult) model_types.ToolResult {
+    return .{
+        .call_id = result.call_id,
+        .name = capability_load_tool_name,
+        .content = result.instructions orelse "",
+        .tool_kind = .capability_load,
+        .metadata = result.metadata,
+        .timestamp_unix_ms = result.timestamp_unix_ms,
+        .outcome = result.outcome,
+    };
+}
+
 /// Builds the portable model-visible tool description when return-schema
 /// visibility is enabled. The caller owns a non-null result.
 pub fn toolDescription(

@@ -2925,6 +2925,584 @@ test "capability composition rejects duplicate tool names" {
     try std.testing.expectEqual(@as(usize, 0), scripted.request_count);
 }
 
+test "on-demand capability loads its complete bundle on the next model request" {
+    const load_parts = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "load-research",
+        .name = "load_capability",
+        .arguments_json = "{\"id\":\"research\"}",
+    } }};
+    const search_parts = [_]zigai.model.Part{.{ .tool_call = .{
+        .id = "search-call",
+        .name = "search",
+        .arguments_json = "{}",
+    } }};
+    const final_parts = [_]zigai.model.Part{.{ .text = "researched" }};
+    const BaseInspector = struct {
+        fn inspect(_: usize, request: zigai.ModelRequest) !void {
+            try std.testing.expectEqual(@as(usize, 1), request.tools.len);
+            try std.testing.expectEqualStrings("load_capability", request.tools[0].name);
+            try std.testing.expect(std.mem.indexOf(
+                u8,
+                request.instructions[0],
+                "research: Use for detailed research.",
+            ) != null);
+        }
+    };
+    const SelectedInspector = struct {
+        fn inspect(index: usize, request: zigai.ModelRequest) !void {
+            try std.testing.expectEqual(@as(usize, 1), request.tools.len);
+            try std.testing.expectEqualStrings("search", request.tools[0].name);
+            try std.testing.expectEqual(@as(f64, 0.7), request.settings.temperature.?);
+            if (index == 0) {
+                const loaded = request.messages[2].request.parts[0].tool_return;
+                try std.testing.expectEqualStrings("load_capability", loaded.name);
+                try std.testing.expectEqual(zigai.ToolPartKind.capability_load, loaded.tool_kind.?);
+                try std.testing.expect(std.mem.indexOf(u8, loaded.content, "Research carefully.") != null);
+            } else {
+                try std.testing.expectEqualStrings("ok", request.messages[4].request.parts[0].tool_return.content);
+            }
+        }
+    };
+    var base = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &load_parts }},
+        .inspectFn = BaseInspector.inspect,
+    };
+    var selected = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &search_parts }, .{ .parts = &final_parts } },
+        .inspectFn = SelectedInspector.inspect,
+        .profile = .{ .supports_temperature = true },
+    };
+    const Selector = struct {
+        model: zigai.Model,
+        calls: usize = 0,
+
+        fn select(context: ?*anyopaque, run: zigai.CapabilityContext) !zigai.Model {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.calls += 1;
+            try std.testing.expectEqual(zigai.CapabilityScope.agent, run.scope);
+            try std.testing.expectEqualStrings("tests", run.metadata[0].value);
+            try std.testing.expectEqualSlices([]const u8, &.{"research"}, run.loaded_capability_ids);
+            return self.model;
+        }
+    };
+    const Hook = struct {
+        starts: usize = 0,
+        ends: usize = 0,
+
+        fn event(context: *anyopaque, value: zigai.LifecycleEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (value) {
+                .model_request_start => self.starts += 1,
+                .run_end => self.ends += 1,
+                else => {},
+            }
+        }
+    };
+    var selector = Selector{ .model = selected.model() };
+    var hook: Hook = .{};
+    var executions: u8 = 0;
+    const search = zigai.Tool{
+        .definition = .{ .name = "search", .description = "", .parameters_json_schema = "{}" },
+        .context = &executions,
+        .executeWithContextFn = struct {
+            fn execute(
+                context: *anyopaque,
+                allocator: std.mem.Allocator,
+                run: zigai.ToolRunContext,
+                _: []const u8,
+            ) ![]const u8 {
+                const calls: *u8 = @ptrCast(@alignCast(context));
+                calls.* += 1;
+                try std.testing.expectEqual(@as(usize, 1), run.capabilities.available_ids.len);
+                try std.testing.expectEqualStrings("research", run.capabilities.available_ids[0]);
+                try std.testing.expectEqualStrings("research", run.capabilities.loaded_ids[0]);
+                return allocator.dupe(u8, "ok");
+            }
+        }.execute,
+    };
+    var result = try (zigai.Agent{
+        .model = base.model(),
+        .capabilities = &.{.{
+            .id = "research",
+            .description = "Use for detailed research.",
+            .metadata = &.{.{ .key = "owner", .value = "tests" }},
+            .loading = .on_demand,
+            .tools = &.{search},
+            .instructions = &.{.{ .text = "Research carefully." }},
+            .hooks = &.{.{ .context = &hook, .eventFn = Hook.event }},
+            .model_settings = .{ .temperature = 0.7 },
+            .context = &selector,
+            .selectModelFn = Selector.select,
+        }},
+    }).run(std.testing.allocator, "investigate");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("researched", result.output);
+    try std.testing.expectEqual(@as(u8, 1), executions);
+    try std.testing.expectEqual(@as(usize, 1), selector.calls);
+    try std.testing.expectEqual(@as(usize, 2), hook.starts);
+    try std.testing.expectEqual(@as(usize, 1), hook.ends);
+    try std.testing.expectEqual(
+        zigai.ToolPartKind.capability_load,
+        result.messages[1].response.parts[0].tool_call.tool_kind.?,
+    );
+}
+
+test "capability scopes compose from inherited through subagent deterministically" {
+    const parts = [_]zigai.model.Part{.{ .text = "ordered" }};
+    const Inspector = struct {
+        fn inspect(_: usize, request: zigai.ModelRequest) !void {
+            try std.testing.expectEqual(@as(usize, 5), request.instructions.len);
+            const expected = [_][]const u8{ "inherited", "agent", "run", "nested", "subagent" };
+            for (expected, request.instructions) |text, actual| {
+                try std.testing.expectEqualStrings(text, actual);
+            }
+            try std.testing.expectEqual(@as(f64, 0.7), request.settings.temperature.?);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .inspectFn = Inspector.inspect,
+        .profile = .{ .supports_temperature = true },
+    };
+    const inherited = zigai.Capability{
+        .id = "inherited",
+        .instructions = &.{.{ .text = "inherited" }},
+        .model_settings = .{ .temperature = 0.1 },
+    };
+    const agent_capability = zigai.Capability{
+        .id = "agent",
+        .instructions = &.{.{ .text = "agent" }},
+        .model_settings = .{ .temperature = 0.2 },
+    };
+    const run = zigai.Capability{
+        .id = "run",
+        .instructions = &.{.{ .text = "run" }},
+        .model_settings = .{ .temperature = 0.3 },
+    };
+    const nested = zigai.Capability{
+        .id = "nested",
+        .instructions = &.{.{ .text = "nested" }},
+        .model_settings = .{ .temperature = 0.4 },
+    };
+    const subagent = zigai.Capability{
+        .id = "subagent",
+        .instructions = &.{.{ .text = "subagent" }},
+        .model_settings = .{ .temperature = 0.5 },
+    };
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .capabilities = &.{agent_capability},
+        .model_settings = .{ .temperature = 0.6 },
+    }).runWithOptions(std.testing.allocator, "compose", .{
+        .capabilities = &.{run},
+        .capability_layers = &.{
+            .{ .scope = .subagent, .capabilities = &.{subagent} },
+            .{ .scope = .nested, .capabilities = &.{nested} },
+            .{ .scope = .inherited, .capabilities = &.{inherited} },
+        },
+        .model_settings = .{ .temperature = 0.7 },
+    });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("ordered", result.output);
+}
+
+test "loaded capability activates native tools toolsets policies processors and validators together" {
+    const load_parts = [_]zigai.Part{.{ .tool_call = .{
+        .id = "load-bundle",
+        .name = "load_capability",
+        .arguments_json = "{\"id\":\"bundle\"}",
+    } }};
+    const final_parts = [_]zigai.Part{.{ .text = "raw" }};
+    const Inspector = struct {
+        fn inspect(_: usize, request: zigai.ModelRequest) !void {
+            try std.testing.expectEqual(@as(usize, 2), request.tools.len);
+            try std.testing.expectEqualStrings("direct", request.tools[0].name);
+            try std.testing.expectEqualStrings("toolset", request.tools[1].name);
+            try std.testing.expectEqualStrings("active", request.tools[0].description);
+            try std.testing.expectEqualStrings("active", request.tools[1].description);
+            try std.testing.expectEqual(@as(usize, 1), request.builtin_tools.len);
+            try std.testing.expectEqual(zigai.BuiltinToolKind.web_search, request.builtin_tools[0].kind());
+        }
+    };
+    var base = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &load_parts }} };
+    var selected = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &final_parts }},
+        .inspectFn = Inspector.inspect,
+        .profile = .{ .builtin_tools = zigai.ModelProfile.BuiltinToolSet.initMany(&.{.web_search}) },
+    };
+    const State = struct {
+        model: zigai.Model,
+        history_calls: usize = 0,
+        policy_calls: usize = 0,
+        validator_calls: usize = 0,
+        hook_starts: usize = 0,
+
+        fn select(context: ?*anyopaque, _: zigai.CapabilityContext) !zigai.Model {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            return self.model;
+        }
+
+        fn process(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            _: zigai.HistoryContext,
+            messages: []const zigai.Message,
+        ) ![]const zigai.Message {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.history_calls += 1;
+            return messages;
+        }
+
+        fn policy(context: *anyopaque, _: std.mem.Allocator, event: zigai.ToolPolicyEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event) {
+                .prepare => |prepared| {
+                    self.policy_calls += 1;
+                    prepared.tool.definition.description = "active";
+                },
+                else => {},
+            }
+        }
+
+        fn validate(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            run: zigai.OutputRunContext,
+            _: ?[]const u8,
+            output: []const u8,
+        ) !zigai.OutputValidatorResult {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.validator_calls += 1;
+            try std.testing.expectEqualStrings("raw", output);
+            try std.testing.expectEqualStrings("bundle", run.capabilities.loaded_ids[0]);
+            return .{ .output = "validated" };
+        }
+
+        fn hook(context: *anyopaque, event: zigai.LifecycleEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event) {
+                .model_request_start => self.hook_starts += 1,
+                else => {},
+            }
+        }
+    };
+    var state = State{ .model = selected.model() };
+    const direct = zigai.Tool{
+        .definition = .{ .name = "direct", .description = "", .parameters_json_schema = "{}" },
+        .context = &state,
+    };
+    const toolset_tool = zigai.Tool{
+        .definition = .{ .name = "toolset", .description = "", .parameters_json_schema = "{}" },
+        .context = &state,
+    };
+    const native = [_]zigai.BuiltinTool{.{ .web_search = .{} }};
+    const toolset = zigai.Toolset{ .tools = &.{toolset_tool} };
+    const processor = zigai.HistoryProcessor{ .custom = .{
+        .context = &state,
+        .processFn = State.process,
+    } };
+    const validator = zigai.OutputValidator{ .context = &state, .validateFn = State.validate };
+    var result = try (zigai.Agent{
+        .model = base.model(),
+        .capabilities = &.{.{
+            .id = "bundle",
+            .description = "complete bundle",
+            .loading = .on_demand,
+            .tools = &.{direct},
+            .builtin_tools = &native,
+            .toolsets = &.{toolset},
+            .hooks = &.{.{ .context = &state, .eventFn = State.hook }},
+            .tool_policies = &.{.{ .context = &state, .applyFn = State.policy }},
+            .history_processors = &.{processor},
+            .output_validators = &.{validator},
+            .context = &state,
+            .selectModelFn = State.select,
+        }},
+    }).run(std.testing.allocator, "load all");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("validated", result.output);
+    try std.testing.expectEqual(@as(usize, 1), state.history_calls);
+    try std.testing.expectEqual(@as(usize, 2), state.policy_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.validator_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.hook_starts);
+}
+
+test "capability graph failures stop before the first model request" {
+    const parts = [_]zigai.model.Part{.{ .text = "unused" }};
+
+    var duplicate_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    try std.testing.expectError(zigai.Agent.Error.DuplicateCapabilityId, (zigai.Agent{
+        .model = duplicate_model.model(),
+        .capabilities = &.{
+            .{ .id = "same" },
+            .{ .id = "same" },
+        },
+    }).run(std.testing.allocator, "duplicate"));
+    try std.testing.expectEqual(@as(usize, 0), duplicate_model.request_count);
+
+    var dependency_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    try std.testing.expectError(zigai.Agent.Error.MissingCapabilityDependency, (zigai.Agent{
+        .model = dependency_model.model(),
+        .capabilities = &.{.{ .id = "child", .dependencies = &.{"missing"} }},
+    }).run(std.testing.allocator, "dependency"));
+    try std.testing.expectEqual(@as(usize, 0), dependency_model.request_count);
+
+    var cycle_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    try std.testing.expectError(zigai.Agent.Error.CapabilityDependencyCycle, (zigai.Agent{
+        .model = cycle_model.model(),
+        .capabilities = &.{
+            .{ .id = "one", .dependencies = &.{"two"} },
+            .{ .id = "two", .dependencies = &.{"one"} },
+        },
+    }).run(std.testing.allocator, "cycle"));
+    try std.testing.expectEqual(@as(usize, 0), cycle_model.request_count);
+
+    var conflict_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    try std.testing.expectError(zigai.Agent.Error.CapabilityConflict, (zigai.Agent{
+        .model = conflict_model.model(),
+        .capabilities = &.{
+            .{ .id = "online", .conflicts = &.{"offline"} },
+            .{ .id = "offline" },
+        },
+    }).run(std.testing.allocator, "conflict"));
+    try std.testing.expectEqual(@as(usize, 0), conflict_model.request_count);
+
+    var reserved_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    var calls: u8 = 0;
+    var reserved_tool = successfulTool(&calls);
+    reserved_tool.definition.name = "load_capability";
+    const loaded_history = [_]zigai.Message{
+        .{ .response = .{ .parts = &.{.{ .tool_call = .{
+            .id = "loaded",
+            .name = "load_capability",
+            .arguments_json = "{\"id\":\"restored\"}",
+            .tool_kind = .capability_load,
+        } }} } },
+        .{ .request = .{ .parts = &.{.{ .tool_return = .{
+            .call_id = "loaded",
+            .name = "load_capability",
+            .content = "loaded",
+            .tool_kind = .capability_load,
+        } }} } },
+    };
+    try std.testing.expectError(zigai.Agent.Error.DuplicateToolName, (zigai.Agent{
+        .model = reserved_model.model(),
+        .tools = &.{reserved_tool},
+        .capabilities = &.{.{
+            .id = "restored",
+            .description = "Restored capability.",
+            .loading = .on_demand,
+        }},
+    }).runWithOptions(std.testing.allocator, "reserved", .{ .message_history = &loaded_history }));
+    try std.testing.expectEqual(@as(usize, 0), reserved_model.request_count);
+}
+
+test "an on-demand conflict fails without partially activating its bundle" {
+    const load_online = [_]zigai.Part{.{ .tool_call = .{
+        .id = "load-online",
+        .name = "load_capability",
+        .arguments_json = "{\"id\":\"online\"}",
+    } }};
+    const load_offline = [_]zigai.Part{.{ .tool_call = .{
+        .id = "load-offline",
+        .name = "load_capability",
+        .arguments_json = "{\"id\":\"offline\"}",
+    } }};
+    const final_parts = [_]zigai.Part{.{ .text = "kept online" }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.ModelRequest) !void {
+            if (index == 0) {
+                try std.testing.expectEqual(@as(usize, 1), request.tools.len);
+                try std.testing.expectEqualStrings("load_capability", request.tools[0].name);
+                return;
+            }
+            try std.testing.expectEqual(@as(usize, 2), request.tools.len);
+            try std.testing.expectEqualStrings("online_tool", request.tools[0].name);
+            try std.testing.expectEqualStrings("load_capability", request.tools[1].name);
+            if (index == 2) {
+                const result = request.messages[4].request.parts[0].tool_return;
+                try std.testing.expectEqual(zigai.ToolOutcome.failed, result.effectiveOutcome());
+                try std.testing.expect(std.mem.indexOf(u8, result.content, "CapabilityConflict") != null);
+            }
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{
+            .{ .parts = &load_online },
+            .{ .parts = &load_offline },
+            .{ .parts = &final_parts },
+        },
+        .inspectFn = Inspector.inspect,
+    };
+    var calls: u8 = 0;
+    var online_tool = successfulTool(&calls);
+    online_tool.definition.name = "online_tool";
+    var offline_tool = successfulTool(&calls);
+    offline_tool.definition.name = "offline_tool";
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .capabilities = &.{
+            .{
+                .id = "online",
+                .description = "Online mode.",
+                .loading = .on_demand,
+                .conflicts = &.{"offline"},
+                .tools = &.{online_tool},
+            },
+            .{
+                .id = "offline",
+                .description = "Offline mode.",
+                .loading = .on_demand,
+                .tools = &.{offline_tool},
+            },
+        },
+    }).run(std.testing.allocator, "choose a mode");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("kept online", result.output);
+    try std.testing.expectEqual(@as(u8, 0), calls);
+}
+
+test "on-demand dependencies load together and history controls retention" {
+    const load_parts = [_]zigai.model.Part{.{ .capability_load_call = .{
+        .call_id = "load-child",
+        .capability_id = "child",
+    } }};
+    const final_parts = [_]zigai.model.Part{.{ .text = "loaded" }};
+    const InitialInspector = struct {
+        fn inspect(index: usize, request: zigai.ModelRequest) !void {
+            if (index == 0) {
+                try std.testing.expectEqual(@as(usize, 1), request.tools.len);
+                try std.testing.expectEqualStrings("load_capability", request.tools[0].name);
+                return;
+            }
+            try std.testing.expectEqual(@as(usize, 2), request.tools.len);
+            try std.testing.expectEqualStrings("base_tool", request.tools[0].name);
+            try std.testing.expectEqualStrings("child_tool", request.tools[1].name);
+            const result = request.messages[2].request.parts[0].tool_return.content;
+            const base_position = std.mem.indexOf(u8, result, "base instructions").?;
+            const child_position = std.mem.indexOf(u8, result, "child instructions").?;
+            try std.testing.expect(base_position < child_position);
+        }
+    };
+    var initial = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &load_parts }, .{ .parts = &final_parts } },
+        .inspectFn = InitialInspector.inspect,
+    };
+    var calls: u8 = 0;
+    var base_tool = successfulTool(&calls);
+    base_tool.definition.name = "base_tool";
+    var child_tool = successfulTool(&calls);
+    child_tool.definition.name = "child_tool";
+    const persistent = [_]zigai.Capability{
+        .{
+            .id = "base",
+            .description = "base",
+            .loading = .on_demand,
+            .tools = &.{base_tool},
+            .instructions = &.{.{ .text = "base instructions" }},
+        },
+        .{
+            .id = "child",
+            .description = "child",
+            .dependencies = &.{"base"},
+            .loading = .on_demand,
+            .tools = &.{child_tool},
+            .instructions = &.{.{ .text = "child instructions" }},
+        },
+    };
+    var first = try (zigai.Agent{ .model = initial.model(), .capabilities = &persistent }).run(
+        std.testing.allocator,
+        "load",
+    );
+    defer first.deinit();
+
+    const ReplayInspector = struct {
+        fn inspect(_: usize, request: zigai.ModelRequest) !void {
+            try std.testing.expectEqual(@as(usize, 2), request.tools.len);
+            try std.testing.expectEqualStrings("base_tool", request.tools[0].name);
+            try std.testing.expectEqualStrings("child_tool", request.tools[1].name);
+        }
+    };
+    var replay = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &final_parts }},
+        .inspectFn = ReplayInspector.inspect,
+    };
+    var replayed = try (zigai.Agent{ .model = replay.model(), .capabilities = &persistent }).runWithOptions(
+        std.testing.allocator,
+        "continue",
+        .{ .message_history = first.messages },
+    );
+    defer replayed.deinit();
+
+    var ephemeral_capabilities = persistent;
+    ephemeral_capabilities[0].unload_policy = .run_end;
+    ephemeral_capabilities[1].unload_policy = .run_end;
+    const EphemeralInspector = struct {
+        fn inspect(_: usize, request: zigai.ModelRequest) !void {
+            try std.testing.expectEqual(@as(usize, 1), request.tools.len);
+            try std.testing.expectEqualStrings("load_capability", request.tools[0].name);
+        }
+    };
+    var ephemeral = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &final_parts }},
+        .inspectFn = EphemeralInspector.inspect,
+    };
+    var forgotten = try (zigai.Agent{
+        .model = ephemeral.model(),
+        .capabilities = &ephemeral_capabilities,
+    }).runWithOptions(std.testing.allocator, "new run", .{ .message_history = first.messages });
+    defer forgotten.deinit();
+}
+
+test "run-end capability remains loaded across a paused-run continuation" {
+    const load_parts = [_]zigai.Part{.{ .tool_call = .{
+        .id = "load-sensitive",
+        .name = "load_capability",
+        .arguments_json = "{\"id\":\"sensitive\"}",
+    } }};
+    const approval_parts = [_]zigai.Part{.{ .tool_call = .{
+        .id = "approve-sensitive",
+        .name = "sensitive_action",
+        .arguments_json = "{}",
+    } }};
+    const final_parts = [_]zigai.Part{.{ .text = "approved" }};
+    var scripted = zigai.testing.ScriptedModel{ .responses = &.{
+        .{ .parts = &load_parts },
+        .{ .parts = &approval_parts },
+        .{ .parts = &final_parts },
+    } };
+    var executions: u8 = 0;
+    var tool = successfulTool(&executions);
+    tool.definition.name = "sensitive_action";
+    tool.execution = .requires_approval;
+    const agent = zigai.Agent{
+        .model = scripted.model(),
+        .capabilities = &.{.{
+            .id = "sensitive",
+            .description = "sensitive workflow",
+            .loading = .on_demand,
+            .unload_policy = .run_end,
+            .tools = &.{tool},
+        }},
+    };
+    var first = try agent.runUntilPause(std.testing.allocator, "act");
+    defer first.deinit();
+    const state = switch (first) {
+        .complete => return error.ExpectedPausedRun,
+        .paused => |paused| paused.state_json,
+    };
+    var resumed = try agent.resumeRun(std.testing.allocator, state, &.{.{
+        .call_id = "approve-sensitive",
+        .action = .approve,
+    }});
+    defer resumed.deinit();
+    switch (resumed) {
+        .paused => return error.ExpectedCompletedRun,
+        .complete => |result| try std.testing.expectEqualStrings("approved", result.output),
+    }
+    try std.testing.expectEqual(@as(u8, 1), executions);
+}
+
 test "static and dynamic toolsets prepare namespaced tools for each model step" {
     const Dependencies = struct { tenant: []const u8 };
     const State = struct {

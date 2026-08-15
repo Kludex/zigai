@@ -9,6 +9,8 @@ pub const RunContext = struct {
     usage: model.RunUsage = .{},
     model_requests: usize = 0,
     dependencies: ?*anyopaque = null,
+    /// Active and on-demand-loaded capability IDs for this model step.
+    capabilities: model.CapabilitySnapshot = .{},
     control: model.RunControl = .{},
 
     pub fn dependency(self: RunContext, comptime T: type) ?*T {

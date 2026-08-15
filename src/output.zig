@@ -24,6 +24,8 @@ pub const RunContext = struct {
     messages: []const model_types.Message,
     usage: model_types.RunUsage = .{},
     model_requests: usize = 0,
+    /// Active and on-demand-loaded capability IDs for this model step.
+    capabilities: model_types.CapabilitySnapshot = .{},
     partial_output: bool = false,
     control: model_types.RunControl = .{},
 

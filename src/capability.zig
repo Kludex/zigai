@@ -32,6 +32,14 @@ pub const Scope = enum {
     subagent,
 };
 
+/// Borrowed progressive-disclosure state exposed to run callbacks and tools.
+pub const Snapshot = struct {
+    /// Stable IDs whose complete bundles are currently active.
+    available_ids: []const []const u8 = &.{},
+    /// Active IDs that entered through on-demand loading.
+    loaded_ids: []const []const u8 = &.{},
+};
+
 /// Stable discovery and composition data for one capability implementation.
 pub const Descriptor = struct {
     /// Stable identifier used by dependencies and on-demand loading.
@@ -44,25 +52,36 @@ pub const Descriptor = struct {
     dependencies: []const []const u8 = &.{},
     /// Capability IDs that may not be active at the same time.
     conflicts: []const []const u8 = &.{},
+    /// Whether the implementation starts active or is disclosed by name first.
     loading: Loading = .eager,
+    /// Whether history reconstructs a successful load in later invocations.
     unload_policy: UnloadPolicy = .history,
 };
 
 /// One descriptor in its deterministic composition layer and source order.
 pub const Entry = struct {
+    /// Borrowed identity and dependency data.
     descriptor: Descriptor,
+    /// Fixed composition tier for diagnostics and deterministic ordering.
     scope: Scope,
+    /// Declaration position inside the source layer.
     source_index: usize,
 };
 
+/// Stable categories returned by registry validation and load planning.
 pub const DiagnosticKind = enum {
     too_many_capabilities,
+    too_many_metadata,
     too_many_dependencies,
+    too_many_conflicts,
     invalid_id,
     missing_id,
     duplicate_id,
     duplicate_metadata,
+    duplicate_dependency,
+    duplicate_conflict,
     missing_dependency,
+    missing_conflict,
     dependency_cycle,
     self_conflict,
     active_conflict,
@@ -72,16 +91,28 @@ pub const DiagnosticKind = enum {
 
 /// Borrowed details for the first deterministic registry or load failure.
 pub const Diagnostic = struct {
+    /// Machine-readable failure category.
     kind: DiagnosticKind,
+    /// Capability primarily responsible for the failure, when known.
     capability_id: ?[]const u8 = null,
+    /// Dependency, conflict, or metadata key related to the failure.
     related_id: ?[]const u8 = null,
+    /// Composition scope of `capability_id`.
     scope: ?Scope = null,
+    /// Composition scope of `related_id` when it identifies a capability.
     related_scope: ?Scope = null,
 };
 
+/// Defensive limits applied before dependency traversal.
 pub const Limits = struct {
+    /// Maximum number of composed registry entries.
     max_capabilities: usize = 256,
+    /// Maximum application metadata entries on any one capability.
+    max_metadata_per_capability: usize = 64,
+    /// Maximum direct dependency count on any one capability.
     max_dependencies_per_capability: usize = 64,
+    /// Maximum direct conflict count on any one capability.
+    max_conflicts_per_capability: usize = 64,
 };
 
 /// Arena-owned dependency order or a borrowed diagnostic.
@@ -103,7 +134,9 @@ pub const LoadResolution = struct {
 
 /// Borrowed registry view. Entry order is the composition order.
 pub const Registry = struct {
+    /// Borrowed entries in deterministic composition order.
     entries: []const Entry,
+    /// Validation bounds for untrusted or generated registries.
     limits: Limits = .{},
 
     /// Returns the first structural problem, or null when the registry is valid.
@@ -111,8 +144,18 @@ pub const Registry = struct {
         if (self.entries.len > self.limits.max_capabilities) return .{ .kind = .too_many_capabilities };
         for (self.entries, 0..) |entry, index| {
             const descriptor = entry.descriptor;
+            if (descriptor.metadata.len > self.limits.max_metadata_per_capability) return .{
+                .kind = .too_many_metadata,
+                .capability_id = descriptor.id,
+                .scope = entry.scope,
+            };
             if (descriptor.dependencies.len > self.limits.max_dependencies_per_capability) return .{
                 .kind = .too_many_dependencies,
+                .capability_id = descriptor.id,
+                .scope = entry.scope,
+            };
+            if (descriptor.conflicts.len > self.limits.max_conflicts_per_capability) return .{
+                .kind = .too_many_conflicts,
                 .capability_id = descriptor.id,
                 .scope = entry.scope,
             };
@@ -145,7 +188,15 @@ pub const Registry = struct {
                         };
                     }
                 }
-                for (descriptor.dependencies) |dependency| {
+                for (descriptor.dependencies, 0..) |dependency, dependency_index| {
+                    for (descriptor.dependencies[0..dependency_index]) |previous| {
+                        if (std.mem.eql(u8, previous, dependency)) return .{
+                            .kind = .duplicate_dependency,
+                            .capability_id = id,
+                            .related_id = dependency,
+                            .scope = entry.scope,
+                        };
+                    }
                     if (self.findIndex(dependency) == null) return .{
                         .kind = .missing_dependency,
                         .capability_id = id,
@@ -153,9 +204,23 @@ pub const Registry = struct {
                         .scope = entry.scope,
                     };
                 }
-                for (descriptor.conflicts) |conflict| {
+                for (descriptor.conflicts, 0..) |conflict, conflict_index| {
+                    for (descriptor.conflicts[0..conflict_index]) |previous| {
+                        if (std.mem.eql(u8, previous, conflict)) return .{
+                            .kind = .duplicate_conflict,
+                            .capability_id = id,
+                            .related_id = conflict,
+                            .scope = entry.scope,
+                        };
+                    }
                     if (std.mem.eql(u8, id, conflict)) return .{
                         .kind = .self_conflict,
+                        .capability_id = id,
+                        .related_id = conflict,
+                        .scope = entry.scope,
+                    };
+                    if (self.findIndex(conflict) == null) return .{
+                        .kind = .missing_conflict,
                         .capability_id = id,
                         .related_id = conflict,
                         .scope = entry.scope,
@@ -208,6 +273,7 @@ pub const Registry = struct {
         return .{ .arena = arena, .outcome = .{ .plan = try plan.toOwnedSlice(arena.allocator()) } };
     }
 
+    /// Returns the composition index for `id`, or null when it is unknown.
     pub fn findIndex(self: Registry, id: []const u8) ?usize {
         for (self.entries, 0..) |entry, index| {
             if (entry.descriptor.id) |candidate| {
@@ -355,6 +421,56 @@ test "registry resolves dependencies first and reports active conflicts" {
 }
 
 test "registry reports every structural diagnostic" {
+    const unnamed = [_]Entry{.{
+        .descriptor = .{},
+        .scope = .agent,
+        .source_index = 0,
+    }};
+    try std.testing.expectEqual(
+        @as(?Diagnostic, null),
+        try (Registry{ .entries = &unnamed }).diagnose(std.testing.allocator),
+    );
+    try std.testing.expectEqual(
+        DiagnosticKind.too_many_capabilities,
+        (try (Registry{ .entries = &unnamed, .limits = .{ .max_capabilities = 0 } }).diagnose(
+            std.testing.allocator,
+        )).?.kind,
+    );
+    const excessive_dependencies = [_]Entry{.{
+        .descriptor = .{ .id = "limited", .dependencies = &.{"limited"} },
+        .scope = .agent,
+        .source_index = 0,
+    }};
+    try std.testing.expectEqual(
+        DiagnosticKind.too_many_dependencies,
+        (try (Registry{
+            .entries = &excessive_dependencies,
+            .limits = .{ .max_dependencies_per_capability = 0 },
+        }).diagnose(std.testing.allocator)).?.kind,
+    );
+    const metadata_limit = [_]Entry{.{
+        .descriptor = .{ .id = "limited", .metadata = &.{.{ .key = "owner", .value = "app" }} },
+        .scope = .agent,
+        .source_index = 0,
+    }};
+    try std.testing.expectEqual(
+        DiagnosticKind.too_many_metadata,
+        (try (Registry{
+            .entries = &metadata_limit,
+            .limits = .{ .max_metadata_per_capability = 0 },
+        }).diagnose(std.testing.allocator)).?.kind,
+    );
+    const conflict_limit = [_]Entry{
+        .{ .descriptor = .{ .id = "limited", .conflicts = &.{"other"} }, .scope = .agent, .source_index = 0 },
+        .{ .descriptor = .{ .id = "other" }, .scope = .run, .source_index = 0 },
+    };
+    try std.testing.expectEqual(
+        DiagnosticKind.too_many_conflicts,
+        (try (Registry{
+            .entries = &conflict_limit,
+            .limits = .{ .max_conflicts_per_capability = 0 },
+        }).diagnose(std.testing.allocator)).?.kind,
+    );
     const missing_id = [_]Entry{.{
         .descriptor = .{ .loading = .on_demand },
         .scope = .agent,
@@ -372,6 +488,15 @@ test "registry reports every structural diagnostic" {
     try std.testing.expectEqual(
         DiagnosticKind.invalid_id,
         (try (Registry{ .entries = &invalid_id }).diagnose(std.testing.allocator)).?.kind,
+    );
+    const empty_id = [_]Entry{.{
+        .descriptor = .{ .id = "" },
+        .scope = .agent,
+        .source_index = 0,
+    }};
+    try std.testing.expectEqual(
+        DiagnosticKind.invalid_id,
+        (try (Registry{ .entries = &empty_id }).diagnose(std.testing.allocator)).?.kind,
     );
     const metadata = [_]Metadata{
         .{ .key = "owner", .value = "one" },
@@ -395,6 +520,14 @@ test "registry reports every structural diagnostic" {
         DiagnosticKind.missing_dependency,
         (try (Registry{ .entries = &missing_dependency }).diagnose(std.testing.allocator)).?.kind,
     );
+    const duplicate_dependency = [_]Entry{
+        .{ .descriptor = .{ .id = "base" }, .scope = .agent, .source_index = 0 },
+        .{ .descriptor = .{ .id = "child", .dependencies = &.{ "base", "base" } }, .scope = .run, .source_index = 0 },
+    };
+    try std.testing.expectEqual(
+        DiagnosticKind.duplicate_dependency,
+        (try (Registry{ .entries = &duplicate_dependency }).diagnose(std.testing.allocator)).?.kind,
+    );
     const self_conflict = [_]Entry{.{
         .descriptor = .{ .id = "valid", .conflicts = &.{"valid"} },
         .scope = .agent,
@@ -404,6 +537,82 @@ test "registry reports every structural diagnostic" {
         DiagnosticKind.self_conflict,
         (try (Registry{ .entries = &self_conflict }).diagnose(std.testing.allocator)).?.kind,
     );
+    const missing_conflict = [_]Entry{.{
+        .descriptor = .{ .id = "online", .conflicts = &.{"offline"} },
+        .scope = .agent,
+        .source_index = 0,
+    }};
+    try std.testing.expectEqual(
+        DiagnosticKind.missing_conflict,
+        (try (Registry{ .entries = &missing_conflict }).diagnose(std.testing.allocator)).?.kind,
+    );
+    const duplicate_conflict = [_]Entry{
+        .{ .descriptor = .{ .id = "online", .conflicts = &.{ "offline", "offline" } }, .scope = .agent, .source_index = 0 },
+        .{ .descriptor = .{ .id = "offline" }, .scope = .run, .source_index = 0 },
+    };
+    try std.testing.expectEqual(
+        DiagnosticKind.duplicate_conflict,
+        (try (Registry{ .entries = &duplicate_conflict }).diagnose(std.testing.allocator)).?.kind,
+    );
+}
+
+test "registry reports invalid load state unknown IDs and reverse conflicts" {
+    const entries = [_]Entry{
+        .{ .descriptor = .{ .id = "online" }, .scope = .agent, .source_index = 0 },
+        .{ .descriptor = .{ .id = "offline", .conflicts = &.{"online"} }, .scope = .run, .source_index = 0 },
+    };
+    const registry = Registry{ .entries = &entries };
+
+    var invalid_state = try registry.resolve(std.testing.allocator, "online", &.{false});
+    defer invalid_state.deinit();
+    try std.testing.expectEqual(DiagnosticKind.invalid_active_state, invalid_state.outcome.diagnostic.kind);
+
+    var unknown = try registry.resolve(std.testing.allocator, "missing", &.{ false, false });
+    defer unknown.deinit();
+    try std.testing.expectEqual(DiagnosticKind.unknown_capability, unknown.outcome.diagnostic.kind);
+
+    var already_active = try registry.resolve(std.testing.allocator, "online", &.{ true, false });
+    defer already_active.deinit();
+    try std.testing.expectEqual(@as(usize, 0), already_active.outcome.plan.len);
+
+    var reverse_conflict = try registry.resolve(std.testing.allocator, "online", &.{ false, true });
+    defer reverse_conflict.deinit();
+    try std.testing.expectEqual(DiagnosticKind.active_conflict, reverse_conflict.outcome.diagnostic.kind);
+
+    const malformed = [_]Entry{.{
+        .descriptor = .{ .id = "child", .dependencies = &.{"missing"} },
+        .scope = .agent,
+        .source_index = 0,
+    }};
+    var malformed_resolution = try (Registry{ .entries = &malformed }).resolve(
+        std.testing.allocator,
+        "child",
+        &.{false},
+    );
+    defer malformed_resolution.deinit();
+    try std.testing.expectEqual(
+        DiagnosticKind.missing_dependency,
+        malformed_resolution.outcome.diagnostic.kind,
+    );
+}
+
+test "load traversal defends against a cycle after registry validation" {
+    const entries = [_]Entry{
+        .{ .descriptor = .{ .id = "one", .dependencies = &.{"two"} }, .scope = .agent, .source_index = 0 },
+        .{ .descriptor = .{ .id = "two", .dependencies = &.{"one"} }, .scope = .run, .source_index = 0 },
+    };
+    const registry = Registry{ .entries = &entries };
+    var colors = [_]Color{ .unvisited, .unvisited };
+    var plan: std.ArrayList(usize) = .empty;
+    defer plan.deinit(std.testing.allocator);
+    const diagnostic = (try registry.visitForLoad(
+        std.testing.allocator,
+        &colors,
+        &.{ false, false },
+        &plan,
+        0,
+    )).?;
+    try std.testing.expectEqual(DiagnosticKind.dependency_cycle, diagnostic.kind);
 }
 
 fn checkRegistryAllocationFailure(gpa: std.mem.Allocator) !void {

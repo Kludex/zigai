@@ -577,7 +577,8 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
                     else
                         return error.UnsupportedContentType;
                 },
-                .tool_search_return, .capability_load_return, .tool_availability_delta => return error.UnsupportedContentType,
+                .capability_load_return => |result| try writeToolReturn(&json, common.capabilityLoadToolResult(result)),
+                .tool_search_return, .tool_availability_delta => return error.UnsupportedContentType,
             },
             .response => |response| for (response.parts) |part| switch (part) {
                 .text => |text| {
@@ -614,7 +615,21 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
                     else
                         return error.UnsupportedContentType;
                 },
-                .audio, .video, .binary, .tool_search_call, .capability_load_call, .native_tool_search_call, .native_tool_call, .native_tool_search_return, .native_tool_return, .compaction => return error.UnsupportedContentType,
+                .capability_load_call => |call| {
+                    const portable = try common.capabilityLoadToolCall(allocator, call);
+                    defer allocator.free(portable.arguments_json);
+                    try json.beginObject();
+                    try json.objectField("type");
+                    try json.write("tool_use");
+                    try json.objectField("id");
+                    try json.write(portable.id);
+                    try json.objectField("name");
+                    try json.write(portable.name);
+                    try json.objectField("input");
+                    try common.rawJson(allocator, &json, portable.arguments_json, json_limits.defaults.tool_payload);
+                    try json.endObject();
+                },
+                .audio, .video, .binary, .tool_search_call, .native_tool_search_call, .native_tool_call, .native_tool_search_return, .native_tool_return, .compaction => return error.UnsupportedContentType,
                 .tool_call => |call| {
                     try ensureProviderPartReplayable(call.provider);
                     if (call.thought_signature != null) return error.UnsupportedContentType;
@@ -1355,6 +1370,7 @@ test "Anthropic encodes detailed message forms and rejects lossy forms" {
             .{ .retry_prompt_part = .{ .content = "retry" } },
             .{ .speech = .{ .speaker = .user, .transcript = "spoken" } },
             .{ .tool_return = .{ .call_id = "call", .name = "tool", .content = "ok" } },
+            .{ .capability_load_return = .{ .call_id = "load", .instructions = "loaded" } },
         } } },
         .{ .response = .{ .parts = &.{
             .{ .text_part = .{ .content = "answer" } },
@@ -1366,6 +1382,7 @@ test "Anthropic encodes detailed message forms and rejects lossy forms" {
             .{ .speech = .{ .speaker = .assistant, .transcript = "said" } },
             .{ .thinking = .{ .content = "think", .signature = "signature" } },
             .{ .tool_call = .{ .id = "call", .name = "tool", .arguments_json = "{}" } },
+            .{ .capability_load_call = .{ .call_id = "load", .capability_id = "weather" } },
         } } },
     };
     const body = try encodeRequest(std.testing.allocator, "claude-test", 20, .{ .messages = &messages });
@@ -1373,6 +1390,8 @@ test "Anthropic encodes detailed message forms and rejects lossy forms" {
     try std.testing.expect(std.mem.indexOf(u8, body, "file_uploaded") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "spoken") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "said") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "load_capability") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "weather") != null);
 
     const unsupported = [_]model_types.Message{
         .{ .request = .{ .parts = &.{.{ .user_prompt_part = .{ .content = .{ .video = image } } }} } },

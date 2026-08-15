@@ -296,7 +296,8 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
                 else
                     return error.InvalidRequestEncoding;
             },
-            .tool_search_return, .capability_load_return, .tool_availability_delta => return error.InvalidRequestEncoding,
+            .capability_load_return => |result| try writeToolResult(&json, common.capabilityLoadToolResult(result)),
+            .tool_search_return, .tool_availability_delta => return error.InvalidRequestEncoding,
         },
         .response => |response| try writeResponseMessage(allocator, &json, response),
     };
@@ -465,6 +466,7 @@ fn writeResponseMessage(allocator: std.mem.Allocator, json: *std.json.Stringify,
             try ensureProviderPartReplayable(call.provider);
             if (call.thought_signature != null) return error.InvalidRequestEncoding;
         },
+        .capability_load_call => {},
         .speech => |speech| {
             try ensureProviderPartReplayable(speech.provider);
             if (speech.transcript == null) return error.InvalidRequestEncoding;
@@ -479,7 +481,7 @@ fn writeResponseMessage(allocator: std.mem.Allocator, json: *std.json.Stringify,
     try json.objectField("content");
     if (text.len > 0) try json.write(text) else try json.write(null);
     var has_calls = false;
-    for (message.parts) |part| if (part == .tool_call) {
+    for (message.parts) |part| if (part == .tool_call or part == .capability_load_call) {
         has_calls = true;
         break;
     };
@@ -499,6 +501,23 @@ fn writeResponseMessage(allocator: std.mem.Allocator, json: *std.json.Stringify,
                 try json.write(call.name);
                 try json.objectField("arguments");
                 try json.write(call.arguments_json);
+                try json.endObject();
+                try json.endObject();
+            },
+            .capability_load_call => |call| {
+                const portable = try common.capabilityLoadToolCall(allocator, call);
+                defer allocator.free(portable.arguments_json);
+                try json.beginObject();
+                try json.objectField("id");
+                try json.write(portable.id);
+                try json.objectField("type");
+                try json.write("function");
+                try json.objectField("function");
+                try json.beginObject();
+                try json.objectField("name");
+                try json.write(portable.name);
+                try json.objectField("arguments");
+                try json.write(portable.arguments_json);
                 try json.endObject();
                 try json.endObject();
             },
@@ -1211,24 +1230,27 @@ test "compatible providers encode detailed text and reject rich history" {
             .{ .user_prompt_part = .{ .content = .{ .cache_point = .{} } } },
             .{ .speech = .{ .speaker = .user, .transcript = "spoken" } },
             .{ .tool_return = .{ .call_id = "call", .name = "tool", .content = "ok" } },
+            .{ .capability_load_return = .{ .call_id = "load", .instructions = "loaded" } },
         } } },
         .{ .response = .{ .parts = &.{
             .{ .text_part = .{ .content = "answer" } },
             .{ .speech = .{ .speaker = .assistant, .transcript = "said" } },
             .{ .tool_call = .{ .id = "call", .name = "tool", .arguments_json = "{}" } },
+            .{ .capability_load_call = .{ .call_id = "load", .capability_id = "weather" } },
         } } },
     };
     const body = try encodeRequest(std.testing.allocator, "model", .{ .messages = &messages });
     defer std.testing.allocator.free(body);
     try std.testing.expect(std.mem.indexOf(u8, body, "spoken") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "said") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "load_capability") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "weather") != null);
 
     const file = model_types.Content{ .source = .{ .bytes = "x" }, .media_type = "application/octet-stream" };
     const unsupported = [_]model_types.Message{
         .{ .request = .{ .parts = &.{.{ .user_prompt = .{ .image = file } }} } },
         .{ .request = .{ .parts = &.{.{ .user_prompt_part = .{ .content = .{ .image = file } } }} } },
         .{ .request = .{ .parts = &.{.{ .speech = .{ .speaker = .user } }} } },
-        .{ .request = .{ .parts = &.{.{ .capability_load_return = .{ .call_id = "load" } }} } },
         .{ .request = .{ .parts = &.{.{ .tool_return = .{
             .call_id = "call",
             .name = "tool",

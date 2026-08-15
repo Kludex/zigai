@@ -276,7 +276,8 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
                     else
                         return error.UnsupportedContentType;
                 },
-                .tool_search_return, .capability_load_return, .tool_availability_delta => return error.UnsupportedContentType,
+                .capability_load_return => |result| try writeCapabilityLoadReturn(&json, result),
+                .tool_search_return, .tool_availability_delta => return error.UnsupportedContentType,
             },
             .response => |response| for (response.parts) |part| switch (part) {
                 .text => |text| try writeTextPart(&json, text),
@@ -320,6 +321,21 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
                     }
                     try json.endObject();
                 },
+                .capability_load_call => |call| {
+                    const portable = try common.capabilityLoadToolCall(allocator, call);
+                    defer allocator.free(portable.arguments_json);
+                    try json.beginObject();
+                    try json.objectField("functionCall");
+                    try json.beginObject();
+                    try json.objectField("name");
+                    try json.write(portable.name);
+                    try json.objectField("args");
+                    try common.rawJson(allocator, &json, portable.arguments_json, json_limits.defaults.tool_payload);
+                    try json.objectField("id");
+                    try json.write(portable.id);
+                    try json.endObject();
+                    try json.endObject();
+                },
                 .speech => |speech| {
                     try ensureProviderPartReplayable(speech.provider);
                     if (speech.transcript) |text|
@@ -327,7 +343,7 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
                     else
                         return error.UnsupportedContentType;
                 },
-                .tool_search_call, .capability_load_call, .native_tool_search_call, .native_tool_call, .native_tool_search_return, .native_tool_return, .compaction => return error.UnsupportedContentType,
+                .tool_search_call, .native_tool_search_call, .native_tool_call, .native_tool_search_return, .native_tool_return, .compaction => return error.UnsupportedContentType,
             },
         }
         try json.endArray();
@@ -487,6 +503,23 @@ fn writeToolReturn(allocator: std.mem.Allocator, json: *std.json.Stringify, resu
     try json.beginObject();
     try json.objectField(if (result.isError()) "error" else "result");
     try common.rawJson(allocator, json, result.content, json_limits.defaults.tool_payload);
+    try json.endObject();
+    try json.objectField("id");
+    try json.write(result.call_id);
+    try json.endObject();
+    try json.endObject();
+}
+
+fn writeCapabilityLoadReturn(json: *std.json.Stringify, result: model_types.CapabilityLoadResult) !void {
+    try json.beginObject();
+    try json.objectField("functionResponse");
+    try json.beginObject();
+    try json.objectField("name");
+    try json.write(common.capability_load_tool_name);
+    try json.objectField("response");
+    try json.beginObject();
+    try json.objectField(if (result.outcome == .success) "result" else "error");
+    try json.write(result.instructions orelse "");
     try json.endObject();
     try json.objectField("id");
     try json.write(result.call_id);
@@ -1226,6 +1259,7 @@ test "Google encodes detailed multimodal forms and rejects local protocol parts"
             .{ .user_prompt_part = .{ .content = .{ .uploaded_file = uploaded } } },
             .{ .speech = .{ .speaker = .user, .transcript = "spoken" } },
             .{ .tool_return = .{ .call_id = "call", .name = "tool", .content = "{\"ok\":true}" } },
+            .{ .capability_load_return = .{ .call_id = "load", .instructions = "loaded" } },
         } } },
         .{ .response = .{ .parts = &.{
             .{ .text_part = .{ .content = "answer" } },
@@ -1245,6 +1279,7 @@ test "Google encodes detailed multimodal forms and rejects local protocol parts"
                 .arguments_json = "{}",
                 .thought_signature = "signature",
             } },
+            .{ .capability_load_call = .{ .call_id = "load", .capability_id = "weather" } },
         } } },
     };
     const body = try encodeRequest(std.testing.allocator, .{ .messages = &messages });
@@ -1252,10 +1287,11 @@ test "Google encodes detailed multimodal forms and rejects local protocol parts"
     try std.testing.expect(std.mem.indexOf(u8, body, "gs://bucket/file") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "spoken") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "said") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "load_capability") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "weather") != null);
 
     const unsupported = [_]model_types.Message{
         .{ .request = .{ .parts = &.{.{ .speech = .{ .speaker = .user } }} } },
-        .{ .request = .{ .parts = &.{.{ .capability_load_return = .{ .call_id = "load" } }} } },
         .{ .request = .{ .parts = &.{.{ .tool_return = .{
             .call_id = "call",
             .name = "tool",

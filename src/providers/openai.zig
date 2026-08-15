@@ -375,7 +375,8 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
                 else
                     return error.UnsupportedContentType;
             },
-            .tool_search_return, .capability_load_return, .tool_availability_delta => return error.UnsupportedContentType,
+            .capability_load_return => |result| try writeToolReturn(&json, common.capabilityLoadToolResult(result)),
+            .tool_search_return, .tool_availability_delta => return error.UnsupportedContentType,
         },
         .response => |response| for (response.parts) |part| switch (part) {
             .text => |text| try writeTextMessage(&json, "assistant", text),
@@ -393,7 +394,12 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
                 else
                     return error.UnsupportedContentType;
             },
-            .audio, .video, .thinking, .tool_search_call, .capability_load_call, .native_tool_search_call, .native_tool_call, .native_tool_search_return, .native_tool_return, .compaction => return error.UnsupportedContentType,
+            .capability_load_call => |call| {
+                const portable = try common.capabilityLoadToolCall(allocator, call);
+                defer allocator.free(portable.arguments_json);
+                try writeToolCall(&json, portable);
+            },
+            .audio, .video, .thinking, .tool_search_call, .native_tool_search_call, .native_tool_call, .native_tool_search_return, .native_tool_return, .compaction => return error.UnsupportedContentType,
             .tool_call => |call| try writeToolCall(&json, call),
         },
     };
@@ -1185,6 +1191,7 @@ test "OpenAI encodes detailed message forms and rejects lossy forms" {
             .{ .user_prompt_part = .{ .content = .{ .uploaded_file = uploaded } } },
             .{ .speech = .{ .speaker = .user, .transcript = "spoken" } },
             .{ .tool_return = .{ .call_id = "call", .name = "tool", .content = "ok" } },
+            .{ .capability_load_return = .{ .call_id = "load", .instructions = "loaded" } },
         } } },
         .{ .response = .{ .parts = &.{
             .{ .text_part = .{ .content = "answer" } },
@@ -1200,6 +1207,7 @@ test "OpenAI encodes detailed message forms and rejects lossy forms" {
             } },
             .{ .speech = .{ .speaker = .assistant, .transcript = "said" } },
             .{ .tool_call = .{ .id = "call", .name = "tool", .arguments_json = "{}" } },
+            .{ .capability_load_call = .{ .call_id = "load", .capability_id = "weather" } },
         } } },
     };
     const body = try encodeRequest(std.testing.allocator, "gpt-test", .{ .messages = &messages });
@@ -1207,6 +1215,8 @@ test "OpenAI encodes detailed message forms and rejects lossy forms" {
     try std.testing.expect(std.mem.indexOf(u8, body, "file_uploaded") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "spoken") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "said") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "load_capability") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "weather") != null);
 
     const unsupported = [_]model_types.Message{
         .{ .request = .{ .parts = &.{.{ .speech = .{ .speaker = .user } }} } },

@@ -1,4 +1,5 @@
 const std = @import("std");
+const capability_types = @import("capability.zig");
 const json_limits = @import("json.zig");
 const messages = @import("messages.zig");
 const usage_types = @import("usage.zig");
@@ -9,6 +10,7 @@ pub const Content = messages.Content;
 pub const ContentSource = messages.ContentSource;
 pub const CapabilityLoadCall = messages.CapabilityLoadCall;
 pub const CapabilityLoadResult = messages.CapabilityLoadResult;
+pub const CapabilitySnapshot = capability_types.Snapshot;
 pub const CompactionPart = messages.CompactionPart;
 pub const InstructionPart = messages.InstructionPart;
 pub const FinishReason = messages.FinishReason;
@@ -395,6 +397,8 @@ pub const ToolRunContext = struct {
     messages: []const Message = &.{},
     usage: RunUsage = .{},
     model_requests: usize = 0,
+    /// Capability state that a nested agent may use to construct inherited layers.
+    capabilities: capability_types.Snapshot = .{},
     /// Shared cooperative cancellation state for the run.
     cancellation: ?*const CancellationToken = null,
     /// Runtime available to tools for cancellable I/O.

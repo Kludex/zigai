@@ -4,6 +4,7 @@ const std = @import("std");
 const model_types = @import("model.zig");
 const output_types = @import("output.zig");
 const tool_policy = @import("tool.zig");
+const capability_types = @import("capability.zig");
 const json_schema = @import("json_schema.zig");
 const reflect = @import("reflect.zig");
 const history = @import("history.zig");
@@ -42,6 +43,16 @@ const AgentError = error{
     DuplicateToolName,
     /// Two provider-managed tools have the same kind.
     DuplicateBuiltinTool,
+    /// Two named capabilities in the composed scopes have the same ID.
+    DuplicateCapabilityId,
+    /// A capability ID or metadata declaration is malformed.
+    InvalidCapability,
+    /// A capability dependency names no capability in the composed scopes.
+    MissingCapabilityDependency,
+    /// Capability dependencies contain a cycle.
+    CapabilityDependencyCycle,
+    /// Two capabilities that cannot coexist would both be active.
+    CapabilityConflict,
     /// A successful model response contained no usable parts.
     EmptyModelResponse,
     /// Generation ended with an unfinished provider tool call.
@@ -355,6 +366,8 @@ fn invokeOutputValidator(validator: OutputValidator, allocator: std.mem.Allocato
 pub const InstructionContext = struct {
     dependencies: ?*anyopaque = null,
     prompt: []const u8,
+    /// Active and on-demand-loaded capability IDs at evaluation time.
+    capabilities: capability_types.Snapshot = .{},
     control: model_types.RunControl = .{},
 
     /// Recovers the application dependency type supplied by the agent or run.
@@ -395,6 +408,11 @@ pub const RunOptions = struct {
     prompt_parts: []const PromptPart = &.{},
     /// Extra instructions appended after the agent's static and dynamic ones.
     instructions: []const []const u8 = &.{},
+    /// Capabilities contributed for this invocation after agent capabilities.
+    capabilities: []const Capability = &.{},
+    /// Explicit inherited, nested, or subagent layers. Layers compose by
+    /// `CapabilityScope` and then declaration order, independent of slice order.
+    capability_layers: []const CapabilityLayer = &.{},
     /// Overrides agent dependencies when non-null.
     dependencies: ?*anyopaque = null,
     /// Highest-precedence generation settings for this run.
@@ -638,9 +656,21 @@ const ResumeState = struct {
 };
 
 pub const CapabilityContext = struct {
+    /// Original prompt for the current invocation.
     prompt: []const u8,
+    /// Application dependency pointer supplied by the agent or run.
     dependencies: ?*anyopaque,
+    /// Model selected by lower-precedence capability layers.
     model: model_types.Model,
+    /// Composition scope of the capability being evaluated.
+    scope: capability_types.Scope = .agent,
+    /// Application-only metadata declared by the capability.
+    metadata: []const capability_types.Metadata = &.{},
+    /// IDs whose complete bundles are active for the next model step.
+    available_capability_ids: []const []const u8 = &.{},
+    /// Active IDs that entered through on-demand loading.
+    loaded_capability_ids: []const []const u8 = &.{},
+    /// Cooperative cancellation and deadline control for callbacks.
     control: model_types.RunControl = .{},
 };
 
@@ -650,6 +680,7 @@ pub const ToolsetContext = struct {
     usage: usage_types.RunUsage,
     model_requests: usize,
     dependencies: ?*anyopaque,
+    capabilities: capability_types.Snapshot = .{},
     control: model_types.RunControl = .{},
 
     pub fn dependency(self: ToolsetContext, comptime T: type) ?*T {
@@ -839,8 +870,23 @@ fn invokeStreamSink(sink: AgentStreamSink, event: AgentStreamEvent) !void {
     return sink.emit(event);
 }
 
-/// A reusable feature bundle applied in `Agent.capabilities` order.
+/// A reusable feature bundle. Named bundles can declare dependencies,
+/// conflicts, model-facing discovery text, and on-demand loading behavior.
 pub const Capability = struct {
+    /// Stable ID required for discovery, dependencies, and conflicts.
+    id: ?[]const u8 = null,
+    /// Concise model-facing text shown before an on-demand capability loads.
+    description: ?[]const u8 = null,
+    /// Application-only metadata exposed to the capability model selector.
+    metadata: []const capability_types.Metadata = &.{},
+    /// IDs activated first, in declaration order.
+    dependencies: []const []const u8 = &.{},
+    /// IDs that cannot be active at the same time.
+    conflicts: []const []const u8 = &.{},
+    /// Whether the complete bundle starts active or is progressively disclosed.
+    loading: capability_types.Loading = .eager,
+    /// Whether a successful on-demand load is restored from later run history.
+    unload_policy: capability_types.UnloadPolicy = .history,
     tools: []const model_types.Tool = &.{},
     builtin_tools: []const model_types.BuiltinTool = &.{},
     toolsets: []const Toolset = &.{},
@@ -857,7 +903,454 @@ pub const Capability = struct {
         const select = self.selectModelFn orelse return run.model;
         return select(self.context, run);
     }
+
+    /// Returns the borrowed registry data for this implementation bundle.
+    pub fn descriptor(self: Capability) capability_types.Descriptor {
+        return .{
+            .id = self.id,
+            .description = self.description,
+            .metadata = self.metadata,
+            .dependencies = self.dependencies,
+            .conflicts = self.conflicts,
+            .loading = self.loading,
+            .unload_policy = self.unload_policy,
+        };
+    }
 };
+
+/// A capability layer supplied by an enclosing run, nested agent, or subagent.
+pub const CapabilityLayer = struct {
+    /// Fixed precedence tier; input layer slice order never changes tier order.
+    scope: capability_types.Scope,
+    /// Capabilities composed in declaration order within `scope`.
+    capabilities: []const Capability,
+};
+
+const ScopedCapability = struct {
+    capability: Capability,
+    scope: capability_types.Scope,
+    source_index: usize,
+};
+
+const ActiveCapabilities = struct {
+    model: model_types.Model,
+    tools: []const model_types.Tool,
+    builtin_tools: []const model_types.BuiltinTool,
+    toolsets: []const Toolset,
+    tool_policies: []const tool_policy.Policy,
+    history_processors: []const history.Processor,
+    output_validators: []const output_types.Validator,
+    model_settings: model_types.ModelSettings,
+};
+
+const CapabilityRuntime = struct {
+    scoped: []const ScopedCapability,
+    entries: []const capability_types.Entry,
+    active: []bool,
+    loaded: []bool,
+    initial: []bool,
+    pending: []bool,
+    generation: usize = 0,
+    prompt: []const u8,
+    dependencies: ?*anyopaque,
+    control: model_types.RunControl,
+
+    fn init(
+        allocator: std.mem.Allocator,
+        scoped: []const ScopedCapability,
+        prompt: []const u8,
+        dependencies: ?*anyopaque,
+        control: model_types.RunControl,
+        previous_messages: []const Message,
+        restoring_pause: bool,
+    ) !CapabilityRuntime {
+        const entries = try allocator.alloc(capability_types.Entry, scoped.len);
+        const active = try allocator.alloc(bool, scoped.len);
+        const loaded = try allocator.alloc(bool, scoped.len);
+        const initial = try allocator.alloc(bool, scoped.len);
+        const pending = try allocator.alloc(bool, scoped.len);
+        @memset(active, false);
+        @memset(loaded, false);
+        @memset(initial, false);
+        @memset(pending, false);
+        for (scoped, entries) |item, *entry| entry.* = .{
+            .descriptor = item.capability.descriptor(),
+            .scope = item.scope,
+            .source_index = item.source_index,
+        };
+        var runtime = CapabilityRuntime{
+            .scoped = scoped,
+            .entries = entries,
+            .active = active,
+            .loaded = loaded,
+            .initial = initial,
+            .pending = pending,
+            .prompt = prompt,
+            .dependencies = dependencies,
+            .control = control,
+        };
+        const capability_registry = runtime.registry();
+        if (try capability_registry.diagnose(allocator)) |diagnostic| return capabilityDiagnosticError(diagnostic);
+
+        for (scoped, 0..) |item, index| {
+            if (item.capability.loading != .eager) continue;
+            try runtime.activate(allocator, index, true);
+        }
+        try runtime.restoreHistoryLoads(allocator, previous_messages, restoring_pause);
+        return runtime;
+    }
+
+    fn registry(self: *const CapabilityRuntime) capability_types.Registry {
+        return .{ .entries = self.entries };
+    }
+
+    fn activate(self: *CapabilityRuntime, allocator: std.mem.Allocator, index: usize, is_initial: bool) !void {
+        const id = self.entries[index].descriptor.id orelse {
+            self.active[index] = true;
+            if (is_initial) self.initial[index] = true;
+            return;
+        };
+        var resolution = try self.registry().resolve(allocator, id, self.active);
+        defer resolution.deinit();
+        switch (resolution.outcome) {
+            .diagnostic => |diagnostic| return capabilityDiagnosticError(diagnostic),
+            .plan => |plan| for (plan) |resolved| {
+                self.active[resolved] = true;
+                if (self.scoped[resolved].capability.loading == .on_demand) self.loaded[resolved] = true;
+                if (is_initial) self.initial[resolved] = true;
+            },
+        }
+    }
+
+    fn restoreHistoryLoads(
+        self: *CapabilityRuntime,
+        allocator: std.mem.Allocator,
+        previous_messages: []const Message,
+        restoring_pause: bool,
+    ) !void {
+        for (previous_messages, 0..) |message, message_index| switch (message) {
+            .response => |response| for (response.parts) |part| switch (part) {
+                .capability_load_call => |call| {
+                    if (!hasSuccessfulCapabilityReturn(previous_messages[message_index + 1 ..], call.call_id)) continue;
+                    try self.activateHistoryId(allocator, call.capability_id, restoring_pause);
+                },
+                .tool_call => |call| {
+                    if (!std.mem.eql(u8, call.name, load_capability_tool_name) or
+                        !hasSuccessfulToolReturn(previous_messages[message_index + 1 ..], call.id, call.name)) continue;
+                    const parsed = json_limits.parseLeaky(
+                        LoadCapabilityArguments,
+                        allocator,
+                        call.arguments_json,
+                        json_limits.defaults.tool_payload,
+                        .{ .ignore_unknown_fields = false },
+                        AgentError.InvalidCapability,
+                    ) catch continue;
+                    try self.activateHistoryId(allocator, parsed.id, restoring_pause);
+                },
+                else => {},
+            },
+            .request => {},
+        };
+    }
+
+    fn activateHistoryId(
+        self: *CapabilityRuntime,
+        allocator: std.mem.Allocator,
+        id: []const u8,
+        restoring_pause: bool,
+    ) !void {
+        const index = self.registry().findIndex(id) orelse return;
+        if (!restoring_pause and self.scoped[index].capability.unload_policy != .history) return;
+        try self.activate(allocator, index, false);
+    }
+
+    fn activeIds(self: *const CapabilityRuntime, allocator: std.mem.Allocator, loaded_only: bool) ![]const []const u8 {
+        var ids: std.ArrayList([]const u8) = .empty;
+        for (self.entries, 0..) |entry, index| {
+            if (!self.active[index] or (loaded_only and !self.loaded[index])) continue;
+            if (entry.descriptor.id) |id| try ids.append(allocator, id);
+        }
+        return ids.toOwnedSlice(allocator);
+    }
+
+    fn snapshot(self: *const CapabilityRuntime, allocator: std.mem.Allocator) !capability_types.Snapshot {
+        return .{
+            .available_ids = try self.activeIds(allocator, false),
+            .loaded_ids = try self.activeIds(allocator, true),
+        };
+    }
+
+    fn assemble(
+        self: *CapabilityRuntime,
+        allocator: std.mem.Allocator,
+        agent: Agent,
+    ) !ActiveCapabilities {
+        var tools: std.ArrayList(model_types.Tool) = .empty;
+        try tools.appendSlice(allocator, agent.tools);
+        var builtin_tools: std.ArrayList(model_types.BuiltinTool) = .empty;
+        try builtin_tools.appendSlice(allocator, agent.builtin_tools);
+        var toolsets: std.ArrayList(Toolset) = .empty;
+        try toolsets.appendSlice(allocator, agent.toolsets);
+        var policies: std.ArrayList(tool_policy.Policy) = .empty;
+        try policies.appendSlice(allocator, agent.tool_policies);
+        var processors: std.ArrayList(history.Processor) = .empty;
+        try processors.appendSlice(allocator, agent.history_processors);
+        var validators: std.ArrayList(output_types.Validator) = .empty;
+        try validators.appendSlice(allocator, agent.output_validators);
+        var settings: model_types.ModelSettings = .{};
+        var selected_model = agent.model;
+        const available_ids = try self.activeIds(allocator, false);
+        const loaded_ids = try self.activeIds(allocator, true);
+        for (self.scoped, 0..) |item, index| {
+            if (!self.active[index]) continue;
+            const capability = item.capability;
+            try tools.appendSlice(allocator, capability.tools);
+            try builtin_tools.appendSlice(allocator, capability.builtin_tools);
+            try toolsets.appendSlice(allocator, capability.toolsets);
+            try policies.appendSlice(allocator, capability.tool_policies);
+            try processors.appendSlice(allocator, capability.history_processors);
+            try validators.appendSlice(allocator, capability.output_validators);
+            settings = settings.overrideWith(capability.model_settings);
+            selected_model = try self.control.invoke(model_types.Model, selectCapabilityModel, .{
+                capability,
+                CapabilityContext{
+                    .prompt = self.prompt,
+                    .dependencies = self.dependencies,
+                    .model = selected_model,
+                    .scope = item.scope,
+                    .metadata = capability.metadata,
+                    .available_capability_ids = available_ids,
+                    .loaded_capability_ids = loaded_ids,
+                    .control = self.control,
+                },
+            });
+        }
+        if (self.hasDeferred()) try tools.append(allocator, self.loadTool());
+        return .{
+            .model = selected_model,
+            .tools = try tools.toOwnedSlice(allocator),
+            .builtin_tools = try builtin_tools.toOwnedSlice(allocator),
+            .toolsets = try toolsets.toOwnedSlice(allocator),
+            .tool_policies = try policies.toOwnedSlice(allocator),
+            .history_processors = try processors.toOwnedSlice(allocator),
+            .output_validators = try validators.toOwnedSlice(allocator),
+            .model_settings = settings,
+        };
+    }
+
+    fn appendInitialInstructions(
+        self: *CapabilityRuntime,
+        allocator: std.mem.Allocator,
+        instructions: *std.ArrayList(Instruction),
+    ) !void {
+        for (self.scoped, 0..) |item, index| {
+            if (self.initial[index]) try instructions.appendSlice(allocator, item.capability.instructions);
+        }
+        if (try self.catalogInstruction(allocator)) |catalog| {
+            try instructions.append(allocator, .{ .text = catalog });
+        }
+    }
+
+    fn catalogInstruction(self: *const CapabilityRuntime, allocator: std.mem.Allocator) !?[]const u8 {
+        if (!self.hasDeferred()) return null;
+        var content: std.ArrayList(u8) = .empty;
+        try content.appendSlice(
+            allocator,
+            "The following capabilities can be loaded with the `load_capability` tool. " ++
+                "Their tools and behavior stay unavailable until loaded:\n",
+        );
+        for (self.scoped, 0..) |item, index| {
+            const capability = item.capability;
+            if (capability.loading != .on_demand or self.active[index]) continue;
+            try content.appendSlice(allocator, "- ");
+            try content.appendSlice(allocator, capability.id.?);
+            if (capability.description) |description| {
+                try content.appendSlice(allocator, ": ");
+                try content.appendSlice(allocator, description);
+            }
+            try content.append(allocator, '\n');
+        }
+        const owned: []const u8 = try content.toOwnedSlice(allocator);
+        return owned;
+    }
+
+    fn hasDeferred(self: *const CapabilityRuntime) bool {
+        for (self.scoped, 0..) |item, index| {
+            if (item.capability.loading == .on_demand and !self.active[index]) return true;
+        }
+        return false;
+    }
+
+    fn hasOnDemand(self: *const CapabilityRuntime) bool {
+        for (self.scoped) |item| if (item.capability.loading == .on_demand) return true;
+        return false;
+    }
+
+    fn loadTool(self: *CapabilityRuntime) model_types.Tool {
+        return .{
+            .definition = .{
+                .name = load_capability_tool_name,
+                .description = "Load one named capability and its required dependencies.",
+                .parameters_json_schema = load_capability_schema,
+            },
+            .sequential = true,
+            .context = self,
+            .validateFn = validateCapabilityLoad,
+            .executeWithContextFn = executeCapabilityLoad,
+        };
+    }
+
+    fn requestLoad(
+        self: *CapabilityRuntime,
+        allocator: std.mem.Allocator,
+        capability_id: []const u8,
+    ) ![]const u8 {
+        const index = self.registry().findIndex(capability_id) orelse return error.UnknownCapability;
+        if (self.scoped[index].capability.loading != .on_demand) return error.CapabilityAlreadyAvailable;
+        if (self.active[index] or self.pending[index]) {
+            return std.fmt.allocPrint(allocator, "Capability `{s}` is already loaded.", .{capability_id});
+        }
+        const effective = try allocator.dupe(bool, self.active);
+        for (self.pending, effective) |is_pending, *is_active| is_active.* = is_active.* or is_pending;
+        var resolution = try self.registry().resolve(allocator, capability_id, effective);
+        defer resolution.deinit();
+        const plan = switch (resolution.outcome) {
+            .diagnostic => |diagnostic| return capabilityLoadError(diagnostic),
+            .plan => |value| value,
+        };
+        var content: std.ArrayList(u8) = .empty;
+        try content.appendSlice(allocator, "Loaded capabilities:");
+        for (plan) |resolved| {
+            const capability = self.scoped[resolved].capability;
+            if (capability.id) |id| {
+                try content.appendSlice(allocator, "\n- ");
+                try content.appendSlice(allocator, id);
+            }
+            const resolved_instructions = try resolveInstructions(allocator, capability.instructions, &.{}, .{
+                .dependencies = self.dependencies,
+                .prompt = self.prompt,
+                .capabilities = try self.snapshot(allocator),
+                .control = self.control,
+            });
+            for (resolved_instructions) |instruction| {
+                try content.appendSlice(allocator, "\n\n");
+                try content.appendSlice(allocator, instruction);
+            }
+        }
+        const owned = try content.toOwnedSlice(allocator);
+        for (plan) |resolved| self.pending[resolved] = true;
+        return owned;
+    }
+
+    fn commitPending(self: *CapabilityRuntime) void {
+        var changed = false;
+        for (self.pending, 0..) |*is_pending, index| {
+            if (!is_pending.*) continue;
+            self.active[index] = true;
+            self.loaded[index] = true;
+            is_pending.* = false;
+            changed = true;
+        }
+        if (changed) self.generation += 1;
+    }
+};
+
+const CapabilityHookAdapter = struct {
+    runtime: *CapabilityRuntime,
+    capability_index: usize,
+    hook: LifecycleHook,
+
+    fn emit(context: *anyopaque, event: LifecycleEvent) !void {
+        const self: *CapabilityHookAdapter = @ptrCast(@alignCast(context));
+        if (!self.runtime.active[self.capability_index]) return;
+        return self.hook.emit(event);
+    }
+};
+
+const LoadCapabilityArguments = struct { id: []const u8 };
+const load_capability_tool_name = "load_capability";
+const load_capability_schema =
+    "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"string\"}}," ++
+    "\"required\":[\"id\"],\"additionalProperties\":false}";
+
+fn validateCapabilityLoad(context: *anyopaque, allocator: std.mem.Allocator, arguments_json: []const u8) !void {
+    const runtime: *CapabilityRuntime = @ptrCast(@alignCast(context));
+    const parsed = try json_limits.parseLeaky(
+        LoadCapabilityArguments,
+        allocator,
+        arguments_json,
+        json_limits.defaults.tool_payload,
+        .{ .ignore_unknown_fields = false },
+        error.InvalidCapabilityArguments,
+    );
+    if (runtime.registry().findIndex(parsed.id) == null) return error.UnknownCapability;
+}
+
+fn executeCapabilityLoad(
+    context: *anyopaque,
+    allocator: std.mem.Allocator,
+    _: model_types.ToolRunContext,
+    arguments_json: []const u8,
+) ![]const u8 {
+    const runtime: *CapabilityRuntime = @ptrCast(@alignCast(context));
+    const parsed = try json_limits.parseLeaky(
+        LoadCapabilityArguments,
+        allocator,
+        arguments_json,
+        json_limits.defaults.tool_payload,
+        .{ .ignore_unknown_fields = false },
+        error.InvalidCapabilityArguments,
+    );
+    return runtime.requestLoad(allocator, parsed.id);
+}
+
+fn capabilityDiagnosticError(diagnostic: capability_types.Diagnostic) AgentError {
+    return switch (diagnostic.kind) {
+        .duplicate_id => AgentError.DuplicateCapabilityId,
+        .missing_dependency => AgentError.MissingCapabilityDependency,
+        .dependency_cycle => AgentError.CapabilityDependencyCycle,
+        .active_conflict => AgentError.CapabilityConflict,
+        else => AgentError.InvalidCapability,
+    };
+}
+
+fn capabilityLoadError(diagnostic: capability_types.Diagnostic) anyerror {
+    return switch (diagnostic.kind) {
+        .active_conflict => error.CapabilityConflict,
+        .unknown_capability => error.UnknownCapability,
+        else => capabilityDiagnosticError(diagnostic),
+    };
+}
+
+fn hasSuccessfulCapabilityReturn(messages: []const Message, call_id: []const u8) bool {
+    for (messages) |message| switch (message) {
+        .request => |request| for (request.parts) |part| switch (part) {
+            .capability_load_return => |result| if (std.mem.eql(u8, result.call_id, call_id)) {
+                return result.outcome == .success;
+            },
+            .tool_return => |result| if (result.tool_kind == .capability_load and
+                std.mem.eql(u8, result.call_id, call_id))
+            {
+                return !result.isError();
+            },
+            else => {},
+        },
+        .response => {},
+    };
+    return false;
+}
+
+fn hasSuccessfulToolReturn(messages: []const Message, call_id: []const u8, name: []const u8) bool {
+    for (messages) |message| switch (message) {
+        .request => |request| for (request.parts) |part| switch (part) {
+            .tool_return => |result| if (std.mem.eql(u8, result.call_id, call_id) and
+                std.mem.eql(u8, result.name, name)) return !result.isError(),
+            else => {},
+        },
+        .response => {},
+    };
+    return false;
+}
 
 fn selectCapabilityModel(capability: Capability, context: CapabilityContext) !model_types.Model {
     return capability.selectModel(context);
@@ -887,6 +1380,7 @@ pub fn TypedResult(comptime Output: type) type {
 
 pub const Agent = struct {
     model: model_types.Model,
+    /// Reusable feature bundles composed before run-scoped capability layers.
     capabilities: []const Capability = &.{},
     hooks: []const LifecycleHook = &.{},
     /// Ordered tool lifecycle policies. Capability policies run afterward in
@@ -1261,7 +1755,7 @@ pub const Agent = struct {
             null;
         defer if (telemetry_run) |*instrumentation| instrumentation.deinit();
 
-        if (self.capabilities.len == 0) {
+        if (self.capabilities.len == 0 and options.capabilities.len == 0 and options.capability_layers.len == 0) {
             try ensureUniqueToolNames(self.tools);
             var hooks: std.ArrayList(LifecycleHook) = .empty;
             defer hooks.deinit(allocator);
@@ -1269,74 +1763,63 @@ pub const Agent = struct {
             if (telemetry_run) |*instrumentation| try hooks.append(allocator, telemetryHook(instrumentation));
             const controlled_hooks = try ControlledHooks.init(allocator, hooks.items, control);
             defer controlled_hooks.deinit(allocator);
-            return self.runConfigured(allocator, prompt, options, controlled_stream_sink, controlled_output_validator, controlled_hooks.hooks, allow_pause, resume_state, decisions, control) catch |err| {
+            return self.runConfigured(allocator, prompt, options, controlled_stream_sink, controlled_output_validator, controlled_hooks.hooks, allow_pause, resume_state, decisions, control, null) catch |err| {
                 emitLifecycle(controlled_hooks.hooks, .{ .run_error = .{ .failure = err } }) catch {};
                 return err;
             };
         }
-        var tools: std.ArrayList(model_types.Tool) = .empty;
-        defer tools.deinit(allocator);
-        try tools.appendSlice(allocator, self.tools);
-        var builtin_tools: std.ArrayList(model_types.BuiltinTool) = .empty;
-        defer builtin_tools.deinit(allocator);
-        try builtin_tools.appendSlice(allocator, self.builtin_tools);
-        var instructions: std.ArrayList(Instruction) = .empty;
-        defer instructions.deinit(allocator);
-        try instructions.appendSlice(allocator, self.instructions);
-        var toolsets: std.ArrayList(Toolset) = .empty;
-        defer toolsets.deinit(allocator);
-        try toolsets.appendSlice(allocator, self.toolsets);
-        var hooks: std.ArrayList(LifecycleHook) = .empty;
-        defer hooks.deinit(allocator);
-        try hooks.appendSlice(allocator, self.hooks);
-        var tool_policies: std.ArrayList(tool_policy.Policy) = .empty;
-        defer tool_policies.deinit(allocator);
-        try tool_policies.appendSlice(allocator, self.tool_policies);
-        var history_processors: std.ArrayList(history.Processor) = .empty;
-        defer history_processors.deinit(allocator);
-        try history_processors.appendSlice(allocator, self.history_processors);
-        var output_validators: std.ArrayList(output_types.Validator) = .empty;
-        defer output_validators.deinit(allocator);
-        try output_validators.appendSlice(allocator, self.output_validators);
-
+        var capability_arena = std.heap.ArenaAllocator.init(allocator);
+        defer capability_arena.deinit();
+        const capability_memory = capability_arena.allocator();
+        const scoped = try flattenCapabilities(
+            capability_memory,
+            self.capabilities,
+            options.capabilities,
+            options.capability_layers,
+        );
         const dependencies = options.dependencies orelse self.dependencies;
-        var model = self.model;
-        var capability_settings: model_types.ModelSettings = .{};
-        for (self.capabilities) |capability| {
-            try tools.appendSlice(allocator, capability.tools);
-            try builtin_tools.appendSlice(allocator, capability.builtin_tools);
-            try toolsets.appendSlice(allocator, capability.toolsets);
-            try instructions.appendSlice(allocator, capability.instructions);
-            try hooks.appendSlice(allocator, capability.hooks);
-            try tool_policies.appendSlice(allocator, capability.tool_policies);
-            try history_processors.appendSlice(allocator, capability.history_processors);
-            try output_validators.appendSlice(allocator, capability.output_validators);
-            capability_settings = capability_settings.overrideWith(capability.model_settings);
-            const capability_context = CapabilityContext{
-                .prompt = prompt,
-                .dependencies = dependencies,
-                .model = model,
-                .control = control,
-            };
-            model = try control.invoke(model_types.Model, selectCapabilityModel, .{ capability, capability_context });
+        var capability_runtime = try CapabilityRuntime.init(
+            capability_memory,
+            scoped,
+            prompt,
+            dependencies,
+            control,
+            if (resume_state) |state| state.messages else options.message_history,
+            resume_state != null,
+        );
+        var instructions: std.ArrayList(Instruction) = .empty;
+        try instructions.appendSlice(capability_memory, self.instructions);
+        try capability_runtime.appendInitialInstructions(capability_memory, &instructions);
+        var hooks: std.ArrayList(LifecycleHook) = .empty;
+        try hooks.appendSlice(capability_memory, self.hooks);
+        var hook_count: usize = 0;
+        for (scoped) |item| hook_count += item.capability.hooks.len;
+        const capability_hook_adapters = try capability_memory.alloc(CapabilityHookAdapter, hook_count);
+        var hook_index: usize = 0;
+        for (scoped, 0..) |item, capability_index| {
+            for (item.capability.hooks) |hook| {
+                capability_hook_adapters[hook_index] = .{
+                    .runtime = &capability_runtime,
+                    .capability_index = capability_index,
+                    .hook = hook,
+                };
+                try hooks.append(capability_memory, .{
+                    .context = &capability_hook_adapters[hook_index],
+                    .eventFn = CapabilityHookAdapter.emit,
+                });
+                hook_index += 1;
+            }
         }
-        try ensureUniqueToolNames(tools.items);
 
         var configured = self;
-        configured.model = model;
-        configured.tools = tools.items;
-        configured.builtin_tools = builtin_tools.items;
-        configured.toolsets = toolsets.items;
         configured.instructions = instructions.items;
-        configured.history_processors = history_processors.items;
-        configured.output_validators = output_validators.items;
-        configured.tool_policies = tool_policies.items;
-        configured.model_settings = capability_settings.overrideWith(self.model_settings);
         configured.capabilities = &.{};
-        if (telemetry_run) |*instrumentation| try hooks.append(allocator, telemetryHook(instrumentation));
+        if (telemetry_run) |*instrumentation| {
+            try hooks.append(capability_memory, telemetryHook(instrumentation));
+        }
         const controlled_hooks = try ControlledHooks.init(allocator, hooks.items, control);
         defer controlled_hooks.deinit(allocator);
-        return configured.runConfigured(allocator, prompt, options, controlled_stream_sink, controlled_output_validator, controlled_hooks.hooks, allow_pause, resume_state, decisions, control) catch |err| {
+        return configured.runConfigured(allocator, prompt, options, controlled_stream_sink, controlled_output_validator, controlled_hooks.hooks, allow_pause, resume_state, decisions, control, &capability_runtime) catch |err| {
             emitLifecycle(controlled_hooks.hooks, .{ .run_error = .{ .failure = err } }) catch {};
             return err;
         };
@@ -1354,28 +1837,37 @@ pub const Agent = struct {
         resume_state: ?ResumeState,
         decisions: []const ResumeDecision,
         control: model_types.RunControl,
+        capability_runtime: ?*CapabilityRuntime,
     ) !RunOutcome {
         try control.check();
-        if (stream_sink != null and !self.model.profile.supports_streaming) return Error.ModelDoesNotSupportStreaming;
-        if (self.system_prompt != null and !self.model.profile.supports_system_messages) {
-            return Error.ModelDoesNotSupportSystemMessages;
-        }
-        const resolved_settings = self.model.settings.overrideWith(self.model_settings).overrideWith(options.model_settings);
-        try requireModelSettings(self.model.profile, resolved_settings);
-        try ensureBuiltinToolsSupported(self.model.profile, self.builtin_tools);
-        if (resume_state) |state|
-            try ensureContentSupported(self.model, self.url_policy, state.messages)
-        else
-            try ensureContentSupported(self.model, self.url_policy, options.message_history);
-        try ensurePromptPartsSupported(self.model, self.url_policy, options.prompt_parts);
-        const invocation_started = monotonicNow(self.io);
-        try emitLifecycle(hooks, .{ .run_start = .{ .prompt = prompt, .model = self.model } });
-
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
         const memory = arena.allocator();
+        var active = try activeCapabilityConfig(capability_runtime, memory, self);
+        var active_generation: usize = if (capability_runtime) |runtime| runtime.generation else 0;
+        var capability_snapshot: capability_types.Snapshot = if (capability_runtime) |runtime|
+            try runtime.snapshot(memory)
+        else
+            .{};
+        if (stream_sink != null and !active.model.profile.supports_streaming) return Error.ModelDoesNotSupportStreaming;
+        if (self.system_prompt != null and !active.model.profile.supports_system_messages) {
+            return Error.ModelDoesNotSupportSystemMessages;
+        }
+        var resolved_settings = active.model.settings
+            .overrideWith(active.model_settings)
+            .overrideWith(self.model_settings)
+            .overrideWith(options.model_settings);
+        try requireModelSettings(active.model.profile, resolved_settings);
+        try ensureBuiltinToolsSupported(active.model.profile, active.builtin_tools);
+        if (resume_state) |state|
+            try ensureContentSupported(active.model, self.url_policy, state.messages)
+        else
+            try ensureContentSupported(active.model, self.url_policy, options.message_history);
+        try ensurePromptPartsSupported(active.model, self.url_policy, options.prompt_parts);
+        const invocation_started = monotonicNow(self.io);
+        try emitLifecycle(hooks, .{ .run_start = .{ .prompt = prompt, .model = active.model } });
 
-        const prepared_output = output_types.prepare(memory, self.output, self.model.profile) catch |failure| {
+        var prepared_output = output_types.prepare(memory, self.output, active.model.profile) catch |failure| {
             return switch (failure) {
                 error.OutOfMemory => error.OutOfMemory,
                 error.InvalidOutputSpec => Error.InvalidOutputSpec,
@@ -1387,18 +1879,20 @@ pub const Agent = struct {
         };
 
         const dependencies = options.dependencies orelse self.dependencies;
-        var resolved_instructions = if (resume_state) |state|
+        const resolved_instructions = if (resume_state) |state|
             try copyStrings(memory, state.instructions)
         else
             try resolveInstructions(memory, self.instructions, options.instructions, .{
                 .dependencies = dependencies,
                 .prompt = prompt,
+                .capabilities = capability_snapshot,
                 .control = control,
             });
-        if (resume_state == null) if (prepared_output.prompted_instruction) |instruction| {
-            resolved_instructions = try appendString(memory, resolved_instructions, instruction);
-        };
-        if (resolved_instructions.len > 0 and !self.model.profile.supports_system_messages) {
+        var initial_instructions = resolved_instructions;
+        if (prepared_output.prompted_instruction) |instruction| {
+            initial_instructions = try appendString(memory, initial_instructions, instruction);
+        }
+        if (initial_instructions.len > 0 and !active.model.profile.supports_system_messages) {
             return Error.ModelDoesNotSupportSystemMessages;
         }
 
@@ -1424,7 +1918,7 @@ pub const Agent = struct {
                 try appendSystemMessage(memory, &messages, system_prompt);
             }
             for (options.message_history) |message| try appendMessageCopy(memory, &messages, message);
-            try appendPromptMessage(memory, &messages, prompt, options.prompt_parts, resolved_instructions);
+            try appendPromptMessage(memory, &messages, prompt, options.prompt_parts, initial_instructions);
         }
 
         var model_requests: usize = if (resume_state) |state| state.model_requests else 0;
@@ -1433,10 +1927,42 @@ pub const Agent = struct {
         var total_retry_delay_ms: u64 = 0;
         var resume_pending = resume_state != null;
         while (true) {
+            if (capability_runtime) |runtime| if (active_generation != runtime.generation) {
+                active = try runtime.assemble(memory, self);
+                active_generation = runtime.generation;
+                capability_snapshot = try runtime.snapshot(memory);
+                if (stream_sink != null and !active.model.profile.supports_streaming) {
+                    return Error.ModelDoesNotSupportStreaming;
+                }
+                if (self.system_prompt != null and !active.model.profile.supports_system_messages) {
+                    return Error.ModelDoesNotSupportSystemMessages;
+                }
+                resolved_settings = active.model.settings
+                    .overrideWith(active.model_settings)
+                    .overrideWith(self.model_settings)
+                    .overrideWith(options.model_settings);
+                try requireModelSettings(active.model.profile, resolved_settings);
+                try ensureBuiltinToolsSupported(active.model.profile, active.builtin_tools);
+                try ensureContentSupported(active.model, self.url_policy, messages.items);
+                prepared_output = output_types.prepare(memory, self.output, active.model.profile) catch |failure| {
+                    return switch (failure) {
+                        error.OutOfMemory => error.OutOfMemory,
+                        error.InvalidOutputSpec => Error.InvalidOutputSpec,
+                        error.JsonObjectOutputNotSupported => Error.ModelDoesNotSupportJsonObjectOutput,
+                        error.NativeOutputNotSupported => Error.ModelDoesNotSupportJsonSchemaOutput,
+                        error.PromptedOutputNotSupported => Error.ModelDoesNotSupportPromptedOutput,
+                        error.ToolOutputNotSupported => Error.ModelDoesNotSupportTools,
+                    };
+                };
+            };
+            var request_instructions = resolved_instructions;
+            if (prepared_output.prompted_instruction) |instruction| {
+                request_instructions = try appendString(memory, request_instructions, instruction);
+            }
             if (!resume_pending) _ = try appendQueuedMessages(
                 options.pending_messages,
                 false,
-                self.model,
+                active.model,
                 self.url_policy,
                 memory,
                 &messages,
@@ -1448,18 +1974,26 @@ pub const Agent = struct {
                 .usage = total_usage,
                 .model_requests = model_requests,
                 .dependencies = dependencies,
+                .capabilities = capability_snapshot,
                 .control = control,
             };
             const available_tools = try prepareTools(
                 memory,
-                self.tools,
-                self.toolsets,
-                self.tool_policies,
+                active.tools,
+                active.toolsets,
+                active.tool_policies,
                 toolset_context,
             );
             try ensureUniqueToolNames(available_tools);
+            if (capability_runtime) |runtime| if (runtime.hasOnDemand() and !runtime.hasDeferred()) {
+                for (available_tools) |tool| {
+                    if (std.mem.eql(u8, tool.definition.name, load_capability_tool_name)) {
+                        return Error.DuplicateToolName;
+                    }
+                }
+            };
             try ensureNoOutputToolConflicts(available_tools, prepared_output.tool_choices);
-            if (available_tools.len > 0 and !self.model.profile.supports_tools) {
+            if (available_tools.len > 0 and !active.model.profile.supports_tools) {
                 return Error.ModelDoesNotSupportTools;
             }
             if (resume_pending) {
@@ -1477,6 +2011,7 @@ pub const Agent = struct {
                         .messages = current_messages,
                         .usage = total_usage,
                         .model_requests = model_requests,
+                        .capabilities = capability_snapshot,
                         .cancellation = self.cancellation,
                         .io = self.io,
                         .deadline = control.deadline,
@@ -1487,9 +2022,9 @@ pub const Agent = struct {
                     .deferred_tool_results = .{ .results = tool_batch.parts },
                 });
                 try messages.append(memory, .{ .request = .{ .parts = tool_batch.parts } });
-                try appendToolFollowUps(self.model, self.url_policy, memory, &messages, tool_batch.follow_up_messages);
+                try appendToolFollowUps(active.model, self.url_policy, memory, &messages, tool_batch.follow_up_messages);
                 const restored = try appendPendingMessageCopies(
-                    self.model,
+                    active.model,
                     self.url_policy,
                     memory,
                     &messages,
@@ -1505,14 +2040,14 @@ pub const Agent = struct {
             for (available_tools) |tool| try definitions.append(memory, tool.definition);
             try definitions.appendSlice(memory, prepared_output.tool_definitions);
             const history_context = history.Context{
-                .profile = self.model.profile,
+                .profile = active.model.profile,
                 .usage = total_usage,
                 .model_requests = model_requests,
                 .control = control,
             };
             var request_messages = try history.processAll(
                 memory,
-                self.history_processors,
+                active.history_processors,
                 history_context,
                 messages.items,
             );
@@ -1526,19 +2061,19 @@ pub const Agent = struct {
                 memory,
                 options.context_budget orelse self.context_budget,
                 .{
-                    .provider_name = self.model.provider_name,
-                    .model_name = self.model.model_name,
+                    .provider_name = active.model.provider_name,
+                    .model_name = active.model.model_name,
                     .messages = request_messages,
-                    .instructions = resolved_instructions,
+                    .instructions = request_instructions,
                     .tools = definitions.items,
-                    .builtin_tools = self.builtin_tools,
+                    .builtin_tools = active.builtin_tools,
                     .output = prepared_output.model_format,
                     .settings = resolved_settings,
                 },
                 control,
             );
             var idempotency_key_storage: [32]u8 = undefined;
-            const idempotency_key = if (self.model.profile.supports_idempotency_key and self.retry_policy.max_retries > 0)
+            const idempotency_key = if (active.model.profile.supports_idempotency_key and self.retry_policy.max_retries > 0)
                 generateIdempotencyKey(self.io orelse return Error.RetryIdempotencyRequiresIo, &idempotency_key_storage)
             else
                 null;
@@ -1557,12 +2092,13 @@ pub const Agent = struct {
                     .emitted = &stream_emitted,
                     .hooks = hooks,
                     .prepared_output = prepared_output,
-                    .validators = self.output_validators,
+                    .validators = active.output_validators,
                     .run_context = .{
                         .dependencies = dependencies,
                         .messages = messages.items,
                         .usage = total_usage,
                         .model_requests = model_requests,
+                        .capabilities = capability_snapshot,
                         .partial_output = true,
                         .control = control,
                     },
@@ -1571,9 +2107,9 @@ pub const Agent = struct {
                 defer forwarder.deinit();
                 const model_request = model_types.ModelRequest{
                     .messages = request_messages,
-                    .instructions = resolved_instructions,
+                    .instructions = request_instructions,
                     .tools = definitions.items,
-                    .builtin_tools = self.builtin_tools,
+                    .builtin_tools = active.builtin_tools,
                     .output = prepared_output.model_format,
                     .error_observer = provider_errors.observer(),
                     .error_policy = self.provider_error_policy,
@@ -1594,13 +2130,13 @@ pub const Agent = struct {
                     control.invoke(
                         model_types.ModelResponse,
                         streamModel,
-                        .{ self.model, memory, model_request, forwarder.modelSink() },
+                        .{ active.model, memory, model_request, forwarder.modelSink() },
                     )
                 else
                     control.invoke(
                         model_types.ModelResponse,
                         requestModel,
-                        .{ self.model, memory, model_request },
+                        .{ active.model, memory, model_request },
                     );
                 const value = attempt catch |err| {
                     try total_usage.recordRequest(elapsedMilliseconds(self.io, request_started));
@@ -1658,7 +2194,7 @@ pub const Agent = struct {
                 break :request accounted;
             };
             if (response.usage.cost == null) if (self.price_table) |table| {
-                if (self.model.provider_name) |provider_name| if (self.model.model_name) |model_name| {
+                if (active.model.provider_name) |provider_name| if (active.model.model_name) |model_name| {
                     const estimate = table.estimate(provider_name, model_name, response.usage) catch
                         return Error.UsageOverflow;
                     if (estimate) |value| {
@@ -1678,9 +2214,10 @@ pub const Agent = struct {
             if (response.parts.len == 0) return Error.EmptyModelResponse;
 
             try messages.append(memory, .{ .response = try copyResponseMessage(memory, response) });
+            const agent_parts = try normalizeAgentResponseParts(memory, response.parts);
 
             var tool_call_count: usize = 0;
-            for (response.parts) |part| switch (part) {
+            for (agent_parts) |part| switch (part) {
                 .tool_call => tool_call_count += 1,
                 else => {},
             };
@@ -1689,7 +2226,7 @@ pub const Agent = struct {
                 if (try appendQueuedMessages(
                     options.pending_messages,
                     false,
-                    self.model,
+                    active.model,
                     self.url_policy,
                     memory,
                     &messages,
@@ -1706,7 +2243,7 @@ pub const Agent = struct {
                     );
                     continue;
                 }
-                const raw_output = try collectText(memory, response.parts);
+                const raw_output = try collectText(memory, agent_parts);
                 try emitLifecycle(hooks, .{ .output_validation_start = .{
                     .output = raw_output,
                     .retry_number = output_retries,
@@ -1717,12 +2254,13 @@ pub const Agent = struct {
                     self.validate_output_locally or prepared_output.validation_required,
                     raw_output,
                     null,
-                    self.output_validators,
+                    active.output_validators,
                     .{
                         .dependencies = dependencies,
                         .messages = messages.items,
                         .usage = total_usage,
                         .model_requests = model_requests,
+                        .capabilities = capability_snapshot,
                         .control = control,
                     },
                     output_validator,
@@ -1751,7 +2289,7 @@ pub const Agent = struct {
                 if (try appendQueuedMessages(
                     options.pending_messages,
                     true,
-                    self.model,
+                    active.model,
                     self.url_policy,
                     memory,
                     &messages,
@@ -1786,14 +2324,14 @@ pub const Agent = struct {
             }
             total_tool_calls += tool_call_count;
             total_usage.tool_calls = total_tool_calls;
-            if (!self.model.profile.supports_tools) return Error.ModelDoesNotSupportTools;
+            if (!active.model.profile.supports_tools) return Error.ModelDoesNotSupportTools;
             if (tool_call_count > 1 and
-                (!self.model.profile.supports_parallel_tool_calls or resolved_settings.parallel_tool_calls == false))
+                (!active.model.profile.supports_parallel_tool_calls or resolved_settings.parallel_tool_calls == false))
             {
                 return Error.ParallelToolCallsNotSupported;
             }
             var ordinary_tool_call_count: usize = 0;
-            for (response.parts) |part| switch (part) {
+            for (agent_parts) |part| switch (part) {
                 .tool_call => |call| if (prepared_output.findToolChoice(call.name) == null) {
                     ordinary_tool_call_count += 1;
                 },
@@ -1804,6 +2342,7 @@ pub const Agent = struct {
                 .messages = messages.items,
                 .usage = total_usage,
                 .model_requests = model_requests,
+                .capabilities = capability_snapshot,
                 .cancellation = self.cancellation,
                 .io = self.io,
                 .deadline = control.deadline,
@@ -1811,12 +2350,12 @@ pub const Agent = struct {
             const tool_work = try resolveToolCalls(
                 available_tools,
                 memory,
-                response.parts,
+                agent_parts,
                 ordinary_tool_call_count,
                 prepared_output,
                 &tool_retries,
                 tool_run_context,
-                self.tool_policies,
+                active.tool_policies,
                 hooks,
             );
             if (hasDeferredToolCall(tool_work)) {
@@ -1824,7 +2363,7 @@ pub const Agent = struct {
                 const pending_queue = options.pending_messages;
                 const pending = try closeAndCopyPendingMessages(
                     pending_queue,
-                    self.model,
+                    active.model,
                     self.url_policy,
                     memory,
                 );
@@ -1841,7 +2380,7 @@ pub const Agent = struct {
                     output_retries,
                     tool_retries.entries.items,
                     available_tools,
-                    response.parts,
+                    agent_parts,
                     tool_work,
                     pending,
                 );
@@ -1851,7 +2390,7 @@ pub const Agent = struct {
                 return .{ .paused = paused };
             }
 
-            if (stream_sink) |sink| for (response.parts) |part| switch (part) {
+            if (stream_sink) |sink| for (agent_parts) |part| switch (part) {
                 .tool_call => |call| try emitStreamEvent(hooks, sink, .{
                     .function_tool_call = .{ .call = call },
                 }),
@@ -1859,7 +2398,7 @@ pub const Agent = struct {
             };
 
             var has_output_call = false;
-            for (response.parts) |part| switch (part) {
+            for (agent_parts) |part| switch (part) {
                 .tool_call => |call| if (prepared_output.findToolChoice(call.name) != null) {
                     has_output_call = true;
                 },
@@ -1871,6 +2410,7 @@ pub const Agent = struct {
                     .messages = messages.items,
                     .usage = total_usage,
                     .model_requests = model_requests,
+                    .capabilities = capability_snapshot,
                     .control = control,
                 };
                 const records = try memory.alloc(?RequestPart, tool_call_count);
@@ -1881,7 +2421,7 @@ pub const Agent = struct {
 
                 if (self.end_strategy == .early) {
                     var ordinal: usize = 0;
-                    for (response.parts) |part| switch (part) {
+                    for (agent_parts) |part| switch (part) {
                         .tool_call => |call| {
                             const choice = prepared_output.findToolChoice(call.name) orelse {
                                 ordinal += 1;
@@ -1901,7 +2441,7 @@ pub const Agent = struct {
                                 choice,
                                 call,
                                 output_run_context,
-                                self.output_validators,
+                                active.output_validators,
                                 hooks,
                                 output_retries,
                                 self.max_output_retries,
@@ -1926,7 +2466,7 @@ pub const Agent = struct {
                 }
 
                 var ordinal: usize = 0;
-                for (response.parts) |part| switch (part) {
+                for (agent_parts) |part| switch (part) {
                     .tool_call => |call| {
                         if (records[ordinal] != null) {
                             ordinal += 1;
@@ -1945,7 +2485,7 @@ pub const Agent = struct {
                                     choice,
                                     call,
                                     output_run_context,
-                                    self.output_validators,
+                                    active.output_validators,
                                     hooks,
                                     output_retries,
                                     self.max_output_retries,
@@ -1980,7 +2520,7 @@ pub const Agent = struct {
                                 &one,
                                 &tool_retries,
                                 tool_run_context,
-                                self.tool_policies,
+                                active.tool_policies,
                                 hooks,
                             );
                             records[ordinal] = batch.parts[0];
@@ -1994,12 +2534,13 @@ pub const Agent = struct {
 
                 const result_parts = try memory.alloc(RequestPart, records.len);
                 for (records, result_parts) |record, *result_part| result_part.* = record.?;
+                if (capability_runtime) |runtime| runtime.commitPending();
                 if (stream_sink) |sink| for (result_parts) |part| try emitStreamEvent(hooks, sink, .{
                     .function_tool_result = .{ .result = part.tool_return },
                 });
                 try messages.append(memory, .{ .request = .{ .parts = result_parts } });
                 try appendToolFollowUps(
-                    self.model,
+                    active.model,
                     self.url_policy,
                     memory,
                     &messages,
@@ -2011,7 +2552,7 @@ pub const Agent = struct {
                     if (try appendQueuedMessages(
                         options.pending_messages,
                         true,
-                        self.model,
+                        active.model,
                         self.url_policy,
                         memory,
                         &messages,
@@ -2053,19 +2594,97 @@ pub const Agent = struct {
                 tool_work,
                 &tool_retries,
                 tool_run_context,
-                self.tool_policies,
+                active.tool_policies,
                 hooks,
             );
+            if (capability_runtime) |runtime| runtime.commitPending();
             if (stream_sink) |sink| for (tool_batch.parts) |part| {
                 try emitStreamEvent(hooks, sink, .{
                     .function_tool_result = .{ .result = part.tool_return },
                 });
             };
             try messages.append(memory, .{ .request = .{ .parts = tool_batch.parts } });
-            try appendToolFollowUps(self.model, self.url_policy, memory, &messages, tool_batch.follow_up_messages);
+            try appendToolFollowUps(active.model, self.url_policy, memory, &messages, tool_batch.follow_up_messages);
         }
     }
 };
+
+fn flattenCapabilities(
+    allocator: std.mem.Allocator,
+    agent_capabilities: []const Capability,
+    run_capabilities: []const Capability,
+    layers: []const CapabilityLayer,
+) ![]const ScopedCapability {
+    var flattened: std.ArrayList(ScopedCapability) = .empty;
+    for ([_]capability_types.Scope{ .inherited, .agent, .run, .nested, .subagent }) |scope| {
+        if (scope == .agent) {
+            for (agent_capabilities, 0..) |capability, source_index| try flattened.append(allocator, .{
+                .capability = capability,
+                .scope = .agent,
+                .source_index = source_index,
+            });
+        } else if (scope == .run) {
+            for (run_capabilities, 0..) |capability, source_index| try flattened.append(allocator, .{
+                .capability = capability,
+                .scope = .run,
+                .source_index = source_index,
+            });
+        }
+        for (layers) |layer| {
+            if (layer.scope != scope) continue;
+            for (layer.capabilities, 0..) |capability, source_index| try flattened.append(allocator, .{
+                .capability = capability,
+                .scope = scope,
+                .source_index = source_index,
+            });
+        }
+    }
+    return flattened.toOwnedSlice(allocator);
+}
+
+fn normalizeAgentResponseParts(
+    allocator: std.mem.Allocator,
+    parts: []const ResponsePart,
+) ![]const ResponsePart {
+    var requires_normalization = false;
+    for (parts) |part| if (part == .capability_load_call) {
+        requires_normalization = true;
+    };
+    if (!requires_normalization) return parts;
+    const normalized = try allocator.alloc(ResponsePart, parts.len);
+    for (parts, normalized) |part, *result| result.* = switch (part) {
+        .capability_load_call => |call| .{ .tool_call = .{
+            .id = call.call_id,
+            .name = load_capability_tool_name,
+            .arguments_json = try std.json.Stringify.valueAlloc(
+                allocator,
+                LoadCapabilityArguments{ .id = call.capability_id },
+                .{},
+            ),
+            .tool_kind = .capability_load,
+        } },
+        else => part,
+    };
+    return normalized;
+}
+
+fn activeCapabilityConfig(
+    runtime: ?*CapabilityRuntime,
+    allocator: std.mem.Allocator,
+    agent: Agent,
+) !ActiveCapabilities {
+    if (runtime) |configured| return configured.assemble(allocator, agent);
+    return .{
+        .model = agent.model,
+        .tools = agent.tools,
+        .builtin_tools = agent.builtin_tools,
+        .toolsets = agent.toolsets,
+        .tool_policies = agent.tool_policies,
+        .history_processors = agent.history_processors,
+        .output_validators = agent.output_validators,
+        .model_settings = .{},
+    };
+}
 
 fn copyStrings(allocator: std.mem.Allocator, values: []const []const u8) ![]const []const u8 {
     const copied = try allocator.alloc([]const u8, values.len);
@@ -2597,6 +3216,7 @@ fn outputToolResult(
         .call_id = call.id,
         .name = call.name,
         .content = content,
+        .tool_kind = call.tool_kind,
         .outcome = outcome,
     } };
 }
@@ -2801,6 +3421,7 @@ fn policyCallContext(
             .usage = run_context.usage,
             .model_requests = run_context.model_requests,
             .dependencies = run_context.dependencies,
+            .capabilities = run_context.capabilities,
             .control = toolRunControl(run_context),
         },
         .call = call,
@@ -3381,6 +4002,10 @@ fn toolResult(
             .call_id = work.call.id,
             .name = work.call.name,
             .content = executed.content,
+            .tool_kind = work.call.tool_kind orelse if (std.mem.eql(u8, work.call.name, load_capability_tool_name))
+                .capability_load
+            else
+                null,
             .is_error = executed.is_error,
         },
         .follow_up_messages = executed.follow_up_messages,
@@ -4026,7 +4651,16 @@ fn copyPromptPart(allocator: std.mem.Allocator, part: PromptPart) !PromptPart {
 }
 
 fn copyResponsePart(allocator: std.mem.Allocator, part: ResponsePart) !ResponsePart {
-    return model_types.dupeResponsePart(allocator, part);
+    var copied = try model_types.dupeResponsePart(allocator, part);
+    switch (copied) {
+        .tool_call => |*call| if (call.tool_kind == null and
+            std.mem.eql(u8, call.name, load_capability_tool_name))
+        {
+            call.tool_kind = .capability_load;
+        },
+        else => {},
+    }
+    return copied;
 }
 
 fn copyPart(allocator: std.mem.Allocator, part: ResponsePart) !ResponsePart {
@@ -4196,6 +4830,7 @@ fn prepareTools(
         .usage = context.usage,
         .model_requests = context.model_requests,
         .dependencies = context.dependencies,
+        .capabilities = context.capabilities,
         .control = context.control,
     };
     for (candidates.items) |candidate| {
@@ -5341,4 +5976,93 @@ test "paused state serializes retries and rejects mismatched calls" {
         .{},
         &.{},
     ));
+}
+
+fn capabilityLoadFailureInstruction(
+    _: *anyopaque,
+    _: std.mem.Allocator,
+    _: InstructionContext,
+) ![]const u8 {
+    return error.TestInstructionFailure;
+}
+
+fn checkCapabilityLoadAllocationFailure(gpa: std.mem.Allocator) !void {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    const capabilities = [_]ScopedCapability{.{
+        .capability = .{ .id = "deferred", .loading = .on_demand },
+        .scope = .agent,
+        .source_index = 0,
+    }};
+    const entries = [_]capability_types.Entry{.{
+        .descriptor = capabilities[0].capability.descriptor(),
+        .scope = .agent,
+        .source_index = 0,
+    }};
+    var active = [_]bool{false};
+    var loaded = [_]bool{false};
+    var initial = [_]bool{false};
+    var pending = [_]bool{false};
+    var runtime = CapabilityRuntime{
+        .scoped = &capabilities,
+        .entries = &entries,
+        .active = &active,
+        .loaded = &loaded,
+        .initial = &initial,
+        .pending = &pending,
+        .prompt = "prompt",
+        .dependencies = null,
+        .control = .{},
+    };
+    _ = try runtime.requestLoad(allocator, "deferred");
+    try std.testing.expect(pending[0]);
+}
+
+test "capability load is atomic across instruction and allocation failures" {
+    var unused: u8 = 0;
+    const capabilities = [_]ScopedCapability{.{
+        .capability = .{
+            .id = "deferred",
+            .loading = .on_demand,
+            .instructions = &.{.{ .dynamic = .{
+                .context = &unused,
+                .resolveFn = capabilityLoadFailureInstruction,
+            } }},
+        },
+        .scope = .agent,
+        .source_index = 0,
+    }};
+    const entries = [_]capability_types.Entry{.{
+        .descriptor = capabilities[0].capability.descriptor(),
+        .scope = .agent,
+        .source_index = 0,
+    }};
+    var active = [_]bool{false};
+    var loaded = [_]bool{false};
+    var initial = [_]bool{false};
+    var pending = [_]bool{false};
+    var runtime = CapabilityRuntime{
+        .scoped = &capabilities,
+        .entries = &entries,
+        .active = &active,
+        .loaded = &loaded,
+        .initial = &initial,
+        .pending = &pending,
+        .prompt = "prompt",
+        .dependencies = null,
+        .control = .{},
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(
+        error.TestInstructionFailure,
+        runtime.requestLoad(arena.allocator(), "deferred"),
+    );
+    try std.testing.expect(!pending[0]);
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        checkCapabilityLoadAllocationFailure,
+        .{},
+    );
 }
