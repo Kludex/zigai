@@ -663,7 +663,9 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, max_t
             try json.objectField("name");
             try json.write(tool.name);
             try json.objectField("description");
-            try json.write(tool.description);
+            const description = try common.toolDescription(allocator, tool);
+            defer if (description) |owned| allocator.free(owned);
+            try json.write(description orelse tool.description);
             try json.objectField("input_schema");
             try common.rawJson(allocator, &json, tool.parameters_json_schema, json_limits.defaults.schema);
             try json.endObject();
@@ -1032,6 +1034,21 @@ test "encodes complete Anthropic settings and filters allowed tools" {
             .settings = .{ .service_tier = tier },
         }));
     }
+}
+
+test "encodes model-visible tool return schemas" {
+    const encoded = try encodeRequest(std.testing.allocator, "claude-test", 128, .{
+        .messages = &.{},
+        .tools = &.{.{
+            .name = "demo",
+            .description = "Demo.",
+            .parameters_json_schema = "{}",
+            .return_json_schema = "{\"type\":\"string\"}",
+            .return_schema_visibility = .model_description,
+        }},
+    });
+    defer std.testing.allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "Return JSON Schema") != null);
 }
 
 test "Anthropic clients forward validated request settings headers" {

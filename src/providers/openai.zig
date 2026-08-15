@@ -417,7 +417,9 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
             try json.objectField("name");
             try json.write(tool.name);
             try json.objectField("description");
-            try json.write(tool.description);
+            const description = try common.toolDescription(allocator, tool);
+            defer if (description) |owned| allocator.free(owned);
+            try json.write(description orelse tool.description);
             try json.objectField("parameters");
             try common.rawJson(allocator, &json, tool.parameters_json_schema, json_limits.defaults.schema);
             try json.endObject();
@@ -893,6 +895,21 @@ test "encodes both Responses API structured output modes" {
     try std.testing.expect(std.mem.indexOf(u8, json_schema, "\"temperature\":0.2") != null);
     try std.testing.expect(std.mem.indexOf(u8, json_schema, "\"max_output_tokens\":512") != null);
     try std.testing.expect(std.mem.indexOf(u8, json_schema, "\"reasoning\":{\"effort\":\"high\"}") != null);
+}
+
+test "encodes model-visible tool return schemas" {
+    const encoded = try encodeRequest(std.testing.allocator, "gpt-test", .{
+        .messages = &.{},
+        .tools = &.{.{
+            .name = "demo",
+            .description = "Demo.",
+            .parameters_json_schema = "{}",
+            .return_json_schema = "{\"type\":\"string\"}",
+            .return_schema_visibility = .model_description,
+        }},
+    });
+    defer std.testing.allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "Return JSON Schema") != null);
 }
 
 test "client forwards OpenAI request correlation IDs" {

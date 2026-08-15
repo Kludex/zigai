@@ -603,7 +603,10 @@ test "resuming mixed deferred calls handles every decision path" {
     defer first.deinit();
     const state = switch (first) {
         .complete => return error.ExpectedPausedRun,
-        .paused => |paused| paused.state_json,
+        .paused => |paused| state: {
+            try std.testing.expectEqual(@as(usize, 2), paused.calls.len);
+            break :state paused.state_json;
+        },
     };
     try std.testing.expectError(zigai.Agent.Error.UnexpectedDeferredToolDecision, agent.resumeRun(
         std.testing.allocator,
@@ -616,10 +619,213 @@ test "resuming mixed deferred calls handles every decision path" {
     var resumed = try agent.resumeRun(std.testing.allocator, state, &.{
         .{ .call_id = "approval", .action = .result, .content = "supplied" },
         .{ .call_id = "external", .action = .deny, .content = "denied" },
-        .{ .call_id = "invalid", .action = .approve },
     });
     defer resumed.deinit();
     try std.testing.expect(resumed == .complete);
+}
+
+test "ordered tool policies persist dynamic approval and transformed arguments" {
+    const calls = [_]zigai.model.Part{
+        .{ .tool_call = .{ .id = "policy-call", .name = "policy", .arguments_json = "{}" } },
+    };
+    const final = [_]zigai.model.Part{.{ .text = "Finished." }};
+    const Inspector = struct {
+        fn inspect(index: usize, request: zigai.ModelRequest) !void {
+            if (index == 0) return;
+            const result = request.messages[2].request.parts[0].tool_return;
+            try std.testing.expectEqualStrings("validated", result.content);
+            try std.testing.expect(!result.is_error);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{ .{ .parts = &calls }, .{ .parts = &final } },
+        .inspectFn = Inspector.inspect,
+    };
+    const State = struct {
+        prepare_calls: usize = 0,
+        arguments_calls: usize = 0,
+        approval_calls: usize = 0,
+        call_calls: usize = 0,
+        return_calls: usize = 0,
+
+        fn apply(context: *anyopaque, allocator: std.mem.Allocator, event: zigai.ToolPolicyEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event) {
+                .prepare => |prepared| {
+                    self.prepare_calls += 1;
+                    try std.testing.expect(prepared.run.messages.len > 0);
+                },
+                .arguments => |arguments| {
+                    self.arguments_calls += 1;
+                    try std.testing.expectEqual(@as(usize, 2), arguments.context.run.messages.len);
+                    try std.testing.expectEqual(@as(u8, 9), arguments.context.run.dependency(u8).?.*);
+                    arguments.arguments_json = try allocator.dupe(u8, "{\"value\":2}");
+                },
+                .approval => |approval| {
+                    self.approval_calls += 1;
+                    try std.testing.expectEqualStrings("{\"value\":2}", approval.arguments_json);
+                    approval.execution = .requires_approval;
+                },
+                .call => |call| {
+                    self.call_calls += 1;
+                    try std.testing.expect(call.context.approved);
+                    try std.testing.expectEqualStrings("{\"value\":2}", call.arguments_json);
+                    call.output = .{ .content = "short-circuited" };
+                },
+                .return_value => |returned| {
+                    self.return_calls += 1;
+                    try std.testing.expectEqualStrings("{\"value\":2}", returned.arguments_json);
+                    try std.testing.expectEqualStrings("short-circuited", returned.output.content);
+                    returned.output.content = "validated";
+                },
+            }
+        }
+    };
+    const Executor = struct {
+        fn execute(_: *anyopaque, _: std.mem.Allocator, _: []const u8) ![]const u8 {
+            return error.ExecutorMustBeSkipped;
+        }
+    };
+    var state: State = .{};
+    var dependency: u8 = 9;
+    const tool = zigai.Tool{
+        .definition = .{ .name = "policy", .description = "", .parameters_json_schema = "{}" },
+        .context = &state,
+        .executeFn = Executor.execute,
+    };
+    const policy = zigai.ToolPolicy{ .context = &state, .applyFn = State.apply };
+    const agent = zigai.Agent{
+        .model = scripted.model(),
+        .tools = &.{tool},
+        .tool_policies = &.{policy},
+        .dependencies = &dependency,
+    };
+    var first = try agent.runUntilPause(std.testing.allocator, "Run policy.");
+    defer first.deinit();
+    const paused = switch (first) {
+        .complete => return error.ExpectedPausedRun,
+        .paused => |value| value,
+    };
+    try std.testing.expectEqual(@as(usize, 1), paused.calls.len);
+    try std.testing.expectEqualStrings("{\"value\":2}", paused.calls[0].arguments_json);
+    var resumed = try agent.resumeRun(std.testing.allocator, paused.state_json, &.{.{
+        .call_id = "policy-call",
+        .action = .approve,
+    }});
+    defer resumed.deinit();
+    try std.testing.expect(resumed == .complete);
+    try std.testing.expectEqual(@as(usize, 3), state.prepare_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.arguments_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.approval_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.call_calls);
+    try std.testing.expectEqual(@as(usize, 1), state.return_calls);
+}
+
+test "tool argument and return policies share the per-tool retry budget" {
+    const call = [_]zigai.model.Part{
+        .{ .tool_call = .{ .id = "retry", .name = "retry", .arguments_json = "{}" } },
+    };
+    const final = [_]zigai.model.Part{.{ .text = "done" }};
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{
+            .{ .parts = &call },
+            .{ .parts = &call },
+            .{ .parts = &call },
+            .{ .parts = &final },
+        },
+    };
+    const State = struct {
+        argument_retries: usize = 0,
+        return_retries: usize = 0,
+        executions: usize = 0,
+
+        fn policy(context: *anyopaque, _: std.mem.Allocator, event: zigai.ToolPolicyEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event) {
+                .arguments => |arguments| if (arguments.context.retry_number == 0) {
+                    self.argument_retries += 1;
+                    arguments.retry_message = "Fix the arguments.";
+                },
+                .return_value => |returned| if (returned.context.retry_number == 1) {
+                    self.return_retries += 1;
+                    returned.retry_message = "Return a better result.";
+                } else {
+                    returned.output.content = "accepted";
+                },
+                else => {},
+            }
+        }
+
+        fn execute(context: *anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.executions += 1;
+            return allocator.dupe(u8, "raw");
+        }
+    };
+    var state: State = .{};
+    const tool = zigai.Tool{
+        .definition = .{ .name = "retry", .description = "", .parameters_json_schema = "{}" },
+        .context = &state,
+        .executeFn = State.execute,
+    };
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .tools = &.{tool},
+        .tool_policies = &.{.{ .context = &state, .applyFn = State.policy }},
+    }).run(std.testing.allocator, "Retry.");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("done", result.output);
+    try std.testing.expectEqual(@as(usize, 1), state.argument_retries);
+    try std.testing.expectEqual(@as(usize, 1), state.return_retries);
+    try std.testing.expectEqual(@as(usize, 2), state.executions);
+    const final_result = result.messages[result.messages.len - 2].request.parts[0].tool_return;
+    try std.testing.expectEqualStrings("accepted", final_result.content);
+}
+
+test "agent tool policies run before capability policies" {
+    const final = [_]zigai.model.Part{.{ .text = "done" }};
+    const Inspector = struct {
+        fn inspect(_: usize, request: zigai.ModelRequest) !void {
+            try std.testing.expectEqualStrings("base agent capability", request.tools[0].description);
+        }
+    };
+    var scripted = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &final }},
+        .inspectFn = Inspector.inspect,
+    };
+    const Policy = struct {
+        suffix: []const u8,
+
+        fn apply(context: *anyopaque, allocator: std.mem.Allocator, event: zigai.ToolPolicyEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event) {
+                .prepare => |prepared| prepared.tool.definition.description = try std.mem.concat(
+                    allocator,
+                    u8,
+                    &.{ prepared.tool.definition.description, self.suffix },
+                ),
+                else => {},
+            }
+        }
+    };
+    var agent_policy = Policy{ .suffix = " agent" };
+    var capability_policy = Policy{ .suffix = " capability" };
+    var tool_context: u8 = 0;
+    const tool = zigai.Tool{
+        .definition = .{ .name = "demo", .description = "base", .parameters_json_schema = "{}" },
+        .context = &tool_context,
+    };
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .tools = &.{tool},
+        .tool_policies = &.{.{ .context = &agent_policy, .applyFn = Policy.apply }},
+        .capabilities = &.{.{ .tool_policies = &.{.{
+            .context = &capability_policy,
+            .applyFn = Policy.apply,
+        }} }},
+    }).run(std.testing.allocator, "Prepare.");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("done", result.output);
 }
 
 test "agent joins final text parts" {
@@ -3225,6 +3431,73 @@ test "parallel tools overlap and keep model call order" {
     defer result.deinit();
     try std.testing.expect(state.overlapped.load(.seq_cst));
     try std.testing.expectEqualStrings("done", result.output);
+}
+
+test "sequential tools never overlap other local calls" {
+    const calls = [_]zigai.model.Part{
+        .{ .tool_call = .{ .id = "exclusive", .name = "exclusive", .arguments_json = "\"exclusive\"" } },
+        .{ .tool_call = .{ .id = "first", .name = "normal", .arguments_json = "\"first\"" } },
+        .{ .tool_call = .{ .id = "second", .name = "normal", .arguments_json = "\"second\"" } },
+    };
+    const final = [_]zigai.model.Part{.{ .text = "done" }};
+    var scripted = zigai.testing.ScriptedModel{ .responses = &.{
+        .{ .parts = &calls },
+        .{ .parts = &final },
+    } };
+    const State = struct {
+        active: std.atomic.Value(usize) = .init(0),
+        exclusive_active: std.atomic.Value(bool) = .init(false),
+        violation: std.atomic.Value(bool) = .init(false),
+
+        fn execute(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            run: zigai.ToolRunContext,
+            arguments: []const u8,
+        ) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const exclusive = std.mem.eql(u8, arguments, "\"exclusive\"");
+            if (exclusive) {
+                if (self.active.load(.seq_cst) != 0) self.violation.store(true, .seq_cst);
+                self.exclusive_active.store(true, .seq_cst);
+            } else if (self.exclusive_active.load(.seq_cst)) {
+                self.violation.store(true, .seq_cst);
+            }
+            _ = self.active.fetchAdd(1, .seq_cst);
+            defer {
+                _ = self.active.fetchSub(1, .seq_cst);
+                if (exclusive) self.exclusive_active.store(false, .seq_cst);
+            }
+            try (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(5),
+                .clock = .awake,
+            } }).sleep(run.io.?);
+            return allocator.dupe(u8, arguments);
+        }
+    };
+    var state: State = .{};
+    const tools = [_]zigai.Tool{
+        .{
+            .definition = .{ .name = "exclusive", .description = "", .parameters_json_schema = "{}" },
+            .sequential = true,
+            .context = &state,
+            .executeWithContextFn = State.execute,
+        },
+        .{
+            .definition = .{ .name = "normal", .description = "", .parameters_json_schema = "{}" },
+            .context = &state,
+            .executeWithContextFn = State.execute,
+        },
+    };
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var result = try (zigai.Agent{
+        .model = scripted.model(),
+        .tools = &tools,
+        .io = threaded.io(),
+    }).run(std.testing.allocator, "Run all.");
+    defer result.deinit();
+    try std.testing.expect(!state.violation.load(.seq_cst));
 }
 
 test "tool isolation returns bounded timeout result and follow-up failures" {

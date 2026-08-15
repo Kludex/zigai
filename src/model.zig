@@ -198,9 +198,17 @@ pub const ToolDefinition = struct {
     name: []const u8,
     description: []const u8,
     parameters_json_schema: []const u8,
-    /// Application-visible schema for the encoded tool result. Providers do
-    /// not currently receive this field.
+    /// Schema for the encoded tool result.
     return_json_schema: ?[]const u8 = null,
+    /// Controls whether adapters add the return schema to the model-visible
+    /// description. Provider function-tool protocols have no portable native
+    /// return-schema field.
+    return_schema_visibility: ToolReturnSchemaVisibility = .application,
+};
+
+pub const ToolReturnSchemaVisibility = enum {
+    application,
+    model_description,
 };
 
 /// Application metadata carried with a tool and exposed to lifecycle hooks.
@@ -254,6 +262,8 @@ pub const Tool = struct {
     /// Metadata for application policy and observability; providers do not receive it.
     metadata: []const ToolMetadata = &.{},
     execution: ToolExecution = .immediate,
+    /// Prevents this call from overlapping any other local function tool.
+    sequential: bool = false,
     context: *anyopaque,
     /// Overrides `Agent.max_tool_retries` for this tool when non-null.
     max_retries: ?usize = null,
@@ -303,7 +313,17 @@ pub const Tool = struct {
 
     /// Validates one bounded JSON argument document and any tool-specific rules.
     pub fn validate(self: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) !void {
-        try validateToolArgumentsJson(allocator, arguments_json);
+        try self.validateJson(allocator, arguments_json);
+        return self.validateRules(allocator, arguments_json);
+    }
+
+    /// Validates only the bounded JSON envelope before argument policies run.
+    pub fn validateJson(_: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) !void {
+        return validateToolArgumentsJson(allocator, arguments_json);
+    }
+
+    /// Applies tool-specific argument rules after policy transformation.
+    pub fn validateRules(self: Tool, allocator: std.mem.Allocator, arguments_json: []const u8) !void {
         const validate_arguments = self.validateFn orelse return;
         return validate_arguments(self.context, allocator, arguments_json);
     }
@@ -371,6 +391,8 @@ fn validateToolArgumentsJson(allocator: std.mem.Allocator, arguments_json: []con
 /// checked-at-the-call-site cast while keeping Agent itself non-generic.
 pub const ToolRunContext = struct {
     dependencies: ?*anyopaque = null,
+    /// Canonical conversation through the model response containing this call.
+    messages: []const Message = &.{},
     usage: RunUsage = .{},
     model_requests: usize = 0,
     /// Shared cooperative cancellation state for the run.

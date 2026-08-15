@@ -3,6 +3,21 @@ const model_types = @import("../model.zig");
 const http = @import("../transport.zig");
 const json_limits = @import("../json.zig");
 
+/// Builds the portable model-visible tool description when return-schema
+/// visibility is enabled. The caller owns a non-null result.
+pub fn toolDescription(
+    allocator: std.mem.Allocator,
+    tool: model_types.ToolDefinition,
+) !?[]u8 {
+    if (tool.return_schema_visibility != .model_description) return null;
+    const schema = tool.return_json_schema orelse return null;
+    return try std.fmt.allocPrint(
+        allocator,
+        "{s}\n\nReturn JSON Schema:\n{s}",
+        .{ tool.description, schema },
+    );
+}
+
 pub fn statusError(status: u16) model_types.ProviderRequestError {
     if (status == 429) return error.ProviderRateLimited;
     if (status >= 500) return error.ProviderServerError;
@@ -717,4 +732,23 @@ test "tool choice validates names and filters allow lists" {
         .{ .allowed = &.{ "search", "search" } },
     ));
     try validateToolChoice(&.{}, 1, .required);
+}
+
+test "provider tool descriptions expose return schemas only when requested" {
+    const base = model_types.ToolDefinition{
+        .name = "demo",
+        .description = "Demo.",
+        .parameters_json_schema = "{}",
+    };
+    try std.testing.expect(try toolDescription(std.testing.allocator, base) == null);
+    var visible = base;
+    visible.return_schema_visibility = .model_description;
+    try std.testing.expect(try toolDescription(std.testing.allocator, visible) == null);
+    visible.return_json_schema = "{\"type\":\"string\"}";
+    const description = (try toolDescription(std.testing.allocator, visible)).?;
+    defer std.testing.allocator.free(description);
+    try std.testing.expectEqualStrings(
+        "Demo.\n\nReturn JSON Schema:\n{\"type\":\"string\"}",
+        description,
+    );
 }

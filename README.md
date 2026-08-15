@@ -103,6 +103,7 @@ and count toward `limits.max_tool_calls` across the full run.
 Local tools use bounded execution defaults: at most eight calls run at once,
 64 may wait, and one result or all follow-up data may use at most 1 MiB. Set
 `Agent.tool_limits` for the run; `Tool.limits` may tighten it for one tool.
+Set `Tool.sequential` when a call must not overlap any other local tool.
 Timeouts require `Agent.io`. Timeout, queue, result-size, and follow-up-size
 failures become ordinary error tool results so the model can recover without
 replaying a successful call.
@@ -116,8 +117,11 @@ agent returns, so they cannot write into result state later. Run deadlines
 require `Agent.io`; a resumed approval starts a fresh invocation deadline.
 
 Reflected tools also expose the return type as
-`ToolDefinition.return_json_schema`. To add context for the next model step,
-return `ToolReturn(T)`:
+`ToolDefinition.return_json_schema`. It stays local by default. Set
+`return_schema_visibility = .model_description` to include it in the portable
+provider-visible description.
+
+To add context for the next model step, return `ToolReturn(T)`:
 
 ```zig
 fn lookup(args: LookupArgs) !zigai.ToolReturn(Weather) {
@@ -410,6 +414,21 @@ The model sees `db__search` and `db__fetch`. A `prepareFn` can enable or disable
 tools before each model step using the current messages, usage, request count,
 and typed dependencies. Tool, toolset, and prepared-entry metadata is available
 to lifecycle hooks, but is not sent to the provider.
+
+### Tool policies
+
+Use `ToolPolicy` when behavior belongs to the agent, not to one executor. A
+policy receives ordered, typed stages for preparation, arguments, approval,
+the call, and its return value.
+
+Preparation policies run after toolsets. They can change or hide a tool for
+one model step, with the current messages, usage, request count, and
+dependencies available through `ToolPolicyRunContext`.
+
+Argument and return stages can transform their value or set `retry_message`.
+Approval runs only after valid arguments and may select `requires_approval`
+from the current dependencies and message history. The resolved arguments and
+decision are persisted when the agent pauses.
 
 ### MCP toolsets
 

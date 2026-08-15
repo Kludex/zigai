@@ -3,6 +3,7 @@
 const std = @import("std");
 const model_types = @import("model.zig");
 const output_types = @import("output.zig");
+const tool_policy = @import("tool.zig");
 const json_schema = @import("json_schema.zig");
 const reflect = @import("reflect.zig");
 const history = @import("history.zig");
@@ -163,6 +164,8 @@ const AgentError = error{
     ToolQueueOverflow,
     /// A tool result exceeded its encoded byte limit.
     ToolResultTooLarge,
+    /// A tool policy requested a retry after the per-tool budget was exhausted.
+    ToolPolicyRetry,
     /// A local tool exceeded its execution timeout.
     ToolTimedOut,
     /// A normal run encountered a tool requiring approval or external execution.
@@ -599,6 +602,15 @@ const SerializedToolRetry = struct {
     count: usize,
 };
 
+const SerializedResolvedToolCall = struct {
+    call_id: []const u8,
+    name: []const u8,
+    arguments_json: []const u8,
+    model_arguments_json: []const u8,
+    execution: model_types.ToolExecution,
+    retry_number: usize,
+};
+
 const SerializedPause = struct {
     version: u8,
     prompt: []const u8,
@@ -609,7 +621,7 @@ const SerializedPause = struct {
     total_tool_calls: usize,
     output_retries: usize,
     tool_retries: []const SerializedToolRetry,
-    calls: []const DeferredToolCall,
+    calls: []const SerializedResolvedToolCall,
     pending_history_json: ?[]const u8 = null,
 };
 
@@ -621,7 +633,7 @@ const ResumeState = struct {
     total_tool_calls: usize,
     output_retries: usize,
     tool_retries: []const SerializedToolRetry,
-    calls: []const DeferredToolCall,
+    calls: []const SerializedResolvedToolCall,
     pending_messages: []const Message,
 };
 
@@ -834,6 +846,7 @@ pub const Capability = struct {
     toolsets: []const Toolset = &.{},
     instructions: []const Instruction = &.{},
     hooks: []const LifecycleHook = &.{},
+    tool_policies: []const tool_policy.Policy = &.{},
     history_processors: []const history.Processor = &.{},
     output_validators: []const output_types.Validator = &.{},
     model_settings: model_types.ModelSettings = .{},
@@ -876,6 +889,9 @@ pub const Agent = struct {
     model: model_types.Model,
     capabilities: []const Capability = &.{},
     hooks: []const LifecycleHook = &.{},
+    /// Ordered tool lifecycle policies. Capability policies run afterward in
+    /// `capabilities` order.
+    tool_policies: []const tool_policy.Policy = &.{},
     tools: []const model_types.Tool = &.{},
     builtin_tools: []const model_types.BuiltinTool = &.{},
     toolsets: []const Toolset = &.{},
@@ -1110,7 +1126,7 @@ pub const Agent = struct {
             Error.InvalidDeferredState,
         );
         defer parsed.deinit();
-        if (parsed.value.version != 1) return Error.InvalidDeferredState;
+        if (parsed.value.version != 2) return Error.InvalidDeferredState;
         var owned_history = history.parse(allocator, parsed.value.history_json) catch
             return Error.InvalidDeferredState;
         defer owned_history.deinit();
@@ -1273,6 +1289,9 @@ pub const Agent = struct {
         var hooks: std.ArrayList(LifecycleHook) = .empty;
         defer hooks.deinit(allocator);
         try hooks.appendSlice(allocator, self.hooks);
+        var tool_policies: std.ArrayList(tool_policy.Policy) = .empty;
+        defer tool_policies.deinit(allocator);
+        try tool_policies.appendSlice(allocator, self.tool_policies);
         var history_processors: std.ArrayList(history.Processor) = .empty;
         defer history_processors.deinit(allocator);
         try history_processors.appendSlice(allocator, self.history_processors);
@@ -1289,6 +1308,7 @@ pub const Agent = struct {
             try toolsets.appendSlice(allocator, capability.toolsets);
             try instructions.appendSlice(allocator, capability.instructions);
             try hooks.appendSlice(allocator, capability.hooks);
+            try tool_policies.appendSlice(allocator, capability.tool_policies);
             try history_processors.appendSlice(allocator, capability.history_processors);
             try output_validators.appendSlice(allocator, capability.output_validators);
             capability_settings = capability_settings.overrideWith(capability.model_settings);
@@ -1310,6 +1330,7 @@ pub const Agent = struct {
         configured.instructions = instructions.items;
         configured.history_processors = history_processors.items;
         configured.output_validators = output_validators.items;
+        configured.tool_policies = tool_policies.items;
         configured.model_settings = capability_settings.overrideWith(self.model_settings);
         configured.capabilities = &.{};
         if (telemetry_run) |*instrumentation| try hooks.append(allocator, telemetryHook(instrumentation));
@@ -1422,13 +1443,20 @@ pub const Agent = struct {
                 stream_sink,
                 hooks,
             );
-            const available_tools = try prepareTools(memory, self.tools, self.toolsets, .{
+            const toolset_context = ToolsetContext{
                 .messages = messages.items,
                 .usage = total_usage,
                 .model_requests = model_requests,
                 .dependencies = dependencies,
                 .control = control,
-            });
+            };
+            const available_tools = try prepareTools(
+                memory,
+                self.tools,
+                self.toolsets,
+                self.tool_policies,
+                toolset_context,
+            );
             try ensureUniqueToolNames(available_tools);
             try ensureNoOutputToolConflicts(available_tools, prepared_output.tool_choices);
             if (available_tools.len > 0 and !self.model.profile.supports_tools) {
@@ -1446,6 +1474,7 @@ pub const Agent = struct {
                     &tool_retries,
                     .{
                         .dependencies = dependencies,
+                        .messages = current_messages,
                         .usage = total_usage,
                         .model_requests = model_requests,
                         .cancellation = self.cancellation,
@@ -1763,7 +1792,34 @@ pub const Agent = struct {
             {
                 return Error.ParallelToolCallsNotSupported;
             }
-            if (hasDeferredToolCall(available_tools, response.parts)) {
+            var ordinary_tool_call_count: usize = 0;
+            for (response.parts) |part| switch (part) {
+                .tool_call => |call| if (prepared_output.findToolChoice(call.name) == null) {
+                    ordinary_tool_call_count += 1;
+                },
+                else => {},
+            };
+            const tool_run_context = model_types.ToolRunContext{
+                .dependencies = dependencies,
+                .messages = messages.items,
+                .usage = total_usage,
+                .model_requests = model_requests,
+                .cancellation = self.cancellation,
+                .io = self.io,
+                .deadline = control.deadline,
+            };
+            const tool_work = try resolveToolCalls(
+                available_tools,
+                memory,
+                response.parts,
+                ordinary_tool_call_count,
+                prepared_output,
+                &tool_retries,
+                tool_run_context,
+                self.tool_policies,
+                hooks,
+            );
+            if (hasDeferredToolCall(tool_work)) {
                 if (!allow_pause) return Error.ToolCallRequiresDeferredRun;
                 const pending_queue = options.pending_messages;
                 const pending = try closeAndCopyPendingMessages(
@@ -1786,6 +1842,7 @@ pub const Agent = struct {
                     tool_retries.entries.items,
                     available_tools,
                     response.parts,
+                    tool_work,
                     pending,
                 );
                 if (stream_sink) |sink| try emitStreamEvent(hooks, sink, .{
@@ -1809,14 +1866,6 @@ pub const Agent = struct {
                 else => {},
             };
             if (has_output_call) {
-                const tool_run_context = model_types.ToolRunContext{
-                    .dependencies = dependencies,
-                    .usage = total_usage,
-                    .model_requests = model_requests,
-                    .cancellation = self.cancellation,
-                    .io = self.io,
-                    .deadline = control.deadline,
-                };
                 const output_run_context = output_types.RunContext{
                     .dependencies = dependencies,
                     .messages = messages.items,
@@ -1922,15 +1971,16 @@ pub const Agent = struct {
                                 .interrupted,
                             );
                         } else {
-                            const one = [_]Part{part};
+                            const one_work = findToolWork(tool_work, call.id) orelse return Error.UnknownTool;
+                            const one = [_]ToolWork{one_work};
                             const batch = try executeToolCalls(
                                 self,
                                 available_tools,
                                 memory,
                                 &one,
-                                1,
                                 &tool_retries,
                                 tool_run_context,
+                                self.tool_policies,
                                 hooks,
                             );
                             records[ordinal] = batch.parts[0];
@@ -2000,17 +2050,10 @@ pub const Agent = struct {
                 self,
                 available_tools,
                 memory,
-                response.parts,
-                tool_call_count,
+                tool_work,
                 &tool_retries,
-                .{
-                    .dependencies = dependencies,
-                    .usage = total_usage,
-                    .model_requests = model_requests,
-                    .cancellation = self.cancellation,
-                    .io = self.io,
-                    .deadline = control.deadline,
-                },
+                tool_run_context,
+                self.tool_policies,
                 hooks,
             );
             if (stream_sink) |sink| for (tool_batch.parts) |part| {
@@ -2041,14 +2084,8 @@ fn appendString(
     return appended;
 }
 
-fn hasDeferredToolCall(tools: []const model_types.Tool, parts: []const Part) bool {
-    for (parts) |part| switch (part) {
-        .tool_call => |call| {
-            const tool = findTool(tools, call.name) orelse continue;
-            if (tool.execution != .immediate) return true;
-        },
-        else => {},
-    };
+fn hasDeferredToolCall(work: []const ToolWork) bool {
+    for (work) |item| if (item.validation_failure == null and item.execution != .immediate) return true;
     return false;
 }
 
@@ -2065,23 +2102,41 @@ fn createPausedRun(
     retry_entries: []const ToolRetryTracker.Entry,
     tools: []const model_types.Tool,
     parts: []const Part,
+    work: []const ToolWork,
     pending_messages: []const Message,
 ) !PausedRun {
     var calls: std.ArrayList(DeferredToolCall) = .empty;
+    var resolved_calls: std.ArrayList(SerializedResolvedToolCall) = .empty;
     for (parts) |part| switch (part) {
         .tool_call => |call| {
-            const tool = findTool(tools, call.name) orelse continue;
-            if (tool.execution == .immediate) continue;
-            try calls.append(allocator, .{
-                .call_id = try allocator.dupe(u8, call.id),
-                .name = try allocator.dupe(u8, call.name),
-                .arguments_json = try allocator.dupe(u8, call.arguments_json),
-                .execution = tool.execution,
+            _ = findTool(tools, call.name) orelse continue;
+            const resolved = findToolWork(work, call.id) orelse continue;
+            const call_id = try allocator.dupe(u8, call.id);
+            const name = try allocator.dupe(u8, call.name);
+            const arguments_json = try allocator.dupe(u8, resolved.arguments_json);
+            const saved = SerializedResolvedToolCall{
+                .call_id = call_id,
+                .name = name,
+                .arguments_json = arguments_json,
+                .model_arguments_json = try allocator.dupe(u8, call.arguments_json),
+                .execution = if (resolved.validation_failure != null or resolved.retry_message != null)
+                    .immediate
+                else
+                    resolved.execution,
+                .retry_number = resolved.retry_number,
+            };
+            try resolved_calls.append(allocator, saved);
+            if (saved.execution != .immediate) try calls.append(allocator, .{
+                .call_id = call_id,
+                .name = name,
+                .arguments_json = arguments_json,
+                .execution = saved.execution,
             });
         },
         else => {},
     };
     const paused_calls = try calls.toOwnedSlice(allocator);
+    const saved_calls = try resolved_calls.toOwnedSlice(allocator);
     const retries = try allocator.alloc(SerializedToolRetry, retry_entries.len);
     for (retry_entries, retries) |entry, *retry| retry.* = .{
         .name = entry.name,
@@ -2093,7 +2148,7 @@ fn createPausedRun(
     else
         null;
     const state_json = try std.json.Stringify.valueAlloc(allocator, SerializedPause{
-        .version = 1,
+        .version = 2,
         .prompt = prompt,
         .history_json = history_json,
         .instructions = instructions,
@@ -2102,7 +2157,7 @@ fn createPausedRun(
         .total_tool_calls = total_tool_calls,
         .output_retries = output_retries,
         .tool_retries = retries,
-        .calls = paused_calls,
+        .calls = saved_calls,
         .pending_history_json = pending_history_json,
     }, .{});
     return .{
@@ -2120,7 +2175,7 @@ fn executeResumedToolCalls(
     allocator: std.mem.Allocator,
     messages: []const Message,
     decisions: []const ResumeDecision,
-    saved_calls: []const DeferredToolCall,
+    saved_calls: []const SerializedResolvedToolCall,
     tool_retries: *ToolRetryTracker,
     run_context: model_types.ToolRunContext,
     hooks: []const LifecycleHook,
@@ -2136,22 +2191,17 @@ fn executeResumedToolCalls(
         else => {},
     };
     if (call_count == 0) return Agent.Error.InvalidDeferredState;
-    try validateDeferredCalls(tools, assistant.parts, saved_calls);
-
     for (decisions, 0..) |decision, index| {
         for (decisions[index + 1 ..]) |other| {
             if (std.mem.eql(u8, decision.call_id, other.call_id)) return Agent.Error.UnexpectedDeferredToolDecision;
         }
         var found = false;
-        for (assistant.parts) |part| switch (part) {
-            .tool_call => |call| if (std.mem.eql(u8, call.id, decision.call_id)) {
-                const tool = findTool(tools, call.name) orelse return Agent.Error.UnknownTool;
-                found = tool.execution != .immediate;
-            },
-            else => {},
+        for (saved_calls) |saved| if (std.mem.eql(u8, saved.call_id, decision.call_id)) {
+            found = saved.execution != .immediate;
         };
         if (!found) return Agent.Error.UnexpectedDeferredToolDecision;
     }
+    try validateDeferredCalls(tools, assistant.parts, saved_calls);
 
     const results = try allocator.alloc(RequestPart, call_count);
     var follow_up_messages: std.ArrayList(model_types.RequestMessage) = .empty;
@@ -2160,14 +2210,22 @@ fn executeResumedToolCalls(
         .tool_call => |call| {
             const tool_index = findToolIndex(tools, call.name) orelse return Agent.Error.UnknownTool;
             const tool = tools[tool_index];
+            const saved = findSavedToolCall(saved_calls, call.id) orelse return Agent.Error.InvalidDeferredState;
             try emitLifecycle(hooks, .{ .tool_validation_start = .{ .call = call } });
             toolRunControl(run_context).invoke(
                 void,
                 validateToolArguments,
-                .{ tool, allocator, call.arguments_json },
+                .{ tool, allocator, saved.arguments_json },
             ) catch |failure| {
                 try emitLifecycle(hooks, .{ .tool_validation_error = .{ .call = call, .failure = failure } }); // kcov-ignore
-                const work = ToolWork{ .call = call, .tool_index = tool_index, .validation_failure = failure };
+                const work = ToolWork{
+                    .call = call,
+                    .tool_index = tool_index,
+                    .arguments_json = saved.arguments_json,
+                    .execution = saved.execution,
+                    .retry_number = saved.retry_number,
+                    .validation_failure = failure,
+                };
                 const processed = try toolResult(
                     agent,
                     tools,
@@ -2184,23 +2242,36 @@ fn executeResumedToolCalls(
             try emitLifecycle(hooks, .{ .tool_validation_end = .{ .call = call, .tool = tool } });
 
             const decision = findResumeDecision(decisions, call.id);
-            switch (tool.execution) {
+            switch (saved.execution) {
                 .immediate => {
                     try emitLifecycle(hooks, .{ .tool_execution_start = .{ .call = call, .tool = tool } });
-                    const outcome = executeToolControlled(
+                    const outcome = executeToolWorkControlled(
                         agent.io,
                         tool,
                         effectiveToolLimits(agent.tool_limits, tool.limits),
                         allocator,
                         run_context,
-                        call.arguments_json,
+                        .{
+                            .call = call,
+                            .tool_index = tool_index,
+                            .arguments_json = saved.arguments_json,
+                            .execution = saved.execution,
+                            .retry_number = saved.retry_number,
+                        },
+                        agent.tool_policies,
                     );
                     try emitToolOutcome(hooks, tool, call, outcome);
                     const processed = try toolResult(
                         agent,
                         tools,
                         allocator,
-                        .{ .call = call, .tool_index = tool_index },
+                        .{
+                            .call = call,
+                            .tool_index = tool_index,
+                            .arguments_json = saved.arguments_json,
+                            .execution = saved.execution,
+                            .retry_number = saved.retry_number,
+                        },
                         tool_retries,
                         outcome,
                     );
@@ -2212,20 +2283,33 @@ fn executeResumedToolCalls(
                     switch (approved.action) {
                         .approve => {
                             try emitLifecycle(hooks, .{ .tool_execution_start = .{ .call = call, .tool = tool } });
-                            const outcome = executeToolControlled(
+                            const outcome = executeToolWorkControlled(
                                 agent.io,
                                 tool,
                                 effectiveToolLimits(agent.tool_limits, tool.limits),
                                 allocator,
                                 run_context,
-                                call.arguments_json,
+                                .{
+                                    .call = call,
+                                    .tool_index = tool_index,
+                                    .arguments_json = saved.arguments_json,
+                                    .execution = saved.execution,
+                                    .retry_number = saved.retry_number,
+                                },
+                                agent.tool_policies,
                             );
                             try emitToolOutcome(hooks, tool, call, outcome);
                             const processed = try toolResult(
                                 agent,
                                 tools,
                                 allocator,
-                                .{ .call = call, .tool_index = tool_index },
+                                .{
+                                    .call = call,
+                                    .tool_index = tool_index,
+                                    .arguments_json = saved.arguments_json,
+                                    .execution = saved.execution,
+                                    .retry_number = saved.retry_number,
+                                },
                                 tool_retries,
                                 outcome,
                             );
@@ -2278,19 +2362,17 @@ fn executeResumedToolCalls(
 fn validateDeferredCalls(
     tools: []const model_types.Tool,
     parts: []const Part,
-    saved_calls: []const DeferredToolCall,
+    saved_calls: []const SerializedResolvedToolCall,
 ) !void {
     var saved_index: usize = 0;
     for (parts) |part| switch (part) {
         .tool_call => |call| {
-            const tool = findTool(tools, call.name) orelse return Agent.Error.UnknownTool;
-            if (tool.execution == .immediate) continue;
+            _ = findTool(tools, call.name) orelse return Agent.Error.UnknownTool;
             if (saved_index >= saved_calls.len) return Agent.Error.InvalidDeferredState;
             const saved = saved_calls[saved_index];
             if (!std.mem.eql(u8, saved.call_id, call.id) or
                 !std.mem.eql(u8, saved.name, call.name) or
-                !std.mem.eql(u8, saved.arguments_json, call.arguments_json) or
-                saved.execution != tool.execution)
+                !std.mem.eql(u8, saved.model_arguments_json, call.arguments_json))
             {
                 return Agent.Error.InvalidDeferredState;
             }
@@ -2299,6 +2381,14 @@ fn validateDeferredCalls(
         else => {},
     };
     if (saved_index != saved_calls.len) return Agent.Error.InvalidDeferredState;
+}
+
+fn findSavedToolCall(
+    saved_calls: []const SerializedResolvedToolCall,
+    call_id: []const u8,
+) ?SerializedResolvedToolCall {
+    for (saved_calls) |saved| if (std.mem.eql(u8, saved.call_id, call_id)) return saved;
+    return null;
 }
 
 fn findResumeDecision(decisions: []const ResumeDecision, call_id: []const u8) ?ResumeDecision {
@@ -2581,11 +2671,16 @@ fn decodeTypedResult(comptime Output: type, untyped: Agent.Result) !TypedResult(
 const ToolWork = struct {
     call: model_types.ToolCall,
     tool_index: usize,
+    arguments_json: []const u8,
+    execution: model_types.ToolExecution,
+    retry_number: usize = 0,
     validation_failure: ?anyerror = null,
+    retry_message: ?[]const u8 = null,
 };
 
 const ToolOutcome = union(enum) {
     success: model_types.ToolOutput,
+    retry: []const u8,
     failure: anyerror,
 };
 
@@ -2611,20 +2706,22 @@ const ToolCallBatch = struct {
     follow_up_messages: []const model_types.RequestMessage = &.{},
 };
 
-fn executeToolCalls(
-    agent: Agent,
+fn resolveToolCalls(
     tools: []const model_types.Tool,
     allocator: std.mem.Allocator,
     response_parts: []const Part,
     call_count: usize,
-    tool_retries: *ToolRetryTracker,
+    prepared_output: output_types.Prepared,
+    tool_retries: *const ToolRetryTracker,
     run_context: model_types.ToolRunContext,
+    policies: []const tool_policy.Policy,
     hooks: []const LifecycleHook,
-) !ToolCallBatch {
+) ![]const ToolWork {
     const work = try allocator.alloc(ToolWork, call_count);
     var work_index: usize = 0;
     for (response_parts) |part| switch (part) {
         .tool_call => |call| {
+            if (prepared_output.findToolChoice(call.name) != null) continue;
             try emitLifecycle(hooks, .{ .tool_validation_start = .{ .call = call } });
             const tool_index = findToolIndex(tools, call.name) orelse {
                 try emitLifecycle(hooks, .{ .tool_validation_error = .{
@@ -2633,50 +2730,127 @@ fn executeToolCalls(
                 } });
                 return Agent.Error.UnknownTool;
             };
+            const tool = tools[tool_index];
             work[work_index] = .{
                 .call = call,
                 .tool_index = tool_index,
+                .arguments_json = call.arguments_json,
+                .execution = tool.execution,
+                .retry_number = tool_retries.current(call.name),
             };
             toolRunControl(run_context).invoke(
                 void,
-                validateToolArguments,
-                .{ tools[tool_index], allocator, call.arguments_json },
-            ) catch |err| {
-                work[work_index].validation_failure = err;
-                try emitLifecycle(hooks, .{ .tool_validation_error = .{
-                    .call = call,
-                    .failure = err,
-                } });
+                validateToolArgumentJson,
+                .{ tool, allocator, call.arguments_json },
+            ) catch |failure| {
+                work[work_index].validation_failure = failure;
+                try emitLifecycle(hooks, .{ .tool_validation_error = .{ .call = call, .failure = failure } });
                 work_index += 1;
                 continue;
             };
-            try emitLifecycle(hooks, .{ .tool_validation_end = .{
-                .call = call,
-                .tool = tools[tool_index],
-            } });
+            var arguments = tool_policy.Arguments{
+                .context = policyCallContext(run_context, call, tool, work[work_index].retry_number, false),
+                .arguments_json = call.arguments_json,
+            };
+            applyToolPolicies(toolRunControl(run_context), policies, allocator, .{ .arguments = &arguments }) catch |failure| {
+                try emitLifecycle(hooks, .{ .tool_validation_error = .{ .call = call, .failure = failure } });
+                return failure;
+            };
+            work[work_index].arguments_json = arguments.arguments_json;
+            if (arguments.retry_message) |message| {
+                work[work_index].retry_message = message;
+                try emitLifecycle(hooks, .{ .tool_validation_error = .{
+                    .call = call,
+                    .failure = error.ToolArgumentsRejected,
+                } });
+                work_index += 1;
+                continue;
+            }
+            toolRunControl(run_context).invoke(
+                void,
+                validateToolArguments,
+                .{ tool, allocator, arguments.arguments_json },
+            ) catch |failure| {
+                work[work_index].validation_failure = failure;
+                try emitLifecycle(hooks, .{ .tool_validation_error = .{ .call = call, .failure = failure } });
+                work_index += 1;
+                continue;
+            };
+            try emitLifecycle(hooks, .{ .tool_validation_end = .{ .call = call, .tool = tool } });
+            var approval = tool_policy.Approval{
+                .context = arguments.context,
+                .arguments_json = arguments.arguments_json,
+                .execution = tool.execution,
+            };
+            try applyToolPolicies(toolRunControl(run_context), policies, allocator, .{ .approval = &approval });
+            work[work_index].execution = approval.execution;
             work_index += 1;
         },
         else => {},
     };
+    std.debug.assert(work_index == call_count);
+    return work;
+}
 
+fn findToolWork(work: []const ToolWork, call_id: []const u8) ?ToolWork {
+    for (work) |item| if (std.mem.eql(u8, item.call.id, call_id)) return item;
+    return null;
+}
+
+fn policyCallContext(
+    run_context: model_types.ToolRunContext,
+    call: model_types.ToolCall,
+    tool: model_types.Tool,
+    retry_number: usize,
+    approved: bool,
+) tool_policy.CallContext {
+    return .{
+        .run = .{
+            .messages = run_context.messages,
+            .usage = run_context.usage,
+            .model_requests = run_context.model_requests,
+            .dependencies = run_context.dependencies,
+            .control = toolRunControl(run_context),
+        },
+        .call = call,
+        .tool = tool,
+        .retry_number = retry_number,
+        .approved = approved,
+    };
+}
+
+fn executeToolCalls(
+    agent: Agent,
+    tools: []const model_types.Tool,
+    allocator: std.mem.Allocator,
+    work: []const ToolWork,
+    tool_retries: *ToolRetryTracker,
+    run_context: model_types.ToolRunContext,
+    policies: []const tool_policy.Policy,
+    hooks: []const LifecycleHook,
+) !ToolCallBatch {
+    const call_count = work.len;
     const result_parts = try allocator.alloc(RequestPart, call_count);
     if (call_count == 1) {
         try toolRunControl(run_context).check();
         const limits = effectiveToolLimits(agent.tool_limits, tools[work[0].tool_index].limits);
-        const outcome: ToolOutcome = if (work[0].validation_failure) |failure|
+        const outcome: ToolOutcome = if (work[0].retry_message) |message|
+            .{ .retry = message }
+        else if (work[0].validation_failure) |failure|
             .{ .failure = failure }
         else execute: {
             try emitLifecycle(hooks, .{ .tool_execution_start = .{
                 .call = work[0].call,
                 .tool = tools[work[0].tool_index],
             } });
-            const executed = executeToolControlled(
+            const executed = executeToolWorkControlled(
                 agent.io,
                 tools[work[0].tool_index],
                 limits,
                 allocator,
                 run_context,
-                work[0].call.arguments_json,
+                work[0],
+                policies,
             );
             try emitToolOutcome(hooks, tools[work[0].tool_index], work[0].call, executed);
             break :execute executed;
@@ -2706,7 +2880,12 @@ fn executeToolCalls(
     var completed: usize = 0; // kcov-ignore
     const global_capacity = agent.tool_limits.max_concurrency +| agent.tool_limits.max_queue_size;
     for (work, states, outcomes) |item, *state, *outcome| {
-        if (item.validation_failure) |failure| {
+        if (item.retry_message) |message| {
+            outcome.* = .{ .retry = message };
+            state.* = .complete;
+            completed += 1;
+            continue;
+        } else if (item.validation_failure) |failure| {
             outcome.* = .{ .failure = failure };
             state.* = .complete;
             completed += 1;
@@ -2735,19 +2914,22 @@ fn executeToolCalls(
         try toolRunControl(run_context).check();
         for (work, states, futures) |item, *state, *future| {
             if (state.* != .pending or running >= agent.tool_limits.max_concurrency) continue;
+            if (runningSequentialTool(tools, work, states)) continue;
+            if (tools[item.tool_index].sequential and running != 0) continue;
             const limits = effectiveToolLimits(agent.tool_limits, tools[item.tool_index].limits);
             if (runningCallsForTool(work, states, item.tool_index) >= limits.max_concurrency) continue;
             try emitLifecycle(hooks, .{ .tool_execution_start = .{
                 .call = item.call,
                 .tool = tools[item.tool_index],
             } });
-            future.* = io.concurrent(executeToolControlled, .{
+            future.* = io.concurrent(executeToolWorkControlled, .{
                 @as(?std.Io, io),
                 tools[item.tool_index],
                 limits,
                 concurrent_allocator,
                 run_context,
-                item.call.arguments_json,
+                item,
+                policies,
             }) catch return Agent.Error.ToolConcurrencyUnavailable;
             state.* = .running;
             running += 1;
@@ -2765,10 +2947,7 @@ fn executeToolCalls(
         completed += 1;
         try emitToolOutcome(hooks, tools[work[index].tool_index], work[index].call, outcomes[index]);
         if (outcomes[index] == .failure and
-            !tools[work[index].tool_index].isRecoverable(outcomes[index].failure))
-        {
-            return outcomes[index].failure;
-        }
+            !tools[work[index].tool_index].isRecoverable(outcomes[index].failure)) return outcomes[index].failure;
     }
     try toolRunControl(run_context).check();
     var follow_up_messages: std.ArrayList(model_types.RequestMessage) = .empty;
@@ -2823,6 +3002,17 @@ fn runningCallsForTool(work: []const ToolWork, states: []const ToolTaskState, to
     return count;
 }
 
+fn runningSequentialTool(
+    tools: []const model_types.Tool,
+    work: []const ToolWork,
+    states: []const ToolTaskState,
+) bool {
+    for (work, states) |item, state| {
+        if (state == .running and tools[item.tool_index].sequential) return true;
+    }
+    return false;
+}
+
 fn emitToolOutcome(
     hooks: []const LifecycleHook,
     tool: model_types.Tool,
@@ -2839,22 +3029,50 @@ fn emitToolOutcome(
             .failure = failure,
             .recoverable = tool.isRecoverable(failure),
         } }),
+        .retry => try emitLifecycle(hooks, .{ .tool_execution_error = .{
+            .call = call,
+            .failure = Agent.Error.ToolPolicyRetry,
+            .recoverable = true,
+        } }),
     }
 }
 
-fn executeTool(
+fn executeToolWork(
     tool: model_types.Tool,
     limits: model_types.ToolLimits,
     allocator: std.mem.Allocator,
     run_context: model_types.ToolRunContext,
-    arguments_json: []const u8,
+    work: ToolWork,
+    policies: []const tool_policy.Policy,
 ) ToolOutcome {
-    toolRunControl(run_context).check() catch |err| return .{ .failure = err };
-    const output = tool.executeOutputWithContext(allocator, run_context, arguments_json) catch |err| {
-        return .{ .failure = err };
+    toolRunControl(run_context).check() catch |failure| return .{ .failure = failure };
+    var call = tool_policy.Call{
+        .context = policyCallContext(
+            run_context,
+            work.call,
+            tool,
+            work.retry_number,
+            work.execution == .requires_approval,
+        ),
+        .arguments_json = work.arguments_json,
     };
-    validateToolOutput(output, limits) catch |failure| return .{ .failure = failure };
-    return .{ .success = output };
+    tool_policy.applyAll(policies, allocator, .{ .call = &call }) catch |failure|
+        return .{ .failure = failure };
+    const output = call.output orelse tool.executeOutputWithContext(
+        allocator,
+        run_context,
+        call.arguments_json,
+    ) catch |failure| return .{ .failure = failure };
+    var returned = tool_policy.Return{
+        .context = call.context,
+        .arguments_json = call.arguments_json,
+        .output = output,
+    };
+    tool_policy.applyAll(policies, allocator, .{ .return_value = &returned }) catch |failure|
+        return .{ .failure = failure };
+    if (returned.retry_message) |message| return .{ .retry = message };
+    validateToolOutput(returned.output, limits) catch |failure| return .{ .failure = failure };
+    return .{ .success = returned.output };
 }
 
 fn validateToolArguments(
@@ -2863,6 +3081,14 @@ fn validateToolArguments(
     arguments_json: []const u8,
 ) !void {
     return tool.validate(allocator, arguments_json);
+}
+
+fn validateToolArgumentJson(
+    tool: model_types.Tool,
+    allocator: std.mem.Allocator,
+    arguments_json: []const u8,
+) !void {
+    return tool.validateJson(allocator, arguments_json);
 }
 
 fn toolRunControl(context: model_types.ToolRunContext) model_types.RunControl {
@@ -2880,22 +3106,23 @@ const ToolControlOutcome = union(enum) {
     cancelled: anyerror!void,
 };
 
-fn executeToolControlled(
+fn executeToolWorkControlled(
     maybe_io: ?std.Io,
     tool: model_types.Tool,
     limits: model_types.ToolLimits,
     allocator: std.mem.Allocator,
     run_context: model_types.ToolRunContext,
-    arguments_json: []const u8,
+    work: ToolWork,
+    policies: []const tool_policy.Policy,
 ) ToolOutcome {
     if (limits.max_concurrency == 0) return .{ .failure = Agent.Error.ToolQueueOverflow };
     if (limits.timeout_ms == null and run_context.cancellation == null and run_context.deadline == null)
-        return executeTool(tool, limits, allocator, run_context, arguments_json);
+        return executeToolWork(tool, limits, allocator, run_context, work, policies);
     const io = maybe_io orelse return .{ .failure = Agent.Error.ToolIsolationRequiresIo };
     var buffer: [4]ToolControlOutcome = undefined;
     var select: std.Io.Select(ToolControlOutcome) = .init(io, &buffer);
     defer select.cancelDiscard();
-    select.concurrent(.tool, executeTool, .{ tool, limits, allocator, run_context, arguments_json }) catch
+    select.concurrent(.tool, executeToolWork, .{ tool, limits, allocator, run_context, work, policies }) catch
         return .{ .failure = Agent.Error.ToolConcurrencyUnavailable };
     if (limits.timeout_ms) |milliseconds|
         select.concurrent(.timeout, waitForToolTimeout, .{ io, milliseconds }) catch
@@ -3137,6 +3364,11 @@ fn toolResult(
             .content = output.content,
             .is_error = false,
             .follow_up_messages = output.follow_up_messages,
+        },
+        .retry => |message| retry: {
+            const retry_limit = tool.max_retries orelse agent.max_tool_retries;
+            if (!try tool_retries.consume(work.call.name, retry_limit)) return Agent.Error.ToolPolicyRetry;
+            break :retry .{ .content = message, .is_error = true };
         },
         .failure => |failure| recover: {
             if (!tool.isRecoverable(failure)) return failure;
@@ -3934,10 +4166,11 @@ fn prepareTools(
     allocator: std.mem.Allocator,
     direct_tools: []const model_types.Tool,
     toolsets: []const Toolset,
+    policies: []const tool_policy.Policy,
     context: ToolsetContext,
 ) ![]const model_types.Tool {
-    var prepared: std.ArrayList(model_types.Tool) = .empty;
-    try prepared.appendSlice(allocator, direct_tools);
+    var candidates: std.ArrayList(model_types.Tool) = .empty;
+    try candidates.appendSlice(allocator, direct_tools);
 
     for (toolsets) |toolset| {
         const entries = try context.control.invoke(
@@ -3963,10 +4196,32 @@ fn prepareTools(
                 toolset.metadata,
                 entry.metadata,
             );
-            try prepared.append(allocator, tool);
+            try candidates.append(allocator, tool);
         }
     }
+    var prepared: std.ArrayList(model_types.Tool) = .empty;
+    const run = tool_policy.RunContext{
+        .messages = context.messages,
+        .usage = context.usage,
+        .model_requests = context.model_requests,
+        .dependencies = context.dependencies,
+        .control = context.control,
+    };
+    for (candidates.items) |candidate| {
+        var event = tool_policy.Prepare{ .run = run, .tool = candidate };
+        try applyToolPolicies(context.control, policies, allocator, .{ .prepare = &event });
+        if (event.enabled) try prepared.append(allocator, event.tool);
+    }
     return prepared.toOwnedSlice(allocator);
+}
+
+fn applyToolPolicies(
+    control: model_types.RunControl,
+    policies: []const tool_policy.Policy,
+    allocator: std.mem.Allocator,
+    event: tool_policy.Event,
+) !void {
+    return control.invoke(void, tool_policy.applyAll, .{ policies, allocator, event });
 }
 
 fn prepareToolset(
@@ -4023,6 +4278,13 @@ const ToolRetryTracker = struct {
         }
         try self.entries.append(self.allocator, .{ .name = name, .count = 1 });
         return true;
+    }
+
+    fn current(self: *const ToolRetryTracker, name: []const u8) usize {
+        for (self.entries.items) |entry| {
+            if (std.mem.eql(u8, entry.name, name)) return entry.count;
+        }
+        return 0;
     }
 };
 
@@ -4217,6 +4479,69 @@ fn findToolIndex(tools: []const model_types.Tool, name: []const u8) ?usize {
     return null;
 }
 
+test "tool preparation policies compose after toolsets" {
+    const State = struct {
+        suffix: []const u8,
+        calls: usize = 0,
+
+        fn apply(context: *anyopaque, allocator: std.mem.Allocator, event: tool_policy.Event) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const prepared = switch (event) {
+                .prepare => |value| value,
+                else => return error.UnexpectedToolPolicyStage,
+            };
+            self.calls += 1;
+            try std.testing.expectEqual(@as(usize, 3), prepared.run.model_requests);
+            try std.testing.expectEqual(@as(u16, 7), prepared.run.dependency(u16).?.*);
+            if (std.mem.eql(u8, prepared.tool.definition.name, "hidden")) {
+                prepared.enabled = false;
+                return;
+            }
+            prepared.tool.definition.description = try std.mem.concat(
+                allocator,
+                u8,
+                &.{ prepared.tool.definition.description, self.suffix },
+            );
+        }
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    var tool_context: u8 = 0;
+    const hidden = model_types.Tool{
+        .definition = .{ .name = "hidden", .description = "hidden", .parameters_json_schema = "{}" },
+        .context = &tool_context,
+    };
+    const visible = model_types.Tool{
+        .definition = .{ .name = "visible", .description = "visible", .parameters_json_schema = "{}" },
+        .context = &tool_context,
+    };
+    var first = State{ .suffix = " one" };
+    var second = State{ .suffix = " two" };
+    const policies = [_]tool_policy.Policy{
+        .{ .context = &first, .applyFn = State.apply },
+        .{ .context = &second, .applyFn = State.apply },
+    };
+    var dependency: u16 = 7;
+    const prepared = try prepareTools(
+        allocator,
+        &.{hidden},
+        &.{.{ .tools = &.{visible} }},
+        &policies,
+        .{
+            .messages = &.{},
+            .usage = .{},
+            .model_requests = 3,
+            .dependencies = &dependency,
+        },
+    );
+    try std.testing.expectEqual(@as(usize, 1), prepared.len);
+    try std.testing.expectEqualStrings("visible", prepared[0].definition.name);
+    try std.testing.expectEqualStrings("visible one two", prepared[0].definition.description);
+    try std.testing.expectEqual(@as(usize, 2), first.calls);
+    try std.testing.expectEqual(@as(usize, 2), second.calls);
+}
+
 fn collectText(allocator: std.mem.Allocator, parts: []const ResponsePart) ![]const u8 {
     var output: std.ArrayList(u8) = .empty;
     for (parts) |part| switch (part) {
@@ -4295,10 +4620,15 @@ test "tool control drains work at deadlines and cancellation" {
         .raw = .fromSeconds(1),
         .clock = .awake,
     });
-    const outcome = executeToolControlled(io, tool, .{}, std.testing.allocator, .{
+    const outcome = executeToolWorkControlled(io, tool, .{}, std.testing.allocator, .{
         .io = io,
         .deadline = deadline,
-    }, "{}");
+    }, .{
+        .call = .{ .id = "slow", .name = "slow", .arguments_json = "{}" },
+        .tool_index = 0,
+        .arguments_json = "{}",
+        .execution = .immediate,
+    }, &.{});
     try std.testing.expectEqual(Agent.Error.RunTimedOut, outcome.failure);
     try std.testing.expect(!state.active.load(.seq_cst));
 
@@ -4306,10 +4636,15 @@ test "tool control drains work at deadlines and cancellation" {
     var cancel_runtime = std.Io.Threaded.init(std.testing.allocator, .{});
     defer cancel_runtime.deinit();
     var cancel = try cancel_runtime.io().concurrent(State.cancelAfter, .{ cancel_runtime.io(), &token, &state });
-    const cancelled = executeToolControlled(io, tool, .{}, std.testing.allocator, .{
+    const cancelled = executeToolWorkControlled(io, tool, .{}, std.testing.allocator, .{
         .io = io,
         .cancellation = &token,
-    }, "{}");
+    }, .{
+        .call = .{ .id = "slow", .name = "slow", .arguments_json = "{}" },
+        .tool_index = 0,
+        .arguments_json = "{}",
+        .execution = .immediate,
+    }, &.{});
     try cancel.await(cancel_runtime.io());
     try std.testing.expectEqual(Agent.Error.Cancelled, cancelled.failure);
     try std.testing.expect(!state.active.load(.seq_cst));
@@ -4322,11 +4657,17 @@ test "tool control drains work at deadlines and cancellation" {
     var success_runtime = std.Io.Threaded.init(std.testing.allocator, .{});
     defer success_runtime.deinit();
     const success_io = success_runtime.io();
-    const succeeded = executeToolControlled(success_io, .{
+    const fast_tool = model_types.Tool{
         .definition = .{ .name = "fast", .description = "", .parameters_json_schema = "{}" },
         .context = &state,
         .executeFn = Fast.execute,
-    }, .{ .timeout_ms = 10_000 }, std.testing.allocator, .{ .io = success_io }, "{}");
+    };
+    const succeeded = executeToolWorkControlled(success_io, fast_tool, .{ .timeout_ms = 10_000 }, std.testing.allocator, .{ .io = success_io }, .{
+        .call = .{ .id = "fast", .name = "fast", .arguments_json = "{}" },
+        .tool_index = 0,
+        .arguments_json = "{}",
+        .execution = .immediate,
+    }, &.{});
     try std.testing.expect(succeeded == .success);
     defer std.testing.allocator.free(succeeded.success.content);
     try std.testing.expectEqualStrings("ok", succeeded.success.content);
@@ -4836,9 +5177,16 @@ test "paused state serializes retries and rejects mismatched calls" {
         &.{.{ .name = "approval", .count = 1 }},
         &.{approval},
         &.{call},
+        &.{.{
+            .call = call.tool_call,
+            .tool_index = 0,
+            .arguments_json = "{}",
+            .execution = .requires_approval,
+        }},
         &.{},
     );
     defer paused.deinit();
+    try std.testing.expect(std.mem.indexOf(u8, paused.state_json, "\"version\":2") != null);
     try std.testing.expect(std.mem.indexOf(u8, paused.state_json, "\"tool_retries\":[{\"name\":\"approval\",\"count\":1}]") != null);
     try std.testing.expectError(Agent.Error.InvalidDeferredState, validateDeferredCalls(
         &.{approval},
@@ -4847,7 +5195,9 @@ test "paused state serializes retries and rejects mismatched calls" {
             .call_id = "different",
             .name = "approval",
             .arguments_json = "{}",
+            .model_arguments_json = "{}",
             .execution = .requires_approval,
+            .retry_number = 0,
         }},
     ));
     var retries = ToolRetryTracker{ .allocator = std.testing.allocator };

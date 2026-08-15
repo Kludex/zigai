@@ -348,7 +348,9 @@ pub fn encodeRequest(allocator: std.mem.Allocator, request: model_types.ModelReq
                 try json.objectField("name");
                 try json.write(tool.name);
                 try json.objectField("description");
-                try json.write(tool.description);
+                const description = try common.toolDescription(allocator, tool);
+                defer if (description) |owned| allocator.free(owned);
+                try json.write(description orelse tool.description);
                 try json.objectField("parameters");
                 try writeToolSchema(allocator, &json, tool.parameters_json_schema);
                 try json.endObject();
@@ -977,6 +979,21 @@ test "encodes complete Gemini settings and tool policy" {
         .messages = &.{},
         .settings = .{ .reasoning_effort = .high, .thinking_budget_tokens = 1_024 },
     }));
+}
+
+test "encodes model-visible tool return schemas" {
+    const encoded = try encodeRequest(std.testing.allocator, .{
+        .messages = &.{},
+        .tools = &.{.{
+            .name = "demo",
+            .description = "Demo.",
+            .parameters_json_schema = "{}",
+            .return_json_schema = "{\"type\":\"string\"}",
+            .return_schema_visibility = .model_description,
+        }},
+    });
+    defer std.testing.allocator.free(encoded);
+    try std.testing.expect(std.mem.indexOf(u8, encoded, "Return JSON Schema") != null);
 }
 
 test "Google clients forward validated request settings headers" {

@@ -37,6 +37,15 @@ Zig:
 | Tools | function, provider-native, tool-search, and capability-load calls and returns |
 | Model output | text, thinking, compaction, files, speech, and tool parts |
 
+`zigai.tool.Policy` is the orchestration extension point for function tools.
+Its typed events cover preparation, argument validation, dynamic approval,
+pre-call behavior, and return validation. `Agent.tool_policies` run first;
+capability policies follow in capability order. Argument and return policies
+may transform values or request a retry from the tool's own budget. Dynamic
+approval is evaluated after valid arguments and persisted across pause/resume.
+`Tool.sequential` provides scheduler-wide exclusivity. Return schemas are
+local unless `return_schema_visibility` opts into provider descriptions.
+
 The short `system_prompt`, `user_prompt`, `retry_prompt`, and `text` variants
 are convenient when no part metadata is needed. Their `*_part` counterparts
 retain timestamps, IDs, and provider replay data. Provider-bound parts carry a

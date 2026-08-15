@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Add a separate ordered tool-policy pipeline with preparation, transforming
+  argument and return validation, history-aware approval, call short-circuiting,
+  shared per-tool retries, persisted decisions, sequential-only scheduling,
+  versioned resolved-call pause state, and opt-in provider-visible return
+  schemas.
 - Separate agent output strategies from provider wire formats, with native
   structured unions, prompted output with JSON-mode fallback, mandatory local
   validation, bounded preparation, and explicit run-arena ownership.

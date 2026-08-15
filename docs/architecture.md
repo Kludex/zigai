@@ -214,11 +214,19 @@ kept separately for each tool, with a per-tool override, and do not consume the
 structured-output retry budget. Allocation and cancellation failures remain
 fatal; custom tools can override failure classification.
 
+Tool behavior that spans executors lives in the separate `tool` policy module.
+Its stable stages are preparation, arguments, approval, call, and return.
+Policies compose in registration order: direct agent policies first, then each
+capability's policies. Preparation runs after toolsets and controls the exact
+definition visible to the provider and available for execution during that
+model step. Policy-owned slices use the run arena.
+
 Reflected tools derive both their argument schema and their return schema. The
-return schema stays application-visible on `ToolDefinition`; provider function
-definitions still receive only the argument schema. A reflected function can
-return `ToolReturn(T)` to pair its typed value with follow-up user messages.
-Manual tools use `ToolOutput` for the same behavior.
+return schema stays application-visible by default. A tool may opt into
+`model_description` visibility, which appends it to the description rather
+than inventing a non-portable provider field. A reflected function can return
+`ToolReturn(T)` to pair its typed value with follow-up user messages. Manual
+tools use `ToolOutput` for the same behavior.
 
 The agent always appends the provider-protocol tool-return request first. It
 then copies follow-up requests in original tool-call order, including after a
@@ -229,7 +237,8 @@ provider-file checks are the same as for normal input.
 When a model requests multiple tools, the agent uses its `Io` runtime to run
 them through a bounded scheduler. Agent-wide and per-tool policies limit active
 and queued calls; excess work becomes a retryable tool result without executing
-the callback. Each accepted call races cooperative execution against its
+the callback. A sequential tool waits for all active work and blocks later
+calls until it finishes. Each accepted call races cooperative execution against its
 optional timeout, the absolute run deadline, and the run cancellation token.
 Every losing task is cancelled and drained before the agent continues.
 Allocations into the result arena are synchronized, result parts remain in
