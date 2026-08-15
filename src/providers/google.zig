@@ -1292,6 +1292,7 @@ test "Google encodes detailed multimodal forms and rejects local protocol parts"
 
     const unsupported = [_]model_types.Message{
         .{ .request = .{ .parts = &.{.{ .speech = .{ .speaker = .user } }} } },
+        .{ .request = .{ .parts = &.{.{ .tool_availability_delta = .{ .tools_added = &.{} } }} } },
         .{ .request = .{ .parts = &.{.{ .tool_return = .{
             .call_id = "call",
             .name = "tool",

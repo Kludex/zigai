@@ -1249,6 +1249,7 @@ test "compatible providers encode detailed text and reject rich history" {
     const file = model_types.Content{ .source = .{ .bytes = "x" }, .media_type = "application/octet-stream" };
     const unsupported = [_]model_types.Message{
         .{ .request = .{ .parts = &.{.{ .user_prompt = .{ .image = file } }} } },
+        .{ .request = .{ .parts = &.{.{ .tool_availability_delta = .{ .tools_added = &.{} } }} } },
         .{ .request = .{ .parts = &.{.{ .user_prompt_part = .{ .content = .{ .image = file } } }} } },
         .{ .request = .{ .parts = &.{.{ .speech = .{ .speaker = .user } }} } },
         .{ .request = .{ .parts = &.{.{ .tool_return = .{

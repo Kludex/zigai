@@ -1215,7 +1215,10 @@ const CapabilityRuntime = struct {
         var resolution = try self.registry().resolve(allocator, capability_id, effective);
         defer resolution.deinit();
         const plan = switch (resolution.outcome) {
-            .diagnostic => |diagnostic| return capabilityLoadError(diagnostic),
+            .diagnostic => |diagnostic| {
+                std.debug.assert(diagnostic.kind == .active_conflict);
+                return error.CapabilityConflict;
+            },
             .plan => |value| value,
         };
         var content: std.ArrayList(u8) = .empty;
@@ -1311,14 +1314,6 @@ fn capabilityDiagnosticError(diagnostic: capability_types.Diagnostic) AgentError
         .dependency_cycle => AgentError.CapabilityDependencyCycle,
         .active_conflict => AgentError.CapabilityConflict,
         else => AgentError.InvalidCapability,
-    };
-}
-
-fn capabilityLoadError(diagnostic: capability_types.Diagnostic) anyerror {
-    return switch (diagnostic.kind) {
-        .active_conflict => error.CapabilityConflict,
-        .unknown_capability => error.UnknownCapability,
-        else => capabilityDiagnosticError(diagnostic),
     };
 }
 
@@ -1849,10 +1844,7 @@ pub const Agent = struct {
             try runtime.snapshot(memory)
         else
             .{};
-        if (stream_sink != null and !active.model.profile.supports_streaming) return Error.ModelDoesNotSupportStreaming;
-        if (self.system_prompt != null and !active.model.profile.supports_system_messages) {
-            return Error.ModelDoesNotSupportSystemMessages;
-        }
+        try requireRunModel(active.model.profile, self.system_prompt != null, stream_sink != null);
         var resolved_settings = active.model.settings
             .overrideWith(active.model_settings)
             .overrideWith(self.model_settings)
@@ -1867,16 +1859,7 @@ pub const Agent = struct {
         const invocation_started = monotonicNow(self.io);
         try emitLifecycle(hooks, .{ .run_start = .{ .prompt = prompt, .model = active.model } });
 
-        var prepared_output = output_types.prepare(memory, self.output, active.model.profile) catch |failure| {
-            return switch (failure) {
-                error.OutOfMemory => error.OutOfMemory,
-                error.InvalidOutputSpec => Error.InvalidOutputSpec,
-                error.JsonObjectOutputNotSupported => Error.ModelDoesNotSupportJsonObjectOutput,
-                error.NativeOutputNotSupported => Error.ModelDoesNotSupportJsonSchemaOutput,
-                error.PromptedOutputNotSupported => Error.ModelDoesNotSupportPromptedOutput,
-                error.ToolOutputNotSupported => Error.ModelDoesNotSupportTools,
-            };
-        };
+        var prepared_output = try prepareAgentOutput(memory, self.output, active.model.profile);
 
         const dependencies = options.dependencies orelse self.dependencies;
         const resolved_instructions = if (resume_state) |state|
@@ -1931,12 +1914,7 @@ pub const Agent = struct {
                 active = try runtime.assemble(memory, self);
                 active_generation = runtime.generation;
                 capability_snapshot = try runtime.snapshot(memory);
-                if (stream_sink != null and !active.model.profile.supports_streaming) {
-                    return Error.ModelDoesNotSupportStreaming;
-                }
-                if (self.system_prompt != null and !active.model.profile.supports_system_messages) {
-                    return Error.ModelDoesNotSupportSystemMessages;
-                }
+                try requireRunModel(active.model.profile, self.system_prompt != null, stream_sink != null);
                 resolved_settings = active.model.settings
                     .overrideWith(active.model_settings)
                     .overrideWith(self.model_settings)
@@ -1944,16 +1922,7 @@ pub const Agent = struct {
                 try requireModelSettings(active.model.profile, resolved_settings);
                 try ensureBuiltinToolsSupported(active.model.profile, active.builtin_tools);
                 try ensureContentSupported(active.model, self.url_policy, messages.items);
-                prepared_output = output_types.prepare(memory, self.output, active.model.profile) catch |failure| {
-                    return switch (failure) {
-                        error.OutOfMemory => error.OutOfMemory,
-                        error.InvalidOutputSpec => Error.InvalidOutputSpec,
-                        error.JsonObjectOutputNotSupported => Error.ModelDoesNotSupportJsonObjectOutput,
-                        error.NativeOutputNotSupported => Error.ModelDoesNotSupportJsonSchemaOutput,
-                        error.PromptedOutputNotSupported => Error.ModelDoesNotSupportPromptedOutput,
-                        error.ToolOutputNotSupported => Error.ModelDoesNotSupportTools,
-                    };
-                };
+                prepared_output = try prepareAgentOutput(memory, self.output, active.model.profile);
             };
             var request_instructions = resolved_instructions;
             if (prepared_output.prompted_instruction) |instruction| {
@@ -2683,6 +2652,32 @@ fn activeCapabilityConfig(
         .history_processors = agent.history_processors,
         .output_validators = agent.output_validators,
         .model_settings = .{},
+    };
+}
+
+fn requireRunModel(
+    profile: model_types.ModelProfile,
+    has_system_prompt: bool,
+    streaming: bool,
+) Agent.Error!void {
+    if (streaming and !profile.supports_streaming) return Agent.Error.ModelDoesNotSupportStreaming;
+    if (has_system_prompt and !profile.supports_system_messages) {
+        return Agent.Error.ModelDoesNotSupportSystemMessages;
+    }
+}
+
+fn prepareAgentOutput(
+    allocator: std.mem.Allocator,
+    spec: output_types.Spec,
+    profile: model_types.ModelProfile,
+) !output_types.Prepared {
+    return output_types.prepare(allocator, spec, profile) catch |failure| switch (failure) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.InvalidOutputSpec => Agent.Error.InvalidOutputSpec,
+        error.JsonObjectOutputNotSupported => Agent.Error.ModelDoesNotSupportJsonObjectOutput,
+        error.NativeOutputNotSupported => Agent.Error.ModelDoesNotSupportJsonSchemaOutput,
+        error.PromptedOutputNotSupported => Agent.Error.ModelDoesNotSupportPromptedOutput,
+        error.ToolOutputNotSupported => Agent.Error.ModelDoesNotSupportTools,
     };
 }
 
@@ -6017,6 +6012,8 @@ fn checkCapabilityLoadAllocationFailure(gpa: std.mem.Allocator) !void {
     };
     _ = try runtime.requestLoad(allocator, "deferred");
     try std.testing.expect(pending[0]);
+    const duplicate = try runtime.requestLoad(allocator, "deferred");
+    try std.testing.expect(std.mem.indexOf(u8, duplicate, "already loaded") != null);
 }
 
 test "capability load is atomic across instruction and allocation failures" {
@@ -6060,6 +6057,33 @@ test "capability load is atomic across instruction and allocation failures" {
         runtime.requestLoad(arena.allocator(), "deferred"),
     );
     try std.testing.expect(!pending[0]);
+    try std.testing.expectEqual(
+        AgentError.InvalidCapability,
+        capabilityDiagnosticError(.{ .kind = .missing_conflict }),
+    );
+    const typed_success = [_]Message{.{ .request = .{ .parts = &.{.{ .capability_load_return = .{
+        .call_id = "typed",
+        .instructions = "loaded",
+    } }} } }};
+    try std.testing.expect(hasSuccessfulCapabilityReturn(&typed_success, "typed"));
+    const typed_failure = [_]Message{.{ .request = .{ .parts = &.{.{ .capability_load_return = .{
+        .call_id = "typed",
+        .outcome = .failed,
+    } }} } }};
+    try std.testing.expect(!hasSuccessfulCapabilityReturn(&typed_failure, "typed"));
+    const ordinary_success = [_]Message{.{ .request = .{ .parts = &.{.{ .tool_return = .{
+        .call_id = "ordinary",
+        .name = load_capability_tool_name,
+        .content = "loaded",
+        .tool_kind = .capability_load,
+    } }} } }};
+    try std.testing.expect(hasSuccessfulCapabilityReturn(&ordinary_success, "ordinary"));
+    try std.testing.expect(hasSuccessfulToolReturn(&ordinary_success, "ordinary", load_capability_tool_name));
+    try std.testing.expect(!hasSuccessfulCapabilityReturn(&.{}, "missing"));
+    try std.testing.expect(!hasSuccessfulToolReturn(&.{}, "missing", load_capability_tool_name));
+    const response_only = [_]Message{.{ .response = .{ .parts = &.{} } }};
+    try std.testing.expect(!hasSuccessfulCapabilityReturn(&response_only, "missing"));
+    try std.testing.expect(!hasSuccessfulToolReturn(&response_only, "missing", load_capability_tool_name));
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
         checkCapabilityLoadAllocationFailure,

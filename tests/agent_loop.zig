@@ -3230,6 +3230,13 @@ test "loaded capability activates native tools toolsets policies processors and 
 test "capability graph failures stop before the first model request" {
     const parts = [_]zigai.model.Part{.{ .text = "unused" }};
 
+    var invalid_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    try std.testing.expectError(zigai.Agent.Error.InvalidCapability, (zigai.Agent{
+        .model = invalid_model.model(),
+        .capabilities = &.{.{ .id = "bad id" }},
+    }).run(std.testing.allocator, "invalid"));
+    try std.testing.expectEqual(@as(usize, 0), invalid_model.request_count);
+
     var duplicate_model = zigai.testing.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
     try std.testing.expectError(zigai.Agent.Error.DuplicateCapabilityId, (zigai.Agent{
         .model = duplicate_model.model(),
@@ -4703,6 +4710,7 @@ test "OpenTelemetry records runs requests tools retries tokens cost and latency"
     var result = try (zigai.Agent{
         .model = model,
         .tools = &.{tool},
+        .capabilities = &.{.{}},
         .telemetry = telemetry,
     }).run(std.testing.allocator, "private prompt");
     defer result.deinit();

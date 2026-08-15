@@ -403,21 +403,16 @@ test "registry resolves dependencies first and reports active conflicts" {
     const registry = Registry{ .entries = &entries };
     var resolved = try registry.resolve(std.testing.allocator, "research", &.{ false, false, false, false });
     defer resolved.deinit();
-    switch (resolved.outcome) {
-        .plan => |plan| try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, plan),
-        .diagnostic => return error.ExpectedLoadPlan,
-    }
+    try std.testing.expect(resolved.outcome == .plan);
+    try std.testing.expectEqualSlices(usize, &.{ 0, 1, 2 }, resolved.outcome.plan);
 
     var conflict = try registry.resolve(std.testing.allocator, "research", &.{ false, false, false, true });
     defer conflict.deinit();
-    switch (conflict.outcome) {
-        .plan => return error.ExpectedConflict,
-        .diagnostic => |diagnostic| {
-            try std.testing.expectEqual(DiagnosticKind.active_conflict, diagnostic.kind);
-            try std.testing.expectEqualStrings("search", diagnostic.capability_id.?);
-            try std.testing.expectEqualStrings("offline", diagnostic.related_id.?);
-        },
-    }
+    try std.testing.expect(conflict.outcome == .diagnostic);
+    const diagnostic = conflict.outcome.diagnostic;
+    try std.testing.expectEqual(DiagnosticKind.active_conflict, diagnostic.kind);
+    try std.testing.expectEqualStrings("search", diagnostic.capability_id.?);
+    try std.testing.expectEqualStrings("offline", diagnostic.related_id.?);
 }
 
 test "registry reports every structural diagnostic" {
@@ -441,36 +436,30 @@ test "registry reports every structural diagnostic" {
         .scope = .agent,
         .source_index = 0,
     }};
-    try std.testing.expectEqual(
-        DiagnosticKind.too_many_dependencies,
-        (try (Registry{
-            .entries = &excessive_dependencies,
-            .limits = .{ .max_dependencies_per_capability = 0 },
-        }).diagnose(std.testing.allocator)).?.kind,
-    );
+    const dependency_limit_diagnostic = (try (Registry{
+        .entries = &excessive_dependencies,
+        .limits = .{ .max_dependencies_per_capability = 0 },
+    }).diagnose(std.testing.allocator)).?;
+    try std.testing.expectEqual(DiagnosticKind.too_many_dependencies, dependency_limit_diagnostic.kind);
     const metadata_limit = [_]Entry{.{
         .descriptor = .{ .id = "limited", .metadata = &.{.{ .key = "owner", .value = "app" }} },
         .scope = .agent,
         .source_index = 0,
     }};
-    try std.testing.expectEqual(
-        DiagnosticKind.too_many_metadata,
-        (try (Registry{
-            .entries = &metadata_limit,
-            .limits = .{ .max_metadata_per_capability = 0 },
-        }).diagnose(std.testing.allocator)).?.kind,
-    );
+    const metadata_limit_diagnostic = (try (Registry{
+        .entries = &metadata_limit,
+        .limits = .{ .max_metadata_per_capability = 0 },
+    }).diagnose(std.testing.allocator)).?;
+    try std.testing.expectEqual(DiagnosticKind.too_many_metadata, metadata_limit_diagnostic.kind);
     const conflict_limit = [_]Entry{
         .{ .descriptor = .{ .id = "limited", .conflicts = &.{"other"} }, .scope = .agent, .source_index = 0 },
         .{ .descriptor = .{ .id = "other" }, .scope = .run, .source_index = 0 },
     };
-    try std.testing.expectEqual(
-        DiagnosticKind.too_many_conflicts,
-        (try (Registry{
-            .entries = &conflict_limit,
-            .limits = .{ .max_conflicts_per_capability = 0 },
-        }).diagnose(std.testing.allocator)).?.kind,
-    );
+    const conflict_limit_diagnostic = (try (Registry{
+        .entries = &conflict_limit,
+        .limits = .{ .max_conflicts_per_capability = 0 },
+    }).diagnose(std.testing.allocator)).?;
+    try std.testing.expectEqual(DiagnosticKind.too_many_conflicts, conflict_limit_diagnostic.kind);
     const missing_id = [_]Entry{.{
         .descriptor = .{ .loading = .on_demand },
         .scope = .agent,
