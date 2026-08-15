@@ -66,7 +66,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Complete model settings and profiles. Support `top_p`, `top_k`, penalties,
   logprobs, tool choice, parallel-tool policy, thinking budgets, service tier,
   truncation, request headers, and validated provider-specific extra bodies.
-- [ ] Complete output modes. Support prompted/native/tool structured output,
+- [x] Complete output modes. Support prompted/native/tool structured output,
   output unions, output functions, full supported JSON Schema validation,
   partial structured streaming, validator hooks, and configurable end strategy.
 - [ ] Add first-class tool hooks and policy. Cover prepare/call/return hooks,
