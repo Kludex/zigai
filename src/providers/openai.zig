@@ -2,6 +2,8 @@
 
 const std = @import("std");
 const model_types = @import("../model.zig");
+const provider_types = @import("../provider.zig");
+const http_provider = @import("http.zig");
 const http = @import("../transport.zig");
 const common = @import("common.zig");
 const json_limits = @import("../json.zig");
@@ -19,11 +21,42 @@ pub const Error = model_types.ProviderRequestError || error{
     UnsupportedContentType,
 };
 
+/// OpenAI provider state. Credentials and HTTP configuration remain here and
+/// are never exposed to `Client` or its wire encoder.
+pub const Provider = struct {
+    http: http_provider.Configured,
+
+    pub const Options = struct {
+        base_url: []const u8 = api_base,
+        headers: []const http.Header = &.{},
+        request_policy: provider_types.RequestPolicy = .{},
+        model_profiles: ?http_provider.Configured.ModelProfiles = null,
+    };
+
+    pub fn init(api_key: []const u8, transport: http.Transport) Provider {
+        return initWithOptions(api_key, transport, .{});
+    }
+
+    pub fn initWithOptions(api_key: []const u8, transport: http.Transport, options: Options) Provider {
+        return .{ .http = .{
+            .name = "openai",
+            .base_url = options.base_url,
+            .transport = transport,
+            .credential = .{ .bearer = api_key },
+            .headers = options.headers,
+            .request_policy = options.request_policy,
+            .model_profiles = options.model_profiles,
+        } };
+    }
+
+    pub fn provider(self: *Provider) provider_types.Provider {
+        return self.http.provider();
+    }
+};
+
 pub const Client = struct {
     model_name: []const u8,
-    api_key: []const u8,
-    transport: http.Transport,
-    base_url: []const u8 = api_base,
+    provider: provider_types.Provider,
     settings: model_types.ModelSettings = .{},
     profile: model_types.ModelProfile = .{
         .supports_tools = true,
@@ -51,8 +84,8 @@ pub const Client = struct {
     pub fn model(self: *Client) model_types.Model {
         return .{
             .context = self,
-            .profile = self.profile, // kcov-ignore
-            .provider_name = "openai",
+            .profile = self.provider.modelProfile(self.model_name, self.profile),
+            .provider_name = self.provider.name,
             .model_name = self.model_name,
             .settings = self.settings,
             .requestFn = request,
@@ -62,40 +95,31 @@ pub const Client = struct {
 
     fn request(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest) !model_types.ModelResponse {
         const self: *Client = @ptrCast(@alignCast(context));
-        const body = try encodeRequest(allocator, self.model_name, value);
+        const body = try encodeRequestForProvider(allocator, self.provider.name, self.model_name, value);
         defer allocator.free(body);
-        const url = try std.fmt.allocPrint(allocator, "{s}/responses", .{self.base_url});
-        defer allocator.free(url);
-        try value.url_policy.validate(url);
-        const authorization = try std.fmt.allocPrint(allocator, "Bearer {s}", .{self.api_key});
-        defer allocator.free(authorization);
         var headers: std.ArrayList(http.Header) = .empty;
         defer headers.deinit(allocator);
-        try headers.appendSlice(allocator, &.{
-            .{ .name = "content-type", .value = "application/json" },
-            .{ .name = "authorization", .value = authorization, .sensitive = true },
-        });
+        try headers.append(allocator, .{ .name = "content-type", .value = "application/json" });
         if (value.request_id) |request_id| try headers.append(allocator, .{ .name = "x-client-request-id", .value = request_id });
         try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
-        const response = self.transport.send(allocator, .{
+        const response = self.provider.request(allocator, .{
             .method = .POST,
-            .url = url,
+            .endpoint = "/responses",
             .headers = headers.items,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
+            .url_policy = value.url_policy,
         }) catch |failure| return common.transportError(failure);
         defer allocator.free(response.body);
         if (response.status < 200 or response.status >= 300) {
-            common.notifyProviderError(
+            self.provider.observeError(
                 allocator,
-                value.error_observer,
-                "openai",
                 response.status,
                 response.body,
                 response.metadata,
+                value.error_observer,
                 value.error_policy,
-                &.{self.api_key},
             );
             return common.statusError(response.status);
         }
@@ -104,41 +128,32 @@ pub const Client = struct {
 
     fn stream(context: *anyopaque, allocator: std.mem.Allocator, value: model_types.ModelRequest, sink: model_types.ModelStreamSink) !model_types.ModelResponse {
         const self: *Client = @ptrCast(@alignCast(context));
-        const body = try encodeStreamingRequest(allocator, self.model_name, value);
+        const body = try encodeStreamingRequestForProvider(allocator, self.provider.name, self.model_name, value);
         defer allocator.free(body);
-        const url = try std.fmt.allocPrint(allocator, "{s}/responses", .{self.base_url});
-        defer allocator.free(url);
-        try value.url_policy.validate(url);
-        const authorization = try std.fmt.allocPrint(allocator, "Bearer {s}", .{self.api_key});
-        defer allocator.free(authorization);
         var headers: std.ArrayList(http.Header) = .empty;
         defer headers.deinit(allocator);
-        try headers.appendSlice(allocator, &.{
-            .{ .name = "content-type", .value = "application/json" },
-            .{ .name = "authorization", .value = authorization, .sensitive = true },
-        });
+        try headers.append(allocator, .{ .name = "content-type", .value = "application/json" });
         if (value.request_id) |request_id| try headers.append(allocator, .{ .name = "x-client-request-id", .value = request_id });
         try common.appendRequestHeaders(allocator, &headers, value.settings.extra_headers);
         var state = StreamState{ .allocator = allocator, .sink = sink };
         defer state.deinit();
-        const response = self.transport.streamLines(allocator, .{
+        const response = self.provider.streamLines(allocator, .{
             .method = .POST,
-            .url = url,
+            .endpoint = "/responses",
             .headers = headers.items,
             .body = body,
             .timeout_ms = value.timeout_ms,
             .cancellation = value.cancellation,
+            .url_policy = value.url_policy,
         }, state.lineSink()) catch |failure| return common.transportError(failure);
         if (response.status < 200 or response.status >= 300) {
-            common.notifyProviderError(
+            self.provider.observeError(
                 allocator,
-                value.error_observer,
-                "openai",
                 response.status,
                 state.error_body.items,
                 response.metadata,
+                value.error_observer,
                 value.error_policy,
-                &.{self.api_key},
             );
             return common.statusError(response.status);
         }
@@ -152,8 +167,31 @@ pub const Client = struct {
     }
 };
 
+test "OpenAI provider owns identity and model profile overrides" {
+    const Profiles = struct {
+        fn override(_: *anyopaque, _: []const u8, profile: model_types.ModelProfile) model_types.ModelProfile {
+            var overridden = profile;
+            overridden.supports_tools = false;
+            return overridden;
+        }
+    };
+    var marker: u8 = 0;
+    var provider_state = Provider.initWithOptions("secret", .{ .context = &marker, .sendFn = undefined }, .{
+        .model_profiles = .{ .context = &marker, .overrideFn = Profiles.override },
+    });
+    var client = Client{ .model_name = "gpt-test", .provider = provider_state.provider() };
+    const model = client.model();
+    try std.testing.expectEqualStrings("openai", model.provider_name.?);
+    try std.testing.expect(!model.profile.supports_tools);
+    try std.testing.expect(model.profile.supports_streaming);
+}
+
 pub fn encodeStreamingRequest(allocator: std.mem.Allocator, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {
-    const buffered = try encodeRequest(allocator, model_name, request);
+    return encodeStreamingRequestForProvider(allocator, "openai", model_name, request);
+}
+
+fn encodeStreamingRequestForProvider(allocator: std.mem.Allocator, provider_name: []const u8, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {
+    const buffered = try encodeRequestForProvider(allocator, provider_name, model_name, request);
     defer allocator.free(buffered);
     if (buffered.len == 0 or buffered[buffered.len - 1] != '}') return error.InvalidRequestEncoding;
     return std.fmt.allocPrint(allocator, "{s},\"stream\":true}}", .{buffered[0 .. buffered.len - 1]});
@@ -313,6 +351,10 @@ const StreamState = struct {
 };
 
 pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {
+    return encodeRequestForProvider(allocator, "openai", model_name, request);
+}
+
+fn encodeRequestForProvider(allocator: std.mem.Allocator, provider_name: []const u8, model_name: []const u8, request: model_types.ModelRequest) ![]u8 {
     request.settings.validate() catch return error.InvalidRequestEncoding;
     try common.validateToolChoice(request.tools, request.builtin_tools.len, request.settings.tool_choice);
     var output: std.Io.Writer.Allocating = .init(allocator);
@@ -338,13 +380,14 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
             .user_prompt => |content| switch (content) {
                 .text => |text| try writeTextMessage(&json, "user", text),
                 .text_content => |text| try writeTextMessage(&json, "user", text.content),
-                .image => |value| try writeContentMessage(allocator, &json, "user", .image, value),
-                .document => |value| try writeContentMessage(allocator, &json, "user", .document, value),
-                .binary => |value| try writeContentMessage(allocator, &json, "user", .binary, value),
+                .image => |value| try writeContentMessage(allocator, &json, provider_name, "user", .image, value),
+                .document => |value| try writeContentMessage(allocator, &json, provider_name, "user", .document, value),
+                .binary => |value| try writeContentMessage(allocator, &json, provider_name, "user", .binary, value),
                 .cache_point => {},
                 .uploaded_file => |file| try writeContentMessage(
                     allocator,
                     &json,
+                    provider_name,
                     "user",
                     if (std.mem.startsWith(u8, file.media_type orelse "", "image/")) .image else .binary,
                     file.asContent(),
@@ -354,13 +397,14 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
             .user_prompt_part => |prompt| switch (prompt.content) {
                 .text => |text| try writeTextMessage(&json, "user", text),
                 .text_content => |text| try writeTextMessage(&json, "user", text.content),
-                .image => |value| try writeContentMessage(allocator, &json, "user", .image, value),
-                .document => |value| try writeContentMessage(allocator, &json, "user", .document, value),
-                .binary => |value| try writeContentMessage(allocator, &json, "user", .binary, value),
+                .image => |value| try writeContentMessage(allocator, &json, provider_name, "user", .image, value),
+                .document => |value| try writeContentMessage(allocator, &json, provider_name, "user", .document, value),
+                .binary => |value| try writeContentMessage(allocator, &json, provider_name, "user", .binary, value),
                 .cache_point => {},
                 .uploaded_file => |file| try writeContentMessage(
                     allocator,
                     &json,
+                    provider_name,
                     "user",
                     if (std.mem.startsWith(u8, file.media_type orelse "", "image/")) .image else .binary,
                     file.asContent(),
@@ -384,9 +428,9 @@ pub fn encodeRequest(allocator: std.mem.Allocator, model_name: []const u8, reque
                 try ensureProviderPartReplayable(text.provider);
                 try writeTextMessage(&json, "assistant", text.content);
             },
-            .image => |content| try writeContentMessage(allocator, &json, "assistant", .image, content),
-            .document => |content| try writeContentMessage(allocator, &json, "assistant", .document, content),
-            .binary => |content| try writeContentMessage(allocator, &json, "assistant", .binary, content),
+            .image => |content| try writeContentMessage(allocator, &json, provider_name, "assistant", .image, content),
+            .document => |content| try writeContentMessage(allocator, &json, provider_name, "assistant", .document, content),
+            .binary => |content| try writeContentMessage(allocator, &json, provider_name, "assistant", .binary, content),
             .speech => |speech| {
                 try ensureProviderPartReplayable(speech.provider);
                 if (speech.transcript) |text|
@@ -562,11 +606,12 @@ fn writeToolChoice(json: *std.json.Stringify, choice: model_types.ToolChoice) !v
 fn writeContentMessage(
     allocator: std.mem.Allocator,
     json: *std.json.Stringify,
+    provider_name: []const u8,
     role: []const u8,
     kind: model_types.ContentType,
     content: model_types.Content,
 ) !void {
-    try ensureContentReplayable(content);
+    try ensureContentReplayable(content, provider_name);
     try json.beginObject();
     try json.objectField("type");
     try json.write("message");
@@ -641,14 +686,14 @@ fn writeToolCall(json: *std.json.Stringify, call: model_types.ToolCall) !void {
     try json.endObject();
 }
 
-fn ensureContentReplayable(content: model_types.Content) !void {
+fn ensureContentReplayable(content: model_types.Content, provider_name: []const u8) !void {
     try ensureProviderPartReplayable(content.provider);
     if (content.thought_signature != null) return error.UnsupportedContentType;
     switch (content.source) {
         .provider_file => |file| if (file.provider) |owner| {
-            if (!std.mem.eql(u8, owner, "openai")) return error.UnsupportedContentType;
+            if (!std.mem.eql(u8, owner, provider_name)) return error.UnsupportedContentType;
         },
-        .uploaded_file => |file| if (!std.mem.eql(u8, file.provider_name, "openai"))
+        .uploaded_file => |file| if (!std.mem.eql(u8, file.provider_name, provider_name))
             return error.UnsupportedContentType,
         else => {},
     }
@@ -950,11 +995,11 @@ test "client forwards OpenAI request correlation IDs" {
         }
     };
     var state: State = .{};
+    var provider_state = Provider.init("secret", .{ .context = &state, .sendFn = State.send, .streamLinesFn = State.stream });
     try std.testing.expect(!State.hasCorrelation(.{ .method = .POST, .url = "https://example.test" }));
     var client = Client{
         .model_name = "gpt-test",
-        .api_key = "secret",
-        .transport = .{ .context = &state, .sendFn = State.send, .streamLinesFn = State.stream },
+        .provider = provider_state.provider(),
     };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1217,6 +1262,13 @@ test "OpenAI encodes detailed message forms and rejects lossy forms" {
     try std.testing.expect(std.mem.indexOf(u8, body, "said") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "load_capability") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "weather") != null);
+    const gateway_messages = [_]model_types.Message{.{ .request = .{ .parts = &.{.{ .user_prompt = .{ .uploaded_file = .{
+        .id = "gateway-file",
+        .provider_name = "gateway",
+    } } }} } }};
+    const gateway_body = try encodeRequestForProvider(std.testing.allocator, "gateway", "gpt-test", .{ .messages = &gateway_messages });
+    defer std.testing.allocator.free(gateway_body);
+    try std.testing.expect(std.mem.indexOf(u8, gateway_body, "gateway-file") != null);
 
     const unsupported = [_]model_types.Message{
         .{ .request = .{ .parts = &.{.{ .speech = .{ .speaker = .user } }} } },
@@ -1274,11 +1326,12 @@ test "OpenAI validates its endpoint before invoking a custom transport" {
     );
     try std.testing.expect(called);
     called = false;
+    var provider_state = Provider.initWithOptions("secret", .{ .context = &called, .sendFn = Stub.send }, .{
+        .base_url = "https://127.0.0.1/v1",
+    });
     var client = Client{
         .model_name = "gpt-test",
-        .api_key = "secret",
-        .transport = .{ .context = &called, .sendFn = Stub.send },
-        .base_url = "https://127.0.0.1/v1",
+        .provider = provider_state.provider(),
     };
     try std.testing.expectError(
         error.LocalNetworkUrlForbidden,

@@ -61,10 +61,10 @@ test "real OpenAI model cassettes replay complete tool loops" {
     inline for (model_matrix.openai) |entry| {
         var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
         defer cassette.deinit();
+        var provider_state = zigai.openai.Provider.init("not-recorded", cassette.transport());
         var client = zigai.openai.Client{
             .model_name = entry.model,
-            .api_key = "not-recorded",
-            .transport = cassette.transport(),
+            .provider = provider_state.provider(),
         };
         try replayMatrixScenario(client.model(), &cassette);
     }
@@ -132,10 +132,10 @@ test "real OpenAI-compatible provider cassettes replay text responses" {
 test "real OpenAI cassette replays native web search" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/native/openai_web_search.yaml"));
     defer cassette.deinit();
+    var provider_state = zigai.openai.Provider.init("not-recorded", cassette.transport());
     var client = zigai.openai.Client{
         .model_name = "gpt-5-nano",
-        .api_key = "not-recorded",
-        .transport = cassette.transport(),
+        .provider = provider_state.provider(),
     };
     try replayNativeScenario(
         client.model(),
@@ -181,10 +181,10 @@ test "real Google cassette replays native web search and fetch" {
 test "real OpenAI cassette replays image input" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/rich/openai_image.yaml"));
     defer cassette.deinit();
+    var provider_state = zigai.openai.Provider.init("not-recorded", cassette.transport());
     var client = zigai.openai.Client{
         .model_name = "gpt-5-nano",
-        .api_key = "not-recorded",
-        .transport = cassette.transport(),
+        .provider = provider_state.provider(),
     };
     try replayRichScenario(client.model(), &cassette);
 }
@@ -268,11 +268,12 @@ fn replayRichScenario(model: zigai.Model, cassette: *cassettes.ReplayTransport) 
 test "OpenAI cassette covers the complete agent tool loop" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/openai_tool_loop.yaml"));
     defer cassette.deinit();
+    var provider_state = zigai.openai.Provider.initWithOptions("not-recorded", cassette.transport(), .{
+        .base_url = "https://openai.test/v1",
+    });
     var client = zigai.openai.Client{
         .model_name = "gpt-test",
-        .api_key = "not-recorded",
-        .transport = cassette.transport(),
-        .base_url = "https://openai.test/v1",
+        .provider = provider_state.provider(),
     };
     var calls: u8 = 0;
     const tool = weatherTool(&calls);
@@ -361,11 +362,12 @@ test "OpenAI-compatible cassette covers the complete Chat Completions tool loop"
 test "OpenAI streaming cassette covers deltas and the complete agent tool loop" {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile("cassettes/openai_stream_tool_loop.yaml"));
     defer cassette.deinit();
+    var provider_state = zigai.openai.Provider.initWithOptions("not-recorded", cassette.transport(), .{
+        .base_url = "https://openai.test/v1",
+    });
     var client = zigai.openai.Client{
         .model_name = "gpt-test",
-        .api_key = "not-recorded",
-        .transport = cassette.transport(),
-        .base_url = "https://openai.test/v1",
+        .provider = provider_state.provider(),
     };
     var calls: u8 = 0;
     const tool = weatherTool(&calls);
@@ -592,10 +594,10 @@ test "OpenAI client exposes stable rate-limit classification" {
         }
     };
     var unused: u8 = 0;
+    var provider_state = zigai.openai.Provider.init("test", .{ .context = &unused, .sendFn = Stub.send });
     var client = zigai.openai.Client{
         .model_name = "gpt-test",
-        .api_key = "test",
-        .transport = .{ .context = &unused, .sendFn = Stub.send },
+        .provider = provider_state.provider(),
     };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -639,12 +641,12 @@ test "agent provider error bodies are hidden by default and bounded when enabled
     };
     var unused: u8 = 0;
     const provider_transport = zigai.transport.Transport{ .context = &unused, .sendFn = Stub.send };
+    var provider_state = zigai.openai.Provider.init("test", provider_transport);
 
     var hidden: Capture = .{};
     var hidden_client = zigai.openai.Client{
         .model_name = "gpt-test",
-        .api_key = "test",
-        .transport = provider_transport,
+        .provider = provider_state.provider(),
     };
     try std.testing.expectError(error.ProviderRequestFailed, (zigai.Agent{
         .model = hidden_client.model(),
@@ -656,8 +658,7 @@ test "agent provider error bodies are hidden by default and bounded when enabled
     var captured: Capture = .{};
     var captured_client = zigai.openai.Client{
         .model_name = "gpt-test",
-        .api_key = "test",
-        .transport = provider_transport,
+        .provider = provider_state.provider(),
     };
     try std.testing.expectError(error.ProviderRequestFailed, (zigai.Agent{
         .model = captured_client.model(),
@@ -692,10 +693,10 @@ test "provider streaming preserves application callback errors" {
         }
     };
     var unused: u8 = 0;
+    var provider_state = zigai.openai.Provider.init("test", .{ .context = &unused, .sendFn = Stub.send, .streamLinesFn = Stub.stream });
     var client = zigai.openai.Client{
         .model_name = "gpt-test",
-        .api_key = "test",
-        .transport = .{ .context = &unused, .sendFn = Stub.send, .streamLinesFn = Stub.stream },
+        .provider = provider_state.provider(),
     };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -745,7 +746,8 @@ test "all streaming clients classify multiline server failures" {
     var unused: u8 = 0;
     const transport = zigai.transport.Transport{ .context = &unused, .sendFn = Stub.send, .streamLinesFn = Stub.stream };
     const sink = zigai.model.ModelStreamSink{ .context = &unused, .eventFn = Stub.event };
-    var openai = zigai.openai.Client{ .model_name = "test", .api_key = "test", .transport = transport };
+    var openai_provider = zigai.openai.Provider.init("test", transport);
+    var openai = zigai.openai.Client{ .model_name = "test", .provider = openai_provider.provider() };
     var anthropic = zigai.anthropic.Client{ .model_name = "test", .api_key = "test", .transport = transport };
     var google = zigai.google.Client{ .model_name = "test", .api_key = "test", .transport = transport };
     var compatible = zigai.openai_compatible.Client{ .model_name = "test", .api_key = "test", .transport = transport, .base_url = "https://compatible.test/v1" };
@@ -783,7 +785,8 @@ test "streaming clients reject malformed events and Anthropic accepts empty tool
     var state: State = .{};
     const transport = zigai.transport.Transport{ .context = &state, .sendFn = State.send, .streamLinesFn = State.stream };
     const sink = zigai.model.ModelStreamSink{ .context = &state, .eventFn = State.event };
-    var openai = zigai.openai.Client{ .model_name = "test", .api_key = "test", .transport = transport };
+    var openai_provider = zigai.openai.Provider.init("test", transport);
+    var openai = zigai.openai.Client{ .model_name = "test", .provider = openai_provider.provider() };
     var anthropic = zigai.anthropic.Client{ .model_name = "test", .api_key = "test", .transport = transport };
     var compatible = zigai.openai_compatible.Client{ .model_name = "test", .api_key = "test", .transport = transport, .base_url = "https://compatible.test/v1" };
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);

@@ -10,6 +10,10 @@
   and credential-safe provider error reporting. Reject malformed credentials,
   header injection, ambiguous API roots, and duplicate header ownership before
   transport I/O.
+- Split OpenAI provider configuration from the Responses API model adapter.
+  `openai.Provider` now owns credentials, the API root, configured headers,
+  request policy, transport, and profile overrides; `openai.Client` borrows its
+  provider and owns only model settings and wire encoding.
 - Pin the official MCP `2026-07-28` conformance framework and TypeScript and
   Python reference servers in a validated test-only interoperability matrix.
 - Add a test-only Cassetter-style YAML format that replays ordered MCP

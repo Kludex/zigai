@@ -4845,10 +4845,10 @@ test "provider credentials reach only the trusted transport" {
     };
     var transport_state: TransportState = .{};
     var capture: Capture = .{};
+    var provider_state = zigai.providers.openai.Provider.init(secret, .{ .context = &transport_state, .sendFn = TransportState.send });
     var client = zigai.providers.openai.Client{
         .model_name = "gpt-test",
-        .api_key = secret,
-        .transport = .{ .context = &transport_state, .sendFn = TransportState.send },
+        .provider = provider_state.provider(),
     };
     var result = try (zigai.Agent{
         .model = client.model(),

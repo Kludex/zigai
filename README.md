@@ -69,10 +69,10 @@ pub fn main(init: std.process.Init) !void {
     var http = zigai.transport.HttpTransport.init(init.gpa, init.io);
     defer http.deinit();
 
+    var provider = zigai.providers.openai.Provider.init(key, http.transport());
     var client = zigai.providers.openai.Client{
         .model_name = "gpt-5-mini",
-        .api_key = key,
-        .transport = http.transport(),
+        .provider = provider.provider(),
     };
 
     const tools = [_]zigai.Tool{
@@ -168,6 +168,11 @@ overrides. Model adapters own only their wire format and borrow the provider
 state for every request. `zigai.providers.http.Configured` supplies the shared
 HTTP implementation, including credential-safe error reporting. Discovery and
 file results are explicitly arena-owned.
+
+OpenAI makes the split explicit: keep `openai.Provider` at a stable address,
+then give `provider.provider()` to `openai.Client`. Use
+`Provider.initWithOptions` for custom API roots, headers, request policy, or
+model profile overrides.
 
 | Provider | API |
 | --- | --- |

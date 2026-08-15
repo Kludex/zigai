@@ -167,6 +167,17 @@ Raw bodies are empty unless `ProviderErrorPolicy.capture_body` is enabled, and
 even then they cannot exceed `max_body_bytes`. Configured API keys are always
 suppressed; `sensitive_data_redacted` reports when this changed visible detail.
 
+Provider construction and optional operations use these boundary errors:
+
+| Namespace | Error | Meaning |
+| --- | --- | --- |
+| `provider` | `InvalidProviderPolicy` | Identity, API root, timeout, or URL policy is invalid. |
+| `provider` | `UnsupportedProviderOperation` | The provider does not implement the requested discovery or file operation. |
+| `providers.http` | `InvalidProviderCredential` | A credential is empty or unsafe for an HTTP header. |
+| `providers.http` | `InvalidProviderEndpoint` | The API root or adapter endpoint is ambiguous or not relative. |
+| `providers.http` | `InvalidProviderHeader` | A configured or adapter header is malformed. |
+| `providers.http` | `ProviderHeaderConflict` | Two layers claim the same case-insensitive header name. |
+
 ## Transport and data errors
 
 | Namespace | Error | Meaning |

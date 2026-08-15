@@ -143,6 +143,21 @@ returns another borrowed view; keep the `Configured` value at a stable address
 until every model and in-flight request using it has finished. Model adapters
 receive only relative endpoints and never receive the provider credential.
 
+OpenAI uses that split directly. Create a stable `openai.Provider`, then pass
+its borrowed interface to the Responses API client:
+
+```zig
+var provider = zigai.providers.openai.Provider.init(api_key, transport);
+var client = zigai.providers.openai.Client{
+    .model_name = "gpt-5-mini",
+    .provider = provider.provider(),
+};
+```
+
+Use `Provider.initWithOptions` for a custom API root, configured headers,
+provider-wide request policy, or model profile callbacks. The provider and
+transport must outlive the client and every in-flight model request.
+
 `agent_spec.Owned` owns parsed configuration in an arena. It is data-only and
 does not read secrets or construct clients. `validateResolution` uses
 application-supplied provider and capability catalogs without building a

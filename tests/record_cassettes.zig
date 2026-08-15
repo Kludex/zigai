@@ -233,10 +233,10 @@ fn recordOpenAI(
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
+    var provider = zigai.openai.Provider.init(api_key, recording.transport());
     var client = zigai.openai.Client{
         .model_name = entry.model,
-        .api_key = api_key,
-        .transport = recording.transport(),
+        .provider = provider.provider(),
     };
     try runScenario(init, client.model());
     try write(init, recording, entry, "openai");
@@ -285,10 +285,10 @@ fn recordNativeOpenAI(
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
+    var provider = zigai.openai.Provider.init(api_key, recording.transport());
     var client = zigai.openai.Client{
         .model_name = entry.model,
-        .api_key = api_key,
-        .transport = recording.transport(),
+        .provider = provider.provider(),
     };
     try runNativeScenario(init, client.model(), &.{.{ .web_search = .{} }}, native_prompt);
     try writeNative(init, recording, entry);
@@ -343,10 +343,10 @@ fn recordRichOpenAI(
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
+    var provider = zigai.openai.Provider.init(api_key, recording.transport());
     var client = zigai.openai.Client{
         .model_name = entry.model,
-        .api_key = api_key,
-        .transport = recording.transport(),
+        .provider = provider.provider(),
     };
     try runRichScenario(init, client.model());
     try writeRich(init, recording, entry);
@@ -424,7 +424,7 @@ fn runRichScenario(init: std.process.Init, model: zigai.Model) !void {
     const image_bytes = try init.gpa.alloc(u8, decoded_size);
     defer init.gpa.free(image_bytes);
     try std.base64.standard.Decoder.decode(image_bytes, pixel_png_base64);
-    const image = zigai.Part{ .image = .{
+    const image = zigai.PromptPart{ .image = .{
         .source = .{ .bytes = image_bytes },
         .media_type = "image/png",
     } };
