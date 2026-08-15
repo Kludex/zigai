@@ -20,11 +20,14 @@ pub const primitives = @import("mcp/primitives.zig");
 pub const tasks = @import("mcp/tasks.zig");
 /// Durable client state for resumable MCP tasks.
 pub const task_store = @import("mcp/task_store.zig");
+/// Bounded Server-Sent Events framing for request-scoped responses.
+pub const sse = @import("mcp/sse.zig");
 const security = @import("security.zig");
 
 test {
     _ = tasks;
     _ = task_store;
+    _ = sse;
 }
 
 /// Latest stable MCP protocol revision supported by ZigAI.
@@ -1985,42 +1988,81 @@ fn extractSseResponse(
 ) ![]u8 {
     const request_id = try JsonRpcId.parse(allocator, request);
     defer request_id.deinit(allocator);
-    const is_subscription = std.mem.eql(u8, request_method, methods.listen);
-    var subscription_acknowledged = !is_subscription;
+    var collector = SseResponseCollector{
+        .allocator = allocator,
+        .request_id = &request_id,
+        .request = request,
+        .is_subscription = std.mem.eql(u8, request_method, methods.listen),
+        .events = events,
+    };
+    collector.subscription_acknowledged = !collector.is_subscription;
+    errdefer if (collector.result) |result| allocator.free(result);
+    var parser = sse.Parser.init(
+        allocator,
+        json_limits.defaults.mcp_message.max_document_bytes,
+        .{ .context = &collector, .emitFn = SseResponseCollector.emit },
+    );
+    defer parser.deinit();
     var lines = std.mem.splitScalar(u8, body, '\n');
     while (lines.next()) |raw_line| {
-        const line = std.mem.trim(u8, raw_line, "\r ");
-        if (!std.mem.startsWith(u8, line, "data:")) continue;
-        const data = std.mem.trimStart(u8, line[5..], " ");
-        if (data.len == 0) continue;
-        validateMcpMessage(allocator, data) catch |failure| switch (failure) {
-            error.OutOfMemory, error.McpMessageTooLarge => return failure,
-            else => continue,
+        parser.line(raw_line) catch |failure| switch (failure) {
+            error.SseEventTooLarge => return error.McpMessageTooLarge,
+            else => |other| return other,
         };
-        const parsed = std.json.parseFromSlice(std.json.Value, allocator, data, .{}) catch continue;
+    }
+    parser.finish() catch |failure| switch (failure) {
+        error.SseEventTooLarge => return error.McpMessageTooLarge,
+        else => |other| return other,
+    };
+    const result = collector.result orelse return error.MissingMcpSseResponse;
+    collector.result = null;
+    return result;
+}
+
+const SseResponseCollector = struct {
+    allocator: std.mem.Allocator,
+    request_id: *const JsonRpcId,
+    request: []const u8,
+    is_subscription: bool,
+    subscription_acknowledged: bool = false,
+    events: ?EventSink,
+    result: ?[]u8 = null,
+
+    fn emit(context: *anyopaque, data: []const u8) !void {
+        const self: *@This() = @ptrCast(@alignCast(context));
+        if (self.result != null or data.len == 0) return;
+        validateMcpMessage(self.allocator, data) catch |failure| switch (failure) {
+            error.OutOfMemory, error.McpMessageTooLarge => return failure,
+            else => return,
+        };
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, data, .{}) catch |failure| switch (failure) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return,
+        };
         defer parsed.deinit();
-        const object = requiredObject(parsed.value) catch continue;
+        const object = requiredObject(parsed.value) catch return;
         if (object.get("method") != null) {
             validateIncomingNotification(
                 parsed.value,
-                is_subscription,
+                self.is_subscription,
                 error.InvalidMcpMessage,
-            ) catch continue;
-            if (is_subscription) {
-                validateSubscriptionNotification(allocator, parsed.value, request) catch continue;
+            ) catch return;
+            if (self.is_subscription) {
+                validateSubscriptionNotification(self.allocator, parsed.value, self.request) catch return;
                 const event_method = optionalString(object, "method") orelse unreachable;
                 if (std.mem.eql(u8, event_method, methods.subscriptions_acknowledged)) {
-                    subscription_acknowledged = true;
-                } else if (!subscription_acknowledged) continue;
+                    self.subscription_acknowledged = true;
+                } else if (!self.subscription_acknowledged) return;
             }
-            if (events) |sink| try sink.emit(data);
-            continue;
+            if (self.events) |sink| try sink.emit(data);
+            return;
         }
-        const response_id = object.get("id") orelse continue;
-        if (request_id.matches(response_id)) return allocator.dupe(u8, data);
+        const response_id = object.get("id") orelse return;
+        if (self.request_id.matches(response_id)) {
+            self.result = try self.allocator.dupe(u8, data);
+        }
     }
-    return error.MissingMcpSseResponse;
-}
+};
 
 fn rejectLegacyServerRequest(self: *StdioTransport, allocator: std.mem.Allocator, id: std.json.Value) !void {
     const response = try std.json.Stringify.valueAlloc(allocator, .{
@@ -6041,8 +6083,8 @@ test "streamable HTTP emits subscription notifications before the result" {
     const body =
         "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\"," ++
         "\"params\":{\"notifications\":{},\"_meta\":{" ++
-        "\"io.modelcontextprotocol/subscriptionId\":1}}}\n" ++
-        "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\"}}\n";
+        "\"io.modelcontextprotocol/subscriptionId\":1}}}\n\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\"}}\n\n";
     const result = try extractSseResponse(
         std.testing.allocator,
         body,
@@ -6065,15 +6107,15 @@ test "subscription streams enforce acknowledgement order and requested filters" 
     };
     const meta = "\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":1}";
     const body =
-        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\",\"params\":{" ++ meta ++ "}}\n" ++
-        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\",\"params\":{\"notifications\":{}," ++ meta ++ "}}\n" ++
-        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/prompts/list_changed\",\"params\":{" ++ meta ++ "}}\n" ++
-        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/list_changed\",\"params\":{" ++ meta ++ "}}\n" ++
-        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\",\"params\":{\"uri\":\"file:///a\"," ++ meta ++ "}}\n" ++
-        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progressToken\":1,\"progress\":0," ++ meta ++ "}}\n" ++
-        "data: {\"jsonrpc\":\"2.0\",\"method\":\"com.example/changed\",\"params\":{" ++ meta ++ "}}\n" ++
-        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":1," ++ meta ++ "}}\n" ++
-        "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":1}}}\n";
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\",\"params\":{" ++ meta ++ "}}\n\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/subscriptions/acknowledged\",\"params\":{\"notifications\":{}," ++ meta ++ "}}\n\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/prompts/list_changed\",\"params\":{" ++ meta ++ "}}\n\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/list_changed\",\"params\":{" ++ meta ++ "}}\n\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/resources/updated\",\"params\":{\"uri\":\"file:///a\"," ++ meta ++ "}}\n\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progressToken\":1,\"progress\":0," ++ meta ++ "}}\n\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"com.example/changed\",\"params\":{" ++ meta ++ "}}\n\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/cancelled\",\"params\":{\"requestId\":1," ++ meta ++ "}}\n\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"resultType\":\"complete\",\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":1}}}\n\n";
     const request =
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"subscriptions/listen\",\"params\":{" ++
         "\"notifications\":{\"toolsListChanged\":true,\"promptsListChanged\":false," ++
@@ -6205,8 +6247,8 @@ test "HTTP transport handles SSE, notifications, and status failures" {
         }
     };
     var stub = Stub{ .body = "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"," ++
-        "\"params\":{\"progressToken\":1,\"progress\":0}}\n" ++
-        "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n" };
+        "\"params\":{\"progressToken\":1,\"progress\":0}}\n\n" ++
+        "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n" };
     var events: Events = .{};
     var streamable = StreamableHttpTransport.init(
         std.testing.io,
@@ -6252,6 +6294,65 @@ test "HTTP transport handles SSE, notifications, and status failures" {
         error.McpMessageTooLarge,
         streamable.transport().send(std.testing.allocator, request),
     );
+}
+
+test "SSE response framing propagates sinks and releases partial allocations" {
+    const Sink = struct {
+        failure: anyerror,
+
+        fn emit(context: *anyopaque, _: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return self.failure;
+        }
+    };
+    const request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"server/discover\"}";
+    const notification = "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\",\"params\":{\"progressToken\":1,\"progress\":0}}";
+    var rejected = Sink{ .failure = error.EventRejected };
+    try std.testing.expectError(
+        error.EventRejected,
+        extractSseResponse(
+            std.testing.allocator,
+            "data: not-json\n\n" ++ notification ++ "\n\n",
+            request,
+            methods.discover,
+            .{ .context = &rejected, .eventFn = Sink.emit },
+        ),
+    );
+    try std.testing.expectError(
+        error.EventRejected,
+        extractSseResponse(
+            std.testing.allocator,
+            notification,
+            request,
+            methods.discover,
+            .{ .context = &rejected, .eventFn = Sink.emit },
+        ),
+    );
+    var reserved = Sink{ .failure = error.SseEventTooLarge };
+    try std.testing.expectError(
+        error.McpMessageTooLarge,
+        extractSseResponse(
+            std.testing.allocator,
+            notification,
+            request,
+            methods.discover,
+            .{ .context = &reserved, .eventFn = Sink.emit },
+        ),
+    );
+
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const response = try extractSseResponse(
+                allocator,
+                "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n",
+                request,
+                methods.discover,
+                null,
+            );
+            allocator.free(response);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
 }
 
 test "Streamable HTTP bounds concurrent in-flight requests" {

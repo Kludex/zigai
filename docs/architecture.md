@@ -418,6 +418,11 @@ parameter headers. It accepts direct JSON and request-scoped SSE responses.
 Independent POST requests run concurrently up to `max_in_flight`; an I/O
 semaphore applies backpressure before the underlying transport and keeps OAuth
 refresh state request-local.
+SSE wire framing lives in `mcp/sse.zig`, separate from JSON-RPC semantics. Its
+incremental parser joins standard multi-line `data:` fields, bounds each event
+before JSON parsing, and ignores session-era `id` and `retry` fields. The MCP
+collector then applies response correlation, acknowledgement ordering, and
+subscription filters to each assembled value.
 `StdioTransport` frames one JSON-RPC message per line and correlates response
 IDs. The separate `mcp.auth` module owns transport-level authorization
 contracts: bounded protected-resource and authorization-server discovery,
