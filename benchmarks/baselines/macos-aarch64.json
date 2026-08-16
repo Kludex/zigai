@@ -1,0 +1,43 @@
+{
+  "version": 2,
+  "zig_version": "0.16.0",
+  "optimize": "ReleaseSafe",
+  "target": "macos-aarch64",
+  "entries": [
+    {
+      "name": "history.roundtrip",
+      "median_ns": 41082,
+      "checksum": 9698141938113304908
+    },
+    {
+      "name": "mcp.server",
+      "median_ns": 21966,
+      "checksum": 12607401236465214645
+    },
+    {
+      "name": "parallel_tools.agent",
+      "median_ns": 28851,
+      "checksum": 14429632145665012325
+    },
+    {
+      "name": "request.decode.openai",
+      "median_ns": 7798,
+      "checksum": 1596404130786225443
+    },
+    {
+      "name": "request.encode.openai",
+      "median_ns": 3777,
+      "checksum": 10387093200798395566
+    },
+    {
+      "name": "schema.reflect_validate",
+      "median_ns": 16472,
+      "checksum": 8727825972607458845
+    },
+    {
+      "name": "streaming.openai",
+      "median_ns": 8834,
+      "checksum": 8468442869234551933
+    }
+  ]
+}

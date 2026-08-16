@@ -2,13 +2,14 @@
 
 const std = @import("std");
 
-pub const schema_version = 1;
+pub const schema_version = 2;
 
 pub const Error = error{
     InvalidBaseline,
     InvalidMeasurement,
     InvalidRunnerOptions,
     NondeterministicWorkload,
+    EnvironmentMismatch,
     WorkloadSetDrift,
     WorkloadChecksumDrift,
 };
@@ -27,11 +28,12 @@ pub const Baseline = struct {
     version: u32,
     zig_version: []const u8,
     optimize: []const u8,
+    target: []const u8,
     entries: []const BaselineEntry,
 
     pub fn validate(self: Baseline) !void {
         if (self.version != schema_version or self.zig_version.len == 0 or
-            self.optimize.len == 0 or self.entries.len == 0)
+            self.optimize.len == 0 or !validName(self.target) or self.entries.len == 0)
             return Error.InvalidBaseline;
         var previous: ?[]const u8 = null;
         for (self.entries) |entry| {
@@ -47,6 +49,25 @@ pub const Baseline = struct {
             previous = entry.name;
         }
     }
+
+    pub fn validateEnvironment(self: Baseline, environment: Environment) !void {
+        try environment.validate();
+        if (!std.mem.eql(u8, self.zig_version, environment.zig_version) or
+            !std.mem.eql(u8, self.optimize, environment.optimize) or
+            !std.mem.eql(u8, self.target, environment.target))
+            return Error.EnvironmentMismatch;
+    }
+};
+
+pub const Environment = struct {
+    zig_version: []const u8,
+    optimize: []const u8,
+    target: []const u8,
+
+    pub fn validate(self: Environment) !void {
+        if (self.zig_version.len == 0 or self.optimize.len == 0 or !validName(self.target))
+            return Error.InvalidMeasurement;
+    }
 };
 
 pub const Measurement = struct {
@@ -59,8 +80,10 @@ pub const Measurement = struct {
 /// baselines. The output is stable so CI artifacts remain easy to diff.
 pub fn stringifyMeasurementsJson(
     allocator: std.mem.Allocator,
+    environment: Environment,
     measurements: []const Measurement,
 ) ![]u8 {
+    try environment.validate();
     var output: std.Io.Writer.Allocating = .init(allocator);
     defer output.deinit();
     var json: std.json.Stringify = .{
@@ -70,6 +93,12 @@ pub fn stringifyMeasurementsJson(
     try json.beginObject();
     try json.objectField("version");
     try json.write(schema_version);
+    try json.objectField("zig_version");
+    try json.write(environment.zig_version);
+    try json.objectField("optimize");
+    try json.write(environment.optimize);
+    try json.objectField("target");
+    try json.write(environment.target);
     try json.objectField("measurements");
     try json.beginArray();
     for (measurements) |measurement| {
@@ -314,9 +343,10 @@ fn exceedsThreshold(baseline_ns: u64, current_ns: u64, basis_points: u32) bool {
 test "benchmark baselines validate exact sorted workloads" {
     const source =
         \\{
-        \\  "version": 1,
+        \\  "version": 2,
         \\  "zig_version": "0.16.0",
         \\  "optimize": "ReleaseSafe",
+        \\  "target": "test-aarch64",
         \\  "entries": [
         \\    {"name":"decode","median_ns":100,"checksum":7,"max_regression_basis_points":500},
         \\    {"name":"encode","median_ns":200,"checksum":9}
@@ -343,6 +373,7 @@ test "benchmark comparison gates only reviewed thresholds" {
         .version = schema_version,
         .zig_version = "0.16.0",
         .optimize = "ReleaseSafe",
+        .target = "test-aarch64",
         .entries = &.{
             .{ .name = "a", .median_ns = 100, .checksum = 1, .max_regression_basis_points = 500 },
             .{ .name = "b", .median_ns = 100, .checksum = 2 },
@@ -364,6 +395,16 @@ test "benchmark comparison gates only reviewed thresholds" {
     defer std.testing.allocator.free(json);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"conclusion\": \"fail\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"status\": \"unreviewed\"") != null);
+    try baseline.validateEnvironment(.{
+        .zig_version = "0.16.0",
+        .optimize = "ReleaseSafe",
+        .target = "test-aarch64",
+    });
+    try std.testing.expectError(Error.EnvironmentMismatch, baseline.validateEnvironment(.{
+        .zig_version = "0.16.0",
+        .optimize = "Debug",
+        .target = "test-aarch64",
+    }));
 }
 
 test "benchmark comparison rejects structural and semantic drift" {
@@ -371,6 +412,7 @@ test "benchmark comparison rejects structural and semantic drift" {
         .version = schema_version,
         .zig_version = "0.16.0",
         .optimize = "ReleaseSafe",
+        .target = "test-aarch64",
         .entries = &.{.{ .name = "a", .median_ns = 1, .checksum = 1 }},
     };
     try std.testing.expectError(Error.WorkloadSetDrift, compare(std.testing.allocator, valid, &.{}));
@@ -391,11 +433,12 @@ test "benchmark comparison rejects structural and semantic drift" {
     }}));
 
     const invalid_baselines = [_]Baseline{
-        .{ .version = schema_version, .zig_version = "0.16.0", .optimize = "ReleaseSafe", .entries = &.{} },
-        .{ .version = schema_version, .zig_version = "0.16.0", .optimize = "ReleaseSafe", .entries = &.{.{ .name = "bad name", .median_ns = 1, .checksum = 1 }} },
-        .{ .version = schema_version, .zig_version = "0.16.0", .optimize = "ReleaseSafe", .entries = &.{.{ .name = "a", .median_ns = 0, .checksum = 1 }} },
-        .{ .version = schema_version, .zig_version = "0.16.0", .optimize = "ReleaseSafe", .entries = &.{.{ .name = "a", .median_ns = 1, .checksum = 1, .max_regression_basis_points = 100_001 }} },
-        .{ .version = schema_version, .zig_version = "0.16.0", .optimize = "ReleaseSafe", .entries = &.{ .{ .name = "b", .median_ns = 1, .checksum = 1 }, .{ .name = "a", .median_ns = 1, .checksum = 1 } } },
+        .{ .version = schema_version, .zig_version = "0.16.0", .optimize = "ReleaseSafe", .target = "test-aarch64", .entries = &.{} },
+        .{ .version = schema_version, .zig_version = "0.16.0", .optimize = "ReleaseSafe", .target = "bad target", .entries = &.{.{ .name = "a", .median_ns = 1, .checksum = 1 }} },
+        .{ .version = schema_version, .zig_version = "0.16.0", .optimize = "ReleaseSafe", .target = "test-aarch64", .entries = &.{.{ .name = "bad name", .median_ns = 1, .checksum = 1 }} },
+        .{ .version = schema_version, .zig_version = "0.16.0", .optimize = "ReleaseSafe", .target = "test-aarch64", .entries = &.{.{ .name = "a", .median_ns = 0, .checksum = 1 }} },
+        .{ .version = schema_version, .zig_version = "0.16.0", .optimize = "ReleaseSafe", .target = "test-aarch64", .entries = &.{.{ .name = "a", .median_ns = 1, .checksum = 1, .max_regression_basis_points = 100_001 }} },
+        .{ .version = schema_version, .zig_version = "0.16.0", .optimize = "ReleaseSafe", .target = "test-aarch64", .entries = &.{ .{ .name = "b", .median_ns = 1, .checksum = 1 }, .{ .name = "a", .median_ns = 1, .checksum = 1 } } },
     };
     for (invalid_baselines) |invalid| try std.testing.expectError(
         Error.InvalidBaseline,
@@ -425,10 +468,15 @@ test "benchmark runner warms samples and rejects nondeterminism" {
     try std.testing.expectEqual(@as(usize, 8), state.calls);
     try std.testing.expectEqual(@as(u64, 42), measured[0].checksum);
     try std.testing.expect(measured[0].median_ns > 0);
-    const json = try stringifyMeasurementsJson(std.testing.allocator, measured);
+    const environment: Environment = .{
+        .zig_version = "0.16.0",
+        .optimize = "ReleaseSafe",
+        .target = "test-aarch64",
+    };
+    const json = try stringifyMeasurementsJson(std.testing.allocator, environment, measured);
     defer std.testing.allocator.free(json);
     try std.testing.expect(std.mem.indexOf(u8, json, "\"name\": \"stable\"") != null);
-    const stable_json = try stringifyMeasurementsJson(std.testing.allocator, &.{.{
+    const stable_json = try stringifyMeasurementsJson(std.testing.allocator, environment, &.{.{
         .name = "stable",
         .median_ns = 1,
         .checksum = 42,
@@ -436,7 +484,10 @@ test "benchmark runner warms samples and rejects nondeterminism" {
     defer std.testing.allocator.free(stable_json);
     try std.testing.expectEqualStrings(
         \\{
-        \\  "version": 1,
+        \\  "version": 2,
+        \\  "zig_version": "0.16.0",
+        \\  "optimize": "ReleaseSafe",
+        \\  "target": "test-aarch64",
         \\  "measurements": [
         \\    {
         \\      "name": "stable",

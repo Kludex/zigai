@@ -246,6 +246,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_benchmarks = b.addRunArtifact(benchmark_executable);
+    if (b.args) |args| run_benchmarks.addArgs(args);
     const benchmark_step = b.step("benchmark", "Run deterministic production benchmarks");
     benchmark_step.dependOn(&run_benchmarks.step);
     const model_catalog_module = b.createModule(.{

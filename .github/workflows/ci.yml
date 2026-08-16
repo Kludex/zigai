@@ -55,3 +55,35 @@ jobs:
         with:
           version: 0.16.0
       - run: ./scripts/stress ${{ matrix.optimize }}
+
+  benchmark:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux-x86_64
+          - os: macos-latest
+            target: macos-aarch64
+    name: benchmark (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Measure and compare
+        shell: bash
+        run: |
+          baseline="benchmarks/baselines/${{ matrix.target }}.json"
+          if [[ -f "$baseline" ]]; then
+            zig build benchmark -Doptimize=ReleaseSafe -- \
+              check "$baseline" benchmark-report.json
+          else
+            zig build benchmark -Doptimize=ReleaseSafe -- measure \
+              > benchmark-report.json
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: benchmark-${{ matrix.target }}
+          path: benchmark-report.json

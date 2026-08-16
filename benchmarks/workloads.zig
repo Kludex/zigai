@@ -66,7 +66,7 @@ pub const Catalog = struct {
             workload(self, "request.decode.openai", requestDecodeOpenai),
             workload(self, "request.encode.openai", requestEncodeOpenai),
             workload(self, "schema.reflect_validate", schemaReflectValidate),
-            workload(self, "streaming.model_events", streamingModelEvents),
+            workload(self, "streaming.openai", streamingModelEvents),
         };
     }
 
