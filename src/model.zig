@@ -49,9 +49,13 @@ pub const UsageCost = usage_types.Cost;
 pub const UsageCostSource = usage_types.CostSource;
 pub const UserContent = messages.UserContent;
 pub const dupeContent = messages.dupeContent;
+pub const dupeMessage = messages.dupeMessage;
+pub const dupeMessages = messages.dupeMessages;
 pub const dupeMetadata = messages.dupeMetadata;
 pub const dupeRequestPart = messages.dupeRequestPart;
+pub const dupeRequestMessage = messages.dupeRequestMessage;
 pub const dupeResponsePart = messages.dupeResponsePart;
+pub const dupeResponseMessage = messages.dupeResponseMessage;
 pub const dupeProviderDetails = messages.dupeProviderDetails;
 pub const dupeUserContent = messages.dupeUserContent;
 

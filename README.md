@@ -211,6 +211,14 @@ deterministic node/edge view for documentation and tooling;
 `graph.renderMermaid(allocator, options)` returns a bounded Mermaid state
 diagram with stable generated IDs.
 
+Agent work remains an explicit adapter rather than a special graph mode.
+`zigai.graph_agent.BufferedNode(Workflow)` prepares a prompt and per-run agent
+options, then adapts the owned `Agent.Result` back into the graph's `Value`.
+`TypedNode(Workflow, Output)` does the same with `Agent.runTypedWithOptions`.
+Both inject the graph dependencies when the prepared options do not override
+them. `graph_agent.Conversation` deep-copies canonical messages and cumulative
+usage for state that must survive the agent result's `deinit` boundary.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.

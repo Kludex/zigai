@@ -354,6 +354,17 @@ pub fn Graph(
     return struct {
         const Self = @This();
 
+        /// Application state type fixed by this graph definition.
+        pub const StateType = State;
+        /// Dependency type fixed by this graph definition.
+        pub const DependenciesType = Deps;
+        /// Boundary input type fixed by this graph definition.
+        pub const InputType = Input;
+        /// Intermediate value type fixed by this graph definition.
+        pub const ValueType = Value;
+        /// Boundary output type fixed by this graph definition.
+        pub const OutputType = Output;
+
         /// Typed context passed to every graph callback. The allocator and all
         /// pointers are borrowed for the current call.
         pub const Context = struct {

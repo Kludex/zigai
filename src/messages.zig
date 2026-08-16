@@ -443,6 +443,76 @@ pub const LoadCapabilityCallPart = CapabilityLoadCall;
 /// PydanticAI name for an on-demand capability-load return.
 pub const LoadCapabilityReturnPart = CapabilityLoadResult;
 
+/// Deep-copies canonical messages and every nested borrowed value into
+/// `arena`. The returned slice remains valid until that arena is released.
+pub fn dupeMessages(arena: std.mem.Allocator, source: []const Message) std.mem.Allocator.Error![]const Message {
+    const copied = try arena.alloc(Message, source.len);
+    for (source, copied) |message, *target| target.* = try dupeMessage(arena, message);
+    return copied;
+}
+
+/// Deep-copies one canonical message into `arena`.
+pub fn dupeMessage(arena: std.mem.Allocator, message: Message) std.mem.Allocator.Error!Message {
+    return switch (message) {
+        .request => |request| .{ .request = try dupeRequestMessage(arena, request) },
+        .response => |response| .{ .response = try dupeResponseMessage(arena, response) },
+    };
+}
+
+/// Deep-copies one request message and all nested parts into `arena`.
+pub fn dupeRequestMessage(
+    arena: std.mem.Allocator,
+    request: RequestMessage,
+) std.mem.Allocator.Error!RequestMessage {
+    const parts = try arena.alloc(RequestPart, request.parts.len);
+    for (request.parts, parts) |part, *target| target.* = try dupeRequestPart(arena, part);
+    const instruction_parts = try arena.alloc(InstructionPart, request.instruction_parts.len);
+    for (request.instruction_parts, instruction_parts) |part, *target| target.* = .{
+        .content = try arena.dupe(u8, part.content),
+        .dynamic = part.dynamic,
+    };
+    return .{
+        .parts = parts,
+        .timestamp_unix_ms = request.timestamp_unix_ms,
+        .instruction_parts = instruction_parts,
+        .instructions = try dupeOptional(arena, request.instructions),
+        .run_id = try dupeOptional(arena, request.run_id),
+        .conversation_id = try dupeOptional(arena, request.conversation_id),
+        .metadata = try dupeMetadata(arena, request.metadata),
+        .state = request.state,
+    };
+}
+
+/// Deep-copies one response message and all nested parts into `arena`.
+pub fn dupeResponseMessage(
+    arena: std.mem.Allocator,
+    response: ResponseMessage,
+) std.mem.Allocator.Error!ResponseMessage {
+    const parts = try arena.alloc(ResponsePart, response.parts.len);
+    for (response.parts, parts) |part, *target| target.* = try dupeResponsePart(arena, part);
+    return .{
+        .parts = parts,
+        .usage = try response.usage.dupe(arena),
+        .timestamp_unix_ms = response.timestamp_unix_ms,
+        .provider_name = try dupeOptional(arena, response.provider_name),
+        .provider_url = try dupeOptional(arena, response.provider_url),
+        .provider_details = if (response.provider_details) |details|
+            try dupeProviderDetails(arena, details)
+        else
+            null,
+        .provider_response_id = try dupeOptional(arena, response.provider_response_id),
+        .model_name = try dupeOptional(arena, response.model_name),
+        .finish_reason = if (response.finish_reason) |reason| .{
+            .kind = reason.kind,
+            .raw = try arena.dupe(u8, reason.raw),
+        } else null,
+        .run_id = try dupeOptional(arena, response.run_id),
+        .conversation_id = try dupeOptional(arena, response.conversation_id),
+        .metadata = try dupeMetadata(arena, response.metadata),
+        .state = response.state,
+    };
+}
+
 /// Copies one request part into caller-owned memory.
 pub fn dupeRequestPart(arena: std.mem.Allocator, part: RequestPart) !RequestPart {
     const gpa = arena;
@@ -916,6 +986,44 @@ fn checkAllVariantDupes(allocator: std.mem.Allocator) !void {
         "123456789012345678901234567890",
         details_copy.value.object.get("values").?.array.items[3].number_string,
     );
+
+    const messages = [_]Message{
+        .{ .request = .{
+            .parts = &request_parts,
+            .timestamp_unix_ms = 10,
+            .instruction_parts = &.{.{ .content = "dynamic", .dynamic = true }},
+            .instructions = "rules",
+            .run_id = "request-run",
+            .conversation_id = "conversation",
+            .metadata = &metadata,
+            .state = .interrupted,
+        } },
+        .{ .response = .{
+            .parts = &response_parts,
+            .usage = .{
+                .input_tokens = 2,
+                .details = &.{.{ .name = "accepted_tokens", .value = 1 }},
+                .cost_table_version = "prices-v1",
+            },
+            .timestamp_unix_ms = 11,
+            .provider_name = "test-provider",
+            .provider_url = "https://example.test",
+            .provider_details = provider.provider_details,
+            .provider_response_id = "response-1",
+            .model_name = "test-model",
+            .finish_reason = .{ .kind = .stop, .raw = "done" },
+            .run_id = "response-run",
+            .conversation_id = "conversation",
+            .metadata = &metadata,
+            .state = .interrupted,
+        } },
+    };
+    const message_copy = try dupeMessages(gpa, &messages);
+    try std.testing.expectEqual(@as(usize, 2), message_copy.len);
+    try std.testing.expectEqualStrings("rules", message_copy[0].request.instructions.?);
+    try std.testing.expectEqualStrings("done", message_copy[1].response.finish_reason.?.raw);
+    try std.testing.expectEqualStrings("accepted_tokens", message_copy[1].response.usage.details[0].name);
+    try std.testing.expectEqualStrings("prices-v1", message_copy[1].response.usage.cost_table_version.?);
 
     _ = uploaded.asContent();
     _ = try dupeMetadata(gpa, &metadata);

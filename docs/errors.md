@@ -333,6 +333,12 @@ Graph snapshot operations additionally report:
 encoded document exceeds the configured visualization bound, and preserves
 `OutOfMemory` for allocator failures.
 
+Graph agent nodes preserve `OutOfMemory` and `Cancelled`. Every other agent
+failure maps to `StepFailed` at the graph boundary. A configured
+`graph_agent.Observer` receives the original error name and the `prepare`,
+`agent`, or `apply` failure phase synchronously before the graph latches that
+error.
+
 ## MCP errors
 
 | Error | Meaning |

@@ -5178,68 +5178,38 @@ fn copyPart(allocator: std.mem.Allocator, part: ResponsePart) !ResponsePart {
     return copyResponsePart(allocator, part);
 }
 
-fn copyRequestPart(allocator: std.mem.Allocator, part: RequestPart) !RequestPart {
-    return model_types.dupeRequestPart(allocator, part);
-}
-
 fn copyRequestMessage(allocator: std.mem.Allocator, request: model_types.RequestMessage) !model_types.RequestMessage {
-    const parts = try allocator.alloc(RequestPart, request.parts.len);
-    for (request.parts, parts) |part, *copy| copy.* = try copyRequestPart(allocator, part);
-    return .{
-        .parts = parts,
-        .timestamp_unix_ms = request.timestamp_unix_ms,
-        .instruction_parts = blk: {
-            const result = try allocator.alloc(model_types.InstructionPart, request.instruction_parts.len);
-            for (request.instruction_parts, result) |part, *copy| copy.* = .{
-                .content = try allocator.dupe(u8, part.content),
-                .dynamic = part.dynamic,
-            };
-            break :blk result;
-        },
-        .instructions = try copyOptionalString(allocator, request.instructions),
-        .run_id = try copyOptionalString(allocator, request.run_id),
-        .conversation_id = try copyOptionalString(allocator, request.conversation_id),
-        .metadata = try copyMetadata(allocator, request.metadata),
-        .state = request.state,
-    };
+    return model_types.dupeRequestMessage(allocator, request);
 }
 
 fn copyResponseMessage(allocator: std.mem.Allocator, response: model_types.ResponseMessage) !model_types.ResponseMessage {
     const parts = try allocator.alloc(ResponsePart, response.parts.len);
-    for (response.parts, parts) |part, *copy| copy.* = try copyResponsePart(allocator, part);
+    for (response.parts, parts) |part, *target| target.* = try copyResponsePart(allocator, part);
     return .{
         .parts = parts,
-        .usage = response.usage,
+        .usage = try response.usage.dupe(allocator),
         .timestamp_unix_ms = response.timestamp_unix_ms,
-        .provider_name = try copyOptionalString(allocator, response.provider_name),
-        .provider_url = try copyOptionalString(allocator, response.provider_url),
+        .provider_name = if (response.provider_name) |value| try allocator.dupe(u8, value) else null,
+        .provider_url = if (response.provider_url) |value| try allocator.dupe(u8, value) else null,
         .provider_details = if (response.provider_details) |details|
             try model_types.dupeProviderDetails(allocator, details)
         else
             null,
-        .provider_response_id = try copyOptionalString(allocator, response.provider_response_id),
-        .model_name = try copyOptionalString(allocator, response.model_name),
+        .provider_response_id = if (response.provider_response_id) |value| try allocator.dupe(u8, value) else null,
+        .model_name = if (response.model_name) |value| try allocator.dupe(u8, value) else null,
         .finish_reason = if (response.finish_reason) |reason| .{
             .kind = reason.kind,
             .raw = try allocator.dupe(u8, reason.raw),
         } else null,
-        .run_id = try copyOptionalString(allocator, response.run_id),
-        .conversation_id = try copyOptionalString(allocator, response.conversation_id),
-        .metadata = try copyMetadata(allocator, response.metadata),
+        .run_id = if (response.run_id) |value| try allocator.dupe(u8, value) else null,
+        .conversation_id = if (response.conversation_id) |value| try allocator.dupe(u8, value) else null,
+        .metadata = try model_types.dupeMetadata(allocator, response.metadata),
         .state = response.state,
     };
 }
 
-fn copyOptionalString(allocator: std.mem.Allocator, value: ?[]const u8) !?[]const u8 {
-    return if (value) |string| try allocator.dupe(u8, string) else null;
-}
-
 fn copyContent(allocator: std.mem.Allocator, value: model_types.Content) !model_types.Content {
     return model_types.dupeContent(allocator, value);
-}
-
-fn copyMetadata(allocator: std.mem.Allocator, source: []const model_types.Metadata) ![]const model_types.Metadata {
-    return model_types.dupeMetadata(allocator, source);
 }
 
 fn resolveInstructions(
@@ -6282,8 +6252,8 @@ test "agent private helpers cover ownership settings retries and rich content" {
         try copyPromptPart(allocator, .{ .binary = .{ .source = .{ .bytes = "binary" }, .media_type = "application/octet-stream" } }),
     };
     try std.testing.expectEqualStrings("audio", copied_prompts[0].audio.source.bytes);
-    _ = try copyRequestPart(allocator, .{ .system_prompt = "system" });
-    _ = try copyRequestPart(allocator, .{ .retry_prompt = "retry" });
+    _ = try model_types.dupeRequestPart(allocator, .{ .system_prompt = "system" });
+    _ = try model_types.dupeRequestPart(allocator, .{ .retry_prompt = "retry" });
     _ = try copyRequestMessage(allocator, .{
         .parts = &.{.{ .user_prompt = .{ .text = "hello" } }},
         .instruction_parts = &.{.{ .content = "structured", .dynamic = true }},

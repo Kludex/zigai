@@ -604,8 +604,23 @@ application-owned map items, branch outputs, and abandoned accumulators during
 both success and fail-fast cleanup.
 
 Graph lifecycle events are synchronous borrowed observations. They do not
-reuse agent hooks or telemetry types: future agent nodes can bridge the two
-without making ordinary application steps depend on model execution.
+reuse agent hooks or telemetry types, so ordinary application steps do not
+depend on model execution.
+
+`graph_agent` is the explicit bridge between those contracts. Its node types
+compile against one concrete `graph.Graph` instantiation, prepare borrowed
+`Agent.RunOptions` in a node-scoped scratch arena, and adapt an owned buffered
+or structured agent result back into the graph's intermediate type. The core
+graph never imports the agent loop. Graph dependencies become agent
+dependencies only when application preparation did not supply an override.
+
+An agent result remains alive through result adaptation and event delivery,
+then is released before the graph transition commits. Long-lived graph state
+therefore uses `graph_agent.Conversation`, which deep-copies the canonical
+message graph and cumulative usage into one explicit arena. Agent-specific
+failure detail is observable at the bridge, while the provider-neutral graph
+retains its narrow `OutOfMemory`, `Cancelled`, and `StepFailed` callback
+contract.
 
 Graph persistence captures only settled boundaries. A snapshot stores the
 typed state and current intermediate value as application-encoded JSON plus a

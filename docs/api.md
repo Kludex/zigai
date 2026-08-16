@@ -130,6 +130,7 @@ Use these namespaces for the rest of the API:
 | `zigai.durable.checkpoint` | Restart-safe stream cursors and approval state stores |
 | `zigai.durable_adapters.temporal` | Temporal sidecar adapter, worker registrations, retry policy, and payload limits |
 | `zigai.graph` | Typed graph definitions, bounded execution, lifecycle events, and manual iteration |
+| `zigai.graph_agent` | Explicit buffered and structured agent-node adapters for typed graphs |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
@@ -569,8 +570,35 @@ a later step or end callback consumes it.
 Event sinks are synchronous and infallible. They receive borrowed run/step
 start, end, and failure records in execution order. They must copy a node name
 or branch name before retaining it. The core supports linear, cyclic, named
-conditional, and bounded parallel routing. Agent-node adapters remain an
-explicit roadmap step rather than hidden behavior.
+conditional, and bounded parallel routing.
+
+### Graph agent nodes
+
+`graph_agent.BufferedNode(Workflow)` and
+`graph_agent.TypedNode(Workflow, AgentOutput)` turn an `Agent` invocation into
+an ordinary typed `Workflow.Step`. Each adapter borrows its agent, callback
+context, observer, name, and metadata for the built graph's lifetime.
+`prepare_fn` receives a node-scoped scratch arena, graph context, and borrowed
+input. It returns a prompt plus `Agent.RunOptions`; when `dependencies` is
+null, the adapter injects the graph's typed dependency pointer. `apply_fn`
+receives the completed agent result and must copy anything retained in the
+returned `Value` before the callback returns.
+
+The adapter's synchronous observer receives borrowed `start`, `end`, and
+`failure` events. Failure events preserve the original error name and identify
+whether preparation, agent execution, or application failed. The graph-facing
+error remains deliberately narrow: allocator failures stay `OutOfMemory`,
+agent cancellation stays `Cancelled`, and other agent failures become
+`StepFailed`.
+
+`graph_agent.Conversation` is the reusable state helper for sequential agent
+nodes. `init` and `replace` deep-copy the complete canonical message vocabulary
+and usage detail names into one arena. `appendRun` replaces history while
+adding request, tool, token, latency, detail, and cost counters to cumulative
+usage. Its storage must be deinitialized by the application state owner.
+Parallel fan-out does not serialize access to an agent, conversation, or
+dependencies; applications must use independent instances or synchronize all
+shared mutation.
 
 Concurrent fan-out callbacks share `State`, `Deps`, branch contexts, and input
 values. The scheduler makes only `Context.gpa` safe for concurrent use.

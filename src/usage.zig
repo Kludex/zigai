@@ -68,6 +68,22 @@ pub const RequestUsage = struct {
             self.reasoning_tokens != 0 or self.input_audio_tokens != 0 or self.cache_audio_read_tokens != 0 or
             self.output_audio_tokens != 0 or self.details.len != 0 or self.cost != null or self.duration_ms != null;
     }
+
+    /// Deep-copies all borrowed request-usage storage into `arena`.
+    pub fn dupe(self: RequestUsage, arena: std.mem.Allocator) std.mem.Allocator.Error!RequestUsage {
+        var copy = self;
+        const details = try arena.alloc(Detail, self.details.len);
+        for (self.details, details) |item, *target| target.* = .{
+            .name = try arena.dupe(u8, item.name),
+            .value = item.value,
+        };
+        copy.details = details;
+        copy.cost_table_version = if (self.cost_table_version) |version|
+            try arena.dupe(u8, version)
+        else
+            null;
+        return copy;
+    }
 };
 
 /// Usage accumulated across one complete or paused agent run. `details` is an
