@@ -430,6 +430,21 @@ identifiers and raw metadata. `Provider.Options.discovery_limits` bounds pages
 and total models for paginated APIs. Model adapters are not involved in
 discovery.
 
+`ModelCatalog.init` validates a borrowed slice of `ModelCatalogEntry` values.
+Each entry scopes one canonical ID and its aliases to `provider_name`, and may
+carry `ModelCatalogLimits`, `ModelDeprecation`, and a trusted `ModelProfile`.
+Resolution is exact and case-sensitive; no allocation, prefix matching, or
+implicit provider fallback occurs. Canonical IDs and aliases occupy the same
+provider-local namespace, so ambiguous catalogs fail at initialization.
+
+`ModelCatalog.resolve(provider_name, requested_id)` returns a borrowed
+`ResolvedModel`. Use `canonicalId()` before constructing a provider client,
+`wasAlias()` for diagnostics, and `replacement()` to follow a validated
+deprecation target. The catalog and every referenced entry must outlive the
+resolution. Live provider metadata remains separate and untrusted; merging it
+with catalog records is an explicit API rather than a capability-profile
+override.
+
 Provider file descriptors always include `provider_name`. Their
 `uploadedFile()` view is the handle accepted by `inspectFile`, `downloadFile`,
 and `deleteFile`, and it can also be passed directly as provider-owned rich

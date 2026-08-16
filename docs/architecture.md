@@ -360,6 +360,13 @@ model discovery. Shared parsing bounds JSON, pages, and total models before
 growth, normalizes resource names for client construction, and returns an arena
 owning both stable identifiers and uninterpreted provider metadata.
 
+The model catalog is a separate trust boundary. It borrows checked application
+or generated entries and validates provider-scoped canonical IDs, aliases,
+limits, deprecations, and replacement links before resolution. Lookup is exact,
+case-sensitive, allocation-free, and deterministic. Provider discovery data
+cannot silently widen a catalog `ModelProfile`; the later merge layer must keep
+trusted capabilities and untrusted provider metadata distinct.
+
 Discovered model lists and file records are arena-owned values with explicit
 `deinit`; requests, provider configuration, and the `Provider` itself are
 borrowed. Concrete provider state must outlive every model and in-flight

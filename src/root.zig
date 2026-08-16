@@ -1,6 +1,7 @@
 //! Provider-neutral building blocks for tool-using LLM agents.
 
 pub const model = @import("model.zig");
+pub const model_catalog = @import("model_catalog.zig");
 pub const settings = @import("settings.zig");
 pub const output = @import("output.zig");
 pub const tool = @import("tool.zig");
@@ -91,6 +92,11 @@ pub const parseResumeDecisions = agent.parseResumeDecisions;
 pub const PausedRun = agent.PausedRun;
 pub const RunOutcome = agent.Agent.RunOutcome;
 pub const Model = model.Model;
+pub const ModelCatalog = model_catalog.Catalog;
+pub const ModelCatalogEntry = model_catalog.Entry;
+pub const ModelCatalogLimits = model_catalog.Limits;
+pub const ModelDeprecation = model_catalog.Deprecation;
+pub const ResolvedModel = model_catalog.ResolvedModel;
 pub const Provider = provider.Provider;
 pub const ProviderRequestPolicy = provider.RequestPolicy;
 pub const ProviderModelDescriptor = provider.ModelDescriptor;
@@ -226,6 +232,7 @@ test "messages namespace is the canonical conversation type" {
 test {
     _ = @import("agent.zig");
     _ = @import("model.zig");
+    _ = @import("model_catalog.zig");
     _ = @import("testing.zig");
     _ = @import("transport.zig");
     _ = @import("provider.zig");

@@ -144,7 +144,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   `clear_thinking` without leaking those fields into generic compatibility.
 - [x] Add provider file lifecycle APIs: upload, inspect, reuse, download where
   safe, and delete, with provider ownership checks and cassette redaction.
-- [ ] Define a provider-neutral model catalog and resolver with exact IDs,
+- [x] Define a provider-neutral model catalog and resolver with exact IDs,
   aliases, deprecation metadata, context/output limits, capability profiles,
   deterministic lookup, and explicit ownership.
 - [ ] Merge provider discovery results with catalog metadata without allowing

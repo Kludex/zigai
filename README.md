@@ -337,6 +337,23 @@ for (models.items) |model| {
 Discovery owns an arena so identifiers and raw provider metadata stay valid
 until `deinit`. Paginated providers enforce configurable page and model limits.
 
+Use `ModelCatalog` for trusted application metadata and aliases:
+
+```zig
+const catalog = try zigai.ModelCatalog.init(&.{.{
+    .provider_name = "openai",
+    .id = "gpt-5.1",
+    .aliases = &.{"default"},
+    .limits = .{ .context_tokens = 400_000, .max_output_tokens = 128_000 },
+    .profile = .{ .supports_streaming = true },
+}});
+const selected = catalog.resolve("openai", "default") orelse
+    return error.UnknownModel;
+```
+
+The catalog borrows its entries and returns borrowed resolutions. Validation
+rejects ambiguous IDs, invalid limits, and broken replacement links.
+
 Each model exposes a `ModelProfile`. The profile tells the agent which
 capabilities are supported before it sends a paid request.
 

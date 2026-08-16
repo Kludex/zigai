@@ -18,6 +18,9 @@
 - Add native Z.AI thinking controls and preserve `reasoning_content` through
   buffered, streaming, and tool-turn history without widening the generic
   OpenAI-compatible surface.
+- Add a borrowed, provider-neutral model catalog with exact canonical and
+  alias resolution, typed limits and deprecations, trusted capability profiles,
+  collision detection, and validated replacement links.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and
