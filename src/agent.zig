@@ -721,9 +721,9 @@ pub const PausedRun = struct {
         run_id: []const u8,
         checkpoint_id: []const u8,
     ) !durable_types.checkpoint.SaveResult {
-        const revision = std.math.add(u64, std.math.cast(u64, self.model_requests) orelse
-            return durable_types.checkpoint.Error.InvalidCheckpoint, 1) catch
+        const next_request = std.math.add(usize, self.model_requests, 1) catch
             return durable_types.checkpoint.Error.InvalidCheckpoint;
+        const revision: u64 = @intCast(next_request);
         return store.save(allocator, .{
             .run_id = run_id,
             .checkpoint_id = checkpoint_id,
@@ -6614,6 +6614,39 @@ test "checkpointed stream resumes after restart without redelivering committed e
     try restarted.sink().emit(.{ .final_result = .{ .output = "three" } });
     try std.testing.expectEqual(@as(usize, 3), collector.outputs.items.len);
     try std.testing.expectEqualStrings("three", collector.outputs.items[2]);
+
+    _ = try restarted_store.store().save(std.testing.allocator, .{
+        .run_id = "run-1",
+        .checkpoint_id = "approval-kind",
+        .kind = .approval,
+        .revision = 1,
+        .state_json = "{}",
+    });
+    try std.testing.expectError(
+        durable_types.checkpoint.Error.CheckpointConflict,
+        CheckpointedStreamSink.init(
+            std.testing.allocator,
+            restarted_store.store(),
+            "run-1",
+            "approval-kind",
+            downstream,
+        ),
+    );
+    const Stub = struct {
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            return error.ModelMustNotRun;
+        }
+    };
+    var unused: u8 = 0;
+    const agent = Agent{ .model = .{ .context = &unused, .profile = .{}, .requestFn = Stub.request } };
+    try std.testing.expectError(Agent.Error.InvalidDeferredState, agent.resumeCheckpoint(
+        std.testing.allocator,
+        restarted_store.store(),
+        "run-1",
+        "initial-stream",
+        &.{},
+        .{},
+    ));
 }
 
 test "paused state serializes retries and rejects mismatched calls" {
@@ -6681,6 +6714,22 @@ test "paused state serializes retries and rejects mismatched calls" {
         &.{},
         null,
     ));
+    const exhausted = PausedRun{
+        .arena = undefined,
+        .state_json = "{}",
+        .calls = &.{},
+        .usage = .{},
+        .model_requests = std.math.maxInt(usize),
+    };
+    try std.testing.expectError(
+        durable_types.checkpoint.Error.InvalidCheckpoint,
+        exhausted.saveCheckpoint(
+            std.testing.allocator,
+            undefined,
+            "run",
+            "approval",
+        ),
+    );
 }
 
 fn capabilityLoadFailureInstruction(
@@ -6974,7 +7023,6 @@ test "durable parallel tools use source-order identities and MCP operation kinds
             return error.LocalToolMustNotRun; // kcov-ignore: durable routing guard
         }
     };
-
     var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
     defer threaded.deinit();
     var runtime_state: RuntimeState = .{};
@@ -7112,7 +7160,7 @@ test "durable approval resumption journals decisions before tool execution" {
         ) !durable_types.OwnedRecord {
             const self: *@This() = @ptrCast(@alignCast(context));
             const output_json = switch (invocation.kind) {
-                .model_request => output: {
+                .model_request, .model_stream => output: {
                     self.model_calls += 1;
                     break :output try durable_types.payloads.model.stringifyResponse(allocator, if (self.model_calls == 1)
                         .{ .parts = &.{.{ .tool_call = .{
@@ -7161,14 +7209,30 @@ test "durable approval resumption journals decisions before tool execution" {
         fn model(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse { // kcov-ignore: durable routing guard
             return error.LocalModelMustNotRun; // kcov-ignore: durable routing guard
         }
+        fn stream(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest, _: model_types.ModelStreamSink) !model_types.ModelResponse { // kcov-ignore: durable routing guard
+            return error.LocalModelMustNotRun; // kcov-ignore: durable routing guard
+        }
         fn tool(_: *anyopaque, _: std.mem.Allocator, _: []const u8) ![]const u8 { // kcov-ignore: durable routing guard
             return error.LocalToolMustNotRun; // kcov-ignore: durable routing guard
+        }
+    };
+    const ResumeEvents = struct {
+        count: usize = 0,
+
+        fn emit(context: *anyopaque, _: AgentStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.count += 1;
         }
     };
     var runtime_state: RuntimeState = .{};
     var local_state: u8 = 0;
     const configured = Agent{
-        .model = .{ .context = &local_state, .profile = .{}, .requestFn = Local.model },
+        .model = .{
+            .context = &local_state,
+            .profile = .{ .supports_streaming = true },
+            .requestFn = Local.model,
+            .streamFn = Local.stream,
+        },
         .tools = &.{.{
             .definition = .{ .name = "publish", .description = "", .parameters_json_schema = "{}" },
             .execution = .requires_approval,
@@ -7181,6 +7245,7 @@ test "durable approval resumption journals decisions before tool execution" {
         .run_id = "approval-run",
         .handlers = .{
             .model_request = "model-worker",
+            .model_stream = "model-worker",
             .tool_call = "tool-worker",
             .approval_resume = "approval-worker",
         },
@@ -7254,19 +7319,22 @@ test "durable approval resumption journals decisions before tool execution" {
         temporary.dir,
         "agent/checkpoints.json",
     );
-    var resumed = try configured.resumeCheckpoint(
+    var resume_events: ResumeEvents = .{};
+    var resumed = try configured.resumeCheckpointStream(
         std.testing.allocator,
         restarted_store.store(),
         binding.run_id,
         "publish-approval",
         &.{.{ .call_id = "approval-1", .action = .approve }},
         .{ .durable = binding },
+        .{ .context = &resume_events, .eventFn = ResumeEvents.emit },
     );
     defer resumed.deinit();
     switch (resumed) {
         .paused => return error.ExpectedCompleteRun,
         .complete => |completed| try std.testing.expectEqualStrings("published", completed.output),
     }
+    try std.testing.expect(resume_events.count > 0);
     try std.testing.expectEqual(@as(usize, 2), runtime_state.approval_calls);
     try std.testing.expectEqual(@as(usize, 1), runtime_state.tool_calls);
 }

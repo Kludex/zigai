@@ -36,7 +36,7 @@ test {
 
 /// Latest stable MCP protocol revision supported by ZigAI.
 pub const protocol_version = "2026-07-28";
-
+// kcov-ignore: LLVM attributes the public alias below to this separator.
 pub const ClientCapabilities = primitives.ClientCapabilities; // kcov-ignore: public alias
 pub const CompletionReference = primitives.CompletionReference;
 pub const CompletionRequest = primitives.CompletionRequest;

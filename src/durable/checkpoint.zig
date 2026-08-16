@@ -249,17 +249,18 @@ pub const FileStore = struct {
         if (object.count() != 2) return Error.InvalidCheckpoint;
         const version = valueU8(object.get("version") orelse return Error.InvalidCheckpoint) catch
             return Error.InvalidCheckpoint;
+        if (version != 1 and version != format_version)
+            return Error.UnsupportedCheckpointVersion;
         const values = switch (object.get("checkpoints") orelse return Error.InvalidCheckpoint) {
             .array => |array| array,
             else => return Error.InvalidCheckpoint,
         };
         const records = try snapshot.arena.allocator().alloc(Record, values.items.len);
         for (values.items, 0..) |value, index| {
-            records[index] = switch (version) {
-                1 => try parseV1(snapshot.arena.allocator(), value),
-                format_version => try parseV2(snapshot.arena.allocator(), value),
-                else => return Error.UnsupportedCheckpointVersion,
-            };
+            records[index] = if (version == 1)
+                try parseV1(snapshot.arena.allocator(), value)
+            else
+                try parseV2(snapshot.arena.allocator(), value);
             try records[index].validate(snapshot.arena.allocator());
             for (records[0..index]) |previous| {
                 if (sameKey(previous, records[index].run_id, records[index].checkpoint_id))
@@ -396,6 +397,11 @@ test "file store survives restart and rejects divergent duplicate delivery" {
     var conflict = original;
     conflict.cursor = 3;
     try std.testing.expectError(Error.CheckpointConflict, first.store().save(std.testing.allocator, conflict));
+    var changed_kind = original;
+    changed_kind.kind = .approval;
+    changed_kind.cursor = 0;
+    changed_kind.revision = 2;
+    try std.testing.expectError(Error.CheckpointConflict, first.store().save(std.testing.allocator, changed_kind));
 
     var restarted = FileStore.init(std.testing.io, temporary.dir, "state/checkpoints.json");
     var loaded = (try restarted.store().load(std.testing.allocator, "run-1", "model-stream-1")).?;
@@ -442,6 +448,14 @@ test "checkpoint validation and removal fail closed" {
     defer temporary.cleanup();
     var file_store = FileStore.init(std.testing.io, temporary.dir, "checkpoints.json");
     const store_value = file_store.store();
+    try std.testing.expectError(
+        Error.InvalidCheckpoint,
+        store_value.load(std.testing.allocator, "bad/run", "stream"),
+    );
+    try std.testing.expectError(
+        Error.InvalidCheckpoint,
+        store_value.remove(std.testing.allocator, "run", "bad/checkpoint"),
+    );
     try std.testing.expectError(Error.InvalidCheckpoint, store_value.save(std.testing.allocator, .{
         .run_id = "bad/run",
         .checkpoint_id = "stream",
@@ -467,4 +481,53 @@ test "checkpoint validation and removal fail closed" {
     try store_value.remove(std.testing.allocator, "run", "missing");
     try store_value.remove(std.testing.allocator, "run", "stream");
     try std.testing.expect((try store_value.load(std.testing.allocator, "run", "stream")) == null);
+}
+
+test "checkpoint snapshots reject corrupt oversized and ambiguous documents" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+
+    const Case = struct {
+        name: []const u8,
+        source: []const u8,
+        failure: anyerror = Error.InvalidCheckpoint,
+    };
+    const cases = [_]Case{
+        .{ .name = "syntax.json", .source = "{" },
+        .{ .name = "root.json", .source = "[]" },
+        .{ .name = "version-type.json", .source = "{\"version\":\"2\",\"checkpoints\":[]}" },
+        .{ .name = "entry-shape.json", .source = "{\"version\":2,\"checkpoints\":[[]]}" },
+        .{ .name = "field-type.json", .source = "{\"version\":2,\"checkpoints\":[{\"run_id\":1,\"checkpoint_id\":\"stream\",\"kind\":\"stream\",\"revision\":1,\"cursor\":0,\"state_json\":\"{}\"}]}" },
+        .{ .name = "state.json", .source = "{\"version\":2,\"checkpoints\":[{\"run_id\":\"run\",\"checkpoint_id\":\"stream\",\"kind\":\"stream\",\"revision\":1,\"cursor\":0,\"state_json\":\"{\"}]}" },
+        .{ .name = "unsupported.json", .source = "{\"version\":3,\"checkpoints\":[]}", .failure = Error.UnsupportedCheckpointVersion },
+        .{ .name = "duplicates.json", .source = "{\"version\":2,\"checkpoints\":[{\"run_id\":\"run\",\"checkpoint_id\":\"stream\",\"kind\":\"stream\",\"revision\":1,\"cursor\":0,\"state_json\":\"{}\"},{\"run_id\":\"run\",\"checkpoint_id\":\"stream\",\"kind\":\"stream\",\"revision\":2,\"cursor\":1,\"state_json\":\"{}\"}]}" },
+    };
+    for (cases) |case| {
+        var file = try temporary.dir.createFile(std.testing.io, case.name, .{});
+        try file.writeStreamingAll(std.testing.io, case.source);
+        file.close(std.testing.io);
+        var file_store = FileStore.init(std.testing.io, temporary.dir, case.name);
+        try std.testing.expectError(
+            case.failure,
+            file_store.store().load(std.testing.allocator, "run", "stream"),
+        );
+    }
+
+    var oversized_file = try temporary.dir.createFile(std.testing.io, "oversized.json", .{});
+    try oversized_file.writeStreamingAll(std.testing.io, "{\"version\":2,\"checkpoints\":[]}");
+    oversized_file.close(std.testing.io);
+    var oversized_store = FileStore.init(std.testing.io, temporary.dir, "oversized.json");
+    oversized_store.max_bytes = 8;
+    try std.testing.expectError(
+        Error.CheckpointTooLarge,
+        oversized_store.store().load(std.testing.allocator, "run", "stream"),
+    );
+
+    try std.testing.expectError(Error.InvalidCheckpoint, (Record{
+        .run_id = "run",
+        .checkpoint_id = "stream",
+        .kind = .stream,
+        .revision = 1,
+        .state_json = "{",
+    }).validate(std.testing.allocator));
 }
