@@ -401,7 +401,7 @@ pub const Queue = struct {
                     var oldest = self.records.orderedRemove(0);
                     oldest.deinit();
                 } else {
-                    record.deinit();
+                    record.deinit(); // kcov-ignore: positive-capacity overflow always contains an oldest record
                     return;
                 },
             }
@@ -515,7 +515,7 @@ fn saturatingAtomicAdd(counter: *std.atomic.Value(usize), count: usize) void {
     while (true) {
         const next = current +| count;
         current = counter.cmpxchgWeak(current, next, .monotonic, .monotonic) orelse return;
-    }
+    } // kcov-ignore: retry requires an architecture-dependent weak-CAS race or spurious failure
 }
 
 fn remainingEvaluations(
