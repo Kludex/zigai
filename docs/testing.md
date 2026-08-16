@@ -398,10 +398,21 @@ is not deterministic.
 
 ## Pricing snapshots
 
-`zigai.pricing.builtin_version` identifies the checked-in standard-price
-snapshot. Before changing it, verify every edited row against the provider URLs
-in `pricing.builtin_sources`, update the version date, and keep a focused unit
-test for each first-party provider. Pricing tests never call a live billing API.
+`data/genai_prices_v2.json` is pinned to a pydantic/genai-prices release commit
+and checksum. `tools/pricing_snapshot.py` turns it into
+`src/pricing_snapshot.zig`; do not edit the generated Zig file.
+
+To update it, change the release metadata and snapshot date in the generator,
+then run:
+
+```console
+$ python3 tools/pricing_snapshot.py --update
+$ python3 tools/pricing_snapshot.py --check
+```
+
+The snapshot applies date-based prices as of its date. Recurring time-of-day
+discounts stay out of the standard table; use a custom table for those. Tests
+only read the checked-in data and never call a live pricing or billing API.
 
 ## Model compatibility snapshot
 

@@ -625,8 +625,10 @@ streamed responses.
 
 `UsageCost` stores nano-USD exactly. `PriceTable.estimate` returns null for an
 unknown model or any non-empty bucket without a rate. `pricing.builtin` is an
-opt-in snapshot identified by `pricing.builtin_version`; applications may
-provide a different immutable table through `Agent.price_table`.
+offline snapshot generated from the pinned pydantic/genai-prices v2 data. Its
+version, source commit, checksum, and coverage counts are public constants.
+Applications may provide a different immutable table through
+`Agent.price_table`.
 
 `transport.HttpTransport.init` uses bounded decompressed response defaults:
 16 MiB per buffered body and 1 MiB per streaming line. Pass a

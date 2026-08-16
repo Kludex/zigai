@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Generate the built-in pricing table from a pinned pydantic/genai-prices v2
+  snapshot, including provider fallbacks, all model match rules, tier cliffs,
+  modalities, requests, and web searches.
 - Align agent, model-request, and tool span names with the OpenTelemetry GenAI
   conventions; add explicit parent trace contexts, opt-in raw or callback-
   redacted prompt capture, UTF-8-safe content bounds, exporter attribute

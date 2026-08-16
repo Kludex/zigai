@@ -879,10 +879,14 @@ if (result.usage.cost) |cost| {
 }
 ```
 
-`pricing.builtin` is a checked-in snapshot, not a live price feed. Its version
-is available as `pricing.builtin_version`; unknown models and unpriced token
-buckets produce no estimate. Pass your own `PriceTable` when you need other
-models, contracts, regions, or service tiers. Money is stored as integer
+`pricing.builtin` is generated from a pinned
+[pydantic/genai-prices](https://github.com/pydantic/genai-prices) v2 snapshot.
+It covers provider aliases, model match rules, tiered prices, modalities, and
+request-based charges without fetching prices at runtime.
+
+Use `pricing.builtin_version` to persist its version. Unknown models and
+unpriced usage produce no estimate. Pass your own `PriceTable` for negotiated
+contracts, regional prices, or time-based discounts. Money is stored as integer
 nano-USD.
 
 ## OpenTelemetry

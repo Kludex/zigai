@@ -62,7 +62,8 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   cancellation semantics, history persistence, and lifecycle/stream events.
 - [x] Add complete usage accounting: cached input, cache writes, reasoning,
   audio, provider-native details, request/tool counts, latency, and optional
-  price-table cost estimation with a versioned data source.
+  price-table cost estimation generated from pinned pydantic/genai-prices v2
+  data.
 - [x] Complete model settings and profiles. Support `top_p`, `top_k`, penalties,
   logprobs, tool choice, parallel-tool policy, thinking budgets, service tier,
   truncation, request headers, and validated provider-specific extra bodies.

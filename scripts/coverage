@@ -161,6 +161,7 @@ run_kcov --merge coverage/merged \
 report="$coverage_dir/merged/kcov-merged/coverage.json"
 for source in "$project_dir"/src/*.zig "$project_dir"/src/cli/*.zig "$project_dir"/src/codecs/pydantic_ai.zig "$project_dir"/src/models/*.zig "$project_dir"/src/providers/*.zig; do
     case "$source" in
+        "$project_dir"/src/pricing_snapshot.zig|\
         "$project_dir"/src/zanthropic.zig|\
         "$project_dir"/src/zgoogle.zig|\
         "$project_dir"/src/zopenai.zig|\
@@ -178,8 +179,8 @@ for source in "$project_dir"/src/*.zig "$project_dir"/src/cli/*.zig "$project_di
         "$project_dir"/src/providers/pydantic_gateway.zig|\
         "$project_dir"/src/providers/together.zig|\
         "$project_dir"/src/providers/zai.zig)
-            # These modules contain aliases only. Downstream consumer builds
-            # compile them, but they have no executable lines for kcov.
+            # These modules contain generated data or aliases only. Downstream
+            # consumer builds compile them, but kcov sees no executable lines.
             continue
             ;;
     esac
