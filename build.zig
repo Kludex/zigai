@@ -117,6 +117,7 @@ pub fn build(b: *std.Build) void {
     });
     const run_cli_common_tests = b.addRunArtifact(cli_common_tests);
     const cli_app_tests = b.addTest(.{
+        .filters = &.{"production CLI"},
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/cli/app.zig"),
             .target = target,

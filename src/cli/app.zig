@@ -175,6 +175,22 @@ pub fn mergeConfig(config: Config, arguments: Arguments) Config {
     return result;
 }
 
+pub fn defaultBaseURL(provider: ProviderName) []const u8 {
+    return switch (provider) {
+        .openai => zigai.openai.api_base,
+        .anthropic => zigai.anthropic.api_base,
+        .google => zigai.google.api_base,
+    };
+}
+
+pub fn endpointPolicy(base_url: []const u8, default_base: []const u8) zigai.security.UrlPolicy {
+    if (std.mem.eql(u8, base_url, default_base)) return .{};
+    return .{
+        .allow_http = std.ascii.startsWithIgnoreCase(base_url, "http://"),
+        .allow_local_network = true,
+    };
+}
+
 pub fn defaultModel(provider: ProviderName) []const u8 {
     return switch (provider) {
         .openai => "gpt-5-mini",
@@ -432,9 +448,11 @@ pub const MCPRuntime = struct {
 const EventOutput = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
+    enabled: bool,
 
     fn emit(context: ?*anyopaque, event: zigai.ui.Event) !void {
         const self: *@This() = @ptrCast(@alignCast(context.?));
+        if (!self.enabled) return;
         const json = try zigai.ui.ag_ui.encode(self.gpa, event);
         defer self.gpa.free(json);
         try writeOutput(self.io, json, true);
@@ -455,16 +473,9 @@ pub fn execute(init: std.process.Init, args: []const []const u8) !ExitCode {
     const api_key = init.environ_map.get(key_name) orelse return error.MissingApiKey;
     if (api_key.len == 0) return error.MissingApiKey;
     const model_name = config.model orelse defaultModel(config.provider);
-    const default_base = switch (config.provider) {
-        .openai => zigai.openai.api_base,
-        .anthropic => zigai.anthropic.api_base,
-        .google => zigai.google.api_base,
-    };
+    const default_base = defaultBaseURL(config.provider);
     const base_url = config.base_url orelse default_base;
-    const url_policy: zigai.security.UrlPolicy = if (std.mem.eql(u8, base_url, default_base)) zigai.security.UrlPolicy{} else .{
-        .allow_http = std.ascii.startsWithIgnoreCase(base_url, "http://"),
-        .allow_local_network = true,
-    };
+    const url_policy = endpointPolicy(base_url, default_base);
     var http = zigai.transport.HttpTransport.initWithOptions(init.gpa, init.io, .{ .url_policy = url_policy });
     defer http.deinit();
     var provider_runtime: ProviderRuntime = undefined;
@@ -486,15 +497,35 @@ pub fn execute(init: std.process.Init, args: []const []const u8) !ExitCode {
         .io = init.io,
     };
 
+    const prompt: ?[]u8 = if (!arguments.resume_run)
+        if (arguments.stdin_prompt)
+            try readStdin(init.gpa, init.io)
+        else
+            try init.gpa.dupe(u8, arguments.prompt.?)
+    else
+        null;
+    defer if (prompt) |value| init.gpa.free(value);
+    return runAgent(init.gpa, init.io, &agent, config, arguments.resume_run, prompt, true);
+}
+
+pub fn runAgent(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    agent: *zigai.Agent,
+    config: Config,
+    resume_run: bool,
+    prompt: ?[]const u8,
+    emit_output: bool,
+) !ExitCode {
     var owned_history: ?zigai.OwnedHistory = if (config.history_path) |path|
-        try (HistoryStore{ .path = path }).load(init.gpa, init.io)
+        try (HistoryStore{ .path = path }).load(gpa, io)
     else
         null;
     defer if (owned_history) |*history| history.deinit();
     const run_options = zigai.RunOptions{
         .message_history = if (owned_history) |history| history.messages else &.{},
     };
-    var event_output = EventOutput{ .gpa = init.gpa, .io = init.io };
+    var event_output = EventOutput{ .gpa = gpa, .io = io, .enabled = emit_output };
     var bridge = zigai.ui.Bridge{
         .sink = .{ .context = &event_output, .event_fn = EventOutput.emit },
         .thread_id = "cli",
@@ -502,48 +533,41 @@ pub fn execute(init: std.process.Init, args: []const []const u8) !ExitCode {
     };
     if (config.output == .events) try bridge.begin();
 
-    var outcome: zigai.RunOutcome = if (arguments.resume_run) resume_block: {
+    var outcome: zigai.RunOutcome = if (resume_run) resume_block: {
         const paused_path = config.paused_path orelse ".zigai-paused.json";
-        var saved = try (PausedStore{ .path = paused_path }).load(init.gpa, init.io);
+        var saved = try (PausedStore{ .path = paused_path }).load(gpa, io);
         defer saved.deinit();
         if (config.approval == .deferred) return error.ApprovalDecisionRequired;
-        const decisions = try decisionsForCalls(init.gpa, saved.calls, config.approval);
-        defer init.gpa.free(decisions);
-        break :resume_block try agent.resumeRunWithOptions(init.gpa, saved.state_json, decisions, run_options);
-    } else initial: {
-        const prompt = if (arguments.stdin_prompt)
-            try readStdin(init.gpa, init.io)
-        else
-            try init.gpa.dupe(u8, arguments.prompt.?);
-        defer init.gpa.free(prompt);
-        break :initial if (config.output == .events)
-            try agent.runUntilPauseStreamWithOptions(init.gpa, prompt, run_options, bridge.agentSink())
-        else
-            try agent.runUntilPauseWithOptions(init.gpa, prompt, run_options);
-    };
+        const decisions = try decisionsForCalls(gpa, saved.calls, config.approval);
+        defer gpa.free(decisions);
+        break :resume_block try agent.resumeRunWithOptions(gpa, saved.state_json, decisions, run_options);
+    } else if (config.output == .events)
+        try agent.runUntilPauseStreamWithOptions(gpa, prompt.?, run_options, bridge.agentSink())
+    else
+        try agent.runUntilPauseWithOptions(gpa, prompt.?, run_options);
 
     while (true) switch (outcome) {
         .complete => |*result| {
             defer result.deinit();
-            if (config.output == .events) try bridge.finish() else try printResult(init.gpa, init.io, result, config.output);
-            if (config.history_path) |path| try (HistoryStore{ .path = path }).save(
-                init.gpa,
-                init.io,
-                result.messages,
-            );
+            if (config.output == .events) {
+                try bridge.finish();
+            } else if (emit_output) {
+                try printResult(gpa, io, result, config.output);
+            }
+            if (config.history_path) |path| try (HistoryStore{ .path = path }).save(gpa, io, result.messages);
             return .success;
         },
         .paused => |*paused| {
             if (config.approval == .deferred) {
                 const paused_path = config.paused_path orelse ".zigai-paused.json";
-                try (PausedStore{ .path = paused_path }).save(init.gpa, init.io, paused.*);
-                try printPaused(init.gpa, init.io, paused.calls, paused_path);
+                try (PausedStore{ .path = paused_path }).save(gpa, io, paused.*);
+                if (emit_output) try printPaused(gpa, io, paused.calls, paused_path);
                 paused.deinit();
                 return .approval_required;
             }
-            const decisions = try decisionsForCalls(init.gpa, paused.calls, config.approval);
-            defer init.gpa.free(decisions);
-            const next = try agent.resumeRunWithOptions(init.gpa, paused.state_json, decisions, run_options);
+            const decisions = try decisionsForCalls(gpa, paused.calls, config.approval);
+            defer gpa.free(decisions);
+            const next = try agent.resumeRunWithOptions(gpa, paused.state_json, decisions, run_options);
             paused.deinit();
             outcome = next;
         },
@@ -651,6 +675,21 @@ test "production CLI parses overrides completions and exit codes" {
     try std.testing.expectEqual(ExitCode.provider_error, classifyError(error.ProviderRateLimited));
     try std.testing.expectEqualStrings("gpt-5-mini", defaultModel(.openai));
     try std.testing.expectEqualStrings("GEMINI_API_KEY", defaultKeyEnvironment(.google));
+    try std.testing.expectEqualStrings(zigai.anthropic.api_base, defaultBaseURL(.anthropic));
+    try std.testing.expect(!endpointPolicy(zigai.openai.api_base, zigai.openai.api_base).allow_http);
+    try std.testing.expect(endpointPolicy("http://localhost:8000", zigai.openai.api_base).allow_local_network);
+
+    var output_args = try parseArguments(std.testing.allocator, &.{ "zigai", "--output", "text", "-" });
+    defer deinitArguments(std.testing.allocator, &output_args);
+    try std.testing.expect(output_args.stdin_prompt);
+    try std.testing.expectError(
+        error.InvalidArguments,
+        parseArguments(std.testing.allocator, &.{ "zigai", "--json", "--events", "prompt" }),
+    );
+    try std.testing.expectError(
+        error.InvalidArguments,
+        parseArguments(std.testing.allocator, &.{ "zigai", "--unknown", "prompt" }),
+    );
 }
 
 test "production CLI config history paused state and provider selection are owned" {
@@ -664,9 +703,17 @@ test "production CLI config history paused state and provider selection are owne
     defer std.testing.allocator.free(directory);
     const config_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/config.json", .{directory});
     defer std.testing.allocator.free(config_path);
+    var defaults = try loadConfig(std.testing.allocator, std.testing.io, null);
+    defaults.deinit();
     var config = try loadConfig(std.testing.allocator, std.testing.io, config_path);
     defer config.deinit();
     try std.testing.expectEqual(ProviderName.google, config.value.provider);
+    try std.testing.expectError(error.InvalidCLIConfig, validateConfig(.{ .model = "" }));
+    try std.testing.expectError(error.InvalidCLIConfig, validateConfig(.{ .api_key_env = "BAD-NAME" }));
+    try std.testing.expectError(
+        error.InvalidCLIConfig,
+        validateConfig(.{ .mcp_servers = &.{.{ .command = &.{} }} }),
+    );
 
     const history_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/history.json", .{directory});
     defer std.testing.allocator.free(history_path);
@@ -715,4 +762,86 @@ test "production CLI config history paused state and provider selection are owne
 
     var mcp = try MCPRuntime.init(std.testing.allocator, std.testing.io, &.{}, &.{});
     mcp.deinit();
+    inline for (std.meta.fields(ProviderName)) |field| {
+        const provider: ProviderName = @enumFromInt(field.value);
+        var runtime: ProviderRuntime = undefined;
+        runtime.init(provider, defaultModel(provider), "key", null, .{}, transport);
+        try std.testing.expectError(
+            error.ModelMustNotRun,
+            runtime.model().request(std.testing.allocator, .{ .messages = &.{} }),
+        );
+    }
+}
+
+test "production CLI runs events and persists resumable tool approvals" {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const directory = try std.fmt.allocPrint(std.testing.allocator, ".zig-cache/tmp/{s}", .{temporary.sub_path});
+    defer std.testing.allocator.free(directory);
+    const paused_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/approval.json", .{directory});
+    defer std.testing.allocator.free(paused_path);
+    const history_path = try std.fmt.allocPrint(std.testing.allocator, "{s}/history.json", .{directory});
+    defer std.testing.allocator.free(history_path);
+
+    const call_parts = [_]zigai.Part{.{ .tool_call = .{
+        .id = "call-1",
+        .name = "publish",
+        .arguments_json = "{}",
+    } }};
+    const final_parts = [_]zigai.Part{.{ .text = "published" }};
+    var scripted = zigai.testing.ScriptedModel{ .responses = &.{
+        .{ .parts = &call_parts },
+        .{ .parts = &final_parts },
+    } };
+    var executions: usize = 0;
+    const tool = zigai.Tool{
+        .definition = .{ .name = "publish", .description = "", .parameters_json_schema = "{}" },
+        .execution = .requires_approval,
+        .context = &executions,
+        .executeFn = struct {
+            fn execute(context: *anyopaque, gpa: std.mem.Allocator, _: []const u8) ![]const u8 {
+                const count: *usize = @ptrCast(@alignCast(context));
+                count.* += 1;
+                return gpa.dupe(u8, "ok");
+            }
+        }.execute,
+    };
+    var agent = zigai.Agent{ .model = scripted.model(), .tools = &.{tool} };
+    const deferred = Config{
+        .paused_path = paused_path,
+        .history_path = history_path,
+        .approval = .deferred,
+        .output = .json,
+    };
+    try std.testing.expectEqual(
+        ExitCode.approval_required,
+        try runAgent(std.testing.allocator, std.testing.io, &agent, deferred, false, "publish", false),
+    );
+    try std.testing.expectEqual(@as(usize, 0), executions);
+    var approved = deferred;
+    approved.approval = .approve;
+    try std.testing.expectEqual(
+        ExitCode.success,
+        try runAgent(std.testing.allocator, std.testing.io, &agent, approved, true, null, false),
+    );
+    try std.testing.expectEqual(@as(usize, 1), executions);
+
+    const event_parts = [_]zigai.Part{.{ .text = "event" }};
+    var event_script = zigai.testing.ScriptedModel{
+        .responses = &.{.{ .parts = &event_parts }},
+        .profile = .{ .supports_streaming = true },
+    };
+    var event_agent = zigai.Agent{ .model = event_script.model() };
+    try std.testing.expectEqual(
+        ExitCode.success,
+        try runAgent(std.testing.allocator, std.testing.io, &event_agent, .{ .output = .events }, false, "event", false),
+    );
+
+    const external_calls = [_]PausedStore.Document.Call{.{
+        .call_id = "external",
+        .execution = .external,
+    }};
+    const denied = try decisionsForCalls(std.testing.allocator, &external_calls, .approve);
+    defer std.testing.allocator.free(denied);
+    try std.testing.expectEqual(zigai.ResumeAction.deny, denied[0].action);
 }

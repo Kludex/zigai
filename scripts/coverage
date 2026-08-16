@@ -45,7 +45,7 @@ compile_test coverage/bin/agent-tests --dep zigai -Mroot=tests/agent_loop.zig --
 compile_test coverage/bin/pydantic-ai-codec-tests --dep zigai -Mroot=tests/pydantic_ai_codec.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 compile_test coverage/bin/provider-tests --dep zigai --dep yaml -Mroot=tests/provider_cassettes.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 compile_test coverage/bin/cli-common-tests --dep zigai -Mroot=src/cli/common.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
-compile_test coverage/bin/cli-app-tests --dep zigai -Mroot=src/cli/app.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+compile_test coverage/bin/cli-app-tests --test-filter "production CLI" --dep zigai -Mroot=src/cli/app.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 compile_test coverage/bin/spec-cli-tests --dep zigai -Mroot=src/cli/spec_common.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 compile_test coverage/bin/mcp-conformance-tests --dep zigai --dep yaml -Mroot=tests/mcp_conformance.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 if [ -n "$coverage_target" ]; then
@@ -112,7 +112,21 @@ cat >coverage/production-config.json <<EOF
 EOF
 OPENAI_API_KEY=test run_kcov --clean "$include_path" coverage/production-cli \
     coverage/bin/production-cli --config coverage/production-config.json test
+OPENAI_API_KEY=test run_kcov "$include_path" coverage/production-cli \
+    coverage/bin/production-cli --config coverage/production-config.json --events test
+cat >coverage/production-anthropic.json <<EOF
+{"provider":"anthropic","model":"claude-sonnet-4-5","base_url":"http://$fixture_host:18765/anthropic"}
+EOF
+ANTHROPIC_API_KEY=test run_kcov "$include_path" coverage/production-cli \
+    coverage/bin/production-cli --config coverage/production-anthropic.json test
+cat >coverage/production-google.json <<EOF
+{"provider":"google","model":"gemini-2.5-flash","base_url":"http://$fixture_host:18765/google"}
+EOF
+GEMINI_API_KEY=test run_kcov "$include_path" coverage/production-cli \
+    coverage/bin/production-cli --config coverage/production-google.json test
 run_kcov "$include_path" coverage/production-cli coverage/bin/production-cli completion bash
+OPENAI_API_KEY= run_kcov "$include_path" coverage/production-cli \
+    coverage/bin/production-cli --config coverage/production-config.json test >/dev/null 2>&1 || true
 
 OPENAI_API_KEY=test OPENAI_BASE_URL="http://$fixture_host:18765/openai" \
     run_kcov --clean "$include_path" coverage/openai-cli coverage/bin/openai-cli test
