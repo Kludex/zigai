@@ -3,9 +3,47 @@
 //! Graph definitions own their node and routing arrays. Node names, branch
 //! names, and callback contexts remain borrowed and must outlive the graph.
 //! Run state, dependencies, inputs, intermediate values, and outputs keep their
-//! declared Zig types; the module performs no serialization or implicit copying.
+//! declared Zig types. Optional snapshots use application-supplied JSON codecs;
+//! dependencies and callback contexts are never serialized.
 
 const std = @import("std");
+const json_limits = @import("json.zig");
+
+/// Current graph snapshot envelope version.
+pub const snapshot_format_version: u8 = 1;
+
+/// Failures returned deliberately by application snapshot codecs or migrations.
+pub const SnapshotCallbackError = error{
+    OutOfMemory,
+    /// An application codec or migration rejected its input or could not encode it.
+    SnapshotCodecFailed,
+};
+
+/// Stable failures while encoding or restoring a settled graph frontier.
+pub const SnapshotError = SnapshotCallbackError || error{
+    /// The snapshot is malformed or its frontier invariants are inconsistent.
+    InvalidSnapshot,
+    /// The snapshot or one payload exceeds a configured byte, depth, or item bound.
+    SnapshotLimitExceeded,
+    /// The graph was built without a stable definition identity.
+    SnapshotsDisabled,
+    /// The snapshot envelope version is not supported by this ZigAI build.
+    UnsupportedSnapshotVersion,
+    /// The payload schema is newer than the supplied codec.
+    UnsupportedSnapshotPayloadVersion,
+    /// The snapshot belongs to a different graph definition.
+    SnapshotDefinitionMismatch,
+    /// Only a settled, still-running frontier can be snapshotted.
+    SnapshotUnavailable,
+    /// An older payload needs a migration callback before decoding.
+    SnapshotMigrationRequired,
+    /// A codec declared version zero or omitted required behavior.
+    InvalidSnapshotCodec,
+    /// Resuming with a narrower step ceiling would invalidate completed progress.
+    SnapshotStepLimitExceeded,
+    /// Resume concurrency is zero or disabled by the definition.
+    InvalidRunOptions,
+};
 
 /// Errors a graph callback may deliberately return.
 pub const CallbackError = error{
@@ -35,6 +73,10 @@ pub const BuildError = std.mem.Allocator.Error || error{
     DuplicateBranchName,
     InvalidEdgeKind,
     UnreachableNode,
+    /// A configured persistence identity is empty.
+    EmptyDefinitionId,
+    /// A persistence identity exceeds `Limits.max_name_bytes`.
+    DefinitionIdTooLong,
     /// A fan-out was registered without a branch callback.
     MissingParallelBranch,
 };
@@ -71,11 +113,20 @@ pub const Limits = struct {
     max_parallel_branches: usize = 64,
     /// Definition ceiling for callbacks concurrently in flight.
     max_concurrency: usize = 64,
+    /// Maximum bytes in one encoded graph snapshot envelope.
+    max_snapshot_bytes: usize = 4 * 1024 * 1024,
+    /// Maximum bytes in either encoded state or frontier value document.
+    max_snapshot_payload_bytes: usize = 1024 * 1024,
+    /// Maximum JSON container depth in snapshot payloads.
+    max_snapshot_depth: usize = 64,
+    /// Maximum fields or elements in one snapshot JSON container.
+    max_snapshot_collection_items: usize = 65_536,
 };
 
 /// Observable graph lifecycle phase.
 pub const EventKind = enum {
     run_start,
+    run_resume,
     step_start,
     step_end,
     run_end,
@@ -136,6 +187,56 @@ pub fn Graph(
             task_index: ?usize = null,
             /// Borrowed branch name inside a fan-out callback.
             branch_name: ?[]const u8 = null,
+        };
+
+        /// Upgrades older state and value documents to a codec's current
+        /// payload version. The callback returns one `gpa`-owned JSON object
+        /// with exactly `state_json` and `value_json` string fields.
+        pub const SnapshotMigration = struct {
+            context: ?*anyopaque = null,
+            run_fn: *const fn (
+                context: ?*anyopaque,
+                gpa: std.mem.Allocator,
+                from_version: u32,
+                to_version: u32,
+                state_json: []const u8,
+                value_json: []const u8,
+            ) SnapshotCallbackError![]u8,
+        };
+
+        /// Application-owned JSON codecs for typed state and frontier values.
+        /// Every encoder returns a `gpa`-owned complete JSON document. Decoders
+        /// return owned typed values; `deinit_state_fn` cleans a decoded state
+        /// only when value decoding subsequently fails.
+        pub const SnapshotCodec = struct {
+            version: u32,
+            context: ?*anyopaque = null,
+            encode_state_fn: *const fn (
+                context: ?*anyopaque,
+                gpa: std.mem.Allocator,
+                state: *const State,
+            ) SnapshotCallbackError![]u8,
+            decode_state_fn: *const fn (
+                context: ?*anyopaque,
+                gpa: std.mem.Allocator,
+                source: []const u8,
+            ) SnapshotCallbackError!State,
+            encode_value_fn: *const fn (
+                context: ?*anyopaque,
+                gpa: std.mem.Allocator,
+                value: *const Value,
+            ) SnapshotCallbackError![]u8,
+            decode_value_fn: *const fn (
+                context: ?*anyopaque,
+                gpa: std.mem.Allocator,
+                source: []const u8,
+            ) SnapshotCallbackError!Value,
+            deinit_state_fn: ?*const fn (
+                context: ?*anyopaque,
+                gpa: std.mem.Allocator,
+                state: *State,
+            ) void = null,
+            migration: ?SnapshotMigration = null,
         };
 
         /// Converts the graph input into its first intermediate value.
@@ -306,10 +407,35 @@ pub fn Graph(
             len: usize,
         };
 
+        const SnapshotFrontierWire = struct {
+            node_index: u64,
+            node_name: []const u8,
+            step_count: u64,
+            max_steps: u64,
+        };
+
+        const SnapshotWire = struct {
+            version: u8,
+            definition_sha256: []const u8,
+            payload_version: u32,
+            frontier: SnapshotFrontierWire,
+            state_json: []const u8,
+            value_json: []const u8,
+        };
+
+        const MigratedPayloadWire = struct {
+            state_json: []const u8,
+            value_json: []const u8,
+        };
+
         /// Mutable graph definition. Call `deinit` even after a successful
         /// `build`; success leaves it empty and reusable.
         pub const Builder = struct {
             limits: Limits = .{},
+            /// Borrowed stable identity enabling snapshots. Keep it unchanged
+            /// across compatible payload migrations; change it for semantic or
+            /// type changes that cannot safely resume old frontiers.
+            definition_id: ?[]const u8 = null,
             start: ?Start = null,
             end: ?End = null,
             entry: ?NodeId = null,
@@ -453,6 +579,10 @@ pub fn Graph(
                 const start = self.start orelse return error.MissingStart;
                 const end = self.end orelse return error.MissingEnd;
                 const entry = self.entry orelse return error.MissingEntry;
+                if (self.definition_id) |definition_id| {
+                    if (definition_id.len == 0) return error.EmptyDefinitionId;
+                    if (definition_id.len > self.limits.max_name_bytes) return error.DefinitionIdTooLong;
+                }
                 for (self.nodes.items, 0..) |_, index| {
                     if (self.edgeCount(.{ .index = index }) == 0) return error.MissingOutgoingEdge;
                 }
@@ -482,8 +612,12 @@ pub fn Graph(
                 self.start = null;
                 self.end = null;
                 self.entry = null;
-                return .{
+                const definition_id = self.definition_id;
+                self.definition_id = null;
+                var result = Self{
                     .limits = self.limits,
+                    .definition_id = definition_id,
+                    .definition_sha256 = undefined,
                     .start = start,
                     .end = end,
                     .entry = entry,
@@ -491,6 +625,8 @@ pub fn Graph(
                     .route_spans = route_spans,
                     .routes = routes,
                 };
+                result.definition_sha256 = result.computeDefinitionFingerprint();
+                return result;
             }
 
             fn validateNode(self: Builder, node: NodeId) BuildError!void {
@@ -786,6 +922,50 @@ pub fn Graph(
                 return self.step_count;
             }
 
+            /// Serializes one settled running frontier. The returned JSON is
+            /// owned by `gpa`; concurrent branch work never survives `next`, so
+            /// callers must invoke this only between advances.
+            pub fn snapshot(
+                self: *const Run,
+                gpa: std.mem.Allocator,
+                codec: SnapshotCodec,
+            ) SnapshotError![]u8 {
+                switch (self.status) {
+                    .running => {},
+                    .complete, .failed => return error.SnapshotUnavailable,
+                }
+                if (self.graph.definition_id == null) return error.SnapshotsDisabled;
+                if (codec.version == 0) return error.InvalidSnapshotCodec;
+
+                const state_json = try codec.encode_state_fn(codec.context, gpa, self.state);
+                defer gpa.free(state_json);
+                try self.graph.validateEncodedPayload(gpa, state_json);
+                const value_json = try codec.encode_value_fn(codec.context, gpa, &self.value);
+                defer gpa.free(value_json);
+                try self.graph.validateEncodedPayload(gpa, value_json);
+
+                var digest_hex = std.fmt.bytesToHex(self.graph.definition_sha256, .lower);
+                const wire = SnapshotWire{
+                    .version = snapshot_format_version,
+                    .definition_sha256 = &digest_hex,
+                    .payload_version = codec.version,
+                    .frontier = .{
+                        .node_index = @intCast(self.current.index),
+                        .node_name = self.graph.nodes[self.current.index].name(),
+                        .step_count = @intCast(self.step_count),
+                        .max_steps = @intCast(self.max_steps),
+                    },
+                    .state_json = state_json,
+                    .value_json = value_json,
+                };
+                const encoded = try std.json.Stringify.valueAlloc(gpa, wire, .{});
+                if (encoded.len > self.graph.limits.max_snapshot_bytes) {
+                    gpa.free(encoded);
+                    return error.SnapshotLimitExceeded;
+                }
+                return encoded;
+            }
+
             fn executeFanOut(self: *Run, fan_out: FanOut) RunError!Value {
                 var emitter = Emitter{
                     .gpa = self.gpa,
@@ -994,6 +1174,8 @@ pub fn Graph(
         };
 
         limits: Limits,
+        definition_id: ?[]const u8,
+        definition_sha256: [32]u8,
         start: Start,
         end: End,
         entry: NodeId,
@@ -1001,11 +1183,89 @@ pub fn Graph(
         route_spans: []RouteSpan,
         routes: []Route,
 
+        /// Returns the stable structural and application-version fingerprint
+        /// embedded in every snapshot produced by this definition.
+        pub fn definitionFingerprint(self: *const Self) [32]u8 {
+            return self.definition_sha256;
+        }
+
         pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
             gpa.free(self.nodes);
             gpa.free(self.route_spans);
             gpa.free(self.routes);
             self.* = undefined;
+        }
+
+        fn computeDefinitionFingerprint(self: *const Self) [32]u8 {
+            var hash = std.crypto.hash.sha2.Sha256.init(.{});
+            fingerprintText(&hash, "zigai.graph.definition.v1");
+            fingerprintOptionalText(&hash, self.definition_id);
+            fingerprintText(&hash, @typeName(State));
+            fingerprintText(&hash, @typeName(Deps));
+            fingerprintText(&hash, @typeName(Input));
+            fingerprintText(&hash, @typeName(Value));
+            fingerprintText(&hash, @typeName(Output));
+            fingerprintU64(&hash, self.entry.index);
+            fingerprintU64(&hash, self.limits.max_steps);
+            fingerprintU64(&hash, self.limits.max_fan_out_items);
+            fingerprintU64(&hash, self.limits.max_fan_out_tasks);
+            fingerprintU64(&hash, self.limits.max_parallel_branches);
+            fingerprintU64(&hash, self.limits.max_concurrency);
+            fingerprintU64(&hash, self.nodes.len);
+            for (self.nodes, 0..) |node, index| {
+                fingerprintU64(&hash, index);
+                fingerprintText(&hash, node.name());
+                switch (node) {
+                    .step => hash.update(&.{0}),
+                    .decision => hash.update(&.{1}),
+                    .fan_out => |fan_out| {
+                        hash.update(&.{2});
+                        hash.update(&.{if (fan_out.mode == .broadcast) 0 else 1});
+                        fingerprintU64(&hash, fan_out.branches.len);
+                        for (fan_out.branches) |parallel_branch| {
+                            fingerprintText(&hash, parallel_branch.name);
+                        }
+                    },
+                }
+                const span = self.route_spans[index];
+                fingerprintU64(&hash, span.len);
+                for (self.routes[span.start..][0..span.len]) |route| {
+                    fingerprintOptionalText(&hash, route.branch);
+                    switch (route.destination) {
+                        .node => |destination| {
+                            hash.update(&.{0});
+                            fingerprintU64(&hash, destination.index);
+                        },
+                        .finish => hash.update(&.{1}),
+                    }
+                }
+            }
+            var digest: [32]u8 = undefined;
+            hash.final(&digest);
+            return digest;
+        }
+
+        fn fingerprintOptionalText(
+            hash: *std.crypto.hash.sha2.Sha256,
+            value: ?[]const u8,
+        ) void {
+            if (value) |text| {
+                hash.update(&.{1});
+                fingerprintText(hash, text);
+            } else {
+                hash.update(&.{0});
+            }
+        }
+
+        fn fingerprintText(hash: *std.crypto.hash.sha2.Sha256, value: []const u8) void {
+            fingerprintU64(hash, value.len);
+            hash.update(value);
+        }
+
+        fn fingerprintU64(hash: *std.crypto.hash.sha2.Sha256, value: usize) void {
+            var bytes: [8]u8 = undefined;
+            std.mem.writeInt(u64, &bytes, @intCast(value), .little);
+            hash.update(&bytes);
         }
 
         fn findDestination(
@@ -1020,6 +1280,224 @@ pub fn Graph(
                     std.mem.eql(u8, branch.?, route.branch.?)) return route.destination;
             }
             return null;
+        }
+
+        /// Restores a settled running frontier without invoking the start
+        /// callback or replaying completed nodes. `state_out` must point to
+        /// uninitialized storage; on success it owns the decoded state.
+        pub fn resumeSnapshot(
+            self: *const Self,
+            gpa: std.mem.Allocator,
+            state_out: *State,
+            deps: *Deps,
+            source: []const u8,
+            codec: SnapshotCodec,
+            options: RunOptions,
+        ) SnapshotError!Run {
+            if (self.definition_id == null) return error.SnapshotsDisabled;
+            if (codec.version == 0) return error.InvalidSnapshotCodec;
+            if (options.max_concurrency == 0 or self.limits.max_concurrency == 0)
+                return error.InvalidRunOptions;
+            try self.validateSnapshotSource(gpa, source);
+            const parsed = std.json.parseFromSlice(SnapshotWire, gpa, source, .{
+                .allocate = .alloc_always,
+                .ignore_unknown_fields = false,
+                .max_value_len = self.snapshotOuterValueLimit(),
+            }) catch |failure| return switch (failure) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.InvalidSnapshot,
+            };
+            defer parsed.deinit();
+            const wire = parsed.value;
+            if (wire.version != snapshot_format_version) return error.UnsupportedSnapshotVersion;
+            var expected_digest = std.fmt.bytesToHex(self.definition_sha256, .lower);
+            if (!std.mem.eql(u8, &expected_digest, wire.definition_sha256))
+                return error.SnapshotDefinitionMismatch;
+            const node_index = std.math.cast(usize, wire.frontier.node_index) orelse
+                return error.InvalidSnapshot;
+            if (node_index >= self.nodes.len or
+                !std.mem.eql(u8, self.nodes[node_index].name(), wire.frontier.node_name))
+                return error.InvalidSnapshot;
+            const step_count = std.math.cast(usize, wire.frontier.step_count) orelse
+                return error.InvalidSnapshot;
+            const stored_max_steps = std.math.cast(usize, wire.frontier.max_steps) orelse
+                return error.InvalidSnapshot;
+            if (step_count > stored_max_steps or stored_max_steps > self.limits.max_steps)
+                return error.InvalidSnapshot;
+            const max_steps = if (options.max_steps) |requested|
+                @min(requested, stored_max_steps)
+            else
+                stored_max_steps;
+            if (step_count > max_steps) return error.SnapshotStepLimitExceeded;
+            if (wire.payload_version == 0) return error.InvalidSnapshot;
+            if (wire.payload_version > codec.version) return error.UnsupportedSnapshotPayloadVersion;
+            try self.validateStoredPayload(gpa, wire.state_json);
+            try self.validateStoredPayload(gpa, wire.value_json);
+
+            const max_concurrency = @min(options.max_concurrency, self.limits.max_concurrency);
+            if (wire.payload_version == codec.version) return self.resumeDecoded(
+                gpa,
+                state_out,
+                deps,
+                wire.state_json,
+                wire.value_json,
+                codec,
+                .{ .index = node_index },
+                step_count,
+                max_steps,
+                max_concurrency,
+                options,
+            );
+
+            const migration = codec.migration orelse return error.SnapshotMigrationRequired;
+            const migrated_source = try migration.run_fn(
+                migration.context,
+                gpa,
+                wire.payload_version,
+                codec.version,
+                wire.state_json,
+                wire.value_json,
+            );
+            defer gpa.free(migrated_source);
+            try self.validateMigrationSource(gpa, migrated_source);
+            const migrated = std.json.parseFromSlice(MigratedPayloadWire, gpa, migrated_source, .{
+                .allocate = .alloc_always,
+                .ignore_unknown_fields = false,
+                .max_value_len = self.limits.max_snapshot_payload_bytes,
+            }) catch |failure| return switch (failure) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.SnapshotCodecFailed,
+            };
+            defer migrated.deinit();
+            try self.validateEncodedPayload(gpa, migrated.value.state_json);
+            try self.validateEncodedPayload(gpa, migrated.value.value_json);
+            return self.resumeDecoded(
+                gpa,
+                state_out,
+                deps,
+                migrated.value.state_json,
+                migrated.value.value_json,
+                codec,
+                .{ .index = node_index },
+                step_count,
+                max_steps,
+                max_concurrency,
+                options,
+            );
+        }
+
+        fn resumeDecoded(
+            self: *const Self,
+            gpa: std.mem.Allocator,
+            state_out: *State,
+            deps: *Deps,
+            state_json: []const u8,
+            value_json: []const u8,
+            codec: SnapshotCodec,
+            current: NodeId,
+            step_count: usize,
+            max_steps: usize,
+            max_concurrency: usize,
+            options: RunOptions,
+        ) SnapshotError!Run {
+            var decoded_state = try codec.decode_state_fn(codec.context, gpa, state_json);
+            errdefer if (codec.deinit_state_fn) |deinit_state| {
+                deinit_state(codec.context, gpa, &decoded_state);
+            };
+            const decoded_value = try codec.decode_value_fn(codec.context, gpa, value_json);
+            state_out.* = decoded_state;
+            if (options.events) |sink| sink.emit(.{
+                .kind = .run_resume,
+                .node_id = current,
+                .node_name = self.nodes[current.index].name(),
+                .step_number = step_count,
+            });
+            return .{
+                .graph = self,
+                .gpa = gpa,
+                .state = state_out,
+                .deps = deps,
+                .value = decoded_value,
+                .current = current,
+                .step_count = step_count,
+                .max_steps = max_steps,
+                .max_concurrency = max_concurrency,
+                .io = options.io,
+                .events = options.events,
+            };
+        }
+
+        fn validateEncodedPayload(
+            self: *const Self,
+            gpa: std.mem.Allocator,
+            source: []const u8,
+        ) SnapshotError!void {
+            json_limits.validate(gpa, source, self.snapshotPayloadLimits()) catch |failure| switch (failure) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidJson => return error.SnapshotCodecFailed,
+                else => return error.SnapshotLimitExceeded,
+            };
+        }
+
+        fn validateStoredPayload(
+            self: *const Self,
+            gpa: std.mem.Allocator,
+            source: []const u8,
+        ) SnapshotError!void {
+            json_limits.validate(gpa, source, self.snapshotPayloadLimits()) catch |failure| switch (failure) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidJson => return error.InvalidSnapshot,
+                else => return error.SnapshotLimitExceeded,
+            };
+        }
+
+        fn validateSnapshotSource(
+            self: *const Self,
+            gpa: std.mem.Allocator,
+            source: []const u8,
+        ) SnapshotError!void {
+            json_limits.validate(gpa, source, self.snapshotOuterLimits()) catch |failure| switch (failure) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidJson => return error.InvalidSnapshot,
+                else => return error.SnapshotLimitExceeded,
+            };
+        }
+
+        fn validateMigrationSource(
+            self: *const Self,
+            gpa: std.mem.Allocator,
+            source: []const u8,
+        ) SnapshotError!void {
+            json_limits.validate(gpa, source, self.snapshotOuterLimits()) catch |failure| switch (failure) {
+                error.OutOfMemory => return error.OutOfMemory,
+                error.InvalidJson => return error.SnapshotCodecFailed,
+                else => return error.SnapshotLimitExceeded,
+            };
+        }
+
+        fn snapshotPayloadLimits(self: *const Self) json_limits.Limits {
+            return .{
+                .max_document_bytes = self.limits.max_snapshot_payload_bytes,
+                .max_value_bytes = self.limits.max_snapshot_payload_bytes,
+                .max_depth = self.limits.max_snapshot_depth,
+                .max_collection_items = self.limits.max_snapshot_collection_items,
+            };
+        }
+
+        fn snapshotOuterLimits(self: *const Self) json_limits.Limits {
+            return .{
+                .max_document_bytes = self.limits.max_snapshot_bytes,
+                .max_value_bytes = self.snapshotOuterValueLimit(),
+                .max_depth = self.limits.max_snapshot_depth,
+                .max_collection_items = self.limits.max_snapshot_collection_items,
+            };
+        }
+
+        fn snapshotOuterValueLimit(self: *const Self) usize {
+            return @max(
+                @max(self.limits.max_snapshot_payload_bytes, self.limits.max_name_bytes),
+                64,
+            );
         }
 
         /// Starts a manually advanced run. The start callback executes before
@@ -1817,6 +2295,865 @@ test "graph map finalizes empty forks and cleans every failure path" {
     try std.testing.expectEqual(@as(usize, 3), state.branch_calls.load(.seq_cst));
 }
 
+test "graph snapshots resume settled frontiers without replaying completed nodes" {
+    const State = struct {
+        starts: u64 = 0,
+        total: u64 = 0,
+    };
+    const Deps = struct { fail: bool = false };
+    const Workflow = Graph(State, Deps, u64, u64, u64);
+    const Callbacks = struct {
+        fn start(_: ?*anyopaque, run: *Workflow.Context, input: u64) CallbackError!u64 {
+            run.state.starts += 1;
+            return input;
+        }
+
+        fn first(_: ?*anyopaque, run: *Workflow.Context, input: u64) CallbackError!u64 {
+            run.state.total += input;
+            return input + 1;
+        }
+
+        fn second(_: ?*anyopaque, run: *Workflow.Context, input: u64) CallbackError!u64 {
+            if (run.deps.fail) return error.StepFailed;
+            run.state.total += input;
+            return input * 2;
+        }
+
+        fn end(_: ?*anyopaque, _: *Workflow.Context, input: u64) CallbackError!u64 {
+            return input;
+        }
+    };
+    const Codec = struct {
+        fn encodeState(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            state: *const State,
+        ) SnapshotCallbackError![]u8 {
+            return std.json.Stringify.valueAlloc(gpa, state.*, .{});
+        }
+
+        fn decodeState(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            source: []const u8,
+        ) SnapshotCallbackError!State {
+            return std.json.parseFromSliceLeaky(State, gpa, source, .{}) catch |failure| switch (failure) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.SnapshotCodecFailed,
+            };
+        }
+
+        fn encodeValue(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            value: *const u64,
+        ) SnapshotCallbackError![]u8 {
+            return std.json.Stringify.valueAlloc(gpa, value.*, .{});
+        }
+
+        fn decodeValue(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            source: []const u8,
+        ) SnapshotCallbackError!u64 {
+            return std.json.parseFromSliceLeaky(u64, gpa, source, .{}) catch |failure| switch (failure) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.SnapshotCodecFailed,
+            };
+        }
+
+        fn codec() Workflow.SnapshotCodec {
+            return .{
+                .version = 1,
+                .encode_state_fn = encodeState,
+                .decode_state_fn = decodeState,
+                .encode_value_fn = encodeValue,
+                .decode_value_fn = decodeValue,
+            };
+        }
+    };
+    const Capture = struct {
+        event: ?Event = null,
+
+        fn emit(context: ?*anyopaque, event: Event) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            if (event.kind == .run_resume) self.event = event;
+        }
+    };
+
+    var builder: Workflow.Builder = .{ .definition_id = "counter/v1" };
+    defer builder.deinit(std.testing.allocator);
+    try builder.setStart(.{ .run_fn = Callbacks.start });
+    try builder.setEnd(.{ .run_fn = Callbacks.end });
+    const first = try builder.addStep(std.testing.allocator, .{
+        .name = "first",
+        .run_fn = Callbacks.first,
+    });
+    const second = try builder.addStep(std.testing.allocator, .{
+        .name = "second",
+        .run_fn = Callbacks.second,
+    });
+    try builder.setEntry(first);
+    try builder.connect(std.testing.allocator, first, second);
+    try builder.finish(std.testing.allocator, second);
+    var graph = try builder.build(std.testing.allocator);
+    defer graph.deinit(std.testing.allocator);
+    try std.testing.expect(!std.mem.allEqual(u8, &graph.definitionFingerprint(), 0));
+
+    var state: State = .{};
+    var deps: Deps = .{};
+    var run = try graph.iter(std.testing.allocator, &state, &deps, 2, .{ .max_steps = 4 });
+    const first_advance = try run.next();
+    try std.testing.expectEqual(
+        @as(std.meta.Tag(Workflow.Advance), .step),
+        std.meta.activeTag(first_advance),
+    );
+    try std.testing.expectEqual(first, first_advance.step.completed);
+    try std.testing.expectEqual(second, first_advance.step.next);
+    const encoded = try run.snapshot(std.testing.allocator, Codec.codec());
+    defer std.testing.allocator.free(encoded);
+
+    var restored_state: State = undefined;
+    var restored_deps: Deps = .{};
+    var capture: Capture = .{};
+    var restored = try graph.resumeSnapshot(
+        std.testing.allocator,
+        &restored_state,
+        &restored_deps,
+        encoded,
+        Codec.codec(),
+        .{
+            .max_steps = 3,
+            .events = .{ .context = &capture, .event_fn = Capture.emit },
+        },
+    );
+    try std.testing.expectEqual(@as(u64, 1), restored_state.starts);
+    try std.testing.expectEqual(@as(u64, 2), restored_state.total);
+    try std.testing.expectEqual(@as(usize, 1), restored.stepsCompleted());
+    try std.testing.expectEqual(second, restored.nextNode().?);
+    try std.testing.expectEqual(@as(u64, 3), restored.currentValue().*);
+    try std.testing.expectEqual(EventKind.run_resume, capture.event.?.kind);
+    try std.testing.expectEqual(second, capture.event.?.node_id.?);
+    try std.testing.expectEqual(@as(usize, 1), capture.event.?.step_number);
+    const completed = try restored.next();
+    try std.testing.expectEqual(
+        @as(std.meta.Tag(Workflow.Advance), .complete),
+        std.meta.activeTag(completed),
+    );
+    try std.testing.expectEqual(@as(u64, 6), completed.complete);
+    try std.testing.expectEqual(@as(u64, 5), restored_state.total);
+    try std.testing.expectError(error.SnapshotUnavailable, restored.snapshot(
+        std.testing.allocator,
+        Codec.codec(),
+    ));
+
+    restored_deps.fail = true;
+    var failing_state: State = undefined;
+    var failing = try graph.resumeSnapshot(
+        std.testing.allocator,
+        &failing_state,
+        &restored_deps,
+        encoded,
+        Codec.codec(),
+        .{},
+    );
+    try std.testing.expectError(error.StepFailed, failing.next());
+    try std.testing.expectError(error.SnapshotUnavailable, failing.snapshot(
+        std.testing.allocator,
+        Codec.codec(),
+    ));
+}
+
+test "graph snapshots reject drift and enforce every JSON boundary" {
+    const Workflow = Graph(u64, u8, u64, u64, u64);
+    const Callbacks = struct {
+        fn start(_: ?*anyopaque, _: *Workflow.Context, input: u64) CallbackError!u64 {
+            return input;
+        }
+
+        fn step(_: ?*anyopaque, run: *Workflow.Context, input: u64) CallbackError!u64 {
+            run.state.* += input;
+            return input + 1;
+        }
+
+        fn end(_: ?*anyopaque, _: *Workflow.Context, input: u64) CallbackError!u64 {
+            return input;
+        }
+    };
+    const Codec = struct {
+        fn encode(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            value: *const u64,
+        ) SnapshotCallbackError![]u8 {
+            return std.json.Stringify.valueAlloc(gpa, value.*, .{});
+        }
+
+        fn decode(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            source: []const u8,
+        ) SnapshotCallbackError!u64 {
+            return std.json.parseFromSliceLeaky(u64, gpa, source, .{}) catch |failure| switch (failure) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.SnapshotCodecFailed,
+            };
+        }
+
+        fn badEncode(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            _: *const u64,
+        ) SnapshotCallbackError![]u8 {
+            return gpa.dupe(u8, "{");
+        }
+
+        fn codec(version: u32) Workflow.SnapshotCodec {
+            return .{
+                .version = version,
+                .encode_state_fn = encode,
+                .decode_state_fn = decode,
+                .encode_value_fn = encode,
+                .decode_value_fn = decode,
+            };
+        }
+
+        fn invalidEncoder() Workflow.SnapshotCodec {
+            var result = codec(1);
+            result.encode_state_fn = badEncode;
+            return result;
+        }
+    };
+    const Config = struct {
+        version: u8 = snapshot_format_version,
+        definition_sha256: ?[]const u8 = null,
+        payload_version: u32 = 1,
+        node_index: u64 = 0,
+        node_name: []const u8 = "step",
+        step_count: u64 = 0,
+        max_steps: u64 = 10_000,
+        state_json: []const u8 = "0",
+        value_json: []const u8 = "1",
+    };
+    const Support = struct {
+        fn build(
+            gpa: std.mem.Allocator,
+            definition_id: ?[]const u8,
+            limits: Limits,
+        ) !Workflow {
+            var builder: Workflow.Builder = .{
+                .limits = limits,
+                .definition_id = definition_id,
+            };
+            defer builder.deinit(gpa);
+            try builder.setStart(.{ .run_fn = Callbacks.start });
+            try builder.setEnd(.{ .run_fn = Callbacks.end });
+            const step = try builder.addStep(gpa, .{ .name = "step", .run_fn = Callbacks.step });
+            try builder.setEntry(step);
+            try builder.finish(gpa, step);
+            return builder.build(gpa);
+        }
+
+        fn document(
+            gpa: std.mem.Allocator,
+            graph: *const Workflow,
+            config: Config,
+        ) ![]u8 {
+            var digest = std.fmt.bytesToHex(graph.definitionFingerprint(), .lower);
+            return std.json.Stringify.valueAlloc(gpa, .{
+                .version = config.version,
+                .definition_sha256 = config.definition_sha256 orelse &digest,
+                .payload_version = config.payload_version,
+                .frontier = .{
+                    .node_index = config.node_index,
+                    .node_name = config.node_name,
+                    .step_count = config.step_count,
+                    .max_steps = config.max_steps,
+                },
+                .state_json = config.state_json,
+                .value_json = config.value_json,
+            }, .{});
+        }
+    };
+
+    var graph = try Support.build(std.testing.allocator, "strict/v1", .{});
+    defer graph.deinit(std.testing.allocator);
+    var same_graph = try Support.build(std.testing.allocator, "strict/v1", .{});
+    defer same_graph.deinit(std.testing.allocator);
+    try std.testing.expectEqualSlices(
+        u8,
+        &graph.definitionFingerprint(),
+        &same_graph.definitionFingerprint(),
+    );
+    var changed_graph = try Support.build(std.testing.allocator, "strict/v2", .{});
+    defer changed_graph.deinit(std.testing.allocator);
+    try std.testing.expect(!std.mem.eql(
+        u8,
+        &graph.definitionFingerprint(),
+        &changed_graph.definitionFingerprint(),
+    ));
+    var state: u64 = 0;
+    var deps: u8 = 0;
+    var run = try graph.iter(std.testing.allocator, &state, &deps, 10, .{});
+    try std.testing.expectError(error.InvalidSnapshotCodec, run.snapshot(
+        std.testing.allocator,
+        Codec.codec(0),
+    ));
+    try std.testing.expectError(error.SnapshotCodecFailed, run.snapshot(
+        std.testing.allocator,
+        Codec.invalidEncoder(),
+    ));
+
+    var payload_limited = try Support.build(std.testing.allocator, "payload-limit/v1", .{
+        .max_snapshot_payload_bytes = 1,
+    });
+    defer payload_limited.deinit(std.testing.allocator);
+    var payload_state: u64 = 0;
+    var payload_run = try payload_limited.iter(std.testing.allocator, &payload_state, &deps, 10, .{});
+    try std.testing.expectError(error.SnapshotLimitExceeded, payload_run.snapshot(
+        std.testing.allocator,
+        Codec.codec(1),
+    ));
+    var envelope_limited = try Support.build(std.testing.allocator, "envelope-limit/v1", .{
+        .max_snapshot_bytes = 100,
+    });
+    defer envelope_limited.deinit(std.testing.allocator);
+    var envelope_state: u64 = 0;
+    var envelope_run = try envelope_limited.iter(std.testing.allocator, &envelope_state, &deps, 1, .{});
+    try std.testing.expectError(error.SnapshotLimitExceeded, envelope_run.snapshot(
+        std.testing.allocator,
+        Codec.codec(1),
+    ));
+
+    var disabled = try Support.build(std.testing.allocator, null, .{});
+    defer disabled.deinit(std.testing.allocator);
+    var disabled_state: u64 = 0;
+    var disabled_run = try disabled.iter(std.testing.allocator, &disabled_state, &deps, 1, .{});
+    try std.testing.expectError(error.SnapshotsDisabled, disabled_run.snapshot(
+        std.testing.allocator,
+        Codec.codec(1),
+    ));
+    try std.testing.expectError(error.SnapshotsDisabled, disabled.resumeSnapshot(
+        std.testing.allocator,
+        &disabled_state,
+        &deps,
+        "{}",
+        Codec.codec(1),
+        .{},
+    ));
+
+    var output_state: u64 = undefined;
+    try std.testing.expectError(error.InvalidSnapshotCodec, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        "{}",
+        Codec.codec(0),
+        .{},
+    ));
+    try std.testing.expectError(error.InvalidRunOptions, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        "{}",
+        Codec.codec(1),
+        .{ .max_concurrency = 0 },
+    ));
+    try std.testing.expectError(error.InvalidSnapshot, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        "{",
+        Codec.codec(1),
+        .{},
+    ));
+
+    var document = try Support.document(std.testing.allocator, &graph, .{ .version = 2 });
+    try std.testing.expectError(error.UnsupportedSnapshotVersion, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        document,
+        Codec.codec(1),
+        .{},
+    ));
+    const duplicate_document = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{{\"version\":1,{s}",
+        .{document[1..]},
+    );
+    defer std.testing.allocator.free(duplicate_document);
+    try std.testing.expectError(error.InvalidSnapshot, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        duplicate_document,
+        Codec.codec(1),
+        .{},
+    ));
+    std.testing.allocator.free(document);
+    var wrong_digest = [_]u8{'0'} ** 64;
+    document = try Support.document(std.testing.allocator, &graph, .{
+        .definition_sha256 = &wrong_digest,
+    });
+    try std.testing.expectError(error.SnapshotDefinitionMismatch, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        document,
+        Codec.codec(1),
+        .{},
+    ));
+    std.testing.allocator.free(document);
+    document = try Support.document(std.testing.allocator, &graph, .{ .node_index = 1 });
+    try std.testing.expectError(error.InvalidSnapshot, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        document,
+        Codec.codec(1),
+        .{},
+    ));
+    std.testing.allocator.free(document);
+    document = try Support.document(std.testing.allocator, &graph, .{ .node_name = "other" });
+    try std.testing.expectError(error.InvalidSnapshot, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        document,
+        Codec.codec(1),
+        .{},
+    ));
+    std.testing.allocator.free(document);
+    document = try Support.document(std.testing.allocator, &graph, .{
+        .step_count = 2,
+        .max_steps = 1,
+    });
+    try std.testing.expectError(error.InvalidSnapshot, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        document,
+        Codec.codec(1),
+        .{},
+    ));
+    std.testing.allocator.free(document);
+    document = try Support.document(std.testing.allocator, &graph, .{ .max_steps = 10_001 });
+    try std.testing.expectError(error.InvalidSnapshot, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        document,
+        Codec.codec(1),
+        .{},
+    ));
+    std.testing.allocator.free(document);
+    document = try Support.document(std.testing.allocator, &graph, .{ .payload_version = 0 });
+    try std.testing.expectError(error.InvalidSnapshot, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        document,
+        Codec.codec(1),
+        .{},
+    ));
+    std.testing.allocator.free(document);
+    document = try Support.document(std.testing.allocator, &graph, .{ .payload_version = 2 });
+    try std.testing.expectError(error.UnsupportedSnapshotPayloadVersion, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        document,
+        Codec.codec(1),
+        .{},
+    ));
+    std.testing.allocator.free(document);
+    document = try Support.document(std.testing.allocator, &graph, .{ .state_json = "{" });
+    try std.testing.expectError(error.InvalidSnapshot, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        document,
+        Codec.codec(1),
+        .{},
+    ));
+    std.testing.allocator.free(document);
+    document = try Support.document(std.testing.allocator, &graph, .{ .state_json = "{}" });
+    try std.testing.expectError(error.SnapshotCodecFailed, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        document,
+        Codec.codec(1),
+        .{},
+    ));
+    std.testing.allocator.free(document);
+    document = try Support.document(std.testing.allocator, &graph, .{
+        .step_count = 1,
+        .max_steps = 2,
+    });
+    try std.testing.expectError(error.SnapshotStepLimitExceeded, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        document,
+        Codec.codec(1),
+        .{ .max_steps = 0 },
+    ));
+    std.testing.allocator.free(document);
+
+    document = try Support.document(std.testing.allocator, &graph, .{});
+    const with_extra = try std.fmt.allocPrint(
+        std.testing.allocator,
+        "{s}",
+        .{document[0 .. document.len - 1]},
+    );
+    defer std.testing.allocator.free(with_extra);
+    const strict_document = try std.fmt.allocPrint(std.testing.allocator, "{s},\"extra\":true}}", .{with_extra});
+    defer std.testing.allocator.free(strict_document);
+    try std.testing.expectError(error.InvalidSnapshot, graph.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        strict_document,
+        Codec.codec(1),
+        .{},
+    ));
+    std.testing.allocator.free(document);
+
+    var outer_limited = graph;
+    outer_limited.limits.max_snapshot_bytes = 1;
+    try std.testing.expectError(error.SnapshotLimitExceeded, outer_limited.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        strict_document,
+        Codec.codec(1),
+        .{},
+    ));
+    var stored_limited = graph;
+    stored_limited.limits.max_snapshot_payload_bytes = 1;
+    document = try Support.document(std.testing.allocator, &graph, .{ .state_json = "10" });
+    try std.testing.expectError(error.SnapshotLimitExceeded, stored_limited.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        document,
+        Codec.codec(1),
+        .{},
+    ));
+    std.testing.allocator.free(document);
+    var depth_limited = graph;
+    depth_limited.limits.max_snapshot_depth = 2;
+    document = try Support.document(std.testing.allocator, &graph, .{ .state_json = "[[[0]]]" });
+    try std.testing.expectError(error.SnapshotLimitExceeded, depth_limited.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        document,
+        Codec.codec(1),
+        .{},
+    ));
+    std.testing.allocator.free(document);
+    var item_limited = graph;
+    item_limited.limits.max_snapshot_collection_items = 6;
+    document = try Support.document(std.testing.allocator, &graph, .{
+        .state_json = "[0,0,0,0,0,0,0]",
+    });
+    try std.testing.expectError(error.SnapshotLimitExceeded, item_limited.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        document,
+        Codec.codec(1),
+        .{},
+    ));
+    std.testing.allocator.free(document);
+
+    var invalid_concurrency = graph;
+    invalid_concurrency.limits.max_concurrency = 0;
+    try std.testing.expectError(error.InvalidRunOptions, invalid_concurrency.resumeSnapshot(
+        std.testing.allocator,
+        &output_state,
+        &deps,
+        "{}",
+        Codec.codec(1),
+        .{},
+    ));
+}
+
+test "graph snapshot codecs migrate payloads and clean partial restores" {
+    const Workflow = Graph(u64, u8, u64, u64, u64);
+    const Callbacks = struct {
+        fn start(_: ?*anyopaque, _: *Workflow.Context, input: u64) CallbackError!u64 {
+            return input;
+        }
+
+        fn step(_: ?*anyopaque, run: *Workflow.Context, input: u64) CallbackError!u64 {
+            run.state.* += input;
+            return input + 1;
+        }
+
+        fn end(_: ?*anyopaque, _: *Workflow.Context, input: u64) CallbackError!u64 {
+            return input;
+        }
+    };
+    const Codec = struct {
+        const Wrapped = struct { value: u64 };
+        const MigrationCapture = struct {
+            count: usize = 0,
+            from_version: u32 = 0,
+            to_version: u32 = 0,
+        };
+
+        fn encodeNumber(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            value: *const u64,
+        ) SnapshotCallbackError![]u8 {
+            return std.json.Stringify.valueAlloc(gpa, value.*, .{});
+        }
+
+        fn decodeNumber(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            source: []const u8,
+        ) SnapshotCallbackError!u64 {
+            return std.json.parseFromSliceLeaky(u64, gpa, source, .{}) catch |failure| switch (failure) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.SnapshotCodecFailed,
+            };
+        }
+
+        fn encodeWrapped(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            value: *const u64,
+        ) SnapshotCallbackError![]u8 {
+            return std.json.Stringify.valueAlloc(gpa, Wrapped{ .value = value.* }, .{});
+        }
+
+        fn decodeWrapped(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            source: []const u8,
+        ) SnapshotCallbackError!u64 {
+            const wrapped = std.json.parseFromSliceLeaky(Wrapped, gpa, source, .{}) catch |failure| switch (failure) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return error.SnapshotCodecFailed,
+            };
+            return wrapped.value;
+        }
+
+        fn migrate(
+            context: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            from_version: u32,
+            to_version: u32,
+            state_json: []const u8,
+            value_json: []const u8,
+        ) SnapshotCallbackError![]u8 {
+            const capture: *MigrationCapture = @ptrCast(@alignCast(context.?));
+            capture.count += 1;
+            capture.from_version = from_version;
+            capture.to_version = to_version;
+            const state = std.fmt.parseInt(u64, state_json, 10) catch
+                return error.SnapshotCodecFailed;
+            const value = std.fmt.parseInt(u64, value_json, 10) catch
+                return error.SnapshotCodecFailed;
+            const current_state = try std.json.Stringify.valueAlloc(gpa, Wrapped{ .value = state }, .{});
+            defer gpa.free(current_state);
+            const current_value = try std.json.Stringify.valueAlloc(gpa, Wrapped{ .value = value }, .{});
+            defer gpa.free(current_value);
+            return std.json.Stringify.valueAlloc(gpa, .{
+                .state_json = current_state,
+                .value_json = current_value,
+            }, .{});
+        }
+
+        fn malformedMigration(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            _: u32,
+            _: u32,
+            _: []const u8,
+            _: []const u8,
+        ) SnapshotCallbackError![]u8 {
+            return gpa.dupe(u8, "{");
+        }
+
+        fn wrongShapeMigration(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            _: u32,
+            _: u32,
+            _: []const u8,
+            _: []const u8,
+        ) SnapshotCallbackError![]u8 {
+            return gpa.dupe(u8, "{}");
+        }
+
+        fn deepMigration(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            _: u32,
+            _: u32,
+            _: []const u8,
+            _: []const u8,
+        ) SnapshotCallbackError![]u8 {
+            return gpa.dupe(
+                u8,
+                "{\"state_json\":\"0\",\"value_json\":\"1\",\"extra\":{\"nested\":{}}}",
+            );
+        }
+
+        fn invalidPayloadMigration(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            _: u32,
+            _: u32,
+            _: []const u8,
+            _: []const u8,
+        ) SnapshotCallbackError![]u8 {
+            return std.json.Stringify.valueAlloc(gpa, .{
+                .state_json = "{",
+                .value_json = "{}",
+            }, .{});
+        }
+
+        fn failValue(
+            _: ?*anyopaque,
+            _: std.mem.Allocator,
+            _: []const u8,
+        ) SnapshotCallbackError!u64 {
+            return error.SnapshotCodecFailed;
+        }
+
+        fn cleanupState(context: ?*anyopaque, _: std.mem.Allocator, _: *u64) void {
+            const count: *usize = @ptrCast(@alignCast(context.?));
+            count.* += 1;
+        }
+
+        fn v1() Workflow.SnapshotCodec {
+            return .{
+                .version = 1,
+                .encode_state_fn = encodeNumber,
+                .decode_state_fn = decodeNumber,
+                .encode_value_fn = encodeNumber,
+                .decode_value_fn = decodeNumber,
+            };
+        }
+
+        fn v2(migration: ?Workflow.SnapshotMigration) Workflow.SnapshotCodec {
+            return .{
+                .version = 2,
+                .encode_state_fn = encodeWrapped,
+                .decode_state_fn = decodeWrapped,
+                .encode_value_fn = encodeWrapped,
+                .decode_value_fn = decodeWrapped,
+                .migration = migration,
+            };
+        }
+    };
+
+    var builder: Workflow.Builder = .{ .definition_id = "migrating/v1" };
+    defer builder.deinit(std.testing.allocator);
+    try builder.setStart(.{ .run_fn = Callbacks.start });
+    try builder.setEnd(.{ .run_fn = Callbacks.end });
+    const step = try builder.addStep(std.testing.allocator, .{ .name = "step", .run_fn = Callbacks.step });
+    try builder.setEntry(step);
+    try builder.finish(std.testing.allocator, step);
+    var graph = try builder.build(std.testing.allocator);
+    defer graph.deinit(std.testing.allocator);
+    var state: u64 = 3;
+    var deps: u8 = 0;
+    var run = try graph.iter(std.testing.allocator, &state, &deps, 5, .{});
+    const v1_snapshot = try run.snapshot(std.testing.allocator, Codec.v1());
+    defer std.testing.allocator.free(v1_snapshot);
+
+    var restored_state: u64 = undefined;
+    try std.testing.expectError(error.SnapshotMigrationRequired, graph.resumeSnapshot(
+        std.testing.allocator,
+        &restored_state,
+        &deps,
+        v1_snapshot,
+        Codec.v2(null),
+        .{},
+    ));
+    var migrations: Codec.MigrationCapture = .{};
+    var restored = try graph.resumeSnapshot(
+        std.testing.allocator,
+        &restored_state,
+        &deps,
+        v1_snapshot,
+        Codec.v2(.{ .context = &migrations, .run_fn = Codec.migrate }),
+        .{},
+    );
+    try std.testing.expectEqual(@as(usize, 1), migrations.count);
+    try std.testing.expectEqual(@as(u32, 1), migrations.from_version);
+    try std.testing.expectEqual(@as(u32, 2), migrations.to_version);
+    try std.testing.expectEqual(@as(u64, 3), restored_state);
+    try std.testing.expectEqual(@as(u64, 5), restored.currentValue().*);
+    const completed = try restored.next();
+    try std.testing.expectEqual(
+        @as(std.meta.Tag(Workflow.Advance), .complete),
+        std.meta.activeTag(completed),
+    );
+    try std.testing.expectEqual(@as(u64, 6), completed.complete);
+
+    try std.testing.expectError(error.SnapshotCodecFailed, graph.resumeSnapshot(
+        std.testing.allocator,
+        &restored_state,
+        &deps,
+        v1_snapshot,
+        Codec.v2(.{ .run_fn = Codec.malformedMigration }),
+        .{},
+    ));
+    try std.testing.expectError(error.SnapshotCodecFailed, graph.resumeSnapshot(
+        std.testing.allocator,
+        &restored_state,
+        &deps,
+        v1_snapshot,
+        Codec.v2(.{ .run_fn = Codec.wrongShapeMigration }),
+        .{},
+    ));
+    try std.testing.expectError(error.SnapshotCodecFailed, graph.resumeSnapshot(
+        std.testing.allocator,
+        &restored_state,
+        &deps,
+        v1_snapshot,
+        Codec.v2(.{ .run_fn = Codec.invalidPayloadMigration }),
+        .{},
+    ));
+    var migration_limited = graph;
+    migration_limited.limits.max_snapshot_depth = 2;
+    try std.testing.expectError(error.SnapshotLimitExceeded, migration_limited.resumeSnapshot(
+        std.testing.allocator,
+        &restored_state,
+        &deps,
+        v1_snapshot,
+        Codec.v2(.{ .run_fn = Codec.deepMigration }),
+        .{},
+    ));
+
+    var cleanups: usize = 0;
+    var partial = Codec.v1();
+    partial.context = &cleanups;
+    partial.decode_value_fn = Codec.failValue;
+    partial.deinit_state_fn = Codec.cleanupState;
+    restored_state = 777;
+    try std.testing.expectError(error.SnapshotCodecFailed, graph.resumeSnapshot(
+        std.testing.allocator,
+        &restored_state,
+        &deps,
+        v1_snapshot,
+        partial,
+        .{},
+    ));
+    try std.testing.expectEqual(@as(usize, 1), cleanups);
+    try std.testing.expectEqual(@as(u64, 777), restored_state);
+}
+
 test "graph builder validates decision branches and reachability" {
     const Workflow = Graph(u8, u8, u8, u8, u8);
     const Callbacks = struct {
@@ -2122,6 +3459,23 @@ test "graph builder rejects invalid bounded definitions" {
         5,
         .{},
     ));
+
+    var identity_builder: Workflow.Builder = .{
+        .limits = .{ .max_name_bytes = 4 },
+        .definition_id = "",
+    };
+    defer identity_builder.deinit(std.testing.allocator);
+    try identity_builder.setStart(start);
+    try identity_builder.setEnd(end);
+    const identity_step = try identity_builder.addStep(std.testing.allocator, step);
+    try identity_builder.setEntry(identity_step);
+    try identity_builder.finish(std.testing.allocator, identity_step);
+    try std.testing.expectError(error.EmptyDefinitionId, identity_builder.build(std.testing.allocator));
+    identity_builder.definition_id = "large";
+    try std.testing.expectError(error.DefinitionIdTooLong, identity_builder.build(std.testing.allocator));
+    identity_builder.definition_id = "v1";
+    var identity_graph = try identity_builder.build(std.testing.allocator);
+    defer identity_graph.deinit(std.testing.allocator);
 }
 
 fn buildGraphWithAllocator(gpa: std.mem.Allocator) !void {
@@ -2196,6 +3550,67 @@ fn runFanOutWithAllocator(gpa: std.mem.Allocator) !void {
     if (output != 3) return error.UnexpectedOutput;
 }
 
+fn runSnapshotWithAllocator(gpa: std.mem.Allocator) !void {
+    const Workflow = Graph(u8, u8, u8, u8, u8);
+    const Callbacks = struct {
+        fn start(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+        fn step(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input + 1;
+        }
+        fn end(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+        fn encode(
+            _: ?*anyopaque,
+            allocator: std.mem.Allocator,
+            value: *const u8,
+        ) SnapshotCallbackError![]u8 {
+            return std.json.Stringify.valueAlloc(allocator, value.*, .{});
+        }
+        fn decode(
+            _: ?*anyopaque,
+            allocator: std.mem.Allocator,
+            source: []const u8,
+        ) SnapshotCallbackError!u8 {
+            return std.json.parseFromSliceLeaky(u8, allocator, source, .{}) catch |failure| switch (failure) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => error.SnapshotCodecFailed,
+            };
+        }
+    };
+    const codec = Workflow.SnapshotCodec{
+        .version = 1,
+        .encode_state_fn = Callbacks.encode,
+        .decode_state_fn = Callbacks.decode,
+        .encode_value_fn = Callbacks.encode,
+        .decode_value_fn = Callbacks.decode,
+    };
+    var builder: Workflow.Builder = .{ .definition_id = "allocation/v1" };
+    defer builder.deinit(gpa);
+    try builder.setStart(.{ .run_fn = Callbacks.start });
+    try builder.setEnd(.{ .run_fn = Callbacks.end });
+    const step = try builder.addStep(gpa, .{ .name = "step", .run_fn = Callbacks.step });
+    try builder.setEntry(step);
+    try builder.finish(gpa, step);
+    var graph = try builder.build(gpa);
+    defer graph.deinit(gpa);
+    var state: u8 = 0;
+    var deps: u8 = 0;
+    var run = try graph.iter(gpa, &state, &deps, 1, .{});
+    const snapshot = try run.snapshot(gpa, codec);
+    defer gpa.free(snapshot);
+    var restored_state: u8 = undefined;
+    var restored = try graph.resumeSnapshot(gpa, &restored_state, &deps, snapshot, codec, .{});
+    const advance = try restored.next();
+    try std.testing.expectEqual(
+        @as(std.meta.Tag(Workflow.Advance), .complete),
+        std.meta.activeTag(advance),
+    );
+    try std.testing.expectEqual(@as(u8, 2), advance.complete);
+}
+
 test "graph builder cleans up every allocation failure" {
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
@@ -2205,6 +3620,11 @@ test "graph builder cleans up every allocation failure" {
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
         runFanOutWithAllocator,
+        .{},
+    );
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        runSnapshotWithAllocator,
         .{},
     );
 }

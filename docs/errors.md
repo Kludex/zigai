@@ -289,9 +289,10 @@ validation never invokes it.
 | `DuplicateNodeName` | Two nodes use the same graph-local name. |
 | `InvalidNode` | An entry or edge references an ID outside its definition. |
 | `InvalidEdgeKind` | A non-decision received a named route, or a decision received an unconditional route. |
-| `EmptyBranchName` / `BranchNameTooLong` | A decision or fan-out branch name is empty or exceeds the definition limit. |
+| `EmptyBranchName` / `BranchNameTooLong` | A decision/fan-out branch is empty or exceeds the definition limit. |
 | `DuplicateBranchName` | A decision or fan-out registers the same branch name twice. |
 | `MissingParallelBranch` | A fan-out node has no branch callbacks. |
+| `EmptyDefinitionId` / `DefinitionIdTooLong` | An enabled graph persistence identity is empty or exceeds its bound. |
 | `DuplicateStart` / `DuplicateEnd` | A boundary callback was registered twice. |
 | `MissingStart` / `MissingEnd` / `MissingEntry` | A required graph boundary is absent. |
 | `MissingOutgoingEdge` | A node has no following node or terminal route. |
@@ -306,6 +307,22 @@ validation never invokes it.
 | `UnmatchedRoute` | A decision returned a branch name that it did not register. |
 | `RunFinished` | A caller advanced a run after it returned its output. |
 | `StepFailed` / `Cancelled` | An application node failed or cooperatively cancelled. |
+
+Graph snapshot operations additionally report:
+
+| Error | Meaning |
+| --- | --- |
+| `InvalidSnapshot` | The envelope, stored payload, or frontier invariants are malformed. |
+| `SnapshotLimitExceeded` | A snapshot exceeds its byte, value, depth, or collection ceiling. |
+| `SnapshotsDisabled` | The graph has no stable `definition_id`. |
+| `UnsupportedSnapshotVersion` | The envelope version is not supported. |
+| `UnsupportedSnapshotPayloadVersion` | The stored payload schema is newer than the supplied codec. |
+| `SnapshotDefinitionMismatch` | The snapshot fingerprint belongs to another graph definition. |
+| `SnapshotUnavailable` | The run is complete, failed, or otherwise not at a settled running boundary. |
+| `SnapshotMigrationRequired` | An older payload has no migration callback. |
+| `InvalidSnapshotCodec` | The supplied codec uses the reserved version zero. |
+| `SnapshotStepLimitExceeded` | A requested resume ceiling is below the completed step count. |
+| `SnapshotCodecFailed` | An application encoder, decoder, or migration rejected its input. |
 
 ## MCP errors
 

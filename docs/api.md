@@ -577,6 +577,48 @@ values. The scheduler makes only `Context.gpa` safe for concurrent use.
 Applications must synchronize all other shared mutation, use immutable data,
 or keep `max_concurrency = 1`.
 
+### Graph snapshots
+
+Graph snapshots are opt-in. Set `Builder.definition_id` to a stable borrowed
+identity before `build`; an absent identity keeps `Run.snapshot` and
+`Graph.resumeSnapshot` disabled. The identity, node kinds and names, fan-out
+mode and branch names, routes, typed graph parameters, entry node, and runtime
+ceilings produce one SHA-256 definition fingerprint. Names, branch slices, and
+the definition identity must remain immutable for the built graph's lifetime.
+Change the identity when callback behavior or types change incompatibly.
+
+`Run.snapshot(gpa, codec)` is valid only while a run is settled and running:
+after `iter` returns or between completed `next` calls. It calls the
+application's `SnapshotCodec` to produce complete JSON documents for `State`
+and the current `Value`, then returns one `gpa`-owned versioned envelope. It
+does not serialize `Deps`, callback contexts, event sinks, `std.Io`, or
+in-flight fan-out work. A `next` call drains every parallel task before it
+returns, so snapshots never contain an ambiguous partial fork.
+
+The version 1 envelope contains `definition_sha256`, `payload_version`, the
+next node's index and name, completed step count, original run step ceiling,
+and encoded state/value documents. Parsing rejects unknown or duplicate fields,
+malformed JSON, mismatched node identity, definition drift, future envelope or
+payload versions, and configured byte/depth/collection limits before invoking
+decoders. Snapshot limits are controlled by `Limits.max_snapshot_bytes`,
+`max_snapshot_payload_bytes`, `max_snapshot_depth`, and
+`max_snapshot_collection_items`.
+
+`Graph.resumeSnapshot(gpa, state_out, deps, source, codec, options)` decodes
+state and value atomically, injects fresh dependencies and run-only options,
+and returns a `Run` positioned at the saved next node without invoking `Start`
+or replaying completed nodes. `state_out` must point to uninitialized storage;
+it remains untouched on failure and owns the decoded state on success. A
+resume emits `run_resume`. `RunOptions.max_steps` may narrow the stored total
+ceiling only when it does not fall below the completed step count.
+
+Each codec has a nonzero payload version. To restore an older payload, provide
+`SnapshotMigration.run_fn`; it receives both old JSON documents and returns one
+`gpa`-owned JSON object with exactly `state_json` and `value_json` string fields
+for the codec's current version. The graph validates the migrated documents
+before decoding them. If decoded state can own resources, set
+`deinit_state_fn` so a later value-decoding failure can release it.
+
 ## Evaluations
 
 `evals.Dataset.run` executes each case once and propagates task, evaluator,

@@ -199,6 +199,12 @@ callbacks and a typed join. Set `RunOptions.max_concurrency` above one and pass
 order. Shared state, dependencies, branch contexts, and returned values must be
 safe for that concurrency level.
 
+Graph persistence is opt-in. Give the builder a stable `definition_id`, encode
+typed state and frontier values with a `SnapshotCodec`, then call
+`run.snapshot(...)` and `graph.resumeSnapshot(...)` between node advances.
+Snapshots are bounded and fingerprinted; they never serialize dependencies,
+callbacks, or in-flight parallel work.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.

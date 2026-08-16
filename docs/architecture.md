@@ -607,6 +607,23 @@ Graph lifecycle events are synchronous borrowed observations. They do not
 reuse agent hooks or telemetry types: future agent nodes can bridge the two
 without making ordinary application steps depend on model execution.
 
+Graph persistence captures only settled boundaries. A snapshot stores the
+typed state and current intermediate value as application-encoded JSON plus a
+frontier containing the next node and completed transition count. Dependencies,
+callbacks, runtime handles, and active work remain process-local. Because
+`Run.next` joins or cancels every fan-out task before returning, there is no
+serializable half-complete fork and resumption never guesses whether a branch
+side effect ran.
+
+Snapshots are bound to an application-supplied definition identity and a
+SHA-256 digest of graph types, topology, branch layout, entry, and execution
+ceilings. Restore checks both the node index and stable node name, then decodes
+state and value into temporary ownership before publishing either to the
+caller. JSON syntax, document bytes, decoded string bytes, nesting, and
+collection sizes are preflighted independently. Payload schema versions can
+advance through one explicit application migration hook; envelope versions and
+newer payloads fail closed.
+
 ## Evaluations
 
 `evals.Dataset` runs ordinary `Agent` instances over named cases and produces

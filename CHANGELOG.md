@@ -8,6 +8,9 @@
 - Add bounded map and broadcast fan-out nodes with typed joins, completion-order
   fail-fast cancellation, deterministic source-order reduction, empty-map
   finalization, thread-safe callback allocation, and explicit value cleanup.
+- Add strict versioned graph state/frontier snapshots with stable definition
+  fingerprints, bounded JSON codecs, resumable iteration, payload migrations,
+  atomic state restoration, and resume lifecycle events.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.
