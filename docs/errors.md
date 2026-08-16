@@ -281,6 +281,22 @@ validation never invokes it.
 | `durable_adapters.temporal.Error.ResponseTooLarge` | The sidecar returned a record above the durable record limit. |
 | `durable_adapters.temporal.Error.GatewayRejected` | The sidecar returned a non-success HTTP status. |
 
+## Graph errors
+
+| Error | Meaning |
+| --- | --- |
+| `EmptyNodeName` / `NodeNameTooLong` | A step name is empty or exceeds the definition limit. |
+| `DuplicateNodeName` | Two steps use the same graph-local name. |
+| `InvalidNode` | An entry or edge references an ID outside its definition. |
+| `DuplicateStart` / `DuplicateEnd` | A boundary callback was registered twice. |
+| `MissingStart` / `MissingEnd` / `MissingEntry` | A required graph boundary is absent. |
+| `MissingOutgoingEdge` | A step has no following step or terminal route. |
+| `DuplicateOutgoingEdge` | A core step has more than one route. |
+| `LimitExceeded` | A node or edge registration exceeds the graph ceiling. |
+| `StepLimitExceeded` | A run reached its bounded transition count. |
+| `RunFinished` | A caller advanced a run after it returned its output. |
+| `StepFailed` / `Cancelled` | An application step failed or cooperatively cancelled. |
+
 ## MCP errors
 
 | Error | Meaning |

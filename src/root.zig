@@ -31,6 +31,7 @@ pub const telemetry = @import("telemetry.zig");
 pub const diagnostics = @import("diagnostics.zig");
 pub const durable = @import("durable.zig");
 pub const durable_adapters = @import("durable/adapters.zig");
+pub const graph = @import("graph.zig");
 pub const mcp = @import("mcp.zig");
 pub const codecs = @import("codecs/root.zig");
 // Compatibility aliases for the original top-level provider imports.
@@ -307,6 +308,7 @@ test {
     _ = @import("diagnostics.zig");
     _ = @import("durable.zig");
     _ = @import("durable/adapters.zig");
+    _ = @import("graph.zig");
     _ = @import("mcp.zig");
     _ = @import("codecs/root.zig");
 }

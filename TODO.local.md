@@ -268,7 +268,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
     worker-restart, duplicate-delivery, and schema-migration tests.
 - [ ] Add a typed graph/workflow module with steps, decisions, joins/reducers,
   parallel branches, state snapshots, visualization metadata, and agent nodes.
-  - [ ] Define a generic graph builder, typed state/dependency/input/output
+  - [x] Define a generic graph builder, typed state/dependency/input/output
     contexts, validated step registration and edges, bounded execution, stable
     step events, and manual step-by-step iteration.
   - [ ] Add typed decision nodes with named branches, explicit unmatched-route

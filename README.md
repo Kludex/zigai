@@ -26,6 +26,7 @@ conversation.
 - MCP toolsets over Streamable HTTP and stdio.
 - Serializable approval and deferred-tool pauses.
 - Durable operations, restart-safe checkpoints, and a Temporal adapter.
+- Explicit typed workflows with bounded runs and step-by-step execution.
 - Static, dynamic, and run-specific instructions.
 - Strict JSON/YAML agent specifications with explicit environment policy.
 - Typed output plus JSON-object and JSON Schema modes.
@@ -158,6 +159,37 @@ Validation performs no network requests. Applications provide the provider,
 model, and capability resolvers used to build the final `Agent`. See
 [Agent specifications](docs/agent-specs.md) for the schema, ownership rules,
 interpolation policy, and CLI options.
+
+## Typed workflows
+
+Graphs are explicit. Define the state, dependencies, input, intermediate value,
+and output types once, then register named steps:
+
+```zig
+const Workflow = zigai.graph.Graph(State, Deps, u64, u64, u64);
+
+var builder: Workflow.Builder = .{};
+defer builder.deinit(allocator);
+
+try builder.setStart(.{ .run_fn = start });
+try builder.setEnd(.{ .run_fn = end });
+const prepare = try builder.addStep(allocator, .{
+    .name = "prepare",
+    .run_fn = prepareStep,
+});
+try builder.setEntry(prepare);
+try builder.finish(allocator, prepare);
+
+var workflow = try builder.build(allocator);
+defer workflow.deinit(allocator);
+
+const output = try workflow.run(allocator, &state, &deps, input, .{});
+```
+
+Use `workflow.iter(...)` to inspect and advance one step at a time. Definitions
+and runs have independent node, edge, name, and step limits. Callback contexts,
+node names, state, and dependencies are borrowed; the built workflow owns only
+its node and routing arrays.
 
 ## Providers
 

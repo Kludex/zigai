@@ -129,6 +129,7 @@ Use these namespaces for the rest of the API:
 | `zigai.durable` | Versioned durable operations, records, payloads, and runtime bindings |
 | `zigai.durable.checkpoint` | Restart-safe stream cursors and approval state stores |
 | `zigai.durable_adapters.temporal` | Temporal sidecar adapter, worker registrations, retry policy, and payload limits |
+| `zigai.graph` | Typed graph definitions, bounded execution, lifecycle events, and manual iteration |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
@@ -513,6 +514,33 @@ arena is released. Capability implementations remain borrowed. See
 provider-extension JSON. Those values need to live only until the model request
 returns; results and reusable history do not retain them. An empty non-null
 slice is an explicit override, while null inherits the lower-precedence value.
+
+## Typed graphs
+
+`graph.Graph(State, Deps, Input, Value, Output)` creates a workflow type without
+erasing application values. Its `Builder` registers one typed start callback,
+one typed end callback, named steps, an entry node, and exactly one outgoing
+edge for every step. Duplicate names, invalid IDs, incomplete routing, and
+definition limits fail before a run starts.
+
+`Graph.run` executes to completion. `Graph.iter` executes the start adapter and
+returns a `Run`; `Run.next` then advances one step and returns either the next
+node or the final typed output. A terminal error is latched, so later calls
+return the same failure instead of continuing a desynchronized workflow.
+`RunOptions.max_steps` may tighten, but never widen, the definition ceiling.
+
+The built graph owns only its node and destination arrays and releases them
+with `deinit(gpa)`. Names and callback contexts are borrowed for the graph's
+lifetime. State and dependencies are borrowed for the run's lifetime.
+Intermediate and output ownership follows the application-defined `Value` and
+`Output` types; callbacks receive the run allocator explicitly and must define
+their own cleanup contract for allocations they return.
+
+Event sinks are synchronous and infallible. They receive borrowed run/step
+start, end, and failure records in execution order. They must copy a node name
+before retaining it. The core currently supports linear and cyclic routing;
+decisions, parallel fan-out, reducers, snapshots, visualization, and agent-node
+adapters remain explicit roadmap steps rather than hidden behavior.
 
 ## Evaluations
 

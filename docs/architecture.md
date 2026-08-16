@@ -564,6 +564,24 @@ completed calls, usage, tool results, and final output synchronously. Once
 visible stream output has been emitted, a failed request is never retried,
 preventing duplicated text or tool events.
 
+## Graph contract
+
+`graph` is a typed application-workflow boundary, not part of the agent loop.
+The generic graph type fixes state, dependencies, boundary input/output, and
+intermediate value types at compile time. Its builder validates borrowed step
+definitions and produces an owned, allocation-free routing table for runs.
+
+Execution is deliberately pull-based at its lowest level. `Run.next` performs
+one callback and one route transition, latches terminal failures, and exposes
+the upcoming node without a background scheduler. `Graph.run` is only the
+convenience loop over that same operation. Definition limits bound nodes,
+edges, and names; a run-specific step limit can tighten the graph ceiling so a
+cycle cannot execute forever.
+
+Graph lifecycle events are synchronous borrowed observations. They do not
+reuse agent hooks or telemetry types: future agent nodes can bridge the two
+without making ordinary application steps depend on model execution.
+
 ## Evaluations
 
 `evals.Dataset` runs ordinary `Agent` instances over named cases and produces

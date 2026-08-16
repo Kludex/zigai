@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add a generic typed graph builder with validated linear/cyclic routing,
+  bounded execution, latched failures, stable lifecycle events, and manual
+  step-by-step runs.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.
