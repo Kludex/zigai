@@ -696,6 +696,13 @@ vocabulary, so text-agent handoff needs no second conversation format.
 Reconnects are allowed only for errors classified by the active connection and
 report whether server state survived.
 
+The raw frame interface isolates deployment-specific WebSocket upgrades and
+WebRTC SDP/ICE/media ownership. OpenAI, Azure OpenAI, and xAI share one strict
+Realtime codec with explicit dialect profiles. Gemini Live has a separate
+setup/content/media/tool codec. Both decode bounded JSON and base64 before
+publishing owned codec events; unknown frame shapes fail rather than silently
+disappearing.
+
 Graph persistence captures only settled boundaries. A snapshot stores the
 typed state and current intermediate value as application-encoded JSON plus a
 frontier containing the next node and completed transition count. Dependencies,

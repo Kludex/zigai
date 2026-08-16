@@ -1,6 +1,11 @@
 //! Provider-neutral realtime sessions and provider protocol adapters.
 
 pub const base = @import("base.zig");
+pub const wire = @import("wire.zig");
+pub const openai = @import("openai.zig");
+pub const azure = @import("azure.zig");
+pub const google = @import("google.zig");
+pub const xai = @import("xai.zig");
 
 pub const AudioRetention = base.AudioRetention;
 pub const CodecEvent = base.CodecEvent;
@@ -22,4 +27,9 @@ pub const TransportKind = base.TransportKind;
 
 test {
     _ = base;
+    _ = wire;
+    _ = openai;
+    _ = azure;
+    _ = google;
+    _ = xai;
 }

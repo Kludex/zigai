@@ -743,6 +743,16 @@ A reconnect policy bounds per-drop attempts and total reconnects; classified
 transport failures close and redial before a `reconnect` event reports whether
 the provider restored state.
 
+`realtime.wire.Channel` is the raw frame boundary. Applications or optional
+transport packages provide authenticated WebSocket/WebRTC dialing and complete
+text/binary/close frames. `realtime.openai` translates the shared OpenAI
+Realtime protocol; its dialect selects OpenAI, Azure OpenAI, or xAI profiles.
+`realtime.azure.init` and `realtime.xai.init` are explicit constructors for
+those dialects. `realtime.google` translates Gemini Live setup, client content,
+realtime media, transcriptions, tools, usage, interruption, and turn terminals.
+Credentials, HTTP upgrades, SDP exchange, ICE, and media tracks remain owned by
+the raw dialer rather than leaking into session state.
+
 ### Graph snapshots
 
 Graph snapshots are opt-in. Set `Builder.definition_id` to a stable borrowed

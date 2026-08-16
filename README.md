@@ -246,7 +246,9 @@ query/document ranking loop.
 an explicit WebSocket or WebRTC-sideband connection. It accepts PCM16 audio,
 text, images, manual turn controls, and interruptions; emits owned audio,
 transcript, tool, turn, reconnect, and error events; and builds canonical
-message history with bounded audio retention and cumulative usage.
+message history with bounded audio retention and cumulative usage. Protocol
+connectors cover OpenAI Realtime, Azure OpenAI, xAI Grok Voice, and Gemini Live
+without coupling the core session to provider JSON or credentials.
 
 ## Providers
 

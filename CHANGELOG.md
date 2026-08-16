@@ -30,7 +30,8 @@
 - Add the provider-neutral realtime session core with explicit WebSocket and
   WebRTC-sideband boundaries, PCM16 input/output, transcripts, manual turns,
   interruption, tools, canonical handoff history, usage, bounded reconnects,
-  cancellation, deadlines, and owned events.
+  cancellation, deadlines, owned events, raw frame isolation, and OpenAI,
+  Azure OpenAI, xAI, and Gemini Live protocol connectors.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.
