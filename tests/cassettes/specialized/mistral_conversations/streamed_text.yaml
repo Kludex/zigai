@@ -1,0 +1,36 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.mistral.ai/v1/conversations"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "mistral-small-latest"
+        inputs:
+          - object: "entry"
+            type: "message.input"
+            role: "user"
+            content: "Reply with exactly: pong"
+        completion_args:
+          max_tokens: 256
+        store: false
+        stream: true
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        event: conversation.response.started
+        data: {"type":"conversation.response.started","created_at":"2026-08-16T01:54:44.852004Z","conversation_id":"conv_01a00847493a76fca706716e12b6bec5"}
+
+        event: message.output.delta
+        data: {"type":"message.output.delta","created_at":"2026-08-16T01:54:44.854475Z","output_index":0,"id":"msg_01a0084749f6769eaf054e27f08a5caa","content_index":0,"model":"mistral-small-latest","role":"assistant","content":"p"}
+
+        event: message.output.delta
+        data: {"type":"message.output.delta","created_at":"2026-08-16T01:54:44.865092Z","output_index":0,"id":"msg_01a0084749f6769eaf054e27f08a5caa","content_index":0,"model":"mistral-small-latest","role":"assistant","content":"ong"}
+
+        event: conversation.response.done
+        data: {"type":"conversation.response.done","created_at":"2026-08-16T01:54:44.867294Z","usage":{"prompt_tokens":9,"completion_tokens":3,"total_tokens":12}}

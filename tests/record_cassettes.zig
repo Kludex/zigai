@@ -483,7 +483,11 @@ fn recordNativeBedrock(
         .model_name = entry.model,
         .provider = provider.provider(),
     };
-    try runScenario(init, client.model());
+    switch (entry.scenario) {
+        .buffered => try runTextScenario(init, client.model()),
+        .function_tool => try runScenario(init, client.model()),
+        else => unreachable,
+    }
     try normalizeBedrockRuntimeUrl(init.gpa, &recording, provider.http.base_url);
     try writeNative(init, recording, entry);
 }
@@ -506,7 +510,12 @@ fn recordNativeAzure(
         .model_name = entry.model,
         .provider = provider.provider(),
     };
-    try runScenario(init, client.model());
+    switch (entry.scenario) {
+        .buffered => try runTextScenario(init, client.model()),
+        .streamed_text => try runStreamTextScenario(init, client.model()),
+        .function_tool => try runScenario(init, client.model()),
+        else => unreachable,
+    }
     try normalizeAzureUrl(init.gpa, &recording, base_url);
     try writeNative(init, recording, entry);
 }
@@ -524,12 +533,18 @@ fn recordNativeMistral(
         .model_name = entry.model,
         .provider = provider.provider(),
     };
-    try runNativeScenario(
-        init,
-        client.model(),
-        &.{.{ .web_search = .{} }},
-        native_google_prompt,
-    );
+    switch (entry.scenario) {
+        .buffered => try runTextScenario(init, client.model()),
+        .streamed_text => try runStreamTextScenario(init, client.model()),
+        .function_tool => try runScenario(init, client.model()),
+        .native_tool => try runNativeScenario(
+            init,
+            client.model(),
+            &.{.{ .web_search = .{} }},
+            native_google_prompt,
+        ),
+        else => unreachable,
+    }
     try writeNative(init, recording, entry);
 }
 
@@ -545,9 +560,17 @@ fn recordNativeCohere(
     var client = zigai.providers.cohere.ChatClient{
         .model_name = entry.model,
         .provider = provider.provider(),
-        .settings = .{ .extra_body = .{ .cohere = "{\"strict_tools\":true}" } },
+        .settings = if (entry.scenario == .function_tool)
+            .{ .extra_body = .{ .cohere = "{\"strict_tools\":true}" } }
+        else
+            .{},
     };
-    try runScenario(init, client.model());
+    switch (entry.scenario) {
+        .buffered => try runTextScenario(init, client.model()),
+        .streamed_text => try runStreamTextScenario(init, client.model()),
+        .function_tool => try runScenario(init, client.model()),
+        else => unreachable,
+    }
     try writeNative(init, recording, entry);
 }
 
@@ -740,7 +763,7 @@ fn writeNative(
     const path = try std.fmt.allocPrint(init.gpa, "tests/{s}", .{entry.cassette});
     defer init.gpa.free(path);
     try recording.writeCassetteAtomic(init.gpa, init.io, .cwd(), path);
-    std.log.info("recorded {s} {s} native tools -> {s}", .{ entry.provider, entry.model, path });
+    std.log.info("recorded {s} {s} {s} -> {s}", .{ entry.provider, entry.model, entry.scenario.name(), path });
 }
 
 fn writeRich(

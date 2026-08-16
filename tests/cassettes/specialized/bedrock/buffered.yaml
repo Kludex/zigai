@@ -1,0 +1,38 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://bedrock-runtime.example-region.amazonaws.com/model/us.anthropic.claude-sonnet-4-6/converse"
+    headers: {}
+    body:
+      type: json
+      content:
+        messages:
+          - role: "user"
+            content:
+              - text: "Reply with exactly: pong"
+        inferenceConfig:
+          maxTokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        metrics:
+          latencyMs: 965
+        output:
+          message:
+            content:
+              - text: "pong"
+            role: "assistant"
+        stopReason: "end_turn"
+        usage:
+          cacheReadInputTokenCount: 0
+          cacheReadInputTokens: 0
+          cacheWriteInputTokenCount: 0
+          cacheWriteInputTokens: 0
+          inputTokens: 13
+          outputTokens: 5
+          serverToolUsage: {}
+          totalTokens: 18

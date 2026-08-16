@@ -175,8 +175,10 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
     eleven configured OpenAI-compatible providers with live recordings.
   - [x] Cover retry and provider-error behavior through reusable deterministic
     fixtures for each compatible wire contract.
-  - [ ] Cover the applicable success and failure matrix for native Bedrock
-    Converse, Azure Responses, Mistral Conversations, and Cohere v2 Chat.
+  - [x] Cover the applicable live success matrix for native Bedrock Converse,
+    Azure Responses, Mistral Conversations, and Cohere v2 Chat.
+  - [ ] Cover deterministic retry and provider-error behavior for each of those
+    four specialized native wire contracts.
 - [ ] Add a cassette audit gate that proves fixture completeness against the
   manifest, rejects credential-shaped values and unsafe headers, validates
   deterministic normalization, and documents intentional capability-based

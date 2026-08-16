@@ -596,10 +596,6 @@ fn writeFunctionCall(allocator: std.mem.Allocator, json: *std.json.Stringify, ca
     try json.write(call.name);
     try json.objectField("arguments");
     try common.rawJson(allocator, json, call.arguments_json, json_limits.defaults.tool_payload);
-    if (call.provider.id) |id| {
-        try json.objectField("id");
-        try json.write(id);
-    }
     try json.endObject();
 }
 
@@ -1736,6 +1732,7 @@ test "native request preserves rich Conversations history and every supported co
     try std.testing.expect(std.mem.indexOf(u8, body, "\"presence_penalty\":") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"frequency_penalty\":") != null);
     try std.testing.expect(std.mem.indexOf(u8, body, "\"type\":\"json_schema\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, body, "\"id\":\"entry_2\"") == null);
 
     const stored = try encodeStoredRequest(std.testing.allocator, "mistral-large-latest", request, &managed);
     defer std.testing.allocator.free(stored);

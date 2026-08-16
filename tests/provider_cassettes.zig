@@ -359,6 +359,10 @@ test "real Cohere v2 cassette replays a complete tool loop" {
     try replayMatrixScenario(client.model(), &cassette);
 }
 
+test "real specialized provider cassettes replay applicable success scenarios" {
+    inline for (cassette_manifest.specialized_success) |entry| try replaySpecializedEntry(entry);
+}
+
 fn replayCompatibleProvider(
     comptime ProviderType: type,
     comptime ClientType: type,
@@ -410,6 +414,72 @@ fn replayNamedCompatible(comptime entry: cassette_manifest.Entry) !void {
         try replayCompatibleProvider(zigai.providers.together.Provider, zigai.providers.together.Client, entry)
     else
         @compileError("compatible cassette has no named provider client: " ++ entry.provider);
+}
+
+fn replaySpecializedEntry(comptime entry: cassette_manifest.Entry) !void {
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+    defer cassette.deinit();
+    switch (entry.route) {
+        .bedrock_converse => {
+            var provider_state = try zigai.providers.bedrock.Provider.initWithOptions(
+                "not-recorded",
+                "example-region",
+                cassette.transport(),
+                .{ .base_url = "https://bedrock-runtime.example-region.amazonaws.com" },
+            );
+            var client = zigai.providers.bedrock.Client{
+                .model_name = entry.model,
+                .provider = provider_state.provider(),
+            };
+            try replaySpecializedScenario(client.model(), &cassette, entry.scenario);
+        },
+        .azure_responses => {
+            var provider_state = zigai.providers.azure_openai.Provider.initWithOptions(
+                "not-recorded",
+                cassette.transport(),
+                .{ .base_url = "https://example.openai.azure.com/openai/v1" },
+            );
+            var client = zigai.providers.azure_openai.ResponsesClient{
+                .model_name = entry.model,
+                .provider = provider_state.provider(),
+            };
+            try replaySpecializedScenario(client.model(), &cassette, entry.scenario);
+        },
+        .mistral_conversations => {
+            var provider_state = zigai.providers.mistral.ConversationsProvider.init("not-recorded", cassette.transport());
+            var client = zigai.providers.mistral.ConversationsClient{
+                .model_name = entry.model,
+                .provider = provider_state.provider(),
+            };
+            try replaySpecializedScenario(client.model(), &cassette, entry.scenario);
+        },
+        .cohere_chat => {
+            var provider_state = zigai.providers.cohere.ChatProvider.init("not-recorded", cassette.transport());
+            var client = zigai.providers.cohere.ChatClient{
+                .model_name = entry.model,
+                .provider = provider_state.provider(),
+                .settings = if (entry.scenario == .function_tool)
+                    .{ .extra_body = .{ .cohere = "{\"strict_tools\":true}" } }
+                else
+                    .{},
+            };
+            try replaySpecializedScenario(client.model(), &cassette, entry.scenario);
+        },
+        else => unreachable,
+    }
+}
+
+fn replaySpecializedScenario(
+    model: zigai.Model,
+    cassette: *cassettes.ReplayTransport,
+    scenario: cassette_manifest.Scenario,
+) !void {
+    return switch (scenario) {
+        .buffered => replayBufferedScenario(model, cassette),
+        .streamed_text => replayStreamTextScenario(model, cassette),
+        .function_tool => replayMatrixScenario(model, cassette),
+        else => unreachable,
+    };
 }
 
 fn replayBufferedScenario(model: zigai.Model, cassette: *cassettes.ReplayTransport) !void {

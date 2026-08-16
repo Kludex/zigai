@@ -59,6 +59,10 @@
   named compatible providers, covering rate-limit recovery metadata, retry
   exhaustion, malformed success, bounded observations, and provider identity
   without duplicating protocol-equivalent fixtures.
+- Add real buffered and applicable streamed-text recordings for Bedrock
+  Converse, Azure Responses, Mistral Conversations, and Cohere v2 Chat, plus a
+  complete Mistral Conversations function-tool loop. Stop replaying Mistral's
+  provider-generated entry IDs because client inputs cannot specify them.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

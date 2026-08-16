@@ -374,6 +374,17 @@ pub const native = [_]Entry{
     scenarioEntry("cohere/command-a-03-2025/function-tool", "cohere", "command-a-03-2025", .function_tool, "cassettes/native/cohere_v2_command_a.yaml", .cohere_chat, .cohere),
 };
 
+pub const specialized_success = [_]Entry{
+    scenarioEntry("bedrock/claude-sonnet-4-6/buffered", "bedrock", "us.anthropic.claude-sonnet-4-6", .buffered, "cassettes/specialized/bedrock/buffered.yaml", .bedrock_converse, .bedrock),
+    scenarioEntry("azure-openai/gpt-4o/responses-buffered", "azure-openai", "gpt-4o", .buffered, "cassettes/specialized/azure_responses/buffered.yaml", .azure_responses, .azure_openai),
+    scenarioEntry("azure-openai/gpt-4o/responses-streamed-text", "azure-openai", "gpt-4o", .streamed_text, "cassettes/specialized/azure_responses/streamed_text.yaml", .azure_responses, .azure_openai),
+    scenarioEntry("mistral/mistral-small-latest/conversations-buffered", "mistral", "mistral-small-latest", .buffered, "cassettes/specialized/mistral_conversations/buffered.yaml", .mistral_conversations, .mistral),
+    scenarioEntry("mistral/mistral-small-latest/conversations-streamed-text", "mistral", "mistral-small-latest", .streamed_text, "cassettes/specialized/mistral_conversations/streamed_text.yaml", .mistral_conversations, .mistral),
+    scenarioEntry("mistral/mistral-small-latest/conversations-function-tool", "mistral", "mistral-small-latest", .function_tool, "cassettes/specialized/mistral_conversations/function_tool.yaml", .mistral_conversations, .mistral),
+    scenarioEntry("cohere/command-a-03-2025/chat-buffered", "cohere", "command-a-03-2025", .buffered, "cassettes/specialized/cohere_chat/buffered.yaml", .cohere_chat, .cohere),
+    scenarioEntry("cohere/command-a-03-2025/chat-streamed-text", "cohere", "command-a-03-2025", .streamed_text, "cassettes/specialized/cohere_chat/streamed_text.yaml", .cohere_chat, .cohere),
+};
+
 pub const rich = [_]Entry{
     scenarioEntry("openai/gpt-5-nano/rich-media", "openai", "gpt-5-nano", .rich_media, "cassettes/rich/openai_image.yaml", .openai_rich, .openai),
     scenarioEntry("anthropic/claude-sonnet-4-6/rich-media", "anthropic", "claude-sonnet-4-6", .rich_media, "cassettes/rich/anthropic_image.yaml", .anthropic_rich, .anthropic),
@@ -386,7 +397,7 @@ pub const files = [_]Entry{
     scenarioEntry("google/files/file-lifecycle", "google", "", .file_lifecycle, "cassettes/files/google.yaml", .google_files, .google),
 };
 
-pub const all = openai ++ anthropic ++ google ++ first_party_buffered ++ first_party_streaming ++ first_party_capabilities ++ first_party_errors ++ compatible_success ++ compatible_errors ++ native ++ rich ++ files;
+pub const all = openai ++ anthropic ++ google ++ first_party_buffered ++ first_party_streaming ++ first_party_capabilities ++ first_party_errors ++ compatible_success ++ compatible_errors ++ native ++ specialized_success ++ rich ++ files;
 
 fn modelEntry(
     id: []const u8,
@@ -540,6 +551,7 @@ pub fn matches(entry: Entry, filter: []const u8) bool {
         entry.route == .compatible and entry.scenario == .function_tool) return true;
     if (std.mem.eql(u8, filter, "compatible-errors") and
         entry.route == .compatible and entry.scenario == .provider_error) return true;
+    if (std.mem.eql(u8, filter, "specialized-success") and isSpecializedSuccess(entry)) return true;
     if (isNativeRecording(entry) and
         (std.mem.eql(u8, filter, "native-tools") or matchesNativeProvider(entry, filter)))
     {
@@ -579,6 +591,15 @@ fn isFirstPartyCapability(entry: Entry) bool {
 
 fn isNativeRecording(entry: Entry) bool {
     return entry.scenario == .native_tool or switch (entry.route) {
+        .bedrock_converse, .azure_responses, .mistral_conversations, .cohere_chat => true,
+        else => false,
+    };
+}
+
+fn isSpecializedSuccess(entry: Entry) bool {
+    if (entry.scenario != .buffered and entry.scenario != .streamed_text and entry.scenario != .function_tool)
+        return false;
+    return switch (entry.route) {
         .bedrock_converse, .azure_responses, .mistral_conversations, .cohere_chat => true,
         else => false,
     };

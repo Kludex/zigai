@@ -1,0 +1,41 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.mistral.ai/v1/conversations"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "mistral-small-latest"
+        inputs:
+          - object: "entry"
+            type: "message.input"
+            role: "user"
+            content: "Reply with exactly: pong"
+        completion_args:
+          max_tokens: 256
+        store: false
+        stream: false
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        object: "conversation.response"
+        conversation_id: "conv_01a00847472077c6a0cacca9adb557c3"
+        outputs:
+          - object: "entry"
+            type: "message.output"
+            created_at: "2026-08-16T01:54:44.341305Z"
+            completed_at: "2026-08-16T01:54:44.354723Z"
+            model: "mistral-small-latest"
+            id: "msg_01a0084747f5778dabaafa41754494c0"
+            role: "assistant"
+            content: "pong"
+        usage:
+          prompt_tokens: 9
+          completion_tokens: 3
+          total_tokens: 12
+        guardrails: null

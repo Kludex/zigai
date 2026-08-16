@@ -1,0 +1,36 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.cohere.com/v2/chat"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "command-a-03-2025"
+        stream: false
+        messages:
+          - role: "user"
+            content: "Reply with exactly: pong"
+        max_tokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "c2214c5c-0601-4ff4-8738-56c67374f7a7"
+        message:
+          role: "assistant"
+          content:
+            - type: "text"
+              text: "pong"
+        finish_reason: "COMPLETE"
+        usage:
+          billed_units:
+            input_tokens: 5
+            output_tokens: 1
+          tokens:
+            input_tokens: 500
+            output_tokens: 4
+          cached_tokens: 448

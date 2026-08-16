@@ -102,6 +102,13 @@ evidence boundary: OpenAI URL citations, Anthropic server-tool calls and
 results, Google grounding chunks and supports, and Mistral tool references are
 retained as structured provider details alongside normalized usage counters.
 
+`tests/cassettes/specialized/` completes the ordinary success matrix for the
+specialized native routes. It contains buffered Bedrock Converse; buffered and
+streamed Azure Responses; buffered, streamed, and function-tool Mistral
+Conversations; and buffered and streamed Cohere v2 Chat. The existing native
+fixtures supply the Bedrock, Azure, and Cohere function-tool loops. Bedrock
+streaming is excluded because its current adapter is buffered-only.
+
 `tests/cassettes/rich/` contains one real inline-image exchange for each
 first-party provider. Replay checks the semantic answer (`red`) rather than
 accepting any non-empty model output.
@@ -147,6 +154,7 @@ zig build record-cassettes -- native-google
 zig build record-cassettes -- native-bedrock
 zig build record-cassettes -- native-azure
 zig build record-cassettes -- native-cohere
+zig build record-cassettes -- specialized-success
 zig build record-cassettes -- mistral
 zig build record-cassettes -- rich-content
 zig build record-cassettes -- rich-anthropic
