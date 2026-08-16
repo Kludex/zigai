@@ -1381,7 +1381,7 @@ test "graph broadcast bounds concurrency and reduces in source order" {
         active: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
         maximum: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
         require_overlap: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
-        invalid_context: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        invalid_context: std.atomic.Value(u8) = std.atomic.Value(u8).init(0),
         hold: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
         release: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     };
@@ -1393,9 +1393,10 @@ test "graph broadcast bounds concurrency and reduces in source order" {
 
         fn branch(context: ?*anyopaque, run: *Workflow.Context, input: Value) CallbackError!Value {
             const delta: *const u64 = @ptrCast(@alignCast(context.?));
-            if (run.task_index == null or run.branch_name == null) {
-                run.state.invalid_context.store(true, .seq_cst);
-            }
+            _ = run.state.invalid_context.fetchOr(
+                @intFromBool(run.task_index == null or run.branch_name == null),
+                .seq_cst,
+            );
             var memory = try run.gpa.alloc(u8, 8);
             if (!run.gpa.resize(memory, memory.len)) return error.StepFailed;
             memory = run.gpa.remap(memory, memory.len).?;
@@ -1442,6 +1443,11 @@ test "graph broadcast bounds concurrency and reduces in source order" {
                 .io = io,
             });
         }
+
+        fn complete(done: *std.atomic.Value(bool), value: Value) RunError!Value {
+            done.store(true, .seq_cst);
+            return value;
+        }
     };
 
     var one: u64 = 1;
@@ -1478,7 +1484,7 @@ test "graph broadcast bounds concurrency and reduces in source order" {
     });
     try std.testing.expectEqual(@as(usize, 2), state.maximum.load(.seq_cst));
     try std.testing.expectEqual(@as(usize, 0), state.active.load(.seq_cst));
-    try std.testing.expect(!state.invalid_context.load(.seq_cst));
+    try std.testing.expectEqual(@as(u8, 0), state.invalid_context.load(.seq_cst));
     try std.testing.expectEqual(@as(usize, 3), output.count);
     try std.testing.expectEqualSlices(u64, &.{ 11, 12, 13 }, &output.ordered);
 
@@ -1559,10 +1565,29 @@ test "graph broadcast bounds concurrency and reduces in source order" {
     while (spins < 100) : (spins += 1) std.Thread.yield() catch {};
     state.release.store(true, .seq_cst);
     cancel_thread.join();
-    switch (cancel_result) {
-        .failure => |failure| try std.testing.expectEqual(error.Cancelled, failure),
-        .pending, .success => return error.ExpectedCancellation,
-    }
+    try std.testing.expectEqual(
+        @as(std.meta.Tag(CancelResult), .failure),
+        std.meta.activeTag(cancel_result),
+    );
+    try std.testing.expectEqual(error.Cancelled, cancel_result.failure);
+
+    var completed = std.atomic.Value(bool).init(false);
+    var completed_future = try runtime.io().concurrent(Callbacks.complete, .{ &completed, Value{ .scalar = 42 } });
+    while (!completed.load(.seq_cst)) std.Thread.yield() catch {};
+    var completed_requested = std.atomic.Value(bool).init(false);
+    var completed_result: CancelResult = .pending;
+    Cancel.run(
+        &completed_future,
+        runtime.io(),
+        &completed_requested,
+        &completed_result,
+    );
+    try std.testing.expect(completed_requested.load(.seq_cst));
+    try std.testing.expectEqual(
+        @as(std.meta.Tag(CancelResult), .success),
+        std.meta.activeTag(completed_result),
+    );
+    try std.testing.expectEqual(@as(u64, 42), completed_result.success.scalar);
 }
 
 test "graph map finalizes empty forks and cleans every failure path" {
