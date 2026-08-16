@@ -18,6 +18,7 @@ pub const execution = @import("execution.zig");
 pub const builtin_capabilities = @import("builtin_capabilities.zig");
 pub const memory = @import("memory.zig");
 pub const planning = @import("planning.zig");
+pub const runtime_services = @import("runtime_services.zig");
 pub const testing = @import("testing.zig");
 pub const transport = @import("transport.zig");
 pub const provider = @import("provider.zig");
@@ -309,6 +310,7 @@ test {
     _ = @import("builtin_capabilities.zig");
     _ = @import("memory.zig");
     _ = @import("planning.zig");
+    _ = @import("runtime_services.zig");
     _ = @import("json.zig");
     _ = @import("reflect.zig");
     _ = @import("history.zig");

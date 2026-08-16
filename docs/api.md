@@ -140,6 +140,7 @@ Use these namespaces for the rest of the API:
 | `zigai.builtin_capabilities` | Reviewed web, browser, image, skill, and repository bundles |
 | `zigai.memory` | Tenant-isolated conversation and semantic memory stores |
 | `zigai.planning` | Bounded revisions, advisors, approval gates, and dynamic workflows |
+| `zigai.runtime_services` | Step, blob, prompt, and bounded-executor service contracts |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
@@ -1314,6 +1315,29 @@ approval, step start/end, completion, and failure.
 approval-required. Once the outer agent approval succeeds, the adapter supplies
 all per-step approvals, propagates the active tool deadline/cancellation, and
 returns structured step output and usage.
+
+## Execution runtime services
+
+`runtime_services.StepStore` persists versioned step records with optimistic
+revision checks. New records start at revision one; replacements require the
+exact prior revision and increment by one. Input/output payloads are bounded
+JSON, and succeeded/failed states require their matching output/error fields.
+
+`BlobStore` owns tenant-qualified media and artifacts with explicit kind, media
+type, bytes, lookup, and deletion. `PromptStore` resolves an exact or latest
+versioned prompt. `renderPrompt` replaces explicit `{{name}}` variables,
+rejects missing values or malformed templates, and bounds literal plus expanded
+output.
+
+`BoundedExecutor` runs a bounded task slice with structured `std.Io` concurrency,
+one shared cancellation/deadline, disposable per-task arenas, and source-
+ordered owned results. It drains cancelled work before releasing arenas and
+rejects per-task output beyond its ceiling.
+
+`InMemoryStores` provides deterministic local implementations for tests and
+single-thread workers. Production databases, object stores, prompt services,
+and thread/remote executors implement the same small vtables. No hosted
+Pydantic client or credential is imported by the core runtime-services module.
 
 ## Production CLI
 

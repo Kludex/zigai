@@ -824,6 +824,19 @@ adapter is an ordinary approval-gated function tool, so dynamic workflow work
 uses existing agent policy, UI approvals, durable tool semantics, and history
 instead of creating another orchestration loophole.
 
+## Execution runtime services
+
+Step, blob, prompt, and task execution are independent service contracts. Step
+persistence uses optimistic monotonic revisions and bounded JSON. Blob identity
+is tenant-scoped. Managed prompt versions are immutable and rendering remains a
+local bounded operation.
+
+The in-memory stores own each item independently for honest replacement and
+deletion. The bounded executor gives each concurrent task its own arena and
+cancels/drains the select before any arena closes; only the coordinator copies
+source-ordered results into the returned arena. Hosted services and remote
+workers remain replaceable application adapters rather than core dependencies.
+
 ## Production CLI
 
 The unified CLI is composition rather than a fourth agent runtime. Provider

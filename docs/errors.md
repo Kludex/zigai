@@ -453,6 +453,17 @@ allocator errors preserve their original categories.
 Advisor, executor, nested-agent, observer, usage, cancellation, deadline, and
 allocator errors retain their original categories.
 
+## Runtime service errors
+
+Step stores report `InvalidStepRecord`, `StepRevisionConflict`,
+`InvalidRuntimePayload`, and `RuntimePayloadTooLarge`. Blob/prompt stores report
+`InvalidBlob`, `BlobAlreadyExists`, `BlobStoreFull`,
+`InvalidManagedPrompt`, `ManagedPromptAlreadyExists`, and
+`ManagedPromptStoreFull`. Prompt rendering adds `MissingPromptVariable` and
+`ManagedPromptTooLarge`. Executors report `InvalidExecutorLimits`,
+`ExecutorConcurrencyUnavailable`, and `ExecutorOutputTooLarge`. Backend,
+callback, cancellation, deadline, and allocator errors remain unchanged.
+
 ## Production CLI errors
 
 `InvalidArguments`, `InvalidCLIConfig`, `InvalidPausedCLIState`, `EmptyPrompt`,

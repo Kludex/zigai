@@ -287,6 +287,12 @@ multi-agent scope propagation, aggregate usage, one deadline, and trace-linked
 lifecycle events. `CapabilityAdapter` exposes an approved plan as an ordinary
 agent capability and function tool.
 
+`zigai.runtime_services` defines local interfaces for optimistic step
+persistence, tenant-owned media/artifact blobs, versioned managed prompts, and
+bounded structured-concurrency tasks. Deterministic in-memory stores and a
+source-ordered executor are included; hosted services remain optional
+application implementations behind the same vtables.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.

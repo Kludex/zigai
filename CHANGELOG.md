@@ -58,6 +58,9 @@
   revisions, approval gates, dependency-ordered dynamic workflows, nested
   usage/deadline propagation, trace-linked events, and an agent capability
   adapter.
+- Add local interfaces and deterministic backends for optimistic step
+  persistence, tenant media/artifact blobs, versioned managed prompts, and
+  bounded source-ordered task execution without hosted-service dependencies.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.
