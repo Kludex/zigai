@@ -533,6 +533,17 @@ caller allocator and report arena; application callback state remains outside
 that boundary. All admitted work is joined before success or failure returns,
 and the lowest source-order task/evaluator failure is propagated.
 
+`Dataset.report_evaluators` run once each after all cases have joined. A
+`ReportEvaluator` receives a borrowed `ReportView` and returns an `Analysis`
+with optional assertion, scalar value, unit, and reason. Returned strings are
+copied into `Report.analyses`. A false analysis assertion participates in
+`Report.passed()`; a non-finite value returns `InvalidReportAnalysis`.
+
+`Report.summary()` returns total and passed run counts plus a null-on-empty pass
+rate. `caseSummary(case_index)` groups repetitions by their stable source index.
+`scoreStatistics(evaluator_name)` ignores absent and non-finite scores and
+returns count, minimum, maximum, mean, and population standard deviation.
+
 ## Ownership
 
 ZigAI follows one rule for high-level operations: a returned type with a

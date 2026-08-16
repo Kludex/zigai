@@ -217,6 +217,7 @@ Provider construction and optional operations use these boundary errors:
 | `evals` | `InvalidExecutionOptions` | Repetitions, concurrency, or task/evaluator attempt limits are zero, or run-count arithmetic overflowed. |
 | `evals` | `ConcurrentExecutionRequiresIo` | More than one eval run was requested concurrently without a `std.Io` runtime. |
 | `evals` | `ConcurrentExecutionUnavailable` | The supplied runtime could not admit eval work. |
+| `evals` | `InvalidReportAnalysis` | A report evaluator returned a non-finite scalar value. |
 
 ### Agent specification errors
 

@@ -80,6 +80,9 @@
 - Add bounded concurrent eval execution through `std.Io`, with stable
   source-order reports, joined failures, shared allocator protection, and an
   explicit thread-safety contract for application callbacks.
+- Add report evaluators with arena-owned aggregate assertions and scalar
+  analyses, plus report, source-case, and finite-score statistical summaries
+  across repeated runs.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

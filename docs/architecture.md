@@ -586,6 +586,14 @@ results and the report arena used by persistent results. Provider/model state,
 evaluators, retry callbacks, and lifecycle hooks remain application-owned and
 must be thread-safe when concurrency is enabled.
 
+Report evaluators run only after concurrent work is joined and usage is
+aggregated. They see an immutable `ReportView`, so an aggregate evaluator
+cannot mutate case outcomes or race workers. Their arena-owned scalar analyses
+may include a pass/fail assertion, value, unit, and reason. Summary helpers
+compute per-report and per-source-case pass rates, and per-evaluator finite
+score statistics across repetitions. Non-finite case scores are excluded from
+statistics; non-finite report-analysis values are rejected.
+
 `evals.ModelGrader` is optional and is itself built from an `Agent`. It sends a
 JSON-quoted task, output, expected value, and rubric to that agent, requests a
 typed pass/score/reason object, and rejects non-finite or out-of-range scores.

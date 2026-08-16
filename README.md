@@ -1176,6 +1176,13 @@ slots, and aggregates usage after all work is joined. The model, evaluators,
 retry callbacks, and lifecycle hooks must be thread-safe in this mode. ZigAI
 serializes access to the caller allocator and the report arena.
 
+Dataset-level `report_evaluators` run after every case and repetition has
+finished. They receive a read-only `ReportView` and append named scalar
+analyses with an optional assertion, unit, and reason. `Report.summary`,
+`caseSummary`, and `scoreStatistics` expose pass rates plus finite-score
+minimum, maximum, mean, and population standard deviation. A failed aggregate
+assertion makes `Report.passed()` false.
+
 ## Security
 
 Hosted endpoints use HTTPS-only URL validation by default. Local names,

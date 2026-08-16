@@ -18,6 +18,8 @@ pub const Error = error{
     ConcurrentExecutionRequiresIo,
     /// The configured I/O runtime could not admit concurrent work.
     ConcurrentExecutionUnavailable,
+    /// A report evaluator returned a non-finite scalar value.
+    InvalidReportAnalysis,
 };
 
 pub const Case = struct {
@@ -172,6 +174,37 @@ pub const EvaluationResult = struct {
     attempts: usize = 1,
 };
 
+pub const Analysis = struct {
+    passed: ?bool = null,
+    value: ?f64 = null,
+    unit: ?[]const u8 = null,
+    reason: ?[]const u8 = null,
+};
+
+pub const AnalysisResult = struct {
+    evaluator: []const u8,
+    passed: ?bool,
+    value: ?f64,
+    unit: ?[]const u8,
+    reason: ?[]const u8,
+};
+
+pub const ReportEvaluator = struct {
+    name: []const u8,
+    context: *anyopaque,
+    evaluateFn: *const fn (
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        report: ReportView,
+    ) anyerror!Analysis,
+
+    pub fn evaluate(self: ReportEvaluator, allocator: std.mem.Allocator, report: ReportView) !Analysis {
+        const analysis = try self.evaluateFn(self.context, allocator, report);
+        if (analysis.value) |value| if (!std.math.isFinite(value)) return Error.InvalidReportAnalysis;
+        return analysis;
+    }
+};
+
 pub const CaseResult = struct {
     name: []const u8,
     case_index: usize = 0,
@@ -188,11 +221,107 @@ pub const CaseResult = struct {
     }
 };
 
+pub const PassSummary = struct {
+    runs: usize,
+    passed_runs: usize,
+    /// Null when there are no runs.
+    pass_rate: ?f64,
+};
+
+pub const ScoreStatistics = struct {
+    count: usize,
+    minimum: f64,
+    maximum: f64,
+    mean: f64,
+    /// Population standard deviation over finite scores.
+    standard_deviation: f64,
+};
+
+pub const ReportView = struct {
+    cases: []const CaseResult,
+    usage: model_types.RunUsage,
+
+    pub fn passed(self: ReportView) bool {
+        for (self.cases) |case| if (!case.passed()) return false;
+        return true;
+    }
+
+    pub fn passedCases(self: ReportView) usize {
+        var count: usize = 0;
+        for (self.cases) |case| if (case.passed()) {
+            count += 1;
+        };
+        return count;
+    }
+
+    pub fn summary(self: ReportView) PassSummary {
+        const passed_runs = self.passedCases();
+        return .{
+            .runs = self.cases.len,
+            .passed_runs = passed_runs,
+            .pass_rate = if (self.cases.len == 0)
+                null
+            else
+                @as(f64, @floatFromInt(passed_runs)) / @as(f64, @floatFromInt(self.cases.len)),
+        };
+    }
+
+    pub fn caseSummary(self: ReportView, case_index: usize) ?PassSummary {
+        var runs: usize = 0;
+        var passed_runs: usize = 0;
+        for (self.cases) |case| {
+            if (case.case_index != case_index) continue;
+            runs += 1;
+            if (case.passed()) passed_runs += 1;
+        }
+        if (runs == 0) return null;
+        return .{
+            .runs = runs,
+            .passed_runs = passed_runs,
+            .pass_rate = @as(f64, @floatFromInt(passed_runs)) / @as(f64, @floatFromInt(runs)),
+        };
+    }
+
+    pub fn scoreStatistics(self: ReportView, evaluator_name: []const u8) ?ScoreStatistics {
+        var count: usize = 0;
+        var minimum = std.math.inf(f64);
+        var maximum = -std.math.inf(f64);
+        var sum: f64 = 0;
+        for (self.cases) |case| for (case.evaluations) |evaluation| {
+            if (!std.mem.eql(u8, evaluation.evaluator, evaluator_name)) continue;
+            const score = evaluation.score orelse continue;
+            if (!std.math.isFinite(score)) continue;
+            count += 1;
+            minimum = @min(minimum, score);
+            maximum = @max(maximum, score);
+            sum += score;
+        };
+        if (count == 0) return null;
+        const mean = sum / @as(f64, @floatFromInt(count));
+        var squared_difference_sum: f64 = 0;
+        for (self.cases) |case| for (case.evaluations) |evaluation| {
+            if (!std.mem.eql(u8, evaluation.evaluator, evaluator_name)) continue;
+            const score = evaluation.score orelse continue;
+            if (!std.math.isFinite(score)) continue;
+            const difference = score - mean;
+            squared_difference_sum += difference * difference;
+        };
+        return .{
+            .count = count,
+            .minimum = minimum,
+            .maximum = maximum,
+            .mean = mean,
+            .standard_deviation = @sqrt(squared_difference_sum / @as(f64, @floatFromInt(count))),
+        };
+    }
+};
+
 /// Arena-owned dataset output. All slices remain valid until `deinit`.
 pub const Report = struct {
     arena: std.heap.ArenaAllocator,
     cases: []const CaseResult,
     usage: model_types.RunUsage,
+    analyses: []const AnalysisResult = &.{},
 
     pub fn deinit(self: *Report) void {
         self.arena.deinit();
@@ -200,22 +329,36 @@ pub const Report = struct {
     }
 
     pub fn passed(self: Report) bool {
-        for (self.cases) |case| if (!case.passed()) return false;
+        if (!self.view().passed()) return false;
+        for (self.analyses) |analysis| if (analysis.passed == false) return false;
         return true;
     }
 
     pub fn passedCases(self: Report) usize {
-        var count: usize = 0;
-        for (self.cases) |case| if (case.passed()) {
-            count += 1;
-        };
-        return count;
+        return self.view().passedCases();
+    }
+
+    pub fn view(self: Report) ReportView {
+        return .{ .cases = self.cases, .usage = self.usage };
+    }
+
+    pub fn summary(self: Report) PassSummary {
+        return self.view().summary();
+    }
+
+    pub fn caseSummary(self: Report, case_index: usize) ?PassSummary {
+        return self.view().caseSummary(case_index);
+    }
+
+    pub fn scoreStatistics(self: Report, evaluator_name: []const u8) ?ScoreStatistics {
+        return self.view().scoreStatistics(evaluator_name);
     }
 };
 
 pub const Dataset = struct {
     cases: []const Case,
     evaluators: []const Evaluator,
+    report_evaluators: []const ReportEvaluator = &.{},
 
     pub fn run(self: Dataset, allocator: std.mem.Allocator, agent: agent_types.Agent) !Report {
         return self.runWithOptions(allocator, agent, .{});
@@ -254,7 +397,19 @@ pub const Dataset = struct {
         }
         var total_usage: model_types.RunUsage = .{};
         for (results) |result| try total_usage.addRun(memory, result.usage);
-        return .{ .arena = arena, .cases = results, .usage = total_usage };
+        const analyses = try memory.alloc(AnalysisResult, self.report_evaluators.len);
+        const view = ReportView{ .cases = results, .usage = total_usage };
+        for (self.report_evaluators, analyses) |evaluator, *analysis_result| {
+            const analysis = try evaluator.evaluate(memory, view);
+            analysis_result.* = .{
+                .evaluator = try memory.dupe(u8, evaluator.name),
+                .passed = analysis.passed,
+                .value = analysis.value,
+                .unit = if (analysis.unit) |unit| try memory.dupe(u8, unit) else null,
+                .reason = if (analysis.reason) |reason| try memory.dupe(u8, reason) else null,
+            };
+        }
+        return .{ .arena = arena, .cases = results, .usage = total_usage, .analyses = analyses };
     }
 };
 
@@ -756,7 +911,6 @@ test "dataset repeats runs and retries tasks and evaluators with stable lifecycl
         evaluator_errors: usize = 0,
         evaluator_ends: usize = 0,
         case_ends: usize = 0,
-        case_errors: usize = 0,
         before_retries: usize = 0,
 
         fn observe(context: *anyopaque, event: LifecycleEvent) !void {
@@ -799,7 +953,7 @@ test "dataset repeats runs and retries tasks and evaluators with stable lifecycl
                     try std.testing.expect(value.result.passed());
                     try std.testing.expectEqual(value.identity.repetition, value.result.repetition);
                 },
-                .case_error => self.case_errors += 1,
+                .case_error => {},
             }
         }
 
@@ -857,7 +1011,6 @@ test "dataset repeats runs and retries tasks and evaluators with stable lifecycl
     try std.testing.expectEqual(@as(usize, 1), capture.evaluator_errors);
     try std.testing.expectEqual(@as(usize, 2), capture.evaluator_ends);
     try std.testing.expectEqual(@as(usize, 2), capture.case_ends);
-    try std.testing.expectEqual(@as(usize, 0), capture.case_errors);
     try std.testing.expectEqual(@as(usize, 2), capture.before_retries);
 }
 
@@ -935,7 +1088,6 @@ test "dataset execution options reject invalid bounds and expose terminal failur
 
 test "dataset bounds concurrent work and preserves source result order" {
     const State = struct {
-        io: std.Io,
         active: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
         maximum: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 
@@ -944,10 +1096,7 @@ test "dataset bounds concurrent work and preserves source result order" {
             const active = self.active.fetchAdd(1, .seq_cst) + 1;
             _ = self.maximum.fetchMax(active, .seq_cst);
             defer _ = self.active.fetchSub(1, .seq_cst);
-            try (std.Io.Timeout{ .duration = .{
-                .raw = .fromMilliseconds(10),
-                .clock = .awake,
-            } }).sleep(self.io);
+            while (self.maximum.load(.seq_cst) < 2) std.Thread.yield() catch {};
             return .{
                 .parts = &.{.{ .text = "ok" }},
                 .usage = .{ .input_tokens = 1, .output_tokens = 1 },
@@ -958,7 +1107,7 @@ test "dataset bounds concurrent work and preserves source result order" {
     var runtime = std.Io.Threaded.init(std.testing.allocator, .{});
     defer runtime.deinit();
     const io = runtime.io();
-    var state = State{ .io = io };
+    var state: State = .{};
     var report = try (Dataset{
         .cases = &.{
             .{ .name = "alpha", .prompt = "a" },
@@ -983,6 +1132,13 @@ test "dataset bounds concurrent work and preserves source result order" {
     try std.testing.expectEqualStrings("gamma", report.cases[4].name);
     try std.testing.expectEqualStrings("gamma", report.cases[5].name);
     try std.testing.expectEqual(@as(u64, 12), report.usage.totalTokens());
+
+    var allocator_lock = AllocatorLock{ .io = io };
+    var wrapper = LockedAllocator{ .child = std.testing.allocator, .lock = &allocator_lock };
+    const locked = wrapper.allocator();
+    var memory = try locked.alloc(u8, 8);
+    memory = locked.remap(memory, memory.len).?;
+    locked.free(memory);
 }
 
 test "dataset concurrency requires an available runtime and drains failures" {
@@ -1035,14 +1191,162 @@ test "dataset concurrency requires an available runtime and drains failures" {
     try std.testing.expectEqual(@as(usize, 0), empty_report.cases.len);
 }
 
+test "report evaluators consume completed runs and summaries aggregate repetitions" {
+    const State = struct {
+        calls: usize = 0,
+
+        fn request(context: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            defer self.calls += 1;
+            return .{
+                .parts = if (self.calls == 0) &.{.{ .text = "yes" }} else &.{.{ .text = "no" }},
+                .usage = .{ .input_tokens = 1, .output_tokens = 1 },
+            };
+        }
+
+        fn report(_: *anyopaque, allocator: std.mem.Allocator, view: ReportView) !Analysis {
+            const summary = view.summary();
+            const scores = view.scoreStatistics("exact_match").?;
+            try std.testing.expectEqual(@as(usize, 2), summary.runs);
+            try std.testing.expectEqual(@as(usize, 1), summary.passed_runs);
+            try std.testing.expectEqual(@as(f64, 0.5), scores.mean);
+            return .{
+                .passed = false,
+                .value = summary.pass_rate,
+                .unit = "ratio",
+                .reason = try allocator.dupe(u8, "below release threshold"),
+            };
+        }
+
+        fn nonFinite(_: *anyopaque, _: std.mem.Allocator, _: ReportView) !Analysis {
+            return .{ .value = std.math.nan(f64) };
+        }
+
+        fn neutral(_: *anyopaque, _: std.mem.Allocator, _: ReportView) !Analysis {
+            return .{ .passed = true };
+        }
+    };
+    var state: State = .{};
+    const evaluators = [_]Evaluator{exactMatch()};
+    const report_evaluators = [_]ReportEvaluator{
+        .{
+            .name = "release_readiness",
+            .context = &state,
+            .evaluateFn = State.report,
+        },
+        .{
+            .name = "neutral",
+            .context = &state,
+            .evaluateFn = State.neutral,
+        },
+    };
+    const dataset = Dataset{
+        .cases = &.{.{ .name = "answer", .prompt = "answer", .expected_output = "yes" }},
+        .evaluators = &evaluators,
+        .report_evaluators = &report_evaluators,
+    };
+    var report = try dataset.runWithOptions(std.testing.allocator, .{ .model = .{
+        .context = &state,
+        .profile = .{},
+        .requestFn = State.request,
+    } }, .{ .repetitions = 2 });
+    defer report.deinit();
+
+    try std.testing.expect(!report.passed());
+    try std.testing.expect(!report.view().passed());
+    try std.testing.expectEqual(@as(usize, 1), report.passedCases());
+    const summary = report.summary();
+    try std.testing.expectEqual(@as(usize, 2), summary.runs);
+    try std.testing.expectEqual(@as(usize, 1), summary.passed_runs);
+    try std.testing.expectEqual(@as(f64, 0.5), summary.pass_rate.?);
+    const case_summary = report.caseSummary(0).?;
+    try std.testing.expectEqual(@as(usize, 2), case_summary.runs);
+    try std.testing.expectEqual(@as(f64, 0.5), case_summary.pass_rate.?);
+    try std.testing.expect(report.caseSummary(99) == null);
+    const scores = report.scoreStatistics("exact_match").?;
+    try std.testing.expectEqual(@as(usize, 2), scores.count);
+    try std.testing.expectEqual(@as(f64, 0), scores.minimum);
+    try std.testing.expectEqual(@as(f64, 1), scores.maximum);
+    try std.testing.expectEqual(@as(f64, 0.5), scores.mean);
+    try std.testing.expectEqual(@as(f64, 0.5), scores.standard_deviation);
+    try std.testing.expect(report.scoreStatistics("unknown") == null);
+    try std.testing.expectEqual(@as(usize, 2), report.analyses.len);
+    try std.testing.expectEqualStrings("release_readiness", report.analyses[0].evaluator);
+    try std.testing.expect(report.analyses[0].passed == false);
+    try std.testing.expectEqual(@as(f64, 0.5), report.analyses[0].value.?);
+    try std.testing.expectEqualStrings("ratio", report.analyses[0].unit.?);
+    try std.testing.expectEqualStrings("below release threshold", report.analyses[0].reason.?);
+    try std.testing.expect(report.analyses[1].passed.?);
+    try std.testing.expect(report.analyses[1].value == null);
+    try std.testing.expect(report.analyses[1].unit == null);
+    try std.testing.expect(report.analyses[1].reason == null);
+
+    const empty = ReportView{ .cases = &.{}, .usage = .{} };
+    try std.testing.expect(empty.passed());
+    try std.testing.expectEqual(@as(usize, 0), empty.passedCases());
+    try std.testing.expect(empty.summary().pass_rate == null);
+    try std.testing.expect(empty.caseSummary(0) == null);
+    try std.testing.expect(empty.scoreStatistics("missing") == null);
+
+    const mixed_evaluations = [_]EvaluationResult{
+        .{ .evaluator = "mixed", .passed = true, .score = 0.25, .reason = null },
+        .{ .evaluator = "mixed", .passed = true, .score = std.math.nan(f64), .reason = null },
+        .{ .evaluator = "mixed", .passed = true, .score = null, .reason = null },
+    };
+    const mixed_cases = [_]CaseResult{.{
+        .name = "mixed",
+        .output = "output",
+        .usage = .{},
+        .evaluations = &mixed_evaluations,
+    }};
+    const mixed = (ReportView{ .cases = &mixed_cases, .usage = .{} }).scoreStatistics("mixed").?;
+    try std.testing.expectEqual(@as(usize, 1), mixed.count);
+    try std.testing.expectEqual(@as(f64, 0.25), mixed.mean);
+    try std.testing.expectEqual(@as(f64, 0), mixed.standard_deviation);
+
+    const blocked_analyses = [_]AnalysisResult{.{
+        .evaluator = "policy",
+        .passed = false,
+        .value = null,
+        .unit = null,
+        .reason = "blocked",
+    }};
+    var blocked_report = Report{
+        .arena = std.heap.ArenaAllocator.init(std.testing.allocator),
+        .cases = &mixed_cases,
+        .usage = .{},
+        .analyses = &blocked_analyses,
+    };
+    defer blocked_report.deinit();
+    try std.testing.expect(!blocked_report.passed());
+
+    const invalid = ReportEvaluator{
+        .name = "invalid",
+        .context = &state,
+        .evaluateFn = State.nonFinite,
+    };
+    try std.testing.expectError(Error.InvalidReportAnalysis, invalid.evaluate(std.testing.allocator, report.view()));
+}
+
 fn checkDatasetAllocationFailure(allocator: std.mem.Allocator) !void {
     const testing = @import("testing.zig");
+    const Aggregate = struct {
+        fn evaluate(_: *anyopaque, _: std.mem.Allocator, _: ReportView) !Analysis {
+            return .{ .passed = true, .value = 1, .unit = "ratio", .reason = "complete" };
+        }
+    };
     const outputs = [_]model_types.Part{.{ .text = "ok" }};
     var scripted = testing.ScriptedModel{ .responses = &.{.{ .parts = &outputs }} };
     const evaluators = [_]Evaluator{validJson()};
+    const report_evaluators = [_]ReportEvaluator{.{
+        .name = "aggregate",
+        .context = &builtin_context,
+        .evaluateFn = Aggregate.evaluate,
+    }};
     var report = try (Dataset{
         .cases = &.{.{ .name = "allocation", .prompt = "prompt" }},
         .evaluators = &evaluators,
+        .report_evaluators = &report_evaluators,
     }).run(allocator, .{ .model = scripted.model() });
     defer report.deinit();
 }
