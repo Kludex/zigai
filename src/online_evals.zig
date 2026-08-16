@@ -139,14 +139,16 @@ pub const Queue = struct {
     flush_mutex: std.Io.Mutex = .init,
     records: std.ArrayList(Record) = .empty,
     state: State = .open,
-    sampled: usize = 0,
-    skipped: usize = 0,
-    dropped_backpressure: usize = 0,
-    dropped_allocation: usize = 0,
+    sampled: std.atomic.Value(usize) = .init(0),
+    skipped: std.atomic.Value(usize) = .init(0),
+    dropped_backpressure: std.atomic.Value(usize) = .init(0),
+    dropped_allocation: std.atomic.Value(usize) = .init(0),
+    dropped_contention: std.atomic.Value(usize) = .init(0),
     dropped_closed: usize = 0,
     dropped_processing: usize = 0,
     reported_backpressure: usize = 0,
     reported_allocation: usize = 0,
+    reported_contention: usize = 0,
     reported_closed: usize = 0,
     reported_processing: usize = 0,
 
@@ -170,6 +172,7 @@ pub const Queue = struct {
         skipped: usize,
         dropped_backpressure: usize,
         dropped_allocation: usize,
+        dropped_contention: usize,
         dropped_closed: usize,
         dropped_processing: usize,
     };
@@ -227,6 +230,9 @@ pub const Queue = struct {
         options: Options,
     ) !Queue {
         try options.sampling.validate();
+        var records: std.ArrayList(Record) = .empty;
+        errdefer records.deinit(allocator);
+        try records.ensureTotalCapacityPrecise(allocator, options.max_pending);
         return .{
             .allocator = allocator,
             .io = io,
@@ -238,6 +244,7 @@ pub const Queue = struct {
             .max_content_bytes = options.max_content_bytes,
             .overflow = options.overflow,
             .fail_open = options.fail_open,
+            .records = records,
         };
     }
 
@@ -245,9 +252,10 @@ pub const Queue = struct {
     pub fn start(self: *Queue, trace: telemetry.SpanContext) !Run {
         if (!trace.isValid()) return Error.InvalidTraceContext;
         const selected = self.sampling.includes(trace.trace_id) catch unreachable;
-        self.mutex.lockUncancelable(self.io);
-        if (selected) self.sampled +|= 1 else self.skipped +|= 1;
-        self.mutex.unlock(self.io);
+        if (selected)
+            saturatingAtomicAdd(&self.sampled, 1)
+        else
+            saturatingAtomicAdd(&self.skipped, 1);
         return .{ .queue = self, .trace = trace, .sampled = selected };
     }
 
@@ -256,10 +264,11 @@ pub const Queue = struct {
         defer self.mutex.unlock(self.io);
         return .{
             .pending = self.records.items.len,
-            .sampled = self.sampled,
-            .skipped = self.skipped,
-            .dropped_backpressure = self.dropped_backpressure,
-            .dropped_allocation = self.dropped_allocation,
+            .sampled = self.sampled.load(.monotonic),
+            .skipped = self.skipped.load(.monotonic),
+            .dropped_backpressure = self.dropped_backpressure.load(.monotonic),
+            .dropped_allocation = self.dropped_allocation.load(.monotonic),
+            .dropped_contention = self.dropped_contention.load(.monotonic),
             .dropped_closed = self.dropped_closed,
             .dropped_processing = self.dropped_processing,
         };
@@ -277,9 +286,13 @@ pub const Queue = struct {
         self.flush_mutex.lockUncancelable(self.io);
         defer self.flush_mutex.unlock(self.io);
 
+        var replacement: std.ArrayList(Record) = .empty;
+        errdefer replacement.deinit(self.allocator);
+        try replacement.ensureTotalCapacityPrecise(self.allocator, self.max_pending);
         self.mutex.lockUncancelable(self.io);
         var batch = self.records;
-        self.records = .empty;
+        self.records = replacement;
+        replacement = .empty;
         self.mutex.unlock(self.io);
         defer batch.deinit(self.allocator);
 
@@ -352,37 +365,48 @@ pub const Queue = struct {
         prompt: []const u8,
         outcome: Observation.Outcome,
     ) void {
-        self.mutex.lockUncancelable(self.io);
-        defer self.mutex.unlock(self.io);
-        if (self.state == .closed) {
-            self.dropped_closed +|= 1;
+        if (self.max_pending == 0) {
+            saturatingAtomicAdd(&self.dropped_backpressure, 1);
             return;
         }
-        if (self.max_pending == 0 or self.records.items.len >= self.max_pending) {
-            self.dropped_backpressure +|= 1;
-            switch (self.overflow) {
-                .drop_newest => return,
-                .drop_oldest => if (self.records.items.len != 0) {
-                    var oldest = self.records.orderedRemove(0);
-                    oldest.deinit();
-                } else return,
-            }
-        }
-        const record = Record.init(
+        var record = Record.init(
             self.allocator,
             self.max_content_bytes,
             trace,
             prompt,
             outcome,
         ) catch {
-            self.dropped_allocation +|= 1;
+            saturatingAtomicAdd(&self.dropped_allocation, 1);
             return;
         };
-        self.records.append(self.allocator, record) catch {
-            var owned = record;
-            owned.deinit();
-            self.dropped_allocation +|= 1;
-        };
+        if (!self.mutex.tryLock()) {
+            record.deinit();
+            saturatingAtomicAdd(&self.dropped_contention, 1);
+            return;
+        }
+        defer self.mutex.unlock(self.io);
+        if (self.state == .closed) {
+            record.deinit();
+            self.dropped_closed +|= 1;
+            return;
+        }
+        if (self.records.items.len >= self.max_pending) {
+            saturatingAtomicAdd(&self.dropped_backpressure, 1);
+            switch (self.overflow) {
+                .drop_newest => {
+                    record.deinit();
+                    return;
+                },
+                .drop_oldest => if (self.records.items.len != 0) {
+                    var oldest = self.records.orderedRemove(0);
+                    oldest.deinit();
+                } else {
+                    record.deinit();
+                    return;
+                },
+            }
+        }
+        self.records.appendAssumeCapacity(record);
     }
 
     fn incrementProcessingDrops(self: *Queue, count: usize) void {
@@ -394,8 +418,9 @@ pub const Queue = struct {
     fn reportDrops(self: *Queue) !usize {
         const exporter = self.metric_exporter orelse return 0;
         self.mutex.lockUncancelable(self.io);
-        const backpressure = self.dropped_backpressure -| self.reported_backpressure;
-        const allocation = self.dropped_allocation -| self.reported_allocation;
+        const backpressure = self.dropped_backpressure.load(.monotonic) -| self.reported_backpressure;
+        const allocation = self.dropped_allocation.load(.monotonic) -| self.reported_allocation;
+        const contention = self.dropped_contention.load(.monotonic) -| self.reported_contention;
         const closed = self.dropped_closed -| self.reported_closed;
         const processing = self.dropped_processing -| self.reported_processing;
         self.mutex.unlock(self.io);
@@ -403,12 +428,13 @@ pub const Queue = struct {
         var reported: usize = 0;
         reported +|= try self.reportDropReason(exporter, .backpressure, backpressure);
         reported +|= try self.reportDropReason(exporter, .allocation, allocation);
+        reported +|= try self.reportDropReason(exporter, .contention, contention);
         reported +|= try self.reportDropReason(exporter, .closed, closed);
         reported +|= try self.reportDropReason(exporter, .processing, processing);
         return reported;
     }
 
-    const DropReason = enum { backpressure, allocation, closed, processing };
+    const DropReason = enum { backpressure, allocation, contention, closed, processing };
 
     fn reportDropReason(
         self: *Queue,
@@ -431,6 +457,7 @@ pub const Queue = struct {
         switch (reason) {
             .backpressure => self.reported_backpressure += count,
             .allocation => self.reported_allocation += count,
+            .contention => self.reported_contention += count,
             .closed => self.reported_closed += count,
             .processing => self.reported_processing += count,
         }
@@ -482,6 +509,14 @@ pub const Run = struct {
         return prompt;
     }
 };
+
+fn saturatingAtomicAdd(counter: *std.atomic.Value(usize), count: usize) void {
+    var current = counter.load(.monotonic);
+    while (true) {
+        const next = current +| count;
+        current = counter.cmpxchgWeak(current, next, .monotonic, .monotonic) orelse return;
+    }
+}
 
 fn remainingEvaluations(
     evaluators: usize,
@@ -594,6 +629,7 @@ const QueueTestState = struct {
     saw_failure: bool = false,
     saw_backpressure: bool = false,
     saw_allocation: bool = false,
+    saw_contention: bool = false,
     saw_closed: bool = false,
     saw_processing: bool = false,
     fail_evaluations: usize = 0,
@@ -664,6 +700,7 @@ const QueueTestState = struct {
         const reason = value.attributes[0].value.string;
         self.saw_backpressure = self.saw_backpressure or std.mem.eql(u8, reason, "backpressure");
         self.saw_allocation = self.saw_allocation or std.mem.eql(u8, reason, "allocation");
+        self.saw_contention = self.saw_contention or std.mem.eql(u8, reason, "contention");
         self.saw_closed = self.saw_closed or std.mem.eql(u8, reason, "closed");
         self.saw_processing = self.saw_processing or std.mem.eql(u8, reason, "processing");
     }
@@ -762,27 +799,20 @@ test "online eval queue samples and applies saturation policies" {
 test "online eval queue isolates allocation closure and processing failures" {
     const trace = telemetry.SpanContext{ .trace_id = [_]u8{1} ** 16, .span_id = [_]u8{2} ** 8 };
     var allocation_state: QueueTestState = .{};
-    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
     var allocation = try Queue.init(failing.allocator(), std.testing.io, &.{}, allocation_state.sink(), .{
+        .max_pending = 1,
         .metric_exporter = allocation_state.exporter(),
     });
     defer allocation.deinit();
+    failing.fail_index = failing.alloc_index;
     var allocation_run = try allocation.start(trace);
     try allocation_run.begin("allocation");
     try allocation_run.succeed("output", .{}, 1);
+    failing.fail_index = std.math.maxInt(usize);
     _ = try allocation.flush();
     try std.testing.expectEqual(@as(usize, 1), allocation.stats().dropped_allocation);
     try std.testing.expect(allocation_state.saw_allocation);
-
-    var append_state: QueueTestState = .{};
-    var append_failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
-    var append_failure = try Queue.init(append_failing.allocator(), std.testing.io, &.{}, append_state.sink(), .{});
-    defer append_failure.deinit();
-    var append_run = try append_failure.start(trace);
-    try append_run.begin("append");
-    try append_run.succeed("output", .{}, 1);
-    try std.testing.expect(append_failing.has_induced_failure);
-    try std.testing.expectEqual(@as(usize, 1), append_failure.stats().dropped_allocation);
 
     allocation.close();
     var closed_run = try allocation.start(trace);
@@ -790,6 +820,21 @@ test "online eval queue isolates allocation closure and processing failures" {
     try closed_run.succeed("output", .{}, 1);
     _ = try allocation.flush();
     try std.testing.expect(allocation_state.saw_closed);
+
+    var contention_state: QueueTestState = .{};
+    var contention = try Queue.init(std.testing.allocator, std.testing.io, &.{}, contention_state.sink(), .{
+        .max_pending = 1,
+        .metric_exporter = contention_state.exporter(),
+    });
+    defer contention.deinit();
+    var contention_run = try contention.start(trace);
+    try contention_run.begin("contention");
+    contention.mutex.lockUncancelable(std.testing.io);
+    try contention_run.succeed("output", .{}, 1);
+    contention.mutex.unlock(std.testing.io);
+    try std.testing.expectEqual(@as(usize, 1), contention.stats().dropped_contention);
+    _ = try contention.flush();
+    try std.testing.expect(contention_state.saw_contention);
 
     var open_state: QueueTestState = .{ .invalid_evaluations = 1, .fail_sinks = 1 };
     const open_evaluators = [_]Evaluator{
@@ -915,6 +960,11 @@ test "online eval queue validates construction and trace identity" {
         Queue.init(std.testing.allocator, std.testing.io, &.{}, state.sink(), .{
             .sampling = .{ .trace_ratio = .{ .numerator = 1, .denominator = 0 } },
         }),
+    );
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(
+        error.OutOfMemory,
+        Queue.init(failing.allocator(), std.testing.io, &.{}, state.sink(), .{ .max_pending = 1 }),
     );
     var queue = try Queue.init(std.testing.allocator, std.testing.io, &.{}, state.sink(), .{});
     defer queue.deinit();

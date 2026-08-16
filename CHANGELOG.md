@@ -20,6 +20,9 @@
 - Add bounded online-evaluation queues with owned UTF-8-bounded observations,
   concurrent producers, explicit overflow and shutdown, isolated off-path
   evaluation, and reasoned dropped-work metrics.
+- Integrate online evaluation into each agent invocation with mandatory trace
+  correlation and isolated lifecycle state. Preallocated queue slots and
+  try-lock admission drop contended work instead of waiting on the agent path.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model

@@ -1265,19 +1265,28 @@ var online = try zigai.OnlineEvalQueue.init(
 );
 defer online.deinit();
 
-var sampled_run = try online.start(trace_context);
-try sampled_run.begin(prompt);
-try sampled_run.succeed(output, usage, model_requests);
+const agent = zigai.Agent{
+    .model = model,
+    .telemetry = telemetry,
+    .online_evals = &online,
+};
+var result = try agent.run(allocator, prompt);
+defer result.deinit();
 
 // Run outside the request path, or during graceful shutdown.
 _ = try online.shutdown();
 ```
 
-Admission never invokes evaluators, result sinks, or metric exporters. The
-queue deep-copies bounded prompt, output, usage, and failure data. `flush` and
-`shutdown` serialize consumer callbacks; `stats` and
-`zigai.online_eval.dropped` expose backpressure, allocation, closure, and
-processing losses.
+`Agent.online_evals` requires `Agent.telemetry`. Each invocation gets isolated
+producer state and the same trace context as its OpenTelemetry run. Successful
+and failed runs are sampled; paused runs create no terminal observation.
+
+Admission never invokes evaluators, result sinks, or metric exporters, and it
+never waits for the queue lock. The queue preallocates its slots, deep-copies
+bounded prompt, output, usage, and failure data, and drops on producer
+contention. `flush` and `shutdown` serialize consumer callbacks. `stats` and
+`zigai.online_eval.dropped` expose backpressure, allocation, contention,
+closure, and processing losses.
 
 Persist portable datasets and complete reports with `zigai.eval_io`:
 

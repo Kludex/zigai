@@ -210,14 +210,14 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add versioned dataset and report serialization for JSON and readable
   Cassetter-style YAML.
 - [x] Add comparison reports and stable machine-readable CI output.
-- [ ] Add online evaluation hooks and sampling policies that never block the
+- [x] Add online evaluation hooks and sampling policies that never block the
   agent path, preserve trace correlation, bound queues, and expose dropped-work
   metrics.
   - [x] Define trace-correlated observation, evaluator, result-sink, and stable
     deterministic trace-ratio sampling contracts.
   - [x] Add bounded owned work queues, explicit saturation and shutdown
     behavior, isolated processing, and reasoned dropped-work metrics.
-  - [ ] Integrate one isolated online-eval lifecycle adapter per agent run and
+  - [x] Integrate one isolated online-eval lifecycle adapter per agent run and
     document the complete production workflow.
 - [ ] Add deterministic benchmarks for request encoding/decoding, streaming,
   history processing, schema reflection/validation, MCP, and parallel tools;

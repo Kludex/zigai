@@ -10,6 +10,7 @@ const reflect = @import("reflect.zig");
 const history = @import("history.zig");
 const context_budget = @import("context_budget.zig");
 const telemetry_types = @import("telemetry.zig");
+const online_eval_types = @import("online_evals.zig");
 const diagnostic_types = @import("diagnostics.zig");
 const json_limits = @import("json.zig");
 const transport = @import("transport.zig");
@@ -214,6 +215,8 @@ const AgentError = error{
     RetryIdempotencyRequiresIo,
     /// A deadline was configured without an `Io` runtime.
     RunControlRequiresIo,
+    /// Online evaluation requires a correlated OpenTelemetry run context.
+    OnlineEvaluationRequiresTelemetry,
     /// The runtime could not schedule a run operation and its control watchers.
     RunControlConcurrencyUnavailable,
     /// The invocation's absolute monotonic deadline elapsed.
@@ -1435,6 +1438,9 @@ pub const Agent = struct {
     io: ?std.Io = null,
     /// Optional per-run OpenTelemetry spans and metrics.
     telemetry: ?telemetry_types.OpenTelemetry = null,
+    /// Optional bounded production-evaluation queue. OpenTelemetry must also
+    /// be configured so every sampled observation retains trace correlation.
+    online_evals: ?*online_eval_types.Queue = null,
     /// Optional backend-neutral structured diagnostic events.
     diagnostics: ?diagnostic_types.Config = null,
     /// Optional deterministic pricing snapshot. Unknown or incompletely
@@ -1762,6 +1768,10 @@ pub const Agent = struct {
         else
             null;
         defer if (telemetry_run) |*instrumentation| instrumentation.deinit();
+        var online_eval_run: ?online_eval_types.Run = if (self.online_evals) |queue| online: {
+            const instrumentation = if (telemetry_run) |*telemetry_state| telemetry_state else return AgentError.OnlineEvaluationRequiresTelemetry;
+            break :online try queue.start(instrumentation.spanContext());
+        } else null;
         var diagnostic_run: ?diagnostic_types.Run = if (self.diagnostics) |configured|
             configured.start(allocator)
         else
@@ -1771,6 +1781,7 @@ pub const Agent = struct {
             try ensureUniqueToolNames(self.tools);
             var hooks: std.ArrayList(LifecycleHook) = .empty;
             defer hooks.deinit(allocator);
+            if (online_eval_run) |*online_state| try hooks.append(allocator, onlineEvalHook(online_state));
             try hooks.appendSlice(allocator, self.hooks);
             if (telemetry_run) |*instrumentation| try hooks.append(allocator, telemetryHook(instrumentation));
             if (diagnostic_run) |*diagnostics| try hooks.append(allocator, diagnosticHook(diagnostics));
@@ -1804,6 +1815,7 @@ pub const Agent = struct {
         try instructions.appendSlice(capability_memory, self.instructions);
         try capability_runtime.appendInitialInstructions(capability_memory, &instructions);
         var hooks: std.ArrayList(LifecycleHook) = .empty;
+        if (online_eval_run) |*online_state| try hooks.append(capability_memory, onlineEvalHook(online_state));
         try hooks.appendSlice(capability_memory, self.hooks);
         var hook_count: usize = 0;
         for (scoped) |item| hook_count += item.capability.hooks.len;
@@ -4792,6 +4804,25 @@ fn telemetryHook(run: *telemetry_types.Run) LifecycleHook {
         fn emit(context: *anyopaque, event: LifecycleEvent) !void {
             const telemetry_run: *telemetry_types.Run = @ptrCast(@alignCast(context));
             return telemetry_run.observe(event);
+        }
+    };
+    return .{ .context = run, .eventFn = Adapter.emit };
+}
+
+fn onlineEvalHook(run: *online_eval_types.Run) LifecycleHook {
+    const Adapter = struct {
+        fn emit(context: *anyopaque, event: LifecycleEvent) !void {
+            const online_run: *online_eval_types.Run = @ptrCast(@alignCast(context));
+            switch (event) {
+                .run_start => |start| online_run.begin(start.prompt) catch {},
+                .run_end => |end| online_run.succeed(
+                    end.output,
+                    end.usage,
+                    end.model_requests,
+                ) catch {},
+                .run_error => |run_error| online_run.fail(run_error.failure) catch {},
+                else => {},
+            }
         }
     };
     return .{ .context = run, .eventFn = Adapter.emit };

@@ -4773,6 +4773,121 @@ test "structured diagnostics instrument ordinary and capability runs with redact
     try std.testing.expect(capture.redactions >= 4);
 }
 
+test "agent online evaluations preserve traces across success capability and failure runs" {
+    const State = struct {
+        successes: usize = 0,
+        failures: usize = 0,
+        results: usize = 0,
+        spans: usize = 0,
+
+        fn evaluate(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            observation: zigai.OnlineEvalObservation,
+        ) !zigai.OnlineEvaluation {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expect(observation.trace.isValid());
+            try std.testing.expectEqualStrings("production prompt", observation.prompt);
+            switch (observation.outcome) {
+                .success => |success| {
+                    self.successes += 1;
+                    try std.testing.expectEqualStrings("done", success.output);
+                    try std.testing.expectEqual(@as(usize, 1), success.model_requests);
+                },
+                .failure => |failure| {
+                    self.failures += 1;
+                    try std.testing.expectEqualStrings("TestProviderFailure", failure.name);
+                },
+            }
+            return .{ .passed = true, .score = 1 };
+        }
+
+        fn result(context: *anyopaque, value: zigai.OnlineEvalResult) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expect(value.trace.isValid());
+            try std.testing.expectEqualStrings("production-quality", value.evaluator_name);
+            self.results += 1;
+        }
+
+        fn span(context: *anyopaque, value: zigai.TelemetrySpan) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (std.mem.eql(u8, value.name, "invoke_agent")) self.spans += 1;
+        }
+
+        fn metric(_: *anyopaque, _: zigai.TelemetryMetric) !void {}
+    };
+    const FailingModel = struct {
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: zigai.ModelRequest) !zigai.ModelResponse {
+            return error.TestProviderFailure;
+        }
+    };
+
+    var state: State = .{};
+    const evaluators = [_]zigai.OnlineEvaluator{.{
+        .name = "production-quality",
+        .context = &state,
+        .evaluateFn = State.evaluate,
+    }};
+    var queue = try zigai.OnlineEvalQueue.init(
+        std.testing.allocator,
+        std.testing.io,
+        &evaluators,
+        .{ .context = &state, .emitFn = State.result },
+        .{},
+    );
+    defer queue.deinit();
+    const telemetry = zigai.OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = .{ .context = &state, .spanFn = State.span, .metricFn = State.metric },
+    };
+    const parts = [_]zigai.model.Part{.{ .text = "done" }};
+    const responses = [_]zigai.ModelResponse{.{ .parts = &parts }};
+    var ordinary_model = zigai.testing.ScriptedModel{ .responses = &responses };
+    var capability_model = zigai.testing.ScriptedModel{ .responses = &responses };
+
+    var ordinary = try (zigai.Agent{
+        .model = ordinary_model.model(),
+        .telemetry = telemetry,
+        .online_evals = &queue,
+    }).run(std.testing.allocator, "production prompt");
+    defer ordinary.deinit();
+    var capability = try (zigai.Agent{
+        .model = capability_model.model(),
+        .capabilities = &.{.{}},
+        .telemetry = telemetry,
+        .online_evals = &queue,
+    }).run(std.testing.allocator, "production prompt");
+    defer capability.deinit();
+
+    var unused: u8 = 0;
+    try std.testing.expectError(
+        error.TestProviderFailure,
+        (zigai.Agent{
+            .model = .{ .context = &unused, .profile = .{}, .requestFn = FailingModel.request },
+            .retry_policy = .{ .max_retries = 0 },
+            .telemetry = telemetry,
+            .online_evals = &queue,
+        }).run(std.testing.allocator, "production prompt"),
+    );
+    try std.testing.expectEqual(@as(usize, 3), queue.stats().pending);
+    const processed = try queue.flush();
+    try std.testing.expectEqual(@as(usize, 3), processed.observations);
+    try std.testing.expectEqual(@as(usize, 3), processed.evaluations);
+    try std.testing.expectEqual(@as(usize, 2), state.successes);
+    try std.testing.expectEqual(@as(usize, 1), state.failures);
+    try std.testing.expectEqual(@as(usize, 3), state.results);
+    try std.testing.expectEqual(@as(usize, 3), state.spans);
+
+    var unused_model = zigai.testing.ScriptedModel{ .responses = &responses };
+    try std.testing.expectError(
+        zigai.AgentError.OnlineEvaluationRequiresTelemetry,
+        (zigai.Agent{ .model = unused_model.model(), .online_evals = &queue }).run(
+            std.testing.allocator,
+            "production prompt",
+        ),
+    );
+}
+
 test "agent applies an explicit versioned price table" {
     const Model = struct {
         fn request(_: *anyopaque, _: std.mem.Allocator, _: zigai.ModelRequest) !zigai.model.ModelResponse {
