@@ -5,6 +5,7 @@ project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cache_dir="${ZIGAI_GLOBAL_CACHE_DIR:-$project_dir/.zig-global-cache}"
 
 cd "$project_dir"
+mkdir -p zig-out
 ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build --fetch=all
 yaml_root=$(find "$project_dir/zig-pkg" -path '*/yaml-*/src/lib.zig' -print -quit)
 if [ -z "$yaml_root" ]; then
