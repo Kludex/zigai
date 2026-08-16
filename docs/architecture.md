@@ -367,6 +367,12 @@ case-sensitive, allocation-free, and deterministic. Provider discovery data
 cannot silently widen a catalog `ModelProfile`; the later merge layer must keep
 trusted capabilities and untrusted provider metadata distinct.
 
+The discovery merge owns only an index of borrowed records. It canonicalizes
+known aliases, retains unknown discovered IDs without inventing capabilities,
+and rejects duplicate canonical results. Trusted profile, limit, and
+deprecation accessors read exclusively from the catalog; the provider's raw
+descriptor remains available for inspection but is never promoted.
+
 Discovered model lists and file records are arena-owned values with explicit
 `deinit`; requests, provider configuration, and the `Provider` itself are
 borrowed. Concrete provider state must outlive every model and in-flight

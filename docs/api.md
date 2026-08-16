@@ -445,6 +445,15 @@ resolution. Live provider metadata remains separate and untrusted; merging it
 with catalog records is an explicit API rather than a capability-profile
 override.
 
+`mergeModelDiscovery` returns `OwnedDiscoveredCatalog`. Each joined item keeps
+the original `ProviderModelDescriptor`, optional catalog entry, and canonical
+ID distinct. `trustedProfile()`, `limits()`, and `deprecation()` read only from
+the catalog; a profile attached to live discovery is never promoted. Alias and
+canonical duplicates in one provider response fail instead of being silently
+collapsed. The owned result stores only the joined index, so call `deinit` and
+keep both the provider discovery arena and catalog entries alive while using
+it.
+
 Provider file descriptors always include `provider_name`. Their
 `uploadedFile()` view is the handle accepted by `inspectFile`, `downloadFile`,
 and `deleteFile`, and it can also be passed directly as provider-owned rich

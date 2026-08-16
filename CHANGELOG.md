@@ -21,6 +21,9 @@
 - Add a borrowed, provider-neutral model catalog with exact canonical and
   alias resolution, typed limits and deprecations, trusted capability profiles,
   collision detection, and validated replacement links.
+- Add an owned discovery-merge index that canonicalizes aliases while keeping
+  provider metadata separate from trusted catalog profiles, limits, and
+  deprecations.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

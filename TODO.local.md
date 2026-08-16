@@ -147,7 +147,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Define a provider-neutral model catalog and resolver with exact IDs,
   aliases, deprecation metadata, context/output limits, capability profiles,
   deterministic lookup, and explicit ownership.
-- [ ] Merge provider discovery results with catalog metadata without allowing
+- [x] Merge provider discovery results with catalog metadata without allowing
   provider payloads to widen trusted capability profiles.
 - [ ] Add a versioned generated compatibility snapshot plus an independent,
   deterministic update/check tool and documented review workflow.

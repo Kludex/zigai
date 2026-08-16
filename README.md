@@ -354,6 +354,10 @@ const selected = catalog.resolve("openai", "default") orelse
 The catalog borrows its entries and returns borrowed resolutions. Validation
 rejects ambiguous IDs, invalid limits, and broken replacement links.
 
+`mergeModelDiscovery` joins a live provider list to that catalog. Its result
+owns only the joined index; keep both inputs alive. Provider metadata remains
+available, but only catalog profiles are exposed as trusted capabilities.
+
 Each model exposes a `ModelProfile`. The profile tells the agent which
 capabilities are supported before it sends a paid request.
 

@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const model = @import("model.zig");
+const provider = @import("provider.zig");
 
 pub const Error = error{
     InvalidProviderName,
@@ -13,6 +14,8 @@ pub const Error = error{
     InvalidModelLimits,
     DuplicateModelIdentifier,
     InvalidModelDeprecation,
+    InvalidDiscoveredModel,
+    DuplicateDiscoveredModel,
 };
 
 pub const Limits = struct {
@@ -132,6 +135,78 @@ pub const Catalog = struct {
         return null;
     }
 };
+
+/// One borrowed provider discovery record joined to optional trusted catalog
+/// metadata. The original descriptor remains visible, but only catalog data is
+/// exposed as the trusted profile and limits.
+pub const DiscoveryItem = struct {
+    descriptor: *const provider.ModelDescriptor,
+    catalog_entry: ?*const Entry,
+    canonical_id: []const u8,
+
+    pub fn wasAlias(self: DiscoveryItem) bool {
+        return !std.mem.eql(u8, self.descriptor.id, self.canonical_id);
+    }
+
+    pub fn trustedProfile(self: DiscoveryItem) ?model.ModelProfile {
+        const entry = self.catalog_entry orelse return null;
+        return entry.profile;
+    }
+
+    pub fn limits(self: DiscoveryItem) ?Limits {
+        const entry = self.catalog_entry orelse return null;
+        return entry.limits;
+    }
+
+    pub fn deprecation(self: DiscoveryItem) ?Deprecation {
+        const entry = self.catalog_entry orelse return null;
+        return entry.deprecation;
+    }
+};
+
+/// Owns only the merged index. Every `DiscoveryItem` borrows both the provider
+/// discovery result and the catalog passed to `mergeDiscovery`.
+pub const OwnedDiscovery = struct {
+    allocator: std.mem.Allocator,
+    items: []const DiscoveryItem,
+
+    pub fn deinit(self: *OwnedDiscovery) void {
+        self.allocator.free(self.items);
+        self.* = undefined;
+    }
+};
+
+/// Joins live discovery to trusted catalog metadata without copying or
+/// promoting provider-supplied profiles. Duplicate canonical results fail
+/// instead of being silently deduplicated.
+pub fn mergeDiscovery(
+    allocator: std.mem.Allocator,
+    catalog: Catalog,
+    provider_name: []const u8,
+    discovered: []const provider.ModelDescriptor,
+) !OwnedDiscovery {
+    try catalog.validate();
+    if (!validIdentifier(provider_name)) return error.InvalidProviderName;
+    const items = try allocator.alloc(DiscoveryItem, discovered.len);
+    errdefer allocator.free(items);
+    var count: usize = 0;
+    for (discovered) |*descriptor| {
+        if (!validIdentifier(descriptor.id)) return error.InvalidDiscoveredModel;
+        const resolution = catalog.resolve(provider_name, descriptor.id);
+        const canonical_id = if (resolution) |resolved| resolved.canonicalId() else descriptor.id;
+        for (items[0..count]) |item| {
+            if (std.mem.eql(u8, item.canonical_id, canonical_id))
+                return error.DuplicateDiscoveredModel;
+        }
+        items[count] = .{
+            .descriptor = descriptor,
+            .catalog_entry = if (resolution) |resolved| resolved.entry else null,
+            .canonical_id = canonical_id,
+        };
+        count += 1;
+    }
+    return .{ .allocator = allocator, .items = items };
+}
 
 fn validateEntry(entry: Entry) Error!void {
     if (!validIdentifier(entry.provider_name)) return error.InvalidProviderName;
@@ -296,4 +371,92 @@ test "catalog validation rejects identifier collisions and invalid replacements"
         .deprecation = .{},
     }});
     try std.testing.expect(no_replacement.replacement(no_replacement.resolve("test", "old").?) == null);
+}
+
+test "discovery merge keeps provider payloads separate from trusted catalog metadata" {
+    const catalog = try Catalog.init(&.{.{
+        .provider_name = "test",
+        .id = "model-v2",
+        .aliases = &.{"latest"},
+        .deprecation = .{},
+        .limits = .{ .context_tokens = 100, .max_output_tokens = 20 },
+        .profile = .{ .supports_tools = false, .supports_streaming = true },
+    }});
+    const discovered = [_]provider.ModelDescriptor{
+        .{
+            .id = "latest",
+            .profile = .{ .supports_tools = true },
+            .metadata_json = "{\"source\":\"provider\"}",
+        },
+        .{ .id = "unknown", .profile = .{ .supports_tools = true } },
+    };
+    var merged = try mergeDiscovery(std.testing.allocator, catalog, "test", &discovered);
+    defer merged.deinit();
+    try std.testing.expectEqual(@as(usize, 2), merged.items.len);
+    try std.testing.expect(merged.items[0].wasAlias());
+    try std.testing.expectEqualStrings("model-v2", merged.items[0].canonical_id);
+    try std.testing.expect(!merged.items[0].trustedProfile().?.supports_tools);
+    try std.testing.expect(merged.items[0].trustedProfile().?.supports_streaming);
+    try std.testing.expectEqual(@as(?u64, 100), merged.items[0].limits().?.context_tokens);
+    try std.testing.expect(merged.items[0].deprecation() != null);
+    try std.testing.expectEqualStrings(
+        "{\"source\":\"provider\"}",
+        merged.items[0].descriptor.metadata_json.?,
+    );
+    try std.testing.expect(!merged.items[1].wasAlias());
+    try std.testing.expect(merged.items[1].trustedProfile() == null);
+    try std.testing.expect(merged.items[1].limits() == null);
+    try std.testing.expect(merged.items[1].deprecation() == null);
+    try std.testing.expect(merged.items[1].descriptor.profile.?.supports_tools);
+}
+
+test "discovery merge rejects malformed and duplicate canonical results" {
+    const catalog = try Catalog.init(&.{.{
+        .provider_name = "test",
+        .id = "model-v2",
+        .aliases = &.{"latest"},
+    }});
+    try std.testing.expectError(
+        error.InvalidProviderName,
+        mergeDiscovery(std.testing.allocator, catalog, "bad provider", &.{}),
+    );
+    try std.testing.expectError(
+        error.InvalidDiscoveredModel,
+        mergeDiscovery(std.testing.allocator, catalog, "test", &.{.{ .id = "bad\nmodel" }}),
+    );
+    try std.testing.expectError(
+        error.DuplicateDiscoveredModel,
+        mergeDiscovery(std.testing.allocator, catalog, "test", &.{
+            .{ .id = "model-v2" },
+            .{ .id = "latest" },
+        }),
+    );
+    const invalid_catalog = Catalog{ .entries = &.{.{
+        .provider_name = "",
+        .id = "model",
+    }} };
+    try std.testing.expectError(
+        error.InvalidProviderName,
+        mergeDiscovery(std.testing.allocator, invalid_catalog, "test", &.{}),
+    );
+}
+
+fn exerciseDiscoveryMergeAllocation(allocator: std.mem.Allocator) !void {
+    const catalog = try Catalog.init(&.{.{
+        .provider_name = "test",
+        .id = "known",
+    }});
+    var merged = try mergeDiscovery(allocator, catalog, "test", &.{
+        .{ .id = "known" },
+        .{ .id = "unknown" },
+    });
+    defer merged.deinit();
+}
+
+test "discovery merge releases every allocation" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        exerciseDiscoveryMergeAllocation,
+        .{},
+    );
 }
