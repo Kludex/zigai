@@ -5479,7 +5479,7 @@ test "tool policy failure and parallel retry branches are explicit" {
     try std.testing.expect(findToolWork(&.{work}, "missing") == null);
 
     const Stub = struct {
-        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse { // kcov-ignore: durable routing guard
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
             return error.UnusedModel;
         }
     };
@@ -6402,7 +6402,7 @@ test "durable model routes bypass local providers and replay normalized streams"
         }
     };
     const LocalModel = struct {
-        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse { // kcov-ignore: durable routing guard
             return error.LocalModelMustNotRun; // kcov-ignore: durable routing guard
         }
 

@@ -9,7 +9,7 @@ const primitives = @import("../mcp/primitives.zig");
 const transport = @import("../transport.zig");
 
 /// Current standalone MCP durable wire version.
-pub const format_version: u8 = 1;
+pub const format_version: u8 = 2;
 /// Maximum encoded request or response document size.
 pub const max_document_bytes: usize = 2 * 1024 * 1024;
 
@@ -37,6 +37,7 @@ const RequestDocument = struct {
     client_version: []const u8,
     capabilities_json: []const u8,
     max_round_trips: usize,
+    deliver_events: bool,
 };
 
 /// Arena-owned request reconstructed by a registered MCP worker.
@@ -51,6 +52,7 @@ pub const OwnedRequest = struct {
     client_version: []const u8,
     capabilities_json: []const u8,
     max_round_trips: usize,
+    deliver_events: bool,
 
     pub fn deinit(self: *OwnedRequest) void {
         self.arena.deinit();
@@ -71,6 +73,7 @@ pub fn stringifyRequest(
     client_version: []const u8,
     capabilities_json: []const u8,
     max_round_trips: usize,
+    deliver_events: bool,
 ) ![]u8 {
     for (headers) |header| if (header.isSensitive()) return Error.SensitiveMcpHeader;
     try validateJson(allocator, params_json, Error.InvalidMcpRequest);
@@ -87,6 +90,7 @@ pub fn stringifyRequest(
         .client_version = client_version,
         .capabilities_json = capabilities_json,
         .max_round_trips = max_round_trips,
+        .deliver_events = deliver_events,
     }, .{});
     errdefer allocator.free(encoded);
     if (encoded.len > max_document_bytes) return Error.InvalidMcpRequest;
@@ -124,20 +128,33 @@ pub fn parseRequest(allocator: std.mem.Allocator, source: []const u8) !OwnedRequ
         .client_version = parsed.client_version,
         .capabilities_json = parsed.capabilities_json,
         .max_round_trips = parsed.max_round_trips,
+        .deliver_events = parsed.deliver_events,
     };
 }
 
 const ResponseDocument = struct {
     version: u8,
     result_json: []const u8,
+    events_json: []const []const u8,
 };
 
 /// Serializes the final MCP result returned after all MRTR round trips.
 pub fn stringifyResponse(allocator: std.mem.Allocator, result_json: []const u8) ![]u8 {
+    return stringifyResponseWithEvents(allocator, result_json, &.{});
+}
+
+/// Serializes the final MCP result and its bounded request-scoped event batch.
+pub fn stringifyResponseWithEvents(
+    allocator: std.mem.Allocator,
+    result_json: []const u8,
+    events_json: []const []const u8,
+) ![]u8 {
     try validateJson(allocator, result_json, Error.InvalidMcpResponse);
+    for (events_json) |event_json| try validateJson(allocator, event_json, Error.InvalidMcpResponse);
     const encoded = try std.json.Stringify.valueAlloc(allocator, ResponseDocument{
         .version = format_version,
         .result_json = result_json,
+        .events_json = events_json,
     }, .{});
     errdefer allocator.free(encoded);
     if (encoded.len > max_document_bytes) return Error.InvalidMcpResponse;
@@ -148,6 +165,7 @@ pub fn stringifyResponse(allocator: std.mem.Allocator, result_json: []const u8) 
 pub const OwnedResponse = struct {
     arena: std.heap.ArenaAllocator,
     result_json: []const u8,
+    events_json: []const []const u8,
 
     pub fn deinit(self: *OwnedResponse) void {
         self.arena.deinit();
@@ -171,7 +189,12 @@ pub fn parseResponse(allocator: std.mem.Allocator, source: []const u8) !OwnedRes
     };
     if (parsed.version != format_version) return Error.UnsupportedMcpWireVersion;
     try validateJson(memory, parsed.result_json, Error.InvalidMcpResponse);
-    return .{ .arena = arena, .result_json = parsed.result_json };
+    for (parsed.events_json) |event_json| try validateJson(memory, event_json, Error.InvalidMcpResponse);
+    return .{
+        .arena = arena,
+        .result_json = parsed.result_json,
+        .events_json = parsed.events_json,
+    };
 }
 
 fn validateJson(allocator: std.mem.Allocator, source: []const u8, invalid: anyerror) !void {
@@ -198,6 +221,7 @@ test "durable MCP request and response round trip" {
         "1.2.3",
         "{\"extensions\":{}}",
         8,
+        true,
     );
     defer std.testing.allocator.free(request_json);
     var request = try parseRequest(std.testing.allocator, request_json);
@@ -212,12 +236,18 @@ test "durable MCP request and response round trip" {
     defer params.deinit();
     try std.testing.expectEqualStrings("next", params.value.cursor);
     try std.testing.expectEqual(@as(usize, 8), request.max_round_trips);
+    try std.testing.expect(request.deliver_events);
 
-    const response_json = try stringifyResponse(std.testing.allocator, "{\"tools\":[]}");
+    const response_json = try stringifyResponseWithEvents(
+        std.testing.allocator,
+        "{\"tools\":[]}",
+        &.{"{\"method\":\"notifications/tools/list_changed\"}"},
+    );
     defer std.testing.allocator.free(response_json);
     var response = try parseResponse(std.testing.allocator, response_json);
     defer response.deinit();
     try std.testing.expectEqualStrings("{\"tools\":[]}", response.result_json);
+    try std.testing.expectEqual(@as(usize, 1), response.events_json.len);
 }
 
 test "durable MCP wire rejects secrets malformed documents and versions" {
@@ -232,6 +262,7 @@ test "durable MCP wire rejects secrets malformed documents and versions" {
         "0.1.0",
         "{}",
         1,
+        false,
     ));
     try std.testing.expectError(Error.InvalidMcpRequest, stringifyRequest(
         std.testing.allocator,
@@ -244,29 +275,38 @@ test "durable MCP wire rejects secrets malformed documents and versions" {
         "0.1.0",
         "{}",
         1,
+        false,
     ));
     try std.testing.expectError(
         Error.UnsupportedMcpWireVersion,
-        parseRequest(std.testing.allocator, "{\"version\":2,\"payload_kind\":\"protocol_request\",\"method\":\"x\",\"params_json\":\"{}\",\"routing_name\":null,\"headers\":[],\"metadata\":{},\"client_name\":\"x\",\"client_version\":\"1\",\"capabilities_json\":\"{}\",\"max_round_trips\":1}"),
+        parseRequest(std.testing.allocator, "{\"version\":3,\"payload_kind\":\"protocol_request\",\"method\":\"x\",\"params_json\":\"{}\",\"routing_name\":null,\"headers\":[],\"metadata\":{},\"client_name\":\"x\",\"client_version\":\"1\",\"capabilities_json\":\"{}\",\"max_round_trips\":1,\"deliver_events\":false}"),
     );
     try std.testing.expectError(
         Error.InvalidMcpResponse,
-        parseResponse(std.testing.allocator, "{\"version\":1,\"result_json\":\"bad\"}"),
+        parseResponse(std.testing.allocator, "{\"version\":2,\"result_json\":\"bad\",\"events_json\":[]}"),
     );
     try std.testing.expectError(Error.InvalidMcpRequest, parseRequest(std.testing.allocator, "{}"));
     try std.testing.expectError(Error.InvalidMcpResponse, parseResponse(std.testing.allocator, "{}"));
     try std.testing.expectError(
         Error.UnsupportedMcpWireVersion,
-        parseResponse(std.testing.allocator, "{\"version\":2,\"result_json\":\"{}\"}"),
+        parseResponse(std.testing.allocator, "{\"version\":3,\"result_json\":\"{}\",\"events_json\":[]}"),
     );
     try std.testing.expectError(Error.InvalidMcpResponse, stringifyResponse(std.testing.allocator, "bad"));
+    try std.testing.expectError(
+        Error.InvalidMcpResponse,
+        stringifyResponseWithEvents(std.testing.allocator, "{}", &.{"bad"}),
+    );
+    try std.testing.expectError(
+        Error.InvalidMcpResponse,
+        parseResponse(std.testing.allocator, "{\"version\":2,\"result_json\":\"{}\",\"events_json\":[\"bad\"]}"),
+    );
 
     const invalid_requests = [_][]const u8{
-        "{\"version\":1,\"payload_kind\":\"protocol_request\",\"method\":\"\",\"params_json\":\"{}\",\"routing_name\":null,\"headers\":[],\"metadata\":{},\"client_name\":\"x\",\"client_version\":\"1\",\"capabilities_json\":\"{}\",\"max_round_trips\":1}",
-        "{\"version\":1,\"payload_kind\":\"protocol_request\",\"method\":\"x\",\"params_json\":\"{}\",\"routing_name\":null,\"headers\":[],\"metadata\":{},\"client_name\":\"x\",\"client_version\":\"1\",\"capabilities_json\":\"{}\",\"max_round_trips\":0}",
-        "{\"version\":1,\"payload_kind\":\"protocol_request\",\"method\":\"x\",\"params_json\":\"bad\",\"routing_name\":null,\"headers\":[],\"metadata\":{},\"client_name\":\"x\",\"client_version\":\"1\",\"capabilities_json\":\"{}\",\"max_round_trips\":1}",
-        "{\"version\":1,\"payload_kind\":\"protocol_request\",\"method\":\"x\",\"params_json\":\"{}\",\"routing_name\":null,\"headers\":[],\"metadata\":{},\"client_name\":\"x\",\"client_version\":\"1\",\"capabilities_json\":\"bad\",\"max_round_trips\":1}",
-        "{\"version\":1,\"payload_kind\":\"protocol_request\",\"method\":\"x\",\"params_json\":\"{}\",\"routing_name\":null,\"headers\":[{\"name\":\"authorization\",\"value\":\"secret\",\"sensitive\":false}],\"metadata\":{},\"client_name\":\"x\",\"client_version\":\"1\",\"capabilities_json\":\"{}\",\"max_round_trips\":1}",
+        "{\"version\":2,\"payload_kind\":\"protocol_request\",\"method\":\"\",\"params_json\":\"{}\",\"routing_name\":null,\"headers\":[],\"metadata\":{},\"client_name\":\"x\",\"client_version\":\"1\",\"capabilities_json\":\"{}\",\"max_round_trips\":1,\"deliver_events\":false}",
+        "{\"version\":2,\"payload_kind\":\"protocol_request\",\"method\":\"x\",\"params_json\":\"{}\",\"routing_name\":null,\"headers\":[],\"metadata\":{},\"client_name\":\"x\",\"client_version\":\"1\",\"capabilities_json\":\"{}\",\"max_round_trips\":0,\"deliver_events\":false}",
+        "{\"version\":2,\"payload_kind\":\"protocol_request\",\"method\":\"x\",\"params_json\":\"bad\",\"routing_name\":null,\"headers\":[],\"metadata\":{},\"client_name\":\"x\",\"client_version\":\"1\",\"capabilities_json\":\"{}\",\"max_round_trips\":1,\"deliver_events\":false}",
+        "{\"version\":2,\"payload_kind\":\"protocol_request\",\"method\":\"x\",\"params_json\":\"{}\",\"routing_name\":null,\"headers\":[],\"metadata\":{},\"client_name\":\"x\",\"client_version\":\"1\",\"capabilities_json\":\"bad\",\"max_round_trips\":1,\"deliver_events\":false}",
+        "{\"version\":2,\"payload_kind\":\"protocol_request\",\"method\":\"x\",\"params_json\":\"{}\",\"routing_name\":null,\"headers\":[{\"name\":\"authorization\",\"value\":\"secret\",\"sensitive\":false}],\"metadata\":{},\"client_name\":\"x\",\"client_version\":\"1\",\"capabilities_json\":\"{}\",\"max_round_trips\":1,\"deliver_events\":false}",
     };
     for (invalid_requests) |source| {
         const expected: anyerror = if (std.mem.indexOf(u8, source, "authorization") != null)
@@ -296,6 +336,7 @@ test "durable MCP wire rejects secrets malformed documents and versions" {
         "0.1.0",
         "{}",
         1,
+        false,
     ));
 
     const large_result = try std.testing.allocator.alloc(u8, max_document_bytes);
@@ -321,6 +362,7 @@ fn checkRequestAllocationFailure(allocator: std.mem.Allocator) !void {
         "0.1.0",
         "{}",
         4,
+        false,
     ) catch |failure| return switch (failure) {
         error.WriteFailed => error.OutOfMemory,
         else => failure,

@@ -244,15 +244,19 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
       per-run binding with a strict provider-neutral request/response codec.
     - [x] Route local function and MCP-backed tool calls with deterministic
       identities that remain stable under parallel scheduling.
-    - [ ] Route standalone MCP client requests, discovery, pagination, task
+    - [x] Route standalone MCP client requests, discovery, pagination, task
       polling, and subscriptions through explicit durable request identities.
       - [x] Route generic requests, discovery, pagination, and task polling as
         complete high-level operations, with explicit concurrent identities
         and a sequential typed-helper identity source.
-      - [ ] Route subscription events through durable event-delivery handlers
-        before enabling durable `listen` calls.
+      - [x] Route subscription events through durable event-delivery handlers
+        and enable worker-owned durable `listen` calls.
     - [ ] Route event delivery, retry delays, and approval resumption without
       duplicating callbacks, sleeps, or decisions during replay.
+      - [x] Route bounded MCP subscription event batches through worker-owned,
+        replay-deduplicated event delivery operations.
+      - [ ] Route agent lifecycle delivery, retry delays, and approval
+        resumption through their registered durable handlers.
     - [ ] Prove direct-run behavior remains unchanged and reject incomplete
       durable handler registration before the first side effect.
   - [ ] Implement and document one real workflow-engine adapter with explicit

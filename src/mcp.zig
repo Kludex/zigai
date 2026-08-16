@@ -30,6 +30,7 @@ test {
     _ = tasks;
     _ = task_store;
     _ = sse;
+    _ = CompletionReference;
 }
 
 /// Latest stable MCP protocol revision supported by ZigAI.
@@ -255,6 +256,8 @@ pub const Error = error{
     MissingMcpTaskStore,
     /// A durable MCP request attempted to persist a process-local event sink.
     DurableMcpEventsRequireRouting,
+    /// Durable subscription delivery was configured without an event worker.
+    MissingDurableEventHandler,
     /// A durable MCP runtime returned a persisted failure outcome.
     DurableOperationFailed,
     /// A durable MCP runtime returned a persisted suspension outcome.
@@ -917,6 +920,8 @@ pub const RequestOptions = struct {
     metadata: RequestMetadata = .{},
     /// Explicit identity overrides the client's sequential identity source.
     durable: ?DurableRequest = null,
+    /// Route returned request-scoped events through `event_delivery` workers.
+    deliver_events_durably: bool = false,
 };
 
 /// Classifies whether a failed subscription attempt may be re-established.
@@ -1029,13 +1034,24 @@ pub const Client = struct {
         params_json: []const u8,
         options: RequestOptions,
     ) ![]u8 {
+        const has_durable_route = options.durable != null or self.durable_requests != null;
+        if (has_durable_route and options.events != null)
+            return Error.DurableMcpEventsRequireRouting;
+        if (!has_durable_route and options.deliver_events_durably)
+            return Error.DurableMcpEventsRequireRouting;
+        if (options.deliver_events_durably) {
+            const binding = if (options.durable) |identity|
+                identity.binding
+            else
+                self.durable_requests.?.binding;
+            if (binding.handlers.event_delivery == null) return Error.MissingDurableEventHandler;
+        }
         const durable_request = options.durable orelse if (self.durable_requests) |source|
             try source.next()
         else
             null;
         if (durable_request) |identity| {
             try self.validateRequestCapabilities(allocator, method, params_json);
-            if (options.events != null) return Error.DurableMcpEventsRequireRouting;
             return self.requestDurable(allocator, method, params_json, options, identity);
         }
 
@@ -1172,6 +1188,19 @@ pub const Client = struct {
         return self.listenJson(allocator, filter_json, events);
     }
 
+    /// Runs a typed subscription whose request-scoped events are delivered by
+    /// the binding's registered durable event worker.
+    pub fn listenDurable(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        filter: primitives.SubscriptionFilter,
+        options: RequestOptions,
+    ) ![]u8 {
+        const filter_json = try filter.stringifyAlloc(allocator);
+        defer allocator.free(filter_json);
+        return self.listenJsonDurable(allocator, filter_json, options);
+    }
+
     /// Re-establishes a typed subscription from its original filter after a
     /// bounded, classified transport interruption.
     pub fn listenWithRecovery(
@@ -1197,6 +1226,21 @@ pub const Client = struct {
         const params = try std.fmt.allocPrint(allocator, "{{\"notifications\":{s}}}", .{filter_json});
         defer allocator.free(params);
         return self.requestWithOptions(allocator, methods.listen, params, .{ .events = events });
+    }
+
+    /// Raw JSON durable-subscription escape hatch. Local event sinks are
+    /// rejected; the event worker receives each versioned event payload once.
+    pub fn listenJsonDurable(
+        self: *Client,
+        allocator: std.mem.Allocator,
+        filter_json: []const u8,
+        options: RequestOptions,
+    ) ![]u8 {
+        const params = try std.fmt.allocPrint(allocator, "{{\"notifications\":{s}}}", .{filter_json});
+        defer allocator.free(params);
+        var durable_options = options;
+        durable_options.deliver_events_durably = true;
+        return self.requestWithOptions(allocator, methods.listen, params, durable_options);
     }
 
     /// Raw JSON subscription recovery escape hatch. Every recovery attempt is
@@ -1505,6 +1549,7 @@ pub const Client = struct {
             self.version,
             self.capabilities_json,
             self.max_round_trips,
+            options.deliver_events_durably,
         );
         defer allocator.free(input_json);
         var record = try identity.binding.execute(
@@ -1521,6 +1566,12 @@ pub const Client = struct {
         };
         var response = try durable_types.payloads.mcp.parseResponse(allocator, payload);
         defer response.deinit();
+        if (!options.deliver_events_durably and response.events_json.len != 0)
+            return error.InvalidMcpResponse;
+        for (response.events_json, 0..) |event_json, event_index| {
+            try validateMcpMessage(allocator, event_json);
+            try deliverDurableMcpEvent(allocator, identity, event_index, event_json);
+        }
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
         const result = try parseResponse(arena.allocator(), response.result_json);
@@ -1680,6 +1731,40 @@ pub const Client = struct {
         return self.request(allocator, method, params);
     }
 };
+
+fn deliverDurableMcpEvent(
+    allocator: std.mem.Allocator,
+    parent: DurableRequest,
+    event_index: usize,
+    event_json: []const u8,
+) !void {
+    const input_json = try durable_types.payloads.event.stringifyRequest(
+        allocator,
+        .mcp,
+        parent.sequence,
+        event_index,
+        event_json,
+    );
+    defer allocator.free(input_json);
+    const step_id = try std.fmt.allocPrint(
+        allocator,
+        "mcp.event.{d}.{d}",
+        .{ parent.sequence, event_index },
+    );
+    defer allocator.free(step_id);
+    var record = try parent.binding.execute(
+        allocator,
+        .event_delivery,
+        step_id,
+        0,
+        input_json,
+    );
+    defer record.deinit();
+    _ = durable_types.successPayload(&record) catch |failure| switch (failure) {
+        error.OperationFailed => return Error.DurableOperationFailed,
+        error.OperationSuspended => return Error.DurableOperationSuspended,
+    };
+}
 
 fn cancelTaskBestEffort(client: *Client, allocator: std.mem.Allocator, task_id: []const u8) void {
     client.cancelTask(allocator, task_id) catch {};
@@ -5762,7 +5847,7 @@ test "standalone MCP operations use explicit and sequential durable identities" 
         }
     };
     const Guard = struct {
-        fn send(_: *anyopaque, _: std.mem.Allocator, _: WireRequest) ![]const u8 {
+        fn send(_: *anyopaque, _: std.mem.Allocator, _: WireRequest) ![]const u8 { // kcov-ignore: durable routing guard
             return error.TransportMustNotRun; // kcov-ignore: durable routing guard
         }
     };
@@ -5819,7 +5904,7 @@ test "durable MCP requests reject event sinks and map terminal outcomes" {
         }
     };
     const Events = struct {
-        fn emit(_: *anyopaque, _: []const u8) !void {}
+        fn emit(_: *anyopaque, _: []const u8) !void {} // kcov-ignore: durable routing guard
     };
     var runtime_state: RuntimeState = .{};
     const binding = durable_types.Binding{
@@ -5854,6 +5939,154 @@ test "durable MCP requests reject event sinks and map terminal outcomes" {
 
     var exhausted = DurableRequestSequence.init(binding, std.math.maxInt(u64));
     try std.testing.expectError(Error.DurableSequenceExhausted, exhausted.next());
+}
+
+test "durable MCP subscriptions deduplicate worker-owned event delivery" {
+    const RuntimeState = struct {
+        request_calls: usize = 0,
+        event_calls: usize = 0,
+        event_outcome: enum { success, failure, suspended } = .success,
+
+        fn execute(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            invocation: durable_types.Invocation,
+        ) !durable_types.OwnedRecord {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const output_json = switch (invocation.kind) {
+                .mcp_request => output: {
+                    self.request_calls += 1;
+                    var request = try durable_types.payloads.mcp.parseRequest(allocator, invocation.input_json);
+                    defer request.deinit();
+                    try std.testing.expectEqualStrings(methods.listen, request.method);
+                    try std.testing.expectEqual(self.request_calls != 2, request.deliver_events);
+                    break :output try durable_types.payloads.mcp.stringifyResponseWithEvents(
+                        allocator,
+                        "{\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":\"subscription-1\"}}",
+                        &.{
+                            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":\"subscription-1\"}}}",
+                            "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/prompts/list_changed\",\"params\":{\"_meta\":{\"io.modelcontextprotocol/subscriptionId\":\"subscription-1\"}}}",
+                        },
+                    );
+                },
+                .event_delivery => output: {
+                    var event = try durable_types.payloads.event.parseRequest(allocator, invocation.input_json);
+                    defer event.deinit();
+                    try std.testing.expectEqual(durable_types.payloads.event.Source.mcp, event.source);
+                    const expected_parent: u64 = switch (self.event_calls) {
+                        0, 1 => 30,
+                        2 => 32,
+                        else => 33,
+                    };
+                    const expected_index: usize = if (self.event_calls == 1) 1 else 0;
+                    try std.testing.expectEqual(expected_parent, event.parent_sequence);
+                    try std.testing.expectEqual(expected_index, event.event_index);
+                    const expected_step = switch (self.event_calls) {
+                        0 => "mcp.event.30.0",
+                        1 => "mcp.event.30.1",
+                        2 => "mcp.event.32.0",
+                        else => "mcp.event.33.0",
+                    };
+                    try std.testing.expectEqualStrings(expected_step, invocation.step_id);
+                    self.event_calls += 1;
+                    switch (self.event_outcome) {
+                        .success => break :output try allocator.dupe(u8, "{}"),
+                        .failure => return durable_types.OwnedRecord.copy(
+                            allocator,
+                            durable_types.Record.init(invocation, .{ .failure = .{
+                                .error_name = "DeliveryFailed",
+                            } }),
+                        ),
+                        .suspended => return durable_types.OwnedRecord.copy(
+                            allocator,
+                            durable_types.Record.init(invocation, .{ .suspended = .{
+                                .reason = .provider_resume,
+                                .state_json = "{}",
+                            } }),
+                        ),
+                    }
+                },
+                else => return error.UnexpectedDurableOperation,
+            };
+            defer allocator.free(output_json);
+            return durable_types.OwnedRecord.copy(
+                allocator,
+                durable_types.Record.init(invocation, .{ .success = output_json }),
+            );
+        }
+    };
+    const Guard = struct {
+        fn send(_: *anyopaque, _: std.mem.Allocator, _: WireRequest) ![]const u8 { // kcov-ignore: durable routing guard
+            return error.TransportMustNotRun; // kcov-ignore: durable routing guard
+        }
+    };
+    var runtime_state: RuntimeState = .{};
+    const binding = durable_types.Binding{
+        .runtime = .{ .context = &runtime_state, .executeFn = RuntimeState.execute },
+        .run_id = "subscription-run",
+        .handlers = .{
+            .mcp_request = "mcp-worker",
+            .event_delivery = "event-worker",
+        },
+    };
+    var sequence = DurableRequestSequence.init(binding, 30);
+    var client = Client{
+        .transport = .{ .context = undefined, .sendFn = Guard.send },
+        .durable_requests = &sequence,
+    };
+    const result = try client.listenDurable(
+        std.testing.allocator,
+        .{ .tools_list_changed = true, .prompts_list_changed = true },
+        .{ .durable = .{ .binding = binding, .sequence = 30 } },
+    );
+    defer std.testing.allocator.free(result);
+    try std.testing.expectEqual(@as(usize, 1), runtime_state.request_calls);
+    try std.testing.expectEqual(@as(usize, 2), runtime_state.event_calls);
+    try std.testing.expectEqual(@as(u64, 30), sequence.next_sequence.load(.monotonic));
+
+    try std.testing.expectError(error.InvalidMcpResponse, client.requestWithOptions(
+        std.testing.allocator,
+        methods.listen,
+        "{\"notifications\":{\"toolsListChanged\":true}}",
+        .{ .durable = .{ .binding = binding, .sequence = 31 } },
+    ));
+    try std.testing.expectEqual(@as(usize, 2), runtime_state.request_calls);
+    try std.testing.expectEqual(@as(usize, 2), runtime_state.event_calls);
+
+    runtime_state.event_outcome = .failure;
+    try std.testing.expectError(Error.DurableOperationFailed, client.listenDurable(
+        std.testing.allocator,
+        .{ .tools_list_changed = true },
+        .{ .durable = .{ .binding = binding, .sequence = 32 } },
+    ));
+    runtime_state.event_outcome = .suspended;
+    try std.testing.expectError(Error.DurableOperationSuspended, client.listenDurable(
+        std.testing.allocator,
+        .{ .tools_list_changed = true },
+        .{ .durable = .{ .binding = binding, .sequence = 33 } },
+    ));
+    runtime_state.event_outcome = .success;
+
+    const missing_binding = durable_types.Binding{
+        .runtime = binding.runtime,
+        .run_id = "missing-events",
+        .handlers = .{ .mcp_request = "mcp-worker" },
+    };
+    var missing_sequence = DurableRequestSequence.init(missing_binding, 40);
+    client.durable_requests = &missing_sequence;
+    try std.testing.expectError(Error.MissingDurableEventHandler, client.listenDurable(
+        std.testing.allocator,
+        .{ .tools_list_changed = true },
+        .{},
+    ));
+    try std.testing.expectEqual(@as(u64, 40), missing_sequence.next_sequence.load(.monotonic));
+
+    client.durable_requests = null;
+    try std.testing.expectError(Error.DurableMcpEventsRequireRouting, client.listenDurable(
+        std.testing.allocator,
+        .{ .tools_list_changed = true },
+        .{},
+    ));
 }
 
 test "client emits self-describing requests and HTTP routing headers" {

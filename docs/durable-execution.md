@@ -156,10 +156,18 @@ It never carries transport credentials, input handlers, event sinks, or other
 process-local pointers. Sensitive per-request headers are rejected; configure
 authorization on the worker's transport.
 
-Durable subscription calls are rejected until their event sink can be replaced
-by the event-delivery handler in the next routing slice. This prevents a replay
-from invoking an ordinary callback twice.
+Durable subscriptions use `listenDurable` or `listenJsonDurable`. Their worker
+returns a bounded event batch with the final result. ZigAI validates every MCP
+notification and routes it through a distinct `event_delivery` invocation whose
+identity contains the parent request sequence and event index. The runtime
+deduplicates each delivery independently, so retrying after event 2 fails does
+not redeliver event 1. The event worker reconstructs
+`zigai.durable.payloads.event`; no process-local `EventSink` is invoked.
 
-Event, retry-delay, and approval routing, a concrete workflow-engine adapter,
-durable stream/approval resumption, and worker-restart recovery tests remain
-tracked in `TODO.local.md`.
+The event handler is preflighted before the MCP request runs. Ordinary event
+sinks on durable requests and durable event delivery on direct requests are
+both rejected rather than silently changing semantics.
+
+Agent lifecycle event, retry-delay, and approval routing, a concrete
+workflow-engine adapter, durable stream/approval resumption, and worker-restart
+recovery tests remain tracked in `TODO.local.md`.

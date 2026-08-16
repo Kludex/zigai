@@ -47,6 +47,9 @@
   versioned high-level durable operations, with explicit concurrent identities,
   sequential typed-helper identities, and rejection of persisted credentials
   or non-durable event sinks.
+- Route durable MCP subscription batches through independently deduplicated
+  event-delivery workers, with notification validation, stable parent/index
+  identities, handler preflight, and no replayed process-local callbacks.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model
