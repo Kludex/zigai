@@ -1,7 +1,10 @@
 //! Provider-neutral embedding execution and provider wire adapters.
 
 pub const base = @import("base.zig");
+pub const openai = @import("openai.zig");
+pub const google = @import("google.zig");
 
+pub const cosineSimilarity = base.cosineSimilarity;
 pub const BatchResult = base.BatchResult;
 pub const Embedder = base.Embedder;
 pub const Error = base.Error;
@@ -17,4 +20,6 @@ pub const RetryPolicy = base.RetryPolicy;
 
 test {
     _ = base;
+    _ = openai;
+    _ = google;
 }

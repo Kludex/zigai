@@ -25,7 +25,8 @@
   recursion/run/cost limits, lifecycle events, and trace correlation.
 - Add provider-neutral text embeddings with explicit query/document intent,
   bounded source-order batching, dimensions, aggregate usage, cancellation,
-  shared deadlines, full-jitter retries, and arena-owned vectors.
+  shared deadlines, full-jitter retries, arena-owned vectors, OpenAI-compatible
+  and Gemini adapters, cosine similarity, and a local retrieval example.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

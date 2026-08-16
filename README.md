@@ -237,7 +237,10 @@ recursive or unexpectedly expensive trees.
 provider-neutral model vtable. It validates byte and dimension limits before
 I/O, splits source-ordered batches, propagates cancellation and one deadline,
 and applies bounded full-jitter retries. The result owns copied inputs, vectors,
-model identity, and aggregate usage in one arena.
+model identity, and aggregate usage in one arena. `embeddings.openai.Client`
+uses any OpenAI-compatible provider; `embeddings.google.Client` uses Gemini
+`batchEmbedContents`. `examples/retrieval.zig` demonstrates a complete local
+query/document ranking loop.
 
 ## Providers
 

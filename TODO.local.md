@@ -285,7 +285,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
     and graph/agent trace correlation.
 - [x] Add multi-agent primitives for delegation, handoff, subagents, shared and
   isolated context, usage/deadline propagation, recursion limits, and tracing.
-- [ ] Add embeddings with provider-neutral requests, batching, dimensions,
+- [x] Add embeddings with provider-neutral requests, batching, dimensions,
   usage, retries, provider adapters, and a small retrieval example.
 - [ ] Add realtime speech-to-speech sessions for OpenAI, Azure, Google, and xAI
   with WebSocket/WebRTC transport boundaries, audio/transcript events, turns,

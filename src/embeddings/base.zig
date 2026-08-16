@@ -26,6 +26,8 @@ pub const Error = error{
     ResponseCountMismatch,
     ResponseDimensionsMismatch,
     InvalidVectorValue,
+    VectorDimensionsMismatch,
+    ZeroMagnitudeVector,
     RetryBackoffRequiresIo,
     RetryBudgetExceeded,
     UsageOverflow,
@@ -161,6 +163,23 @@ pub const Result = struct {
         return null;
     }
 };
+
+/// Computes cosine similarity for equal, nonzero finite vectors.
+pub fn cosineSimilarity(left: []const f32, right: []const f32) Error!f64 {
+    if (left.len == 0 or left.len != right.len) return Error.VectorDimensionsMismatch;
+    var dot: f64 = 0;
+    var left_squared: f64 = 0;
+    var right_squared: f64 = 0;
+    for (left, right) |left_value, right_value| {
+        if (!std.math.isFinite(left_value) or !std.math.isFinite(right_value))
+            return Error.InvalidVectorValue;
+        dot += @as(f64, left_value) * @as(f64, right_value);
+        left_squared += @as(f64, left_value) * @as(f64, left_value);
+        right_squared += @as(f64, right_value) * @as(f64, right_value);
+    }
+    if (left_squared == 0 or right_squared == 0) return Error.ZeroMagnitudeVector;
+    return dot / (@sqrt(left_squared) * @sqrt(right_squared));
+}
 
 /// High-level bounded embedding runner.
 pub const Embedder = struct {
@@ -383,6 +402,22 @@ fn elapsedMilliseconds(io: ?std.Io, started: ?i128) ?u64 {
     const elapsed = std.Io.Clock.awake.now(runtime).nanoseconds - start;
     if (elapsed <= 0) return 0;
     return @intCast(@divFloor(elapsed, std.time.ns_per_ms));
+}
+
+test "cosine similarity validates vectors and preserves ranking" {
+    try std.testing.expectApproxEqAbs(
+        @as(f64, 1),
+        try cosineSimilarity(&.{ 1, 0 }, &.{ 2, 0 }),
+        0.000001,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f64, 0),
+        try cosineSimilarity(&.{ 1, 0 }, &.{ 0, 1 }),
+        0.000001,
+    );
+    try std.testing.expectError(Error.VectorDimensionsMismatch, cosineSimilarity(&.{1}, &.{ 1, 2 }));
+    try std.testing.expectError(Error.ZeroMagnitudeVector, cosineSimilarity(&.{ 0, 0 }, &.{ 1, 2 }));
+    try std.testing.expectError(Error.InvalidVectorValue, cosineSimilarity(&.{std.math.nan(f32)}, &.{1}));
 }
 
 test "embedder batches in source order and owns vectors inputs and usage" {

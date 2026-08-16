@@ -373,6 +373,8 @@ than becoming a multi-agent wrapper error.
 | `ResponseCountMismatch` | A provider did not return exactly one vector per input. |
 | `ResponseDimensionsMismatch` | Provider vectors or requested dimensions do not agree. |
 | `InvalidVectorValue` | A provider returned NaN or infinity. |
+| `VectorDimensionsMismatch` | Similarity operands have different or empty dimensions. |
+| `ZeroMagnitudeVector` | Cosine similarity is undefined for an all-zero vector. |
 | `RetryBackoffRequiresIo` | Positive full-jitter delay has no `std.Io` runtime. |
 | `RetryBudgetExceeded` | Cumulative retry delay exceeds its bound or overflows. |
 | `UsageOverflow` | Aggregate request, token, latency, detail, or cost usage overflows. |

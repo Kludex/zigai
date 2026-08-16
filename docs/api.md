@@ -695,6 +695,22 @@ cumulative delay, applies full jitter, and exposes a fallible pre-retry hook.
 A positive retry delay requires `Options.io`. Losing controlled callbacks
 allocate in a disposable attempt arena and are drained before it is released.
 
+`embeddings.openai.Client` encodes OpenAI's `/embeddings` API through any
+configured `Provider`, including compatible providers. It sends float encoding,
+optional dimensions, and source inputs in one batch. Decoding restores provider
+index order, rejects missing or duplicate indexes, and maps prompt-token usage.
+
+`embeddings.google.Client` encodes Gemini `batchEmbedContents`. It distinguishes
+`RETRIEVAL_QUERY` from `RETRIEVAL_DOCUMENT`, supports document titles and
+output dimensions, and aggregates Vertex-style per-vector token statistics.
+Both adapters reuse provider authentication, request policy, cancellation,
+timeouts, safe error observation, and stable status classification.
+
+`cosineSimilarity` validates equal finite nonzero vectors before ranking.
+`examples/retrieval.zig` uses a deterministic local model to show the complete
+index, query, similarity, and best-document flow without credentials or network
+access.
+
 ### Graph snapshots
 
 Graph snapshots are opt-in. Set `Builder.definition_id` to a stable borrowed

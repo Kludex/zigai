@@ -676,6 +676,12 @@ discarded without leaking. Successful batches are copied into an independently
 owned batch before provider storage is released, then into the complete result.
 This makes partial batches unobservable and preserves source order.
 
+OpenAI-compatible and Gemini adapters reuse the authenticated `Provider`
+boundary instead of owning credentials or transports. OpenAI index fields are
+validated and restored to source order. Gemini query/document task types,
+document titles, dimensions, and per-vector usage stay inside its adapter.
+Neither provider extension leaks into the neutral request or result.
+
 Graph persistence captures only settled boundaries. A snapshot stores the
 typed state and current intermediate value as application-encoded JSON plus a
 frontier containing the next node and completed transition count. Dependencies,
