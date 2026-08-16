@@ -611,7 +611,7 @@ test "bounded executor overlaps work and preserves source order" {
                 } else break;
             }
             try control.check();
-            try (std.Io.Timeout{
+            try (std.Io.Timeout{ // kcov-ignore: overlap assertion proves the task delay
                 .duration = .{ // kcov-ignore: overlap assertion proves the task delay
                     .raw = .fromMilliseconds(5),
                     .clock = .awake,

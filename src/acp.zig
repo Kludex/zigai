@@ -575,7 +575,10 @@ pub const StdioTransport = struct {
         errdefer bytes.deinit(gpa);
         var byte: [1]u8 = undefined;
         while (true) {
-            const count = try self.child.stdout.?.readStreaming(self.io, &.{&byte});
+            const count = self.child.stdout.?.readStreaming(self.io, &.{&byte}) catch |failure| return switch (failure) {
+                error.EndOfStream => error.ACPProcessClosed,
+                else => failure,
+            };
             if (count == 0) return error.ACPProcessClosed;
             if (byte[0] == '\n') break;
             if (bytes.items.len >= self.max_line_bytes) return error.ACPMessageTooLarge;
@@ -802,7 +805,8 @@ test "ACP v2 initializes sessions prompts updates permissions filesystem termina
         "{\"jsonrpc\":\"2.0\",\"id\":90,\"method\":\"fs/read_text_file\",\"params\":{\"path\":\"/workspace/file.txt\"}}",
         "{\"jsonrpc\":\"2.0\",\"id\":91,\"method\":\"fs/write_text_file\",\"params\":{\"path\":\"/workspace/out.txt\",\"content\":\"written\"}}",
         "{\"jsonrpc\":\"2.0\",\"id\":92,\"method\":\"terminal/create\",\"params\":{\"sessionId\":\"session-1\",\"command\":\"echo\"}}",
-        "{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"session-1\",\"title\":\"Approve?\",\"options\":[{\"optionId\":\"allow-once\",\"name\":\"Allow\",\"kind\":\"allow_once\"}]}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":99,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"session-1\",\"title\":\"Approve?\",\"description\":\"Review operation\",\"options\":[{\"optionId\":\"allow-once\",\"name\":\"Allow\",\"kind\":\"allow_once\"}]}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":777,\"result\":{}}",
         "{\"jsonrpc\":\"2.0\",\"id\":5,\"result\":{}}",
         "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"session-1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"messageId\":\"m1\",\"content\":{\"type\":\"text\",\"text\":\"hello\"}}}}",
         "{\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{}}",
@@ -892,6 +896,13 @@ test "ACP stdio process follows the official initialize session and prompt fixtu
     try client.promptText("hello");
     try client.nextUpdate();
     try std.testing.expectEqual(@as(usize, 1), updates.count);
+
+    var partial = try StdioTransport.init(std.testing.io, &.{ "/bin/sh", "-c", "printf partial" });
+    defer partial.deinit();
+    try std.testing.expectError(
+        error.ACPProcessClosed,
+        partial.transport().receive(std.testing.allocator),
+    );
 }
 
 test "ACP resume reconnect renegotiates and restores the active session" {
@@ -900,11 +911,13 @@ test "ACP resume reconnect renegotiates and restores the active session" {
         index: usize = 0,
         opens: usize = 0,
         drop_next: bool = false,
+        fail_open: bool = false,
         updates: usize = 0,
 
         fn open(context: *anyopaque, _: std.mem.Allocator) !Transport {
             const self: *@This() = @ptrCast(@alignCast(context));
             self.opens += 1;
+            if (self.fail_open) return error.ConnectFailed;
             return .{
                 .context = self,
                 .send_fn = send,
@@ -954,6 +967,9 @@ test "ACP resume reconnect renegotiates and restores the active session" {
     try client.nextUpdate();
     try std.testing.expectEqual(@as(usize, 2), state.opens);
     try std.testing.expectEqual(@as(usize, 1), state.updates);
+    state.drop_next = true;
+    state.fail_open = true;
+    try std.testing.expectError(error.ACPReconnectExhausted, client.nextUpdate());
 }
 
 test "ACP remote errors and version negotiation fail explicitly" {
@@ -981,6 +997,10 @@ test "ACP remote errors and version negotiation fail explicitly" {
     client.state = .connected;
     client.next_id = 3;
     try std.testing.expectError(error.ACPRemoteError, client.initialize());
+    state.line = "{\"jsonrpc\":\"2.0\",\"id\":90,\"method\":\"unknown/method\",\"params\":{}}";
+    client.state = .connected;
+    client.next_id = 4;
+    try std.testing.expectError(error.UnsupportedACPClientMethod, client.initialize());
 }
 
 fn runACPWithAllocator(gpa: std.mem.Allocator) !void {
@@ -1002,12 +1022,14 @@ fn runACPWithAllocator(gpa: std.mem.Allocator) !void {
     const lines = [_][]const u8{
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":2,\"capabilities\":{\"session\":{}}}}",
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"session\"}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{}}",
     };
     var state = AllocationState{ .lines = &lines };
     var client = try Client.init(gpa, std.testing.io, .{ .context = &state, .open_fn = AllocationState.open });
     defer client.deinit();
     _ = try client.initialize();
     _ = try client.newSession("/workspace", "[]");
+    try client.resumeSession("session", "/workspace", "[]", true);
 }
 
 test "ACP ownership survives every allocation failure" {
@@ -1043,6 +1065,11 @@ test "ACP v1 capability compatibility path and filesystem roots fail closed" {
     };
     try std.testing.expectEqualStrings("src/main.zig", try filesystem.relativePath("/workspace/src/main.zig"));
     try std.testing.expectError(error.ACPPathOutsideRoot, filesystem.relativePath("/workspace-other/file"));
+    const bytes = try filesystem.environment.read(std.testing.allocator, "file");
+    defer std.testing.allocator.free(bytes);
+    try filesystem.environment.write("file", "value");
+    try filesystem.environment.remove("file");
+    try std.testing.expectError(error.InvalidACPMessage, parseCapabilities(std.testing.allocator, "[]"));
     const capabilities = try parseCapabilities(
         std.testing.allocator,
         "{\"protocolVersion\":1,\"capabilities\":{\"session\":{}}}",
