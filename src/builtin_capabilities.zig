@@ -345,6 +345,37 @@ test "built-in catalog exposes native and optional capability families safely" {
     try std.testing.expectEqual(@as(usize, 1), state.image_calls);
     try std.testing.expectEqual(@as(usize, 1), state.skill_calls);
     try std.testing.expectEqual(@as(usize, 1), state.search_calls);
+
+    catalog.limits.max_output_bytes = 1;
+    try std.testing.expectError(
+        error.BuiltinCapabilityOutputTooLarge,
+        browser.execute(std.testing.allocator, "{\"url\":\"https://example.com/\"}"),
+    );
+    try std.testing.expectError(
+        error.BuiltinCapabilityOutputTooLarge,
+        catalog.skill_tools[0].execute(std.testing.allocator, "{\"name\":\"review\"}"),
+    );
+    try std.testing.expectError(
+        error.BuiltinCapabilityOutputTooLarge,
+        catalog.repository_tools[0].execute(std.testing.allocator, "{\"path\":\"README.md\"}"),
+    );
+    try std.testing.expectError(
+        error.BuiltinCapabilityOutputTooLarge,
+        catalog.repository_tools[1].execute(std.testing.allocator, "{\"query\":\"needle\"}"),
+    );
+    catalog.limits.max_image_bytes = 1;
+    try std.testing.expectError(
+        error.InvalidGeneratedImage,
+        catalog.image_tools[0].execute(std.testing.allocator, "{\"prompt\":\"draw\"}"),
+    );
+    try std.testing.expectError(
+        error.InvalidBuiltinCapabilityArguments,
+        browser.execute(std.testing.allocator, "{}"),
+    );
+    try std.testing.expectError(
+        error.InvalidBuiltinCapabilityArguments,
+        browser.execute(std.testing.allocator, "{\"url\":1}"),
+    );
 }
 
 fn runCatalogWithAllocator(gpa: std.mem.Allocator) !void {
