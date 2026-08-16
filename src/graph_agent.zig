@@ -451,19 +451,26 @@ test "buffered agent nodes propagate canonical history usage dependencies and ev
     };
     const Inspector = struct {
         fn inspect(index: usize, request: model_types.ModelRequest) !void {
-            try std.testing.expectEqual(if (index == 0) @as(usize, 1) else 3, request.messages.len);
+            const expected_messages: usize = switch (index) {
+                0 => 1,
+                1 => 3,
+                else => 5,
+            };
+            try std.testing.expectEqual(expected_messages, request.messages.len);
             try std.testing.expectEqualStrings(
-                if (index == 0) "question:1" else "question:2",
+                if (index == 1) "question:2" else "question:1",
                 request.messages[request.messages.len - 1].request.parts[0].user_prompt.text,
             );
         }
     };
     const first_parts = [_]model_types.Part{.{ .text = "first" }};
     const second_parts = [_]model_types.Part{.{ .text = "second" }};
+    const third_parts = [_]model_types.Part{.{ .text = "third" }};
     var scripted = testing_types.ScriptedModel{
         .responses = &.{
             .{ .parts = &first_parts, .usage = .{ .input_tokens = 2, .output_tokens = 3 } },
             .{ .parts = &second_parts, .usage = .{ .input_tokens = 5, .output_tokens = 7 } },
+            .{ .parts = &third_parts },
         },
         .inspectFn = Inspector.inspect,
     };
@@ -508,6 +515,15 @@ test "buffered agent nodes propagate canonical history usage dependencies and ev
     try std.testing.expectEqual(std.meta.Tag(Event).start, capture.tags[0]);
     try std.testing.expectEqual(std.meta.Tag(Event).end, capture.tags[3]);
     try std.testing.expectEqual(@as(u64, 12), capture.end_tokens);
+
+    state.conversation.?.usage.requests = std.math.maxInt(usize);
+    try std.testing.expectError(error.StepFailed, graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        .{ .prompt = "question" },
+        .{},
+    ));
 }
 
 test "typed agent nodes decode application output before adapting the graph value" {
@@ -570,6 +586,99 @@ test "typed agent nodes decode application output before adapting the graph valu
         5,
         .{},
     ));
+}
+
+test "typed agent nodes report prepare agent and apply failures" {
+    const Answer = struct { value: u8 };
+    const Workflow = graph_types.Graph(u8, u8, u8, u8, u8);
+    const Capture = struct {
+        phase: ?FailurePhase = null,
+
+        fn observe(context: ?*anyopaque, event: Event) void {
+            if (event != .failure) return;
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.phase = event.failure.phase;
+        }
+    };
+    const Callbacks = struct {
+        fn boundary(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+        fn prepareFailure(
+            _: ?*anyopaque,
+            _: std.mem.Allocator,
+            _: *Workflow.Context,
+            _: *const u8,
+        ) CallbackError!Prepared {
+            return error.StepFailed;
+        }
+        fn prepare(
+            _: ?*anyopaque,
+            _: std.mem.Allocator,
+            _: *Workflow.Context,
+            _: *const u8,
+        ) CallbackError!Prepared {
+            return .{ .prompt = "prompt" };
+        }
+        fn apply(
+            context: ?*anyopaque,
+            _: std.mem.Allocator,
+            _: *Workflow.Context,
+            input: u8,
+            _: *const agent_types.TypedResult(Answer),
+        ) CallbackError!u8 {
+            if (context != null) return error.StepFailed;
+            return input;
+        }
+    };
+    const Support = struct {
+        fn runNode(node: *TypedNode(Workflow, Answer), capture: *Capture) !u8 {
+            node.observer = .{ .context = capture, .event_fn = Capture.observe };
+            var builder: Workflow.Builder = .{};
+            defer builder.deinit(std.testing.allocator);
+            try builder.setStart(.{ .run_fn = Callbacks.boundary });
+            try builder.setEnd(.{ .run_fn = Callbacks.boundary });
+            const id = try builder.addStep(std.testing.allocator, node.step("typed-agent", .{}));
+            try builder.setEntry(id);
+            try builder.finish(std.testing.allocator, id);
+            var graph = try builder.build(std.testing.allocator);
+            defer graph.deinit(std.testing.allocator);
+            var state: u8 = 0;
+            var deps: u8 = 0;
+            return graph.run(std.testing.allocator, &state, &deps, 0, .{});
+        }
+    };
+
+    var empty_script = testing_types.ScriptedModel{
+        .responses = &.{},
+        .profile = .{ .supports_json_schema_output = true },
+    };
+    const empty_agent = Agent{ .model = empty_script.model() };
+    var capture: Capture = .{};
+    var node = TypedNode(Workflow, Answer){
+        .agent = &empty_agent,
+        .prepare_fn = Callbacks.prepareFailure,
+        .apply_fn = Callbacks.apply,
+    };
+    try std.testing.expectError(error.StepFailed, Support.runNode(&node, &capture));
+    try std.testing.expectEqual(FailurePhase.prepare, capture.phase.?);
+
+    capture = .{};
+    node.prepare_fn = Callbacks.prepare;
+    try std.testing.expectError(error.StepFailed, Support.runNode(&node, &capture));
+    try std.testing.expectEqual(FailurePhase.agent, capture.phase.?);
+
+    const parts = [_]model_types.Part{.{ .text = "{\"value\":1}" }};
+    var success_script = testing_types.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .profile = .{ .supports_json_schema_output = true },
+    };
+    const success_agent = Agent{ .model = success_script.model() };
+    capture = .{};
+    node.agent = &success_agent;
+    node.context = &capture;
+    try std.testing.expectError(error.StepFailed, Support.runNode(&node, &capture));
+    try std.testing.expectEqual(FailurePhase.apply, capture.phase.?);
 }
 
 test "agent node failures retain their phase and stable graph error" {
@@ -668,6 +777,94 @@ test "agent node failures retain their phase and stable graph error" {
     node.context = null;
     try std.testing.expectError(error.Cancelled, Support.runNode(&node, &capture));
     try std.testing.expectEqualStrings("Cancelled", capture.failure_name.?);
+
+    var final_script = testing_types.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    const final_agent = Agent{ .model = final_script.model() };
+    capture = .{};
+    node.agent = &final_agent;
+    try std.testing.expectEqual(@as(u8, 0), try Support.runNode(&node, &capture));
+}
+
+fn copyConversationWithAllocator(gpa: std.mem.Allocator) !void {
+    const messages = [_]Message{
+        .{ .request = .{ .parts = &.{.{ .user_prompt = .{ .text = "prompt" } }} } },
+        .{ .response = .{ .parts = &.{.{ .text = "answer" }} } },
+    };
+    var conversation = try Conversation.init(gpa, &messages, .{
+        .details = &.{.{ .name = "accepted_tokens", .value = 1 }},
+    });
+    defer conversation.deinit();
+    try std.testing.expectEqualStrings("prompt", conversation.messages[0].request.parts[0].user_prompt.text);
+}
+
+test "conversation ownership survives every allocation failure" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        copyConversationWithAllocator,
+        .{},
+    );
+}
+
+test "buffered agent nodes release adapted output when usage propagation fails" {
+    const State = struct { conversation: Conversation };
+    const Workflow = graph_types.Graph(State, u8, u8, u8, u8);
+    const Callbacks = struct {
+        fn boundary(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+        fn prepare(
+            _: ?*anyopaque,
+            _: std.mem.Allocator,
+            run: *Workflow.Context,
+            _: *const u8,
+        ) CallbackError!Prepared {
+            return .{ .prompt = "prompt", .options = .{
+                .message_history = run.state.conversation.messages,
+            } };
+        }
+        fn apply(
+            _: ?*anyopaque,
+            gpa: std.mem.Allocator,
+            run: *Workflow.Context,
+            input: u8,
+            result: *const Agent.Result,
+        ) CallbackError!u8 {
+            const output = gpa.dupe(u8, result.output) catch return error.OutOfMemory;
+            errdefer gpa.free(output);
+            run.state.conversation.appendRun(gpa, result.messages, result.usage) catch |failure| return switch (failure) {
+                error.OutOfMemory => error.OutOfMemory,
+                error.UsageOverflow => error.StepFailed,
+            };
+            gpa.free(output);
+            return input;
+        }
+    };
+    const parts = [_]model_types.Part{.{ .text = "answer" }};
+    var scripted = testing_types.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    const agent = Agent{ .model = scripted.model() };
+    var node = BufferedNode(Workflow){
+        .agent = &agent,
+        .prepare_fn = Callbacks.prepare,
+        .apply_fn = Callbacks.apply,
+    };
+    var builder: Workflow.Builder = .{};
+    defer builder.deinit(std.testing.allocator);
+    try builder.setStart(.{ .run_fn = Callbacks.boundary });
+    try builder.setEnd(.{ .run_fn = Callbacks.boundary });
+    const id = try builder.addStep(std.testing.allocator, node.step("agent", .{}));
+    try builder.setEntry(id);
+    try builder.finish(std.testing.allocator, id);
+    var graph = try builder.build(std.testing.allocator);
+    defer graph.deinit(std.testing.allocator);
+    var state = State{ .conversation = try Conversation.init(std.testing.allocator, &.{}, .{
+        .requests = std.math.maxInt(usize),
+    }) };
+    defer state.conversation.deinit();
+    var deps: u8 = 0;
+    try std.testing.expectError(
+        error.StepFailed,
+        graph.run(std.testing.allocator, &state, &deps, 0, .{}),
+    );
 }
 
 fn runBufferedNodeWithAllocator(gpa: std.mem.Allocator) !void {
