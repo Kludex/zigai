@@ -427,6 +427,21 @@ test "embedder batches in source order and owns vectors inputs and usage" {
     try std.testing.expectEqual(@as(u64, 3), result.usage.input_tokens);
     try std.testing.expectEqualSlices(f32, result.vectors[1], result.vectorFor("four").?);
     try std.testing.expectEqual(@as(?[]const f32, null), result.vectorFor("missing"));
+
+    const Allocation = struct {
+        fn run(gpa: std.mem.Allocator) !void {
+            var allocation_state: State = .{};
+            var allocation_result = try (Embedder{ .model = .{
+                .context = &allocation_state,
+                .provider_name = "test",
+                .model_name = "batch-allocation",
+                .max_batch_size = 2,
+                .embed_fn = State.embed,
+            } }).embedDocuments(gpa, &.{ "one", "two" }, .{});
+            allocation_result.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Allocation.run, .{});
 }
 
 test "embedder retries transient batches with bounded full jitter" {
@@ -437,7 +452,7 @@ test "embedder retries transient batches with bounded full jitter" {
         fn embed(context: *anyopaque, gpa: std.mem.Allocator, _: Request) !BatchResult {
             const self: *@This() = @ptrCast(@alignCast(context));
             self.calls += 1;
-            if (self.calls == 1) return error.ProviderRateLimited;
+            if (self.calls <= 2) return error.ProviderRateLimited;
             var arena = std.heap.ArenaAllocator.init(gpa);
             errdefer arena.deinit();
             const vectors = try arena.allocator().alloc([]const f32, 1);
@@ -447,7 +462,7 @@ test "embedder retries transient batches with bounded full jitter" {
 
         fn retry(context: ?*anyopaque, event: RetryEvent) !void {
             const self: *@This() = @ptrCast(@alignCast(context.?));
-            try std.testing.expectEqual(@as(usize, 1), event.retry_number);
+            try std.testing.expectEqual(self.retries + 1, event.retry_number);
             self.retries += 1;
         }
     };
@@ -462,14 +477,56 @@ test "embedder retries transient batches with bounded full jitter" {
         .io = std.testing.io,
         .retry = .{
             .initial_delay_ms = 1,
-            .maximum_delay_ms = 1,
+            .maximum_delay_ms = 2,
             .before_retry = .{ .context = &state, .event_fn = State.retry },
         },
     });
     defer result.deinit();
-    try std.testing.expectEqual(@as(usize, 2), state.calls);
-    try std.testing.expectEqual(@as(usize, 1), state.retries);
-    try std.testing.expectEqual(@as(usize, 2), result.usage.requests);
+    try std.testing.expectEqual(@as(usize, 3), state.calls);
+    try std.testing.expectEqual(@as(usize, 2), state.retries);
+    try std.testing.expectEqual(@as(usize, 3), result.usage.requests);
+
+    const Allocation = struct {
+        fn run(gpa: std.mem.Allocator) !void {
+            var allocation_state: State = .{};
+            var allocation_result = try (Embedder{ .model = .{
+                .context = &allocation_state,
+                .provider_name = "test",
+                .model_name = "retry-allocation",
+                .max_batch_size = 1,
+                .embed_fn = State.embed,
+            } }).embedQuery(gpa, "query", .{
+                .retry = .{ .max_retries = 2, .initial_delay_ms = 0, .maximum_delay_ms = 0 },
+            });
+            allocation_result.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Allocation.run, .{});
+}
+
+test "embedder validates requested dimensions before provider I/O" {
+    var marker: u8 = 0;
+    const model = Model{
+        .context = &marker,
+        .provider_name = "test",
+        .model_name = "dimensions",
+        .max_batch_size = 1,
+        .max_dimensions = 2,
+        .embed_fn = struct {
+            fn embed(_: *anyopaque, _: std.mem.Allocator, _: Request) !BatchResult { // kcov-ignore: pre-I/O guard
+                return error.ModelMustNotRun; // kcov-ignore: pre-I/O guard
+            }
+        }.embed,
+    };
+    const embedder = Embedder{ .model = model, .limits = .{ .max_dimensions = 3 } };
+    try std.testing.expectError(
+        Error.InvalidDimensions,
+        embedder.embedQuery(std.testing.allocator, "query", .{ .dimensions = 0 }),
+    );
+    try std.testing.expectError(
+        Error.InvalidDimensions,
+        embedder.embedQuery(std.testing.allocator, "query", .{ .dimensions = 3 }),
+    );
 }
 
 fn embedWithAllocator(gpa: std.mem.Allocator) !void {
