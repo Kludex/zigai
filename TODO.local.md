@@ -238,7 +238,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   and approvals, version serialized state, and test worker restart recovery.
   - [x] Define the fixed operation vocabulary, stable idempotency identity,
     strict versioned record format, ownership rules, and runtime boundary.
-  - [ ] Route model, stream, tool, MCP, event, retry-delay, and approval-resume
+  - [x] Route model, stream, tool, MCP, event, retry-delay, and approval-resume
     operations through the runtime without changing ordinary agent runs.
     - [x] Route buffered and streaming model requests through an immutable
       per-run binding with a strict provider-neutral request/response codec.
@@ -251,14 +251,14 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
         and a sequential typed-helper identity source.
       - [x] Route subscription events through durable event-delivery handlers
         and enable worker-owned durable `listen` calls.
-    - [ ] Route event delivery, retry delays, and approval resumption without
+    - [x] Route event delivery, retry delays, and approval resumption without
       duplicating callbacks, sleeps, or decisions during replay.
       - [x] Route bounded MCP subscription event batches through worker-owned,
         replay-deduplicated event delivery operations.
       - [x] Route deterministic retry timers and paused approval/external
         decisions through their registered durable handlers.
-      - [ ] Route agent lifecycle delivery without replaying process-local
-        callbacks.
+      - [x] Expose explicit worker-owned application event delivery while
+        keeping process-local lifecycle observers outside durable semantics.
     - [x] Prove direct-run behavior remains unchanged and reject incomplete
       durable handler registration before the first side effect.
   - [ ] Implement and document one real workflow-engine adapter with explicit

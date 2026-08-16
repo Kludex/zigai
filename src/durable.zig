@@ -235,6 +235,34 @@ pub fn successPayload(record: *const OwnedRecord) error{ OperationFailed, Operat
     };
 }
 
+/// Delivers one application-owned JSON event through a replay-deduplicated
+/// worker. The caller supplies its semantic step and deterministic sequence.
+pub fn deliverEvent(
+    binding: Binding,
+    allocator: std.mem.Allocator,
+    step_id: []const u8,
+    sequence: u64,
+    event_json: []const u8,
+) !void {
+    const input_json = try payloads.event.stringifyRequest(
+        allocator,
+        .application,
+        sequence,
+        0,
+        event_json,
+    );
+    defer allocator.free(input_json);
+    var record = try binding.execute(
+        allocator,
+        .event_delivery,
+        step_id,
+        sequence,
+        input_json,
+    );
+    defer record.deinit();
+    _ = try successPayload(&record);
+}
+
 pub fn stringifyRecord(allocator: std.mem.Allocator, record: Record) ![]u8 {
     try record.validate(allocator);
     var output: std.Io.Writer.Allocating = .init(allocator);
@@ -565,7 +593,10 @@ test "durable binding selects explicit handlers and exposes success only" {
     const binding = Binding{
         .runtime = .{ .context = &marker, .executeFn = State.execute },
         .run_id = "run",
-        .handlers = .{ .model_request = "registered-model" },
+        .handlers = .{
+            .model_request = "registered-model",
+            .event_delivery = "registered-event",
+        },
     };
     const all_handlers = HandlerIds{
         .model_request = "model",
@@ -607,6 +638,14 @@ test "durable binding selects explicit handlers and exposes success only" {
     ));
     defer suspended.deinit();
     try std.testing.expectError(Error.OperationSuspended, successPayload(&suspended));
+
+    try deliverEvent(
+        binding,
+        std.testing.allocator,
+        "order.created",
+        3,
+        "{\"order_id\":\"order-1\"}",
+    );
 }
 
 test {

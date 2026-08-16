@@ -18,6 +18,7 @@ pub const Error = error{
 
 /// Closed event source vocabulary understood by registered delivery workers.
 pub const Source = enum {
+    application,
     mcp,
 };
 
@@ -105,7 +106,7 @@ fn validateEvent(allocator: std.mem.Allocator, source: []const u8) !void {
 test "durable event request round trips and rejects invalid input" {
     const encoded = try stringifyRequest(
         std.testing.allocator,
-        .mcp,
+        .application,
         7,
         2,
         "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}",
@@ -113,7 +114,7 @@ test "durable event request round trips and rejects invalid input" {
     defer std.testing.allocator.free(encoded);
     var parsed = try parseRequest(std.testing.allocator, encoded);
     defer parsed.deinit();
-    try std.testing.expectEqual(Source.mcp, parsed.source);
+    try std.testing.expectEqual(Source.application, parsed.source);
     try std.testing.expectEqual(@as(u64, 7), parsed.parent_sequence);
     try std.testing.expectEqual(@as(usize, 2), parsed.event_index);
 

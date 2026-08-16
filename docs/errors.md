@@ -103,6 +103,10 @@ cases relevant to the application, then propagate the remainder.
 | `InvalidDeferredState` | Paused state or resume JSON is malformed or incompatible. |
 | `InvalidContentRole` | A follow-up part is invalid for a request message. |
 | `InvalidToolFollowUpMessage` | A follow-up violates provider message invariants. |
+| `DurableOperationFailed` | A durable worker returned a persisted failure. |
+| `DurableOperationSuspended` | A worker suspended an operation outside a resume-aware path. |
+| `MissingDurableHandler` | A required model, timer, tool, or resume worker is not registered. |
+| `MissingDurableToolsetOrigins` | A dynamic toolset did not declare its possible durable tool families. |
 
 On-demand load failures such as `UnknownCapability`,
 `CapabilityAlreadyAvailable`, `InvalidCapabilityArguments`, and a dynamic
@@ -289,6 +293,11 @@ validation never invokes it.
 | `MissingMcpClient` | An MCP toolset has no client. |
 | `MissingMcpClientCapability` | A Tasks operation was attempted without the extension capability. |
 | `MissingMcpTaskStore` | Durable task resumption was requested without a store. |
+| `DurableMcpEventsRequireRouting` | A durable subscription used a process-local sink, or durable event delivery lacked a durable request. |
+| `MissingDurableEventHandler` | Durable subscription delivery has no registered event worker. |
+| `DurableOperationFailed` | An MCP durable worker returned a persisted failure. |
+| `DurableOperationSuspended` | An MCP durable worker returned a persisted suspension. |
+| `DurableSequenceExhausted` | A sequential MCP durable identity source exhausted `u64`. |
 | `MissingMcpSseResponse` | Streamable HTTP did not produce the required SSE stream. |
 | `SubscriptionRecoveryRequiresIo` | A nonzero subscription recovery delay has no I/O runtime. |
 | `TaskPollingRequiresIo` | A nonzero task polling delay has no I/O runtime. |

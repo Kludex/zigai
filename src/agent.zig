@@ -5935,6 +5935,10 @@ test "backoff applies full jitter, caps growth, and honors Retry-After" {
         durableBackoffDelayMilliseconds(durable_binding, policy, 2, 3, null),
     );
     try std.testing.expect(durable_delay <= 200);
+    try std.testing.expectEqual(
+        @as(u64, 350),
+        durableBackoffDelayMilliseconds(durable_binding, policy, 1, 1, 2),
+    );
     _ = durableBackoffDelayMilliseconds(durable_binding, .{
         .initial_delay_ms = std.math.maxInt(u64),
         .maximum_delay_ms = std.math.maxInt(u64),
@@ -6901,6 +6905,7 @@ test "durable approval resumption journals decisions before tool execution" {
         model_calls: usize = 0,
         approval_calls: usize = 0,
         tool_calls: usize = 0,
+        wrong_approval_call_id: bool = false,
 
         fn execute(
             context: *anyopaque,
@@ -6930,7 +6935,10 @@ test "durable approval resumption journals decisions before tool execution" {
                     try std.testing.expectEqual(durable_types.payloads.approval.Action.approve, request.proposed.action);
                     break :output try durable_types.payloads.approval.stringifyResponse(
                         allocator,
-                        request.proposed,
+                        if (self.wrong_approval_call_id)
+                            .{ .call_id = "other", .action = request.proposed.action }
+                        else
+                            request.proposed,
                     );
                 },
                 .tool_call => output: {
@@ -7005,6 +7013,17 @@ test "durable approval resumption journals decisions before tool execution" {
     try std.testing.expectEqual(@as(usize, 0), runtime_state.approval_calls);
     try std.testing.expectEqual(@as(usize, 0), runtime_state.tool_calls);
 
+    runtime_state.wrong_approval_call_id = true;
+    try std.testing.expectError(Agent.Error.InvalidDeferredState, configured.resumeRunWithOptions(
+        std.testing.allocator,
+        state_json,
+        &.{.{ .call_id = "approval-1", .action = .approve }},
+        .{ .durable = binding },
+    ));
+    runtime_state.wrong_approval_call_id = false;
+    try std.testing.expectEqual(@as(usize, 1), runtime_state.approval_calls);
+    try std.testing.expectEqual(@as(usize, 0), runtime_state.tool_calls);
+
     var resumed = try configured.resumeRunWithOptions(
         std.testing.allocator,
         state_json,
@@ -7016,7 +7035,7 @@ test "durable approval resumption journals decisions before tool execution" {
         .paused => return error.ExpectedCompleteRun,
         .complete => |completed| try std.testing.expectEqualStrings("published", completed.output),
     }
-    try std.testing.expectEqual(@as(usize, 1), runtime_state.approval_calls);
+    try std.testing.expectEqual(@as(usize, 2), runtime_state.approval_calls);
     try std.testing.expectEqual(@as(usize, 1), runtime_state.tool_calls);
 }
 

@@ -199,6 +199,18 @@ dynamic toolset without a declaration fails as
 Runs without a durable binding do not execute this preflight and retain the
 ordinary provider, timer, callback, and tool paths.
 
-Agent lifecycle event routing, a concrete workflow-engine adapter, durable
-stream/approval checkpointing, and worker-restart recovery tests remain tracked
-in `TODO.local.md`.
+## Application events and observers
+
+`zigai.durable.deliverEvent` sends an application JSON event through the
+registered `event_delivery` worker using the caller's semantic step and
+deterministic sequence. Runtime replay returns the persisted record instead of
+repeating the worker side effect.
+
+Agent lifecycle hooks are intentionally not serialized business events. They
+remain process-local observers for telemetry, diagnostics, and online
+evaluation and may observe workflow replay. Applications that require durable
+delivery must call `deliverEvent` rather than putting a business side effect in
+a lifecycle hook.
+
+A concrete workflow-engine adapter, durable stream/approval checkpointing, and
+worker-restart recovery tests remain tracked in `TODO.local.md`.

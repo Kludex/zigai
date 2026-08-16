@@ -30,6 +30,7 @@ test {
     _ = tasks;
     _ = task_store;
     _ = sse;
+    _ = ClientCapabilities;
     _ = CompletionReference;
 }
 
