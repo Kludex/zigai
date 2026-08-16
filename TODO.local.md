@@ -314,7 +314,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add explicit planning, advisory, and dynamic-workflow capabilities with
   bounded plans, user-visible revisions, approval gates, nested usage/deadline
   propagation, and trace-linked execution events.
-- [ ] Add execution-runtime services for step persistence, media/artifact
+- [x] Add execution-runtime services for step persistence, media/artifact
   stores, managed prompts, and bounded thread executors, with local interfaces
   that do not make hosted Pydantic services a core dependency.
 - [ ] Add Agent Client Protocol support with process lifecycle, initialization,
