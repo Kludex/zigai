@@ -377,6 +377,7 @@ const StreamState = struct {
     const ToolPartIndex = struct {
         id: []const u8,
         index: usize,
+        name: ?[]const u8 = null,
         ended: bool = false,
     };
 
@@ -426,6 +427,14 @@ const StreamState = struct {
                 .index = index,
                 .delta = .{ .text = .{ .content_delta = delta } },
             } });
+        } else if (std.mem.eql(u8, kind, "response.output_item.added")) {
+            const item = try common.requiredObject(root, "item");
+            const item_kind = try common.objectString(item, "type");
+            if (std.mem.eql(u8, item_kind, "function_call")) {
+                const id = try common.objectString(item, "id");
+                const name = try common.objectString(item, "name");
+                _ = try self.findOrCreateToolPart(id, name);
+            }
         } else if (std.mem.eql(u8, kind, "response.function_call_arguments.delta")) {
             self.saw_tool_call_delta = true;
             const delta = try common.objectString(object, "delta");
@@ -436,13 +445,19 @@ const StreamState = struct {
                 .delta = .{ .tool_call = .{ .id = id, .arguments_delta = delta } },
             } });
         } else if (std.mem.eql(u8, kind, "response.function_call_arguments.done")) {
+            const id = try common.objectString(object, "item_id");
+            const name = if (object.get("name")) |name_value| switch (name_value) {
+                .string => |name| name,
+                else => return error.InvalidProviderResponse,
+            } else (try self.findOrCreateToolPart(id, null)).name orelse
+                return error.InvalidProviderResponse;
             const call = model_types.ToolCall{
-                .id = try common.objectString(object, "item_id"),
-                .name = try common.objectString(object, "name"),
+                .id = id,
+                .name = name,
                 .arguments_json = try common.objectString(object, "arguments"),
             };
             try self.parts.append(self.allocator, .{ .tool_call = call });
-            const tool_part = try self.findOrCreateToolPart(call.id);
+            const tool_part = try self.findOrCreateToolPart(call.id, name);
             if (!tool_part.ended) {
                 try self.sink.emit(.{ .part_end = .{ .index = tool_part.index, .part = .{ .tool_call = call } } });
                 tool_part.ended = true;
@@ -496,17 +511,21 @@ const StreamState = struct {
     }
 
     fn ensureToolPart(self: *StreamState, id: []const u8) !usize {
-        return (try self.findOrCreateToolPart(id)).index;
+        return (try self.findOrCreateToolPart(id, null)).index;
     }
 
-    fn findOrCreateToolPart(self: *StreamState, id: []const u8) !*ToolPartIndex {
-        for (self.tool_indexes.items) |*part| if (std.mem.eql(u8, part.id, id)) return part;
+    fn findOrCreateToolPart(self: *StreamState, id: []const u8, name: ?[]const u8) !*ToolPartIndex {
+        for (self.tool_indexes.items) |*part| {
+            if (!std.mem.eql(u8, part.id, id)) continue;
+            if (name) |value| part.name = value;
+            return part;
+        }
         const index = self.next_part_index;
         self.next_part_index += 1;
-        try self.tool_indexes.append(self.allocator, .{ .id = id, .index = index });
+        try self.tool_indexes.append(self.allocator, .{ .id = id, .index = index, .name = name });
         try self.sink.emit(.{ .part_start = .{ .index = index, .part = .{ .tool_call = .{
             .id = id,
-            .name = "",
+            .name = name orelse "",
             .arguments_json = "{}",
         } } } });
         return &self.tool_indexes.items[self.tool_indexes.items.len - 1];
@@ -1546,6 +1565,55 @@ test "covers Responses API refusal, incomplete, and malformed edges" {
     try std.testing.expectEqual(model_types.FinishReason.Kind.incomplete_tool_call, incomplete_call.finish_reason.?.kind);
     const unknown = try decodeResponse(arena.allocator(), "{\"status\":\"paused\",\"output\":[]}");
     try std.testing.expectEqual(model_types.FinishReason.Kind.other, unknown.finish_reason.?.kind);
+}
+
+test "OpenAI stream preserves function identity when argument completion omits name" {
+    const Sink = struct {
+        starts: usize = 0,
+        deltas: usize = 0,
+        ends: usize = 0,
+
+        fn emit(context: *anyopaque, event: model_types.ModelStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event) {
+                .part_start => self.starts += 1,
+                .part_delta => self.deltas += 1,
+                .part_end => self.ends += 1,
+                .usage => {},
+            }
+        }
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var sink: Sink = .{};
+    var state = StreamState{
+        .allocator = arena.allocator(),
+        .sink = .{ .context = &sink, .eventFn = Sink.emit },
+        .status = 200,
+    };
+    defer state.deinit();
+
+    try StreamState.line(&state, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\"}}");
+    try StreamState.line(&state, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"call-a\",\"name\":\"weather\"}}");
+    try StreamState.line(&state, "data: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"call-a\",\"arguments\":\"{}\"}");
+    try std.testing.expectEqualStrings("weather", state.parts.items[0].tool_call.name);
+
+    try StreamState.line(&state, "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"call-b\",\"delta\":\"{\"}");
+    try StreamState.line(&state, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"function_call\",\"id\":\"call-b\",\"name\":\"lookup\"}}");
+    try StreamState.line(&state, "data: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"call-b\",\"arguments\":\"{}\"}");
+    try std.testing.expectEqualStrings("lookup", state.parts.items[1].tool_call.name);
+    try std.testing.expectEqual(@as(usize, 2), sink.starts);
+    try std.testing.expectEqual(@as(usize, 1), sink.deltas);
+    try std.testing.expectEqual(@as(usize, 2), sink.ends);
+
+    try std.testing.expectError(error.InvalidProviderResponse, StreamState.line(
+        &state,
+        "data: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"call-c\",\"name\":false,\"arguments\":\"{}\"}",
+    ));
+    try std.testing.expectError(error.InvalidProviderResponse, StreamState.line(
+        &state,
+        "data: {\"type\":\"response.function_call_arguments.done\",\"item_id\":\"call-d\",\"arguments\":\"{}\"}",
+    ));
 }
 
 test "OpenAI encodes detailed message forms and rejects lossy forms" {

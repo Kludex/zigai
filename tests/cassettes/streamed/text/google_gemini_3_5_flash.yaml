@@ -1,0 +1,24 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse"
+    headers: {}
+    body:
+      type: json
+      content:
+        contents:
+          - role: "user"
+            parts:
+              - text: "Reply with exactly: pong"
+        generationConfig:
+          maxOutputTokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        data: {"candidates": [{"content": {"parts": [{"text": "pong"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 6,"candidatesTokenCount": 1,"totalTokenCount": 106,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 6}],"thoughtsTokenCount": 99,"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "DgmBaq_mA_HxvdIP2puJ8AM"}
+
+        data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "EskECsYEARFNMg+6jjrNuL5wtLYP7TWd+A1nCWafEPhEeHZSo8xVCFC7LBfR04lGJZsk+sWL69DlxsDX12/4mWxDXgmcZ7q7h7SyvjSxD6MVHYMp918a3IOaZRFMqyx4aZ8Yfeu4xpJBPNFeBTW/eoBRn28Y333ZeHygOWoppVmX2QKPNsxB80JpBleJrlIbseOLlTTHSV5FCuZ5HKoDhtMo74T0ZjmsSc0I/OfUzfMRMD6hXc4dOs8AyVKR5Tp7GEsUFkkFH7uaPhsJ6KXBASxw4MyztyzYIiPehNVukJnj4xvjlmw1lpV3VyH8UVpByyc423+9F0yrhL23xv2ra6AlBUkJ0nFgydGFKsYnZIJzTKVnrX0XdWZYIMZcjPe4DL+8iF/LMEwC5GyAn+F9Uq8dDLrZ9UdUiEe0NB6SCAAsimSUL8TKwbnPeWUQ32o9XhZ7LwnAZIAj81lBPF+W788sIq/cBUjQWQj7AoaUZnZMJ7SMDFbm0rcF7FcaDflYetalFu40WdRiV805WgT5dA66XEWSXzlos1peZRZ/9abHLpnxX+bmyBy+xp8DyNp0VuavMKSFWZ+c7C1kGtvBK8GxG3tlJrRHQg9gwM5vhePIwENhlnOQ3ftZhXLdi8sdpO642+vsxVYG3guS5eW1aN367QSF1flow1+NNJz0cubCCOeE4iCOrjyhd+guRNYfLSi5zOQ0Tg5WsuLQrBITg8mcYa/VLgZZulM1EM2cSEX1hSJW4UE1OqBUuP00crtSpIOvG2Qh7yfncXdP"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 6,"candidatesTokenCount": 1,"totalTokenCount": 106,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 6}],"thoughtsTokenCount": 99,"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "DgmBaq_mA_HxvdIP2puJ8AM"}

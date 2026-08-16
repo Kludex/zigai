@@ -1,0 +1,24 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:streamGenerateContent?alt=sse"
+    headers: {}
+    body:
+      type: json
+      content:
+        contents:
+          - role: "user"
+            parts:
+              - text: "Reply with exactly: pong"
+        generationConfig:
+          maxOutputTokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        data: {"candidates": [{"content": {"parts": [{"text": "pong"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 6,"candidatesTokenCount": 1,"totalTokenCount": 53,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 6}],"thoughtsTokenCount": 46,"serviceTier": "standard"},"modelVersion": "gemini-3-flash-preview","responseId": "DAmBarSGIODSxN8Pto_pkAU"}
+
+        data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "Es4CCssCARFNMg852pCta4MiupuZj4g0UDMYuZJGYQFXF1BJa43pAj8+HdaWeqDO3WD7aLbqVKWLQAFukxmio1OYvJEJNy83r+lapgZSrjUCsLWuw/PS6jdiO2Pq6N7eoq/3REjjWUGqCod4suQZ7QgI+pfScf+LFB4qdjIX+OPlSwAyStYgEFcE3yk8w9zx72DFLp0F+0MuvfODMQ/DHQSWpNFTIRlZVODDeP35oR/r3apKReUc1be6rtQrEjlzG8nQwAXA+TIpMazQM9vEP4I54qr9VaBzAKO6piU9HC+EWL9F06oVZnG7bl3Bh3tE7XsvUXw8ydFR5w3abHfogGdYjwpfFcbVUPvSN+E4u8EZ9xmCXi6Mwby9dXzwffO1DIaKRMcGj3UKMKz+950j9+vUWkkTkxEHh9i5yqMh2tYkvPLW9SX7gYves7BCbGjgDg=="}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 6,"candidatesTokenCount": 1,"totalTokenCount": 53,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 6}],"thoughtsTokenCount": 46,"serviceTier": "standard"},"modelVersion": "gemini-3-flash-preview","responseId": "DAmBarSGIODSxN8Pto_pkAU"}

@@ -157,7 +157,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   and provide a secret-free command that lists runnable recordings.
 - [x] Record and replay one minimal buffered text response for every first-party
   OpenAI, Anthropic, and Google model in the manifest with an available key.
-- [ ] Record and replay streamed text plus a streamed function-tool loop for
+- [x] Record and replay streamed text plus a streamed function-tool loop for
   every applicable first-party model in the manifest with an available key.
 - [ ] Record and replay structured-output and thinking scenarios for every
   applicable first-party capability profile, asserting provider-specific wire

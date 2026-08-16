@@ -4,6 +4,7 @@ const std = @import("std");
 const zigai = @import("zigai");
 const cassettes = @import("support/cassettes.zig");
 const manifest = @import("support/cassette_manifest.zig");
+const stream_scenarios = @import("support/stream_scenarios.zig");
 
 const prompt = "Call the weather tool exactly once with city Madrid. Then reply with one short sentence.";
 const system_prompt = "Always use the weather tool before answering.";
@@ -33,17 +34,17 @@ pub fn main(init: std.process.Init) !void {
         const key = requiredCredential(init, entry, 0);
         switch (entry.route) {
             .openai => switch (entry.scenario) {
-                .buffered, .function_tool => try recordOpenAI(init, http.transport(), key, entry),
+                .buffered, .function_tool, .streamed_text, .streamed_function_tool => try recordOpenAI(init, http.transport(), key, entry),
                 .native_tool => try recordNativeOpenAI(init, http.transport(), key, entry),
                 else => unreachable,
             },
             .anthropic => switch (entry.scenario) {
-                .buffered, .function_tool => try recordAnthropic(init, http.transport(), key, entry),
+                .buffered, .function_tool, .streamed_text, .streamed_function_tool => try recordAnthropic(init, http.transport(), key, entry),
                 .native_tool => try recordNativeAnthropic(init, http.transport(), key, entry),
                 else => unreachable,
             },
             .google => switch (entry.scenario) {
-                .buffered, .function_tool => try recordGoogle(init, http.transport(), key, entry),
+                .buffered, .function_tool, .streamed_text, .streamed_function_tool => try recordGoogle(init, http.transport(), key, entry),
                 .native_tool => try recordNativeGoogle(init, http.transport(), key, entry),
                 else => unreachable,
             },
@@ -214,8 +215,38 @@ fn runFirstPartyScenario(
     switch (scenario) {
         .buffered => try runTextScenario(init, model),
         .function_tool => try runScenario(init, model),
+        .streamed_text => try runStreamTextScenario(init, model),
+        .streamed_function_tool => try runStreamToolScenario(init, model),
         else => unreachable,
     }
+}
+
+fn runStreamTextScenario(init: std.process.Init, model: zigai.Model) !void {
+    var capture: stream_scenarios.Capture = .{};
+    var result = try (zigai.Agent{
+        .model = model,
+        .io = init.io,
+        .model_settings = .{ .max_tokens = 256 },
+        .limits = .{ .max_model_requests = 2 },
+    }).runStream(init.gpa, stream_scenarios.text_prompt, capture.sink());
+    defer result.deinit();
+    try capture.validateText(result.output, result.usage);
+}
+
+fn runStreamToolScenario(init: std.process.Init, model: zigai.Model) !void {
+    var tool_calls: u8 = 0;
+    const tool = stream_scenarios.weatherTool(&tool_calls);
+    var capture: stream_scenarios.Capture = .{};
+    var result = try (zigai.Agent{
+        .model = model,
+        .io = init.io,
+        .tools = &.{tool},
+        .system_prompt = stream_scenarios.tool_system_prompt,
+        .model_settings = .{ .max_tokens = 1024 },
+        .limits = .{ .max_model_requests = 4, .max_tool_calls = 2 },
+    }).runStream(init.gpa, stream_scenarios.tool_prompt, capture.sink());
+    defer result.deinit();
+    try capture.validateTool(result.output, result.usage, tool_calls);
 }
 
 fn recordOpenAI(

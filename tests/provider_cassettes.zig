@@ -2,6 +2,7 @@ const std = @import("std");
 const zigai = @import("zigai");
 const cassettes = @import("support/cassettes.zig");
 const cassette_manifest = @import("support/cassette_manifest.zig");
+const stream_scenarios = @import("support/stream_scenarios.zig");
 
 const matrix_prompt = "Call the weather tool exactly once with city Madrid. Then reply with one short sentence.";
 const matrix_system_prompt = "Always use the weather tool before answering.";
@@ -134,6 +135,74 @@ test "real Google model cassettes replay buffered text" {
             .provider = provider_state.provider(),
         };
         try replayBufferedScenario(client.model(), &cassette);
+    }
+}
+
+test "real OpenAI model cassettes replay streamed text" {
+    inline for (cassette_manifest.openai_streamed_text) |entry| {
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+        defer cassette.deinit();
+        var provider_state = zigai.openai.Provider.init("not-recorded", cassette.transport());
+        var client = zigai.openai.Client{ .model_name = entry.model, .provider = provider_state.provider() };
+        try replayStreamTextScenario(client.model(), &cassette);
+    }
+}
+
+test "real Anthropic model cassettes replay streamed text" {
+    inline for (cassette_manifest.anthropic_streamed_text) |entry| {
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+        defer cassette.deinit();
+        var provider_state = zigai.anthropic.Provider.init("not-recorded", cassette.transport());
+        var client = zigai.anthropic.Client{
+            .model_name = entry.model,
+            .provider = provider_state.provider(),
+            .max_tokens = 128,
+        };
+        try replayStreamTextScenario(client.model(), &cassette);
+    }
+}
+
+test "real Google model cassettes replay streamed text" {
+    inline for (cassette_manifest.google_streamed_text) |entry| {
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+        defer cassette.deinit();
+        var provider_state = zigai.google.Provider.init("not-recorded", cassette.transport());
+        var client = zigai.google.Client{ .model_name = entry.model, .provider = provider_state.provider() };
+        try replayStreamTextScenario(client.model(), &cassette);
+    }
+}
+
+test "real OpenAI model cassettes replay streamed function tools" {
+    inline for (cassette_manifest.openai_streamed_tools) |entry| {
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+        defer cassette.deinit();
+        var provider_state = zigai.openai.Provider.init("not-recorded", cassette.transport());
+        var client = zigai.openai.Client{ .model_name = entry.model, .provider = provider_state.provider() };
+        try replayStreamToolScenario(client.model(), &cassette);
+    }
+}
+
+test "real Anthropic model cassettes replay streamed function tools" {
+    inline for (cassette_manifest.anthropic_streamed_tools) |entry| {
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+        defer cassette.deinit();
+        var provider_state = zigai.anthropic.Provider.init("not-recorded", cassette.transport());
+        var client = zigai.anthropic.Client{
+            .model_name = entry.model,
+            .provider = provider_state.provider(),
+            .max_tokens = 128,
+        };
+        try replayStreamToolScenario(client.model(), &cassette);
+    }
+}
+
+test "real Google model cassettes replay streamed function tools" {
+    inline for (cassette_manifest.google_streamed_tools) |entry| {
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+        defer cassette.deinit();
+        var provider_state = zigai.google.Provider.init("not-recorded", cassette.transport());
+        var client = zigai.google.Client{ .model_name = entry.model, .provider = provider_state.provider() };
+        try replayStreamToolScenario(client.model(), &cassette);
     }
 }
 
@@ -274,6 +343,34 @@ fn replayBufferedScenario(model: zigai.Model, cassette: *cassettes.ReplayTranspo
     defer result.deinit();
     try std.testing.expectEqualStrings("pong", result.output);
     try std.testing.expect(result.usage.totalTokens() > 0);
+    try std.testing.expectEqual(@as(usize, 0), cassette.remaining());
+}
+
+fn replayStreamTextScenario(model: zigai.Model, cassette: *cassettes.ReplayTransport) !void {
+    var capture: stream_scenarios.Capture = .{};
+    var result = try (zigai.Agent{
+        .model = model,
+        .model_settings = .{ .max_tokens = 256 },
+        .limits = .{ .max_model_requests = 2 },
+    }).runStream(std.testing.allocator, stream_scenarios.text_prompt, capture.sink());
+    defer result.deinit();
+    try capture.validateText(result.output, result.usage);
+    try std.testing.expectEqual(@as(usize, 0), cassette.remaining());
+}
+
+fn replayStreamToolScenario(model: zigai.Model, cassette: *cassettes.ReplayTransport) !void {
+    var tool_calls: u8 = 0;
+    const tool = stream_scenarios.weatherTool(&tool_calls);
+    var capture: stream_scenarios.Capture = .{};
+    var result = try (zigai.Agent{
+        .model = model,
+        .tools = &.{tool},
+        .system_prompt = stream_scenarios.tool_system_prompt,
+        .model_settings = .{ .max_tokens = 1024 },
+        .limits = .{ .max_model_requests = 4, .max_tool_calls = 2 },
+    }).runStream(std.testing.allocator, stream_scenarios.tool_prompt, capture.sink());
+    defer result.deinit();
+    try capture.validateTool(result.output, result.usage, tool_calls);
     try std.testing.expectEqual(@as(usize, 0), cassette.remaining());
 }
 

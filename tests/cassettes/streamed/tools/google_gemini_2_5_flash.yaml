@@ -1,0 +1,89 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+    headers: {}
+    body:
+      type: json
+      content:
+        systemInstruction:
+          parts:
+            - text: "Always call the weather tool before answering."
+        contents:
+          - role: "user"
+            parts:
+              - text: "Call the weather tool exactly once with city Madrid. After the tool result, reply with exactly: 31 C."
+        tools:
+          - functionDeclarations:
+              - name: "weather"
+                description: "Get the current weather for a city."
+                parameters:
+                  type: "object"
+                  properties:
+                    city:
+                      type: "string"
+                  required:
+                    - "city"
+        generationConfig:
+          maxOutputTokens: 1024
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        data: {"candidates": [{"content": {"parts": [{"functionCall": {"name": "weather","args": {"city": "Madrid"}},"thoughtSignature": "CiQBEU0yD5XMXafVN8Np9nCLjbjiaAMpLT7BA2UmGAqpDMIytEYKYgERTTIPpMIU7FVRxBM3snCF9BNbqlK89CcB3/d1Qv/Q/nFTT732IpXQEn4ADCG9xDMlWKH1laiRh27ziGBvAZq9/G0cqvGl7Tb/8xms8CbdYthpLo3q6ntoIqXyh2NqT6lPCmABEU0yD8qAYNczDg07ZQWoShUU6gDTQU0ks9tuLepm9lSp0leIxPBvpPcky0cvmYccTbHn6cQR3hEK0N9TdSq4E+fTSp/YjCaSjsvah2JIUBUQVBEqkl3s8seLbjcndR8="}],"role": "model"},"finishReason": "STOP","index": 0,"finishMessage": "Model generated function call(s)."}],"usageMetadata": {"promptTokenCount": 71,"candidatesTokenCount": 13,"totalTokenCount": 119,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 71}],"thoughtsTokenCount": 35,"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "XQqBapu4K8SjnsEP19fduQ4"}
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:streamGenerateContent?alt=sse"
+    headers: {}
+    body:
+      type: json
+      content:
+        systemInstruction:
+          parts:
+            - text: "Always call the weather tool before answering."
+        contents:
+          - role: "user"
+            parts:
+              - text: "Call the weather tool exactly once with city Madrid. After the tool result, reply with exactly: 31 C."
+          - role: "model"
+            parts:
+              - functionCall:
+                  name: "weather"
+                  args:
+                    city: "Madrid"
+                  id: "google-call-0"
+                thoughtSignature: "CiQBEU0yD5XMXafVN8Np9nCLjbjiaAMpLT7BA2UmGAqpDMIytEYKYgERTTIPpMIU7FVRxBM3snCF9BNbqlK89CcB3/d1Qv/Q/nFTT732IpXQEn4ADCG9xDMlWKH1laiRh27ziGBvAZq9/G0cqvGl7Tb/8xms8CbdYthpLo3q6ntoIqXyh2NqT6lPCmABEU0yD8qAYNczDg07ZQWoShUU6gDTQU0ks9tuLepm9lSp0leIxPBvpPcky0cvmYccTbHn6cQR3hEK0N9TdSq4E+fTSp/YjCaSjsvah2JIUBUQVBEqkl3s8seLbjcndR8="
+          - role: "user"
+            parts:
+              - functionResponse:
+                  name: "weather"
+                  response:
+                    result:
+                      temperature_c: 31
+                      condition: "sunny"
+                  id: "google-call-0"
+        tools:
+          - functionDeclarations:
+              - name: "weather"
+                description: "Get the current weather for a city."
+                parameters:
+                  type: "object"
+                  properties:
+                    city:
+                      type: "string"
+                  required:
+                    - "city"
+        generationConfig:
+          maxOutputTokens: 1024
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        data: {"candidates": [{"content": {"parts": [{"text": "31 C."}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 144,"candidatesTokenCount": 4,"totalTokenCount": 148,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 144}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "XgqBauLjE-bknsEPh8G-gA8"}
+
+        data: {"candidates": [{"content": {"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 144,"candidatesTokenCount": 4,"totalTokenCount": 148,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 144}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash","responseId": "XgqBauLjE-bknsEPh8G-gA8"}

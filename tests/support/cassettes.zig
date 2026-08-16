@@ -224,7 +224,7 @@ pub const ReplayTransport = struct {
         defer if (filtered_body) |value| allocator.free(value);
         if (interaction.request.method != request.method or
             !std.mem.eql(u8, interaction.request.url, filtered_url orelse request.url) or
-            !std.mem.eql(u8, interaction.request.body, filtered_body orelse request.body))
+            !bodiesMatch(allocator, interaction.request.body, filtered_body orelse request.body))
         {
             return error.CassetteMismatch;
         }
@@ -248,7 +248,10 @@ pub const ReplayTransport = struct {
         defer if (filtered_body) |value| allocator.free(value);
         if (interaction.request.method != request.method or
             !std.mem.eql(u8, interaction.request.url, filtered_url orelse request.url) or
-            !std.mem.eql(u8, interaction.request.body, filtered_body orelse request.body)) return error.CassetteMismatch;
+            !bodiesMatch(allocator, interaction.request.body, filtered_body orelse request.body))
+        {
+            return error.CassetteMismatch;
+        }
         if (request.response_header_sink) |header_sink| for (interaction.response.headers) |header| try header_sink.header(header);
         self.next_interaction += 1;
         const result = http.StreamResponse{ .status = interaction.response.status, .metadata = interaction.response.metadata };
@@ -258,6 +261,63 @@ pub const ReplayTransport = struct {
         return result;
     }
 };
+
+fn bodiesMatch(allocator: std.mem.Allocator, expected: []const u8, actual: []const u8) bool {
+    if (std.mem.eql(u8, expected, actual)) return true;
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const arena_allocator = arena.allocator();
+    const expected_json = std.json.parseFromSliceLeaky(std.json.Value, arena_allocator, expected, .{}) catch return false;
+    const actual_json = std.json.parseFromSliceLeaky(std.json.Value, arena_allocator, actual, .{}) catch return false;
+    return jsonValuesEqual(expected_json, actual_json);
+}
+
+fn jsonValuesEqual(expected: std.json.Value, actual: std.json.Value) bool {
+    return switch (expected) {
+        .null => actual == .null,
+        .bool => |value| actual == .bool and actual.bool == value,
+        .integer => |value| actual == .integer and actual.integer == value,
+        .float => |value| actual == .float and actual.float == value,
+        .number_string => |value| actual == .number_string and std.mem.eql(u8, actual.number_string, value),
+        .string => |value| actual == .string and std.mem.eql(u8, actual.string, value),
+        .array => |items| {
+            if (actual != .array or actual.array.items.len != items.items.len) return false;
+            for (items.items, actual.array.items) |expected_item, actual_item| {
+                if (!jsonValuesEqual(expected_item, actual_item)) return false;
+            }
+            return true;
+        },
+        .object => |object| {
+            if (actual != .object or actual.object.count() != object.count()) return false;
+            var iterator = object.iterator();
+            while (iterator.next()) |entry| {
+                const actual_value = actual.object.get(entry.key_ptr.*) orelse return false;
+                if (!jsonValuesEqual(entry.value_ptr.*, actual_value)) return false;
+            }
+            return true;
+        },
+    };
+}
+
+test "cassette request bodies compare JSON semantically and text exactly" {
+    try std.testing.expect(bodiesMatch(
+        std.testing.allocator,
+        "{\"object\":{\"value\":true},\"array\":[null,1,1.5,1e3,\"x\"]}",
+        "{ \"array\": [null, 1, 1.5, 1e3, \"x\"], \"object\": {\"value\": true} }",
+    ));
+    try std.testing.expect(!bodiesMatch(std.testing.allocator, "plain text", "plain  text"));
+    try std.testing.expect(!bodiesMatch(std.testing.allocator, "{\"value\":true}", "{\"value\":false}"));
+    try std.testing.expect(!bodiesMatch(std.testing.allocator, "{\"value\":1}", "{\"value\":2}"));
+    try std.testing.expect(!bodiesMatch(std.testing.allocator, "{\"value\":1.5}", "{\"value\":2.5}"));
+    try std.testing.expect(!bodiesMatch(std.testing.allocator, "{\"value\":1e3}", "{\"value\":2e3}"));
+    try std.testing.expect(!bodiesMatch(std.testing.allocator, "{\"value\":\"a\"}", "{\"value\":\"b\"}"));
+    try std.testing.expect(!bodiesMatch(std.testing.allocator, "[1]", "[1,2]"));
+    try std.testing.expect(!bodiesMatch(std.testing.allocator, "[1,2]", "[1,3]"));
+    try std.testing.expect(!bodiesMatch(std.testing.allocator, "{\"a\":1}", "{\"a\":1,\"b\":2}"));
+    try std.testing.expect(!bodiesMatch(std.testing.allocator, "{\"a\":1}", "{\"b\":1}"));
+    try std.testing.expect(jsonValuesEqual(.{ .number_string = "1e3" }, .{ .number_string = "1e3" }));
+    try std.testing.expect(!jsonValuesEqual(.{ .number_string = "1e3" }, .{ .number_string = "2e3" }));
+}
 
 /// Wraps any transport and captures successful interactions in memory. Header
 /// values are never copied, which keeps API keys out of cassettes by design.

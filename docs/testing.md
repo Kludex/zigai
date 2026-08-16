@@ -58,6 +58,12 @@ credential requirements.
 same 24-model first-party matrix. These fixtures isolate ordinary request
 encoding, response decoding, usage, and terminal-state handling from tools.
 
+`tests/cassettes/streamed/text/` and `tests/cassettes/streamed/tools/` contain
+48 real streams for that matrix. Text fixtures require decoded deltas, usage,
+one final result, and exact `pong` output. Tool fixtures additionally require
+one completed function call, one local result, final text containing the
+returned temperature, and complete two-request replay.
+
 `tests/cassettes/native/` contains real provider-native recordings: OpenAI web
 search, Anthropic web search plus fetch, Google Search plus URL Context, a
 complete Amazon Bedrock Converse function-tool loop, and an Azure OpenAI v1
@@ -98,6 +104,9 @@ zig build record-cassettes -- gemini-3.5-flash
 zig build record-cassettes -- openai/gpt-5-nano/native-tool
 zig build record-cassettes -- function-tool
 zig build record-cassettes -- first-party-buffered
+zig build record-cassettes -- first-party-streaming
+zig build record-cassettes -- streamed-text
+zig build record-cassettes -- streamed-function-tool
 zig build record-cassettes -- native-tools
 zig build record-cassettes -- native-google
 zig build record-cassettes -- native-bedrock
@@ -125,7 +134,9 @@ Azure resource endpoint.
 The files follow Cassetter v1 YAML. JSON bodies are nested YAML values, streamed
 responses use literal text blocks, and binary bodies are explicit. Headers are
 omitted by default. Review request and response content before committing a new
-cassette.
+cassette. Replay compares JSON request bodies structurally, so harmless object
+whitespace and key formatting introduced by YAML serialization do not cause a
+mismatch; non-JSON bodies remain byte-exact.
 
 File recordings use the same request filters during recording and replay.
 Multipart boundaries are normalized, uploaded bytes are replaced with an

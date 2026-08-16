@@ -1,0 +1,88 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:streamGenerateContent?alt=sse"
+    headers: {}
+    body:
+      type: json
+      content:
+        systemInstruction:
+          parts:
+            - text: "Always call the weather tool before answering."
+        contents:
+          - role: "user"
+            parts:
+              - text: "Call the weather tool exactly once with city Madrid. After the tool result, reply with exactly: 31 C."
+        tools:
+          - functionDeclarations:
+              - name: "weather"
+                description: "Get the current weather for a city."
+                parameters:
+                  type: "object"
+                  properties:
+                    city:
+                      type: "string"
+                  required:
+                    - "city"
+        generationConfig:
+          maxOutputTokens: 1024
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        data: {"candidates": [{"content": {"parts": [{"functionCall": {"name": "weather","args": {"city": "Madrid"}}}],"role": "model"},"finishReason": "STOP","index": 0,"finishMessage": "Model generated function call(s)."}],"usageMetadata": {"promptTokenCount": 71,"candidatesTokenCount": 13,"totalTokenCount": 84,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 71}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash-lite","responseId": "EwqBavWgL7_onsEP2vOhIA"}
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:streamGenerateContent?alt=sse"
+    headers: {}
+    body:
+      type: json
+      content:
+        systemInstruction:
+          parts:
+            - text: "Always call the weather tool before answering."
+        contents:
+          - role: "user"
+            parts:
+              - text: "Call the weather tool exactly once with city Madrid. After the tool result, reply with exactly: 31 C."
+          - role: "model"
+            parts:
+              - functionCall:
+                  name: "weather"
+                  args:
+                    city: "Madrid"
+                  id: "google-call-0"
+          - role: "user"
+            parts:
+              - functionResponse:
+                  name: "weather"
+                  response:
+                    result:
+                      temperature_c: 31
+                      condition: "sunny"
+                  id: "google-call-0"
+        tools:
+          - functionDeclarations:
+              - name: "weather"
+                description: "Get the current weather for a city."
+                parameters:
+                  type: "object"
+                  properties:
+                    city:
+                      type: "string"
+                  required:
+                    - "city"
+        generationConfig:
+          maxOutputTokens: 1024
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        data: {"candidates": [{"content": {"parts": [{"text": "3"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 109,"candidatesTokenCount": 1,"totalTokenCount": 110,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 109}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash-lite","responseId": "FAqBauj3EpOfnsEP6b2CgAE"}
+
+        data: {"candidates": [{"content": {"parts": [{"text": "1 C.\n"}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 109,"candidatesTokenCount": 4,"totalTokenCount": 113,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 109}],"serviceTier": "standard"},"modelVersion": "gemini-2.5-flash-lite","responseId": "FAqBauj3EpOfnsEP6b2CgAE"}

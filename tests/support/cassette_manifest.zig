@@ -3,6 +3,8 @@ const std = @import("std");
 pub const Scenario = enum {
     buffered,
     function_tool,
+    streamed_text,
+    streamed_function_tool,
     native_tool,
     rich_media,
     file_lifecycle,
@@ -11,6 +13,8 @@ pub const Scenario = enum {
         return switch (self) {
             .buffered => "buffered",
             .function_tool => "function-tool",
+            .streamed_text => "streamed-text",
+            .streamed_function_tool => "streamed-function-tool",
             .native_tool => "native-tool",
             .rich_media => "rich-media",
             .file_lifecycle => "file-lifecycle",
@@ -183,6 +187,76 @@ pub const google_buffered = [_]Entry{
 
 pub const first_party_buffered = openai_buffered ++ anthropic_buffered ++ google_buffered;
 
+pub const openai_streamed_text = [_]Entry{
+    streamEntry(openai[0], .streamed_text, "cassettes/streamed/text/openai_gpt_4o_mini.yaml"),
+    streamEntry(openai[1], .streamed_text, "cassettes/streamed/text/openai_gpt_4_1_mini.yaml"),
+    streamEntry(openai[2], .streamed_text, "cassettes/streamed/text/openai_gpt_5_nano.yaml"),
+    streamEntry(openai[3], .streamed_text, "cassettes/streamed/text/openai_gpt_5_mini.yaml"),
+    streamEntry(openai[4], .streamed_text, "cassettes/streamed/text/openai_gpt_5_4_mini.yaml"),
+    streamEntry(openai[5], .streamed_text, "cassettes/streamed/text/openai_gpt_5_5.yaml"),
+    streamEntry(openai[6], .streamed_text, "cassettes/streamed/text/openai_gpt_5_6_luna.yaml"),
+    streamEntry(openai[7], .streamed_text, "cassettes/streamed/text/openai_gpt_5_6_sol.yaml"),
+};
+
+pub const anthropic_streamed_text = [_]Entry{
+    streamEntry(anthropic[0], .streamed_text, "cassettes/streamed/text/anthropic_claude_haiku_4_5.yaml"),
+    streamEntry(anthropic[1], .streamed_text, "cassettes/streamed/text/anthropic_claude_sonnet_4_5.yaml"),
+    streamEntry(anthropic[2], .streamed_text, "cassettes/streamed/text/anthropic_claude_opus_4_5.yaml"),
+    streamEntry(anthropic[3], .streamed_text, "cassettes/streamed/text/anthropic_claude_sonnet_4_6.yaml"),
+    streamEntry(anthropic[4], .streamed_text, "cassettes/streamed/text/anthropic_claude_opus_4_6.yaml"),
+    streamEntry(anthropic[5], .streamed_text, "cassettes/streamed/text/anthropic_claude_fable_5.yaml"),
+    streamEntry(anthropic[6], .streamed_text, "cassettes/streamed/text/anthropic_claude_sonnet_5.yaml"),
+    streamEntry(anthropic[7], .streamed_text, "cassettes/streamed/text/anthropic_claude_opus_5.yaml"),
+};
+
+pub const google_streamed_text = [_]Entry{
+    streamEntry(google[0], .streamed_text, "cassettes/streamed/text/google_gemini_2_5_flash_lite.yaml"),
+    streamEntry(google[1], .streamed_text, "cassettes/streamed/text/google_gemini_2_5_flash.yaml"),
+    streamEntry(google[2], .streamed_text, "cassettes/streamed/text/google_gemini_2_5_pro.yaml"),
+    streamEntry(google[3], .streamed_text, "cassettes/streamed/text/google_gemini_3_flash_preview.yaml"),
+    streamEntry(google[4], .streamed_text, "cassettes/streamed/text/google_gemini_3_1_flash_lite.yaml"),
+    streamEntry(google[5], .streamed_text, "cassettes/streamed/text/google_gemini_3_5_flash.yaml"),
+    streamEntry(google[6], .streamed_text, "cassettes/streamed/text/google_gemini_3_1_pro_preview.yaml"),
+    streamEntry(google[7], .streamed_text, "cassettes/streamed/text/google_gemini_3_7_flash.yaml"),
+};
+
+pub const openai_streamed_tools = [_]Entry{
+    streamEntry(openai[0], .streamed_function_tool, "cassettes/streamed/tools/openai_gpt_4o_mini.yaml"),
+    streamEntry(openai[1], .streamed_function_tool, "cassettes/streamed/tools/openai_gpt_4_1_mini.yaml"),
+    streamEntry(openai[2], .streamed_function_tool, "cassettes/streamed/tools/openai_gpt_5_nano.yaml"),
+    streamEntry(openai[3], .streamed_function_tool, "cassettes/streamed/tools/openai_gpt_5_mini.yaml"),
+    streamEntry(openai[4], .streamed_function_tool, "cassettes/streamed/tools/openai_gpt_5_4_mini.yaml"),
+    streamEntry(openai[5], .streamed_function_tool, "cassettes/streamed/tools/openai_gpt_5_5.yaml"),
+    streamEntry(openai[6], .streamed_function_tool, "cassettes/streamed/tools/openai_gpt_5_6_luna.yaml"),
+    streamEntry(openai[7], .streamed_function_tool, "cassettes/streamed/tools/openai_gpt_5_6_sol.yaml"),
+};
+
+pub const anthropic_streamed_tools = [_]Entry{
+    streamEntry(anthropic[0], .streamed_function_tool, "cassettes/streamed/tools/anthropic_claude_haiku_4_5.yaml"),
+    streamEntry(anthropic[1], .streamed_function_tool, "cassettes/streamed/tools/anthropic_claude_sonnet_4_5.yaml"),
+    streamEntry(anthropic[2], .streamed_function_tool, "cassettes/streamed/tools/anthropic_claude_opus_4_5.yaml"),
+    streamEntry(anthropic[3], .streamed_function_tool, "cassettes/streamed/tools/anthropic_claude_sonnet_4_6.yaml"),
+    streamEntry(anthropic[4], .streamed_function_tool, "cassettes/streamed/tools/anthropic_claude_opus_4_6.yaml"),
+    streamEntry(anthropic[5], .streamed_function_tool, "cassettes/streamed/tools/anthropic_claude_fable_5.yaml"),
+    streamEntry(anthropic[6], .streamed_function_tool, "cassettes/streamed/tools/anthropic_claude_sonnet_5.yaml"),
+    streamEntry(anthropic[7], .streamed_function_tool, "cassettes/streamed/tools/anthropic_claude_opus_5.yaml"),
+};
+
+pub const google_streamed_tools = [_]Entry{
+    streamEntry(google[0], .streamed_function_tool, "cassettes/streamed/tools/google_gemini_2_5_flash_lite.yaml"),
+    streamEntry(google[1], .streamed_function_tool, "cassettes/streamed/tools/google_gemini_2_5_flash.yaml"),
+    streamEntry(google[2], .streamed_function_tool, "cassettes/streamed/tools/google_gemini_2_5_pro.yaml"),
+    streamEntry(google[3], .streamed_function_tool, "cassettes/streamed/tools/google_gemini_3_flash_preview.yaml"),
+    streamEntry(google[4], .streamed_function_tool, "cassettes/streamed/tools/google_gemini_3_1_flash_lite.yaml"),
+    streamEntry(google[5], .streamed_function_tool, "cassettes/streamed/tools/google_gemini_3_5_flash.yaml"),
+    streamEntry(google[6], .streamed_function_tool, "cassettes/streamed/tools/google_gemini_3_1_pro_preview.yaml"),
+    streamEntry(google[7], .streamed_function_tool, "cassettes/streamed/tools/google_gemini_3_7_flash.yaml"),
+};
+
+pub const first_party_streaming =
+    openai_streamed_text ++ anthropic_streamed_text ++ google_streamed_text ++
+    openai_streamed_tools ++ anthropic_streamed_tools ++ google_streamed_tools;
+
 pub const compatible = [_]Entry{
     compatibleEntry("azure-openai/gpt-4o/buffered", "azure-openai", "gpt-4o", "cassettes/providers/azure_openai_gpt_4o.yaml", .azure_openai, "", .azure_openai, true),
     compatibleEntry("bedrock/openai.gpt-oss-20b/buffered", "bedrock", "openai.gpt-oss-20b", "cassettes/providers/bedrock_gpt_oss_20b.yaml", .bedrock, "", .bedrock, false),
@@ -219,7 +293,7 @@ pub const files = [_]Entry{
     scenarioEntry("google/files/file-lifecycle", "google", "", .file_lifecycle, "cassettes/files/google.yaml", .google_files, .google),
 };
 
-pub const all = openai ++ anthropic ++ google ++ first_party_buffered ++ compatible ++ native ++ rich ++ files;
+pub const all = openai ++ anthropic ++ google ++ first_party_buffered ++ first_party_streaming ++ compatible ++ native ++ rich ++ files;
 
 fn modelEntry(
     id: []const u8,
@@ -238,6 +312,18 @@ fn bufferedEntry(comptime model_entry: Entry, cassette: []const u8) Entry {
         .provider = model_entry.provider,
         .model = model_entry.model,
         .scenario = .buffered,
+        .cassette = cassette,
+        .route = model_entry.route,
+        .credentials = model_entry.credentials,
+    };
+}
+
+fn streamEntry(comptime model_entry: Entry, scenario: Scenario, cassette: []const u8) Entry {
+    return .{
+        .id = std.fmt.comptimePrint("{s}/{s}/{s}", .{ model_entry.provider, model_entry.model, scenario.name() }),
+        .provider = model_entry.provider,
+        .model = model_entry.model,
+        .scenario = scenario,
         .cassette = cassette,
         .route = model_entry.route,
         .credentials = model_entry.credentials,
@@ -297,6 +383,7 @@ pub fn matches(entry: Entry, filter: []const u8) bool {
         return true;
     }
     if (std.mem.eql(u8, filter, "first-party-buffered") and isFirstPartyBuffered(entry)) return true;
+    if (std.mem.eql(u8, filter, "first-party-streaming") and isFirstPartyStreaming(entry)) return true;
     if (isNativeRecording(entry) and
         (std.mem.eql(u8, filter, "native-tools") or matchesNativeProvider(entry, filter)))
     {
@@ -306,6 +393,14 @@ pub fn matches(entry: Entry, filter: []const u8) bool {
         .native_tool => false,
         .rich_media => std.mem.eql(u8, filter, "rich-content") or prefixedProvider(entry, filter, "rich-"),
         .file_lifecycle => std.mem.eql(u8, filter, "files") or prefixedProvider(entry, filter, "files-"),
+        else => false,
+    };
+}
+
+fn isFirstPartyStreaming(entry: Entry) bool {
+    if (entry.scenario != .streamed_text and entry.scenario != .streamed_function_tool) return false;
+    return switch (entry.route) {
+        .openai, .anthropic, .google => true,
         else => false,
     };
 }
@@ -401,6 +496,8 @@ test "manifest selection supports stable and compatibility filters" {
     try std.testing.expect(selected(rich[1], &.{"rich-content"}));
     try std.testing.expect(selected(openai_buffered[0], &.{"first-party-buffered"}));
     try std.testing.expect(!selected(compatible[0], &.{"first-party-buffered"}));
+    try std.testing.expect(selected(openai_streamed_text[0], &.{"first-party-streaming"}));
+    try std.testing.expect(selected(google_streamed_tools[7], &.{"streamed-function-tool"}));
     try std.testing.expect(selected(entry, &.{"--list"}));
 }
 

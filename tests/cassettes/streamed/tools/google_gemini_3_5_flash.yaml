@@ -1,0 +1,93 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse"
+    headers: {}
+    body:
+      type: json
+      content:
+        systemInstruction:
+          parts:
+            - text: "Always call the weather tool before answering."
+        contents:
+          - role: "user"
+            parts:
+              - text: "Call the weather tool exactly once with city Madrid. After the tool result, reply with exactly: 31 C."
+        tools:
+          - functionDeclarations:
+              - name: "weather"
+                description: "Get the current weather for a city."
+                parameters:
+                  type: "object"
+                  properties:
+                    city:
+                      type: "string"
+                  required:
+                    - "city"
+        generationConfig:
+          maxOutputTokens: 1024
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        data: {"candidates": [{"content": {"parts": [{"functionCall": {"name": "weather","args": {"city": "Madrid"},"id": "call_2136996"},"thoughtSignature": "EuEDCt4DARFNMg+o06CZP8o2XjtsX3GGb4A/4c6UJkemJdl5OyNlFgEfkROqXvxAx7hKdFVPsVYrKy6xeJ0muX0XIAXZGubN4NEyz/1/U4ZZuzmQc6EoBIN/KeUMxRZrKlw2n15gtVIR6W2thiWnTSaafoJ0sCl7MRDebT3rTp+47DOsgrjOYDUDvaszQjH3s+X/PwVE+g77jNxQirlYVoxuK2ItNsswRAGk0PHXzyezt/o9S3hQOvIlUFVMJXMI+oYNrf7t85rofQBFIPTZSSaPGrsl/atBALEmWO2mjhEbbN7uwg48ZFOtXiOL8+X1aCoHBty+i7YpmJm+OVOg1CnDkEis/8rvHEMwK5QLVCypIe6iMHNhfnuTnS5Nzl7cmLUSie97o17R+BII0N1gPDk4UwYNUtSfmrvRuzBZQbiLT5JUtLGDzDxqtvrGnOCgB1Tvf5eKeDhjR2tr6Yr9J/ZYhp4PBQKC1O0hZvuLOBQmoqV9OZVn/vTUi/2yhBPIdbVPuUS1e7yNLdDrWKTRHwOI0TYjuea/SGIhqcflzTsHfXJZOp15W1FY7fuS3LqmhFku2NkuLPPz6FaqNHtiDvRkuwMc1aDOYmEhuXEeAJ5r3ZA3LLYftBtRLqaKk22xLldYcQ=="}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 76,"candidatesTokenCount": 14,"totalTokenCount": 168,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 76}],"thoughtsTokenCount": 78,"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "cQqBapG1C5v4nsEPuYW_WA"}
+
+        data: {"candidates": [{"content": {"parts": [{"text": ""}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 76,"candidatesTokenCount": 14,"totalTokenCount": 168,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 76}],"thoughtsTokenCount": 78,"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "cQqBapG1C5v4nsEPuYW_WA"}
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:streamGenerateContent?alt=sse"
+    headers: {}
+    body:
+      type: json
+      content:
+        systemInstruction:
+          parts:
+            - text: "Always call the weather tool before answering."
+        contents:
+          - role: "user"
+            parts:
+              - text: "Call the weather tool exactly once with city Madrid. After the tool result, reply with exactly: 31 C."
+          - role: "model"
+            parts:
+              - functionCall:
+                  name: "weather"
+                  args:
+                    city: "Madrid"
+                  id: "call_2136996"
+                thoughtSignature: |-
+                  EuEDCt4DARFNMg+o06CZP8o2XjtsX3GGb4A/4c6UJkemJdl5OyNlFgEfkROqXvxAx7hKdFVPsVYrKy6xeJ0muX0XIAXZGubN4NEyz/1/U4ZZuzmQc6EoBIN/KeUMxRZrKlw2n15gtVIR6W2thiWnTSaafoJ0sCl7MRDebT3rTp+47DOsgrjOYDUDvaszQjH3s+X/PwVE+g77jNxQirlYVoxuK2ItNsswRAGk0PHXzyezt/o9S3hQOvIlUFVMJXMI+oYNrf7t85rofQBFIPTZSSaPGrsl/atBALEmWO2mjhEbbN7uwg48ZFOtXiOL8+X1aCoHBty+i7YpmJm+OVOg1CnDkEis/8rvHEMwK5QLVCypIe6iMHNhfnuTnS5Nzl7cmLUSie97o17R+BII0N1gPDk4UwYNUtSfmrvRuzBZQbiLT5JUtLGDzDxqtvrGnOCgB1Tvf5eKeDhjR2tr6Yr9J/ZYhp4PBQKC1O0hZvuLOBQmoqV9OZVn/vTUi/2yhBPIdbVPuUS1e7yNLdDrWKTRHwOI0TYjuea/SGIhqcflzTsHfXJZOp15W1FY7fuS3LqmhFku2NkuLPPz6FaqNHtiDvRkuwMc1aDOYmEhuXEeAJ5r3ZA3LLYftBtRLqaKk22xLldYcQ==
+              - text: ""
+          - role: "user"
+            parts:
+              - functionResponse:
+                  name: "weather"
+                  response:
+                    result:
+                      temperature_c: 31
+                      condition: "sunny"
+                  id: "call_2136996"
+        tools:
+          - functionDeclarations:
+              - name: "weather"
+                description: "Get the current weather for a city."
+                parameters:
+                  type: "object"
+                  properties:
+                    city:
+                      type: "string"
+                  required:
+                    - "city"
+        generationConfig:
+          maxOutputTokens: 1024
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        data: {"candidates": [{"content": {"parts": [{"text": "31 C."}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 111,"candidatesTokenCount": 4,"totalTokenCount": 160,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 111}],"thoughtsTokenCount": 45,"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "cgqBauqyHfuInsEPnJGK2AQ"}
+
+        data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "EpwCCpkCARFNMg9AfjIB7KdAVEg5srtI7F9u1/a03ADKTKlKL51sXA5+FHMVB9zeXtfsbiljZnLHvEAc7PS/QXcRRF1ASIQRxNLNgVNrpZmrd3rFB0wNqBcnDlKXMb0pO9sfp/mAOOZ8zN2qtvMK4UPBbLk6O7Rrzc2fWLrdSluYPp2VUGazZ+ZYiBRzMkuXQN9S4HLEvQAd50iWEF1Xh710sqnsXw8n0jJa352C0P589V/pM4Vb+QmADKqEHcG1/BLgKKTtL/8eQOeW9FgrsLsDivJlWdNcStbN9YGxlXr++4R7mznC5JJcWwuAPLXiqGPJAZGhypUntvj5DexOpN0yK8TjdfqzvyqrSGUENHSJmkh94RKbwM+7MrwXNuM="}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 189,"candidatesTokenCount": 4,"totalTokenCount": 238,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 189}],"thoughtsTokenCount": 45,"serviceTier": "standard"},"modelVersion": "gemini-3.5-flash","responseId": "cgqBauqyHfuInsEPnJGK2AQ"}

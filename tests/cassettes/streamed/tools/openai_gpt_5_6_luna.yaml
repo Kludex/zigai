@@ -1,0 +1,158 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.openai.com/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-5.6-luna"
+        input:
+          - type: "message"
+            role: "system"
+            content: "Always call the weather tool before answering."
+          - type: "message"
+            role: "user"
+            content: "Call the weather tool exactly once with city Madrid. After the tool result, reply with exactly: 31 C."
+        tools:
+          - type: "function"
+            name: "weather"
+            description: "Get the current weather for a city."
+            parameters:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+        max_output_tokens: 1024
+        stream: true
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "29999"
+      x-ratelimit-remaining-tokens:
+      - "179999487"
+      x-request-id:
+      - "req_c1837c718cc04816bf1925247e6193b7"
+    body:
+      type: text
+      content: |+
+        event: response.created
+        data: {"type":"response.created","response":{"id":"resp_0865ce40f9c99806006a8109f478cc8194aad70c18708fc96a","object":"response","created_at":1786841588,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":true,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Get the current weather for a city.","name":"weather","output_schema":null,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":0}
+
+        event: response.in_progress
+        data: {"type":"response.in_progress","response":{"id":"resp_0865ce40f9c99806006a8109f478cc8194aad70c18708fc96a","object":"response","created_at":1786841588,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":true,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Get the current weather for a city.","name":"weather","output_schema":null,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":1}
+
+        event: response.output_item.added
+        data: {"type":"response.output_item.added","item":{"id":"rs_0865ce40f9c99806006a8109f4cd688194be570bb26cb3a4bd","type":"reasoning","content":[],"encrypted_content":"gAAAAABqgQn0Bs1Ms-Y6dWMGLiFBHPjC4lPZlBFXJqmILPSRbpX91_gPd_gitEKYSSf6KlfFJPRCX4ld3xQTct4QvKPG_KZQPx7HVvNAmCEZ0xYex-iCZ-tny6_bCmKcGwreHWpJFlt9x3I5lD67IvtCpBEAneGTsD1Vahw9DZQyTjhBRp-Hoc_ftZlb5sVlxT1jDsMfZXVp9LoThGhKs8cfpKF2vmeiBd6yQ-93aQ73f7MjYDtqQyQWZ7Zl6z2RTB_99CGDvtO39lGJEIi1mct-BcwDK2Y6zbxR7kQ0FlTqImxPsnB0nDMSZoo5zYyFZVepv7Q0yp_K1FRKWqIGTRi1hjLhIHt2MsgQ-gwqyHCxosJLxrm7vAjnUeKaw-ZjRuZb4IvoasJX5n4REXAJKUEQrVm2HxayKtp0-Km8hmY3t41Kdg5eHZOKPNFVFQPGa9pzkm35lQ3SW5CYNGb7_jDimO7uRYUrCqXw7DwtdVZzMUSPPWkt7OY64AEw293Nq6ybWQCqQkmkqLucycD_-qGbqIafKHsm49WFaSHh9Usnjg1uHyJtAyRZw-QSZHUWtY2giMJE4FRkJItBVr6ueoeMXfGYFXDSNA2LPEXdxQXDmO9ojzCIB9lskOLdUKfWIEeddlGIm9_mHah7hfB8ehIfzsN9zAl6uDffO1g3dFM0QjHVqJWVPbFRP9eHun1I1d_pnWXVDUXhWvso201KXa5wlQbfv5yX6w3AQwfBPtt8OANyzV-TB0HFgMQcBWOvFctOATfXPt5A8Y9isr8iIHVYHt0QmKW19zgtEOi2ZXArmY5Ep7IRjjnQn1f8i-QGaVYeUZMTYczkirgpV8kYtbpPSy_c4BV8c1wHW3FaZ5f9ce7UrOplJrq1siRP_STY4iZcAUKebPqDpQgISm5F2KmHVZbaxzjJio9x2jUQSOZ-bqEfBFg2tgM83T-sMKgeJV5KCFKRGB0bMcmLcKgGZAkQiFR8T6D2wd74gHdY1F_APWMp10JVR7oJH7xk5qgutK0zPPbJUfzH_5Ip0gi8jUPjjGNav-ZiyYalfkAp4117Lb0R1i3sfuLZOPWYZfLo09ECdVmD3HwNhoOAChaU4h0co-hCuG7ShrYEBQscKZix4lAdH6ZKN3wNWFOA4G5F3g1X0rcUZsaJe-ecEMXzNyysyZ8oLKLBYA==","summary":[]},"output_index":0,"sequence_number":2}
+
+        event: response.output_item.done
+        data: {"type":"response.output_item.done","item":{"id":"rs_0865ce40f9c99806006a8109f4cd688194be570bb26cb3a4bd","type":"reasoning","content":[],"encrypted_content":"gAAAAABqgQn1vZ_1FVKXbJE6-Ki_5bnkf6ukROldoJFWhCpfOS6kTB0vt3uckm2ACwEssXEe1JEt6QrIXzbaC1fXuSJoLyo0v5D-ehAQJkoh0IbCwk68aOWS3d3LgVLNPRQzE4iQ1iPI3SqKkdObbrXxzT-Jjbxn6s7vbAnwLDX3TsLHd3lvUGCp24akHbdw3ZmsVHl1YeLy0tjlSdpwT3wn8rVKIbwDiX7IUviax_ckxfQkcZXveeugAcRKZIyTyZYjimKtb9wfQj8bhi52k3B1ehJQGj8WdqScLpytZTaHg0DpOC4ACP3hAp37oBgBhtF27AP30JHvI_GZoMLAP0-MKjNZMixHWlYisdAjqI9wYYOb7ICXX9AW1sRYFHu7AbHspHaAzBdgHZ5SbJmqYFZcVc3YhayjjDMEGw_k6UaC8nT-vscuaC4te8BGyYXukAfdqw4bByAq6oHyZ1GWSgQDevJWY3b9xhrTDWVP--jiAhYpv_hXUGJ0BOrZ2osvXQP2hrw0BW0zH4gQC3ZmmzCMVaHX2vX-5mq82QVn6FUs6nkfLbCtlAh1IPWcevOUcFBCcQLWfeqfLnRVuD_blin-xd9z47LHGIbSpmiON8UCQkFl5aiE7WpNarZjbSMJxQ60kvIuSVWU8we8QUI_IFFk9eAd1bsyZCk_Efu5dIqEwQDQH723LZTXhLncfM9WLQFObgLY1Bsuw_CNs2Bi0HrHAvTCpBOIMj7IVqF3o1BBtOTCwLA2-2tw_dMStN8-5zgfRgOSfYjSRS6euuIDGCoSX2RoWah_GlFdkgjd3ggbdu5QrbjSWzBk38nvHnR_XiM86gzzb3_4oQm3UCjnVFFdTMN3PQxkvYK1qY_YXaV85MyCGfC31PwLYPtrXmnJkJpzaP4H1tO6WjQ2HnNHlVd7bUYQXuYczZgIc3bXKEn2NpSXnHib682clCsH_wDcoeo7jhPGTu1E7JGDcKUbBqd_wliA6OEtdZzIUJhKbWy1zmMYtyARHVJkNomJgNWDJqF5ERRLTQSBdzVOhaZgBQ-gaK_hZKaAT7UditL47exTHGE2XKXcUwZnzlIR43rWB-7hqn7yA9EfWls_BaP3PnSsh3VeuFZOC2UcZG4Wcp2MDRW1CK1-jiDXGcjnbntYqDsp_ZqRhVzfmH4WuDs2H9xk43F8wliuoHYz9nokyNAFhzD1vGq6n3EKkx69lVTrnCHttcNutyx6","summary":[]},"output_index":0,"sequence_number":3}
+
+        event: response.output_item.added
+        data: {"type":"response.output_item.added","item":{"id":"fc_0865ce40f9c99806006a8109f50b4c819499209bf96829697b","type":"function_call","status":"in_progress","arguments":"","call_id":"call_esACOsVpPJJCEyZ2f1tnZQMH","name":"weather"},"output_index":1,"sequence_number":4}
+
+        event: response.function_call_arguments.delta
+        data: {"type":"response.function_call_arguments.delta","delta":"{\"","item_id":"fc_0865ce40f9c99806006a8109f50b4c819499209bf96829697b","obfuscation":"YgPU9YMoApKXRS","output_index":1,"sequence_number":5}
+
+        event: response.function_call_arguments.delta
+        data: {"type":"response.function_call_arguments.delta","delta":"city","item_id":"fc_0865ce40f9c99806006a8109f50b4c819499209bf96829697b","obfuscation":"2RSaGW32CIjd","output_index":1,"sequence_number":6}
+
+        event: response.function_call_arguments.delta
+        data: {"type":"response.function_call_arguments.delta","delta":"\":\"","item_id":"fc_0865ce40f9c99806006a8109f50b4c819499209bf96829697b","obfuscation":"KG99oJkDFJCCk","output_index":1,"sequence_number":7}
+
+        event: response.function_call_arguments.delta
+        data: {"type":"response.function_call_arguments.delta","delta":"Madrid","item_id":"fc_0865ce40f9c99806006a8109f50b4c819499209bf96829697b","obfuscation":"3MWmEgdwOg","output_index":1,"sequence_number":8}
+
+        event: response.function_call_arguments.delta
+        data: {"type":"response.function_call_arguments.delta","delta":"\"}","item_id":"fc_0865ce40f9c99806006a8109f50b4c819499209bf96829697b","obfuscation":"cgwXb65DkAc6yN","output_index":1,"sequence_number":9}
+
+        event: response.function_call_arguments.done
+        data: {"type":"response.function_call_arguments.done","arguments":"{\"city\":\"Madrid\"}","item_id":"fc_0865ce40f9c99806006a8109f50b4c819499209bf96829697b","output_index":1,"sequence_number":10}
+
+        event: response.output_item.done
+        data: {"type":"response.output_item.done","item":{"id":"fc_0865ce40f9c99806006a8109f50b4c819499209bf96829697b","type":"function_call","status":"completed","arguments":"{\"city\":\"Madrid\"}","call_id":"call_esACOsVpPJJCEyZ2f1tnZQMH","name":"weather"},"output_index":1,"sequence_number":11}
+
+        event: response.completed
+        data: {"type":"response.completed","response":{"id":"resp_0865ce40f9c99806006a8109f478cc8194aad70c18708fc96a","object":"response","created_at":1786841588,"status":"completed","background":false,"completed_at":1786841589,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[{"id":"rs_0865ce40f9c99806006a8109f4cd688194be570bb26cb3a4bd","type":"reasoning","content":[],"encrypted_content":"gAAAAABqgQn1qbB-TqtOwgjz3WikzOc0Hb9kguv87Wu-BRKKw4I6gQtla8tZ8iruJ7QQXpgFlYtT3ga1HWVAoHPm1vYaSg2b5z1ToVTidtCCPPbpbQCMCDdNbpEa-DacEAqsrMHFdCf20hXtupdKsL9MHQIacOVuQlzGb7q-Lz5GpaJS2hikJhKV5paRfmnZLQGAZTaPQlszAJng2Hwy--50tnzYTw1qIbEdus3bSw5flF0QrbA_xKf3Y5thatnuD2-MNCaCGVpY21y0BJXkSsmuCq84CF69y60EThWmb7ub8QMTbk5Ak1WsUG15zNcHwsbOUkDxA9UVLJwgoV39uqqVoSUPzit8eMSpPqWc_hR1lEpvQohrp33WaVU0H73inaVyqRurO8Qw-TzXKSIPccltoWnIk2Sg8Xtb-EfJvNMsw6MvG22RlcdFgs2yLFIfCX_70z5evy6MUym3gcsZ9nQiyKPPoeUv0UJH2m0PUGnF0F1FODnnnHnUJunO7v0pas0q3r2nGEiP49Q_cglQ287PQkmg2wrnKfzqRrXdoVH24z2_LO-8K5QL-TkyWpWmqSGr-DH4QEZqQDjbjLyNBAoS_fhNzIY69d8BUyizfhoP3RVSWHRGtaGKx2zGk0IExEQSvAZVgPr8ODKEQutKlu6w5A2SGvY3LZlhLH9mFfNDuvIpYEL1uXMDInPPPpWUnfp2OA4cfTCgbFY-xTcCNSI5VAwifuJvFTUGFqsUeHfbprUX8g44FncjEzrjdFeVO6yImQmpvPEMjqg5OKNg44Yzt7EK_UFGY4-XoErvgVbP0zCrwSr1qbqCeVYwE46EqjkSXEydlFUWsMtrMTUIB8AWY9SVaOHig-T_iYDFBjik6nqtzUy4zQ5IrYJThC0aekMdgsjOFqfD-PIUY7gIwJzgBD9sST5aXtTMpULiabh8L83juBkjS9z2gsLVzvTIn8X2M8IhYSRhKC7uRm00pLgvQy7wyWTFlQawsIoRyrxGE8e8yb6XU38XRNc4kZ7hvvIwBNQpVwZvn_FrmNSI0YTmbE3o3bdlRJMN8ahFJb2QfiQrR99Dc17jfS0RM67WkuvS18MaJdVCtqQ0YGkjupsxNT-gkfoBP-g43CHbOVbPMfYVUcAM_4rsNZsSPgGMDn3hiaQ0d2m_lCDTxXNku-BbfESn2KYzK5sLiuRj93Z1Gqdr_ByVTFlhf8bYfQS7nUgaIu4cV3Io","summary":[]},{"id":"fc_0865ce40f9c99806006a8109f50b4c819499209bf96829697b","type":"function_call","status":"completed","arguments":"{\"city\":\"Madrid\"}","call_id":"call_esACOsVpPJJCEyZ2f1tnZQMH","name":"weather"}],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"default","store":true,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Get the current weather for a city.","name":"weather","output_schema":null,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":{"input_tokens":78,"input_tokens_details":{"cache_write_tokens":0,"cached_tokens":0},"output_tokens":29,"output_tokens_details":{"reasoning_tokens":10},"total_tokens":107},"user":null,"metadata":{}},"sequence_number":12}
+- request:
+    method: POST
+    uri: "https://api.openai.com/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-5.6-luna"
+        input:
+          - type: "message"
+            role: "system"
+            content: "Always call the weather tool before answering."
+          - type: "message"
+            role: "user"
+            content: "Call the weather tool exactly once with city Madrid. After the tool result, reply with exactly: 31 C."
+          - type: "function_call"
+            call_id: "fc_0865ce40f9c99806006a8109f50b4c819499209bf96829697b"
+            name: "weather"
+            arguments: "{\"city\":\"Madrid\"}"
+          - type: "function_call_output"
+            call_id: "fc_0865ce40f9c99806006a8109f50b4c819499209bf96829697b"
+            output: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            name: "weather"
+            description: "Get the current weather for a city."
+            parameters:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+        max_output_tokens: 1024
+        stream: true
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "29999"
+      x-ratelimit-remaining-tokens:
+      - "179999448"
+      x-request-id:
+      - "req_fa7680ddab274e0790c55c467e68043f"
+    body:
+      type: text
+      content: |+
+        event: response.created
+        data: {"type":"response.created","response":{"id":"resp_0ee941ce0a5071d8006a8109f577f08194a1039638340360d2","object":"response","created_at":1786841589,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":true,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Get the current weather for a city.","name":"weather","output_schema":null,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":0}
+
+        event: response.in_progress
+        data: {"type":"response.in_progress","response":{"id":"resp_0ee941ce0a5071d8006a8109f577f08194a1039638340360d2","object":"response","created_at":1786841589,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":true,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Get the current weather for a city.","name":"weather","output_schema":null,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":1}
+
+        event: response.output_item.added
+        data: {"type":"response.output_item.added","item":{"id":"msg_0ee941ce0a5071d8006a8109f5c2ac819489b56f664e171cbc","type":"message","status":"in_progress","content":[],"phase":"final_answer","role":"assistant"},"output_index":0,"sequence_number":2}
+
+        event: response.content_part.added
+        data: {"type":"response.content_part.added","content_index":0,"item_id":"msg_0ee941ce0a5071d8006a8109f5c2ac819489b56f664e171cbc","output_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""},"sequence_number":3}
+
+        event: response.output_text.delta
+        data: {"type":"response.output_text.delta","content_index":0,"delta":"31","item_id":"msg_0ee941ce0a5071d8006a8109f5c2ac819489b56f664e171cbc","logprobs":[],"obfuscation":"SmzxAlaEv2MxB5","output_index":0,"sequence_number":4}
+
+        event: response.output_text.delta
+        data: {"type":"response.output_text.delta","content_index":0,"delta":" C","item_id":"msg_0ee941ce0a5071d8006a8109f5c2ac819489b56f664e171cbc","logprobs":[],"obfuscation":"awrRj1avMoDlfP","output_index":0,"sequence_number":5}
+
+        event: response.output_text.done
+        data: {"type":"response.output_text.done","content_index":0,"item_id":"msg_0ee941ce0a5071d8006a8109f5c2ac819489b56f664e171cbc","logprobs":[],"output_index":0,"sequence_number":6,"text":"31 C"}
+
+        event: response.content_part.done
+        data: {"type":"response.content_part.done","content_index":0,"item_id":"msg_0ee941ce0a5071d8006a8109f5c2ac819489b56f664e171cbc","output_index":0,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":"31 C"},"sequence_number":7}
+
+        event: response.output_item.done
+        data: {"type":"response.output_item.done","item":{"id":"msg_0ee941ce0a5071d8006a8109f5c2ac819489b56f664e171cbc","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"31 C"}],"phase":"final_answer","role":"assistant"},"output_index":0,"sequence_number":8}
+
+        event: response.completed
+        data: {"type":"response.completed","response":{"id":"resp_0ee941ce0a5071d8006a8109f577f08194a1039638340360d2","object":"response","created_at":1786841589,"status":"completed","background":false,"completed_at":1786841589,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"gpt-5.6-luna","moderation":null,"output":[{"id":"msg_0ee941ce0a5071d8006a8109f5c2ac819489b56f664e171cbc","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"31 C"}],"phase":"final_answer","role":"assistant"}],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"24h","reasoning":{"context":"all_turns","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"default","store":true,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Get the current weather for a city.","name":"weather","output_schema":null,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"top_logprobs":0,"top_p":0.98,"truncation":"disabled","usage":{"input_tokens":116,"input_tokens_details":{"cache_write_tokens":0,"cached_tokens":0},"output_tokens":6,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":122},"user":null,"metadata":{}},"sequence_number":9}

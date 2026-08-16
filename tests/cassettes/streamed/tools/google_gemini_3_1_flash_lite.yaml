@@ -1,0 +1,94 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:streamGenerateContent?alt=sse"
+    headers: {}
+    body:
+      type: json
+      content:
+        systemInstruction:
+          parts:
+            - text: "Always call the weather tool before answering."
+        contents:
+          - role: "user"
+            parts:
+              - text: "Call the weather tool exactly once with city Madrid. After the tool result, reply with exactly: 31 C."
+        tools:
+          - functionDeclarations:
+              - name: "weather"
+                description: "Get the current weather for a city."
+                parameters:
+                  type: "object"
+                  properties:
+                    city:
+                      type: "string"
+                  required:
+                    - "city"
+        generationConfig:
+          maxOutputTokens: 1024
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        data: {"candidates": [{"content": {"parts": [{"functionCall": {"name": "weather","args": {"city": "Madrid"},"id": "call_859075"},"thoughtSignature": "EnEKbwERTTIPzCd/J57uTUe88NAZ9DmWUNzgo22lccaLj/jh3xejpBPsuwDCEYTQzSQipUpFuW5ba/WyBnkv0av37PTAVW564VDtwQpezIgAX5Y6OI3UyvPwGBA9kXu2tKaGct+8ZspwQIDGvdoKowE/eQ=="}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 76,"candidatesTokenCount": 14,"totalTokenCount": 90,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 76}],"serviceTier": "standard"},"modelVersion": "gemini-3.1-flash-lite","responseId": "cAqBasn9Arr4nsEPqPajyQM"}
+
+        data: {"candidates": [{"content": {"parts": [{"text": ""}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 76,"candidatesTokenCount": 14,"totalTokenCount": 90,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 76}],"serviceTier": "standard"},"modelVersion": "gemini-3.1-flash-lite","responseId": "cAqBasn9Arr4nsEPqPajyQM"}
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:streamGenerateContent?alt=sse"
+    headers: {}
+    body:
+      type: json
+      content:
+        systemInstruction:
+          parts:
+            - text: "Always call the weather tool before answering."
+        contents:
+          - role: "user"
+            parts:
+              - text: "Call the weather tool exactly once with city Madrid. After the tool result, reply with exactly: 31 C."
+          - role: "model"
+            parts:
+              - functionCall:
+                  name: "weather"
+                  args:
+                    city: "Madrid"
+                  id: "call_859075"
+                thoughtSignature: "EnEKbwERTTIPzCd/J57uTUe88NAZ9DmWUNzgo22lccaLj/jh3xejpBPsuwDCEYTQzSQipUpFuW5ba/WyBnkv0av37PTAVW564VDtwQpezIgAX5Y6OI3UyvPwGBA9kXu2tKaGct+8ZspwQIDGvdoKowE/eQ=="
+              - text: ""
+          - role: "user"
+            parts:
+              - functionResponse:
+                  name: "weather"
+                  response:
+                    result:
+                      temperature_c: 31
+                      condition: "sunny"
+                  id: "call_859075"
+        tools:
+          - functionDeclarations:
+              - name: "weather"
+                description: "Get the current weather for a city."
+                parameters:
+                  type: "object"
+                  properties:
+                    city:
+                      type: "string"
+                  required:
+                    - "city"
+        generationConfig:
+          maxOutputTokens: 1024
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        data: {"candidates": [{"content": {"parts": [{"text": "31"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 111,"candidatesTokenCount": 2,"totalTokenCount": 113,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 111}],"serviceTier": "standard"},"modelVersion": "gemini-3.1-flash-lite","responseId": "cAqBaoHXJ-mpnsEPgfKnoQo"}
+
+        data: {"candidates": [{"content": {"parts": [{"text": " C."}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 111,"candidatesTokenCount": 4,"totalTokenCount": 115,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 111}],"serviceTier": "standard"},"modelVersion": "gemini-3.1-flash-lite","responseId": "cAqBaoHXJ-mpnsEPgfKnoQo"}
+
+        data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "EnEKbwERTTIPCllUkEop9bKpujnfNJ7oEubLXFUPqvAPMwIT5U7uBarBvK0aB6U2+qg5HbEON216d8vTqVdSpa5/e5Cj9xFeySJjgM1iBa497+OEUweuIfAxoYlr01gJndnzm1Z882tzPIjGWAy7mrupKQ=="}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 111,"candidatesTokenCount": 4,"totalTokenCount": 115,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 111}],"serviceTier": "standard"},"modelVersion": "gemini-3.1-flash-lite","responseId": "cAqBaoHXJ-mpnsEPgfKnoQo"}

@@ -1,0 +1,24 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:streamGenerateContent?alt=sse"
+    headers: {}
+    body:
+      type: json
+      content:
+        contents:
+          - role: "user"
+            parts:
+              - text: "Reply with exactly: pong"
+        generationConfig:
+          maxOutputTokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        data: {"candidates": [{"content": {"parts": [{"text": "pong"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 6,"candidatesTokenCount": 1,"totalTokenCount": 7,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 6}],"serviceTier": "standard"},"modelVersion": "gemini-3.1-flash-lite","responseId": "DQmBaqadHd-lvdIPreGw-QQ"}
+
+        data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "EnEKbwERTTIPGnLUTz2efr3E/FkhaPSEOnHCKa2UYETHgyZaUdfmKLAZ2eJ36jisjEe25fFsxScnxb9sks3kd1xUaukvEc3mCfDsOc3Cd1e6QdDl8Rq8oqUcO1MB8RhEHc1SCT16CQ0kkqr4JodA7kM+Vg=="}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 6,"candidatesTokenCount": 1,"totalTokenCount": 7,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 6}],"serviceTier": "standard"},"modelVersion": "gemini-3.1-flash-lite","responseId": "DQmBaqadHd-lvdIPreGw-QQ"}

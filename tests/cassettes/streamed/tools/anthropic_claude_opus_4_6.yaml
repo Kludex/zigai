@@ -1,0 +1,151 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.anthropic.com/v1/messages"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "claude-opus-4-6"
+        max_tokens: 1024
+        system:
+          - type: "text"
+            text: "Always call the weather tool before answering."
+        messages:
+          - role: "user"
+            content:
+              - type: "text"
+                text: "Call the weather tool exactly once with city Madrid. After the tool result, reply with exactly: 31 C."
+        tools:
+          - name: "weather"
+            description: "Get the current weather for a city."
+            input_schema:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+        stream: true
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "19999"
+      x-ratelimit-remaining-tokens:
+      - "12000000"
+      x-request-id:
+      - "req_011Ce5WkCo9wiaX2d7RGkDRU"
+    body:
+      type: text
+      content: |+
+        event: message_start
+        data: {"type":"message_start","message":{"model":"claude-opus-4-6","id":"msg_011Ce5WkDEwqruy1w4XH9oWq","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":598,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":25,"service_tier":"standard","inference_geo":"global"}}   }
+
+        event: content_block_start
+        data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_01D4cr6FLVRfV2nLynWD13Dc","name":"weather","input":{},"caller":{"type":"direct"}}  }
+
+        event: ping
+        data: {"type": "ping"}
+
+        event: content_block_delta
+        data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":""}              }
+
+        event: content_block_delta
+        data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"city\""}           }
+
+        event: content_block_delta
+        data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":": \""}        }
+
+        event: content_block_delta
+        data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"Mad"}          }
+
+        event: content_block_delta
+        data: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"rid\"}"}   }
+
+        event: content_block_stop
+        data: {"type":"content_block_stop","index":0 }
+
+        event: message_delta
+        data: {"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":598,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":52}  }
+
+        event: message_stop
+        data: {"type":"message_stop"         }
+- request:
+    method: POST
+    uri: "https://api.anthropic.com/v1/messages"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "claude-opus-4-6"
+        max_tokens: 1024
+        system:
+          - type: "text"
+            text: "Always call the weather tool before answering."
+        messages:
+          - role: "user"
+            content:
+              - type: "text"
+                text: "Call the weather tool exactly once with city Madrid. After the tool result, reply with exactly: 31 C."
+          - role: "assistant"
+            content:
+              - type: "tool_use"
+                id: "toolu_01D4cr6FLVRfV2nLynWD13Dc"
+                name: "weather"
+                input:
+                  city: "Madrid"
+          - role: "user"
+            content:
+              - type: "tool_result"
+                tool_use_id: "toolu_01D4cr6FLVRfV2nLynWD13Dc"
+                content: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - name: "weather"
+            description: "Get the current weather for a city."
+            input_schema:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+        stream: true
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "19999"
+      x-ratelimit-remaining-tokens:
+      - "12000000"
+      x-request-id:
+      - "req_011Ce5WkPFTKwYbNZWY9KxM4"
+    body:
+      type: text
+      content: |+
+        event: message_start
+        data: {"type":"message_start","message":{"model":"claude-opus-4-6","id":"msg_011Ce5WkPgzYd5bPA2sfP8gb","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":673,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":1,"service_tier":"standard","inference_geo":"global"}}              }
+
+        event: content_block_start
+        data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}   }
+
+        event: ping
+        data: {"type": "ping"}
+
+        event: content_block_delta
+        data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"31"} }
+
+        event: content_block_delta
+        data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" C."}      }
+
+        event: content_block_stop
+        data: {"type":"content_block_stop","index":0              }
+
+        event: message_delta
+        data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":673,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":7}   }
+
+        event: message_stop
+        data: {"type":"message_stop"}

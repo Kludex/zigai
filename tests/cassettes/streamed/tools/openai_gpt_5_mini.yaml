@@ -1,0 +1,164 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.openai.com/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-5-mini"
+        input:
+          - type: "message"
+            role: "system"
+            content: "Always call the weather tool before answering."
+          - type: "message"
+            role: "user"
+            content: "Call the weather tool exactly once with city Madrid. After the tool result, reply with exactly: 31 C."
+        tools:
+          - type: "function"
+            name: "weather"
+            description: "Get the current weather for a city."
+            parameters:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+        max_output_tokens: 1024
+        stream: true
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "29999"
+      x-ratelimit-remaining-tokens:
+      - "179999427"
+      x-request-id:
+      - "req_fe1ce770e2c1454ab89dc2575a9517b8"
+    body:
+      type: text
+      content: |+
+        event: response.created
+        data: {"type":"response.created","response":{"id":"resp_0147c10bbe78f94e006a8109e83ca08195ada27bc328291329","object":"response","created_at":1786841576,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"gpt-5-mini-2025-08-07","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"in_memory","reasoning":{"context":"current_turn","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":true,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Get the current weather for a city.","name":"weather","output_schema":null,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":0}
+
+        event: response.in_progress
+        data: {"type":"response.in_progress","response":{"id":"resp_0147c10bbe78f94e006a8109e83ca08195ada27bc328291329","object":"response","created_at":1786841576,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"gpt-5-mini-2025-08-07","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"in_memory","reasoning":{"context":"current_turn","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":true,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Get the current weather for a city.","name":"weather","output_schema":null,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":1}
+
+        event: response.output_item.added
+        data: {"type":"response.output_item.added","item":{"id":"rs_0147c10bbe78f94e006a8109e8b680819583a8ad932006cbdb","type":"reasoning","content":[],"encrypted_content":"gAAAAABqgQnoZQMqbVe5M-0o8mQCqRkl6-naeQaP6ZaCDBQYs18n4Gq6KlWCeKQ5MnU_5Td6M1iIrCizIr9jS_tRBLw4lHHuiIfAJ0ava4epmdI2r0ArvevZtb9jjc9bFgJzXnVqsM0LSq4xZrdx4XQIUch-TqQ70anBiVHuRKL1Mxbmwt6fsK7VufZTK3uhVXjpKtTZn53Aa6yN1iF6J3K2ZhOKbGedX7r7oyr2jJyKmuTw_xTnQGidab4VuQ6ACjd3CvXE-0NAR87H04vppwsmnemXLtvsTVyRPHNTlq40tkzZ4zwInydZXS8r5cLnbnmCSjwoAC0leY5SRBBnqtxEUMIAr8p0xeiS2zOYaUzJyy2DrYPJR4Smt78Xp19yrkTsVr_G8tKQ8u7JbmHCXT3PvxlfZgY7Va1OAagvXbGQ3g2xchdcw8JQZ8tm52YERZ4GPSOgPVasiHI5RVU5EmYDDQefH0EYSHOz3Qg8O9UaEKD3hE4Zp5nX243EKSCYR0gUsDIaEdMi9PWPKPjR3xV0TTsLcDKStuk15WGxedL0L4E7RH7fMHtD_XVROzpG4fzou3NSFFmyPkWrjVwGKDD-dI6Q82LPPIkieiFe1T3n-sjHGjqCQPrHBRGdT6zp6X2F6Ek3vQwWPPAQ1Q6ZFsR8stYkC9SCBnaQ--FnbkUM3bdEPq7QAKPHPCRdUC1L-J0mT2dNw9sM8-b0nJUGRIbFmqYBANr4Fi-PZEkIuwxrJA2mVg4mhkyijlcnrmmZ2gPZd_iG2p6x_UPd3BWt0KdqFdHQrPsHhf_TWNjxdKczOnaYBavvjIN6C_iQJyq0gfDydu5UbNoZ5c6vsmy8vJHQTVMvXs4R48cODRSP4bnrXHCy8lawr5sYzOYoQt7nN-MbTpm3Cm6-KbcCwhLNjByI_A5AEAR5rQAsMrBt13tGxSSD_m-a8_u3gxawQo0r9gpAzkyQpI1oRse0QgzN7NXxH24RdaT3mDh_sxMiFUj7sGALztQmBnL6iIN-aQFKASH0ux6YwO7PvI_QD6d_IdQrwQipTZCp75nLnaQVTa109gTTQW8LcNO8lS5ANGThyjr2TzSJxfp195b9sIYApCE3VKro97y7p_ZIyo4w-HpPPzjOZmH_0tsQGUUpi_M9jfPlia29VnLE54CCKi2c9eVVyRLBK8--LXqKI9yevCNvOQDfCpj34EA=","summary":[]},"output_index":0,"sequence_number":2}
+
+        event: response.output_item.done
+        data: {"type":"response.output_item.done","item":{"id":"rs_0147c10bbe78f94e006a8109e8b680819583a8ad932006cbdb","type":"reasoning","content":[],"encrypted_content":"gAAAAABqgQnt6NbgEOB9aTqSRwwpJNNt-BG5H59tHTZnO7vDaj3_TEtrJe3hCx1vzdPQWunFUWEfyWshjPu3feQE7s-YOycxFDfU0XbjQ2H4pLikhfQ0k3dFbRyFld3LQfSEj5ybPUJk_LuPs04QbFEnLQXZHHB-94IcF32armRfrjazLRG0hisVc2d7S2y0E_h2pjYfdadB61jnZ3mzpSG6Pa0tTUt0H5n8gBexHgP6PmKn-oB7-rm6Lr93VpVKHyRvND2DdQL5q4JLTqCJSJgEPNbTFberhkymwxfpsTxdlUA1QRinkwiKHHYe97-UNQIlMDYkYmgl6TVV7RTUoYm-afLmHr4TIYcwI9XMdmzMDChgRI0u1KdJO4J0FeJ5wQ6etOdS4GNYGmj1YVFNAzWg76a2mpZq9ZCZdharlRp4GigjP8hYlsHfZyor6bW6lkJtAE2pi5Fq8mdZIehhgZF5r5pa89J0qxVhihIrohnHObSn6blVS05s2q3GDGEnulPRD0lBm44rXE5H0ihw5oYFBak8FWDipV897_vh39e8xwi3bjs84xNDR4lTPC3NLO41kK4gtLGlmJnr5TfoqZlum9wlU6moBdISvwry1pV2Iy-vp9DJkbhU3JqWg_mVvQBsha5670WdS6WLmQyakcU4LSOemFCJFnMMc7t1VDchHEFkCaTc00-oxXM6LWPLifYV6E9DP8Ql6zwcl9_PX-IC-3RejzjhvgnFwrlFjJcHchOM-DptToLRi0uJhVqnRoW1318901kQPXD8IP6NrQAYX87ESRyrO5j_Rd2yj5TSj9U30h1ubMbaCecUY2C53rMwaTgGHwfRzUk2B1SwgCubSLni8W-fOlmCAqYAH8WkWgzt_WKPTq_Ozy4519B6ny73ZXI50xQ7h1JjaXnSPKmewPU7UD1fGlFZFwMJCUeGKxx86AuZU0gxPtqOk3Ie3FLXEgIILOdqX7C6Y8mVXqYI3EI0bY0OWk_tl7fqDpRi8lQCJ4df97L-M3l6NX6bwnz_giOq_8iPFAaYSTd_taifN5CN9nkl9zPft4pKRnaawPzfKaYbq2SPSW7dcQp6rYOVraDcojZ77X8_yvRhMa6C-5nLEIBta0cHaCc6LwXS6SF42qSztO23xuCakHYsqqwLSPXE_sFOFFbQshgxO1VynGmDR4PMbvmnUk8VgazgoCMqqYvnuZ_MifEFxbDt3zR2PVpYHf9PZrH1KLiLGlfxz0Id9rYL-k1P8E43UcHdcSSvNjHgVa-EACQGH0d_slR3PtXOwTBBEdnG-naVQLmXmynlMmSNoabKeYJYCtiZzsJBIek3isibkSekmJusj9L-y-huie3zh04qGJD2e8MgaYmBSWMVRWpeq9qjh6_OKmaf4PmCGLT33t1N4nRdDk_7yTKZPu0VRYv20KYvyqkbPT-f6cI5Bwf4s0FxhEoYdjyN5-5pmTLyLvP0G_mckoadLMSXzDZnlpX3J0RCAKlYUhcZCgRpyrjpPq5n-ilbLN20LRZRZkCp_9onzwFbgkTHNKLEE9M3AB1jb3uOdjbTJ1uPZlxo-AkLiwnihL3U3RiK1oEaJCondKGqJQ7U48MNKY2FMyac7xswuVBSf7quCBGHsn0PDfWZHY3jn5X-FBKCXRlnsi_knsyA0Qk_uP53YYXpGJSLiihJyQcMzET5lwrGYqX8gygupNHzAOAioHzR2JDoySL_v_k4wCJ1a6TNe0ko2p_GsuTJIMvl9-Frw1Ow3B3tZP7cHJkfT8oFWrrDUyRr2nSQES7aUcL92R1aFkRuVw4ArNeCDQ2aWNQ4oLXIwPJxDSi_O3F7BnAihClNAh_MA_Pmd3gGDuDExLxPTIjZN4gs-H2QrpBVBZfqWu8KROioiL6FzyJ6DMTxCgjNw1w56g_AVlgiTNmaYEdE-am7pBscKnmvj2FxyOQ5V7xPjYu4RPf4PaARrZSUT-JUw6TW-bhhXAw22zVpBLsp_iHAJ7JQ-8wvH9ovoTzyx9MVxUpbwNpTh5IKggZMYGi0HBWUWabDBohPKJpgX1EsOPslAuK-C_1Ufb1ZvzTPq-1fEnM0f9eI8BbcgxWkcwAveF7U7pSK3BILbTtk8jSSC49xxCts6GKbxsHUB7g7RLiBkk_lzeBxSa0GQUYibjEHtYkmGYuKUsh2TbyGK8UlpjrjSbsrxvygA11QszfP3GgipQ5BrM3e78j7tYvqc0p8mn18weyMhioGHtZWtXTFhJCQy0aKDJqB0yU499VBlMQiSOy3ePFrY7ypT0UpUYwISENh24twpM58FNSUU3o2-ADUXbrGirKjzQq6pxvjOoicfdPm3IjoQTEKPgziYE91ne2lhS2lu_x9XpJMyavulHb57D645BYJ1tOIvIlTxOc1dma13VwfodsBU2JqcMdhB3QUE7Mq0GuI2mxPyU2IOEbHUDvZySHpqRK5Ubd1WH3DxtFErKCrE0mgSoLYDqCiQw8LTD8FHmn7mvtldS2ODY7kNjk8sUR2bDGBJPkSfduMnkuCpH6rGV0ydVSHiQisJI_roLEwuE5uufRKzdCC-qc-PeSI_7jybKoP6u3Ct4WDFWEjGDfZcEOzmmHLVAJxCAxGcDp0xT4ep6HLlV0Diju38GuD5-f3F2rh7--2FWW1tc-hoLN-awXwh9ic6_QzM4L4RtCuSfSm4Nj4BNdblTZWXziYhC6_aeN1WwDoLp_PVlu6ZzAH-jNjl_-9ledB8FD2mq8ElaEd0zq7Kba7FwYL59asI24rU1bZdtY12iiOweL-FUmAwlwEf3tFjygt5zgLquPxU6lzStrOlTygbXsfJzP1aFQzu7bz6x8ffWaKRPU7_AgES1HXWUWBXPAeZML5F8MrF0uWaVGYbejAk8vaWNg8mN6fjjOyET_wUy3xMXW_b2qC4YEaY5q_xWgN7ocwGxSwckHYvv1_9MuA8fDgsPD9CgRdDp4cssF0QgFdJ3d9gY4nzMiG8amnOhdH33mhDfq5vhXS2Q5OGLwDpNlDb_5PbMXSE05asPwNTna57H4-isTwju_TxsuCZ5fWEQDVaYjGzROus_RqaUySO30hG-Os08kmwCVt_If6aBsH9D6mJoT0XZ-iFjIBjLPGmbbGmp8w0AtCMlT61Ra7dX12oKVUn8Ck-Z7GuO3vd1VrrNxqUnag5TMlxvyWt1dTT-N8s58ETbx7jz3IUvKJjZE_R4sFL3m1bsK-byKAJRo_hvD8Wz4BaUXOS0eHToGBz8Xqwd9AuT7OlWE5mXnn0SHUS-E22u2nfxeoz_901nF5YvZkJaCl7cw9N7JtljNDI9Lqheci85JP0eF_rzCuECHw2Pv8LA58I988XKz02G8lnm__t2r6p8-LJmA_XyOLxNpSGLn9epGHROljmIpIJ2ZPoKeW0IQq4XDD3AjSCN4N0A9tTX1tQ30h3BNu-YdsSOoR0F3Pq8ddLJXh-TL0i5_lz0denM5OvDVi-wC8z2Vy49IhNIcn6YUoNiDu00XkdIMPY1hLqqjlCfCWxeSmiZuIQOVvkmUGJnRFXtOBIwbGfQuK27ct2jQ8t6cPZ4_HfyYwPUN9rST3cvAgrJgDxHw0EtL5GkO9wSDGkvR5LiRobHlreUqI_947k4I9bX3tQJh45_44Pk9uol4GXz7U3elht-sFU5_J9GC6NAClMbmCm56lZ1J3Ax6LcX7gB3fxe6S7iSvulh92_zcrqyjJFS2UIR1HxrX3D8y1gmY3tzsr1dfcq7-uKbBjMF7OuD4mkpobb_s=","summary":[]},"output_index":0,"sequence_number":3}
+
+        event: response.output_item.added
+        data: {"type":"response.output_item.added","item":{"id":"fc_0147c10bbe78f94e006a8109ed00bc819584980ea0ee6caa4c","type":"function_call","status":"in_progress","arguments":"","call_id":"call_WA8Q0bdcI72b9znKtazj137T","name":"weather"},"output_index":1,"sequence_number":4}
+
+        event: response.function_call_arguments.delta
+        data: {"type":"response.function_call_arguments.delta","delta":"{\"","item_id":"fc_0147c10bbe78f94e006a8109ed00bc819584980ea0ee6caa4c","obfuscation":"jNAQwL2udsrc2P","output_index":1,"sequence_number":5}
+
+        event: response.function_call_arguments.delta
+        data: {"type":"response.function_call_arguments.delta","delta":"city","item_id":"fc_0147c10bbe78f94e006a8109ed00bc819584980ea0ee6caa4c","obfuscation":"iyYHmfUtk1QX","output_index":1,"sequence_number":6}
+
+        event: response.function_call_arguments.delta
+        data: {"type":"response.function_call_arguments.delta","delta":"\":\"","item_id":"fc_0147c10bbe78f94e006a8109ed00bc819584980ea0ee6caa4c","obfuscation":"GaK0j4a7Iu9Sf","output_index":1,"sequence_number":7}
+
+        event: response.function_call_arguments.delta
+        data: {"type":"response.function_call_arguments.delta","delta":"Madrid","item_id":"fc_0147c10bbe78f94e006a8109ed00bc819584980ea0ee6caa4c","obfuscation":"XeN5FNT4UD","output_index":1,"sequence_number":8}
+
+        event: response.function_call_arguments.delta
+        data: {"type":"response.function_call_arguments.delta","delta":"\"}","item_id":"fc_0147c10bbe78f94e006a8109ed00bc819584980ea0ee6caa4c","obfuscation":"HyEDVethjjxDPz","output_index":1,"sequence_number":9}
+
+        event: response.function_call_arguments.done
+        data: {"type":"response.function_call_arguments.done","arguments":"{\"city\":\"Madrid\"}","item_id":"fc_0147c10bbe78f94e006a8109ed00bc819584980ea0ee6caa4c","output_index":1,"sequence_number":10}
+
+        event: response.output_item.done
+        data: {"type":"response.output_item.done","item":{"id":"fc_0147c10bbe78f94e006a8109ed00bc819584980ea0ee6caa4c","type":"function_call","status":"completed","arguments":"{\"city\":\"Madrid\"}","call_id":"call_WA8Q0bdcI72b9znKtazj137T","name":"weather"},"output_index":1,"sequence_number":11}
+
+        event: response.completed
+        data: {"type":"response.completed","response":{"id":"resp_0147c10bbe78f94e006a8109e83ca08195ada27bc328291329","object":"response","created_at":1786841576,"status":"completed","background":false,"completed_at":1786841581,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"gpt-5-mini-2025-08-07","moderation":null,"output":[{"id":"rs_0147c10bbe78f94e006a8109e8b680819583a8ad932006cbdb","type":"reasoning","content":[],"encrypted_content":"gAAAAABqgQntVROMhm9FMcTrVXfpPvPRIgNbF1fhuKxwyqzYgniUxicqoTMLwQmp2xrfpwKX16yR4b_Zf4-2RwOdDfTwU0bfADsqwC9w5pdhgdQ3BMbkGJTyyVX7X27mn3MUXhLF2n6sztYDDGTz26rfk4q63L4bsTGYXahABBBGz24uAQQgOfAj_XrjDhZIvd01fH0gcpMZ2WsPRf7zQ4WiHNuuFT8ZzY6nRJnC8mXUdMdO310w7Uqc8n3CHbGNd9kOg71b4jKInbiINNjPQHYOZntrbQVE3yGd-W1vat5gqV54pxnKMFdVIGt8znaxKyXya36JIoPOMUjQhTHmY29ZPVYOOE_AEIajb8hTkQzNKdqyCCT5kefas-nP0xJBZ_uEoqfnAE7SgaqYyDbMSsHPfikDvymTgrfwRVei_QoLBoNHjkDsnhf-5KdRyBKAxXWF695ZDBEarsxLUVF0W87X_a7eF8LUMeLdJxuDlosalq9K4EVaYJj0-0G7fjZUYwq7HfpjOsi4C_fn-4gM4O1M91rxx7VafyXo_WmjpCom1IJRRKD_kDHnJOMH5Nno1F6HodIezAEXBjY5f-SclU6e157CbZEDlLkFhw7WCz506lotLE9YukSuyt-zp6cgyWZl0jxhRhcdyVVpoZuTCP5ZtPf98HcuBU90HZ8pQ7zHULDQyoU0Wt9Vp0M76zqvvMd7hiwHbj1a-I2I30EoGJ7ltFJO-Qhon-biLFFgwGZg-OoD1Cf9nRMphqehRSg-31nTIBGf55s0c_cYMrlxujBv-cuR6_KVble-_6PYq_MOun5k-k39Zo_wPBnSjT8qVX-kykMT2TM5z10P2tSef1sP1J68Y_l2iLqL3oobVXJsW1eqJMiWRHvSya8IuZuWJIVGG_5kjaUEfLzrS-YUTSd6LaSXyDZRoEqstN64xRDZuQHW2hXXZM-97US8WsU72o1uo9kF-tDOtKyzU5LSJt0hvifGaCevICSAoMNAJrGYG-T_ATkBMuDwomktegHg9DfGuOJ1Xtud7Hz-NoMYU2Pxw7nZa7GuxNV3h2kjrWjrWRU6adLnpyemMsBSjp2hagXZ7rUV9aApF4F5l5vIWlSV0qPH_E7aoirmo2PEtopgBKM4kOm6uStAsiXNgZlM6oM2iFzhLo7s1j1b0AWhfzrTGMpYdhJG8ffPHdkEpNSjsOLyaB-xgJdGKFHas1cxF8pnj9XZPTgJgK61HaxA4hyZt_fBScBZMzZDVxlfq-J_bmB3d7mvIftiHvMBLyTxcW6I5uUBnF13Nz8riik9yksctA4SSkDMx2qlWu-AiNyP4Lic3dS6aIE0Z4LPq0bwOPiOxlljw0_VDfjpVoq3I2WCj6tPNBIaoVL4e2DGT37e-36rjkaJ2vWuqZlKQ7SPl8b-MebkhPy4OChZfHcktfH1RSwKnbxCbn8mkXbi5yDftOQ0Ha-HwXtkBCULK6ln5Hcok2xv-1lKoeaP0E38-ZIa_LdLdR-6eIcbbIZ8X6jj799OlECXocbpymeBTcyazxv99KdKi3g8yiDmNnjPp0IcfQCcJhZA1qZNNgBA1cyzjdaTAPis4Ro4-ggM4Hb8Yr_ruEni_nqdXJzjc6GlxtOR7nQp7e9KoO3_2ZFWGpWKlvE42fIlMYcGqsvJFFl9kqjxa9BUJE-nY5I1USG-eF9L24_dTHedBH54rP9aOHLcKl65tviTWvZi8UuRQvT1LbFyKqhSTfkCbK00CI2EKuGpAtbS2R5HtdQUax5OB7Q4TlIx1pywGI0z0FGibfr8oC6VC0IXgW5HamSdB8yInIKjdGpShHQMLUZN0wTsPCVe8cRtgIXEdqUZ7O7FUAcmSIA05XfdA1-5oayiDElNlUftODm8GZMfypFrdgUyRcncpqf6bb2qmZiM_EZX6nWorrITWPuRbz40CgigGjJO1a6KUnSZS1EX_bsA66wi8MNzeCcZBPj71HzzR5ondn6TwLAkuVPGNSjfZLoLbrngDb67OGY1C7Xefqi_QNmN7z5-WHzlNa3xPUerMKGzeAXBYzEY7s3yVnhNcrnDH9PtiCzmSITxovgFRKZdZ12LVewffx6PT8_LqJX-MDIchmG60JnVZvcc-dh6C86fr6gf3iMWiVuoqJ0CxeN0vVfjEnt1Hn5o-ZKBbWrDhRD_5m0Axee15Vk1_qCIUmMs6kcpZFjglPa9qBV9GL8nGr0XZkAaSCmvlt5-oIHJ0IER6m9_IiRU5JsiDT85kBbA-n4Wu4x05rn5cAqIERuM9bP_poD8mJr4hcHQVZM5ybxqUtkPbgfP3jPR7PbtjGxZ4cdkecebEkc0iI2y762czJ6Hb0tUnVFzvAL4MfxjAlTInBXfQxjkN7-FA0GX4kO1ZvXsnOlsZ9KVIvvZptSU8EIT7OHzoJ7hnlXUt6UZw6Czpn1rfNhl9ArwxANzSsimu7bh-14UE0t9ti9LxmXXRLD-U9ZqcfY7bsojllJpfgVqAfl7vITVp4_BhzT0h-tJxp_2vsp9sd6EVquFapDl_PDVBragFwV8gRPQgp6EtBiyWxvt3fUXY402Pq-cxbg4ben-KXlE-N0qrkiuu-pUIcxcPlsBJfDDOOCeUWeVbJXBcTmJ9sP5qnQ8fPoNW9EoMg8xP_7qr0Od55HlJdsyXyLstxfcsdMPWGOSm0LBqjPaRkafZNGOzIvgjBBgkdeIjjTvj-Av37QQaeUw1OFKbRqES3g3IaSIj_tfUd83BDyMf4PKhERH1Ul-McHsSxuY4opS1qhTJW1RDypDsaz0u3OCctTgvYq_87MUy89yTCuIcvtcoLC6t_yxb4OfjNBduy3LjGKnBmXhDYnnGMUnnuqKOArYfF89YtzHRLOWEW779Oy3BLwEm_DV4avOuiy26ogm_kbZoWsKYfw4sjy611rGfN8Ah5p_Big_dbQmPEo776H-Fs-VIBDhHwHqjmUXJwQqZjcDHACLMivzc5TI4kAMCZL-7nv0u2A4iyNWny6kGGfz66WKdG4VLeE67VCKzej4YIakae6s9pKzy2BcPmATa2gt5-TvNx8RbdrwH8GOzTqOAS8K8H_6yVrzaK-5pKgpyQCGNLN-FP3n96R7Tu0oZzypkqs7j0VN7lN5a3A4lOiaM9AdL86JV37WEbnIPF59YZ1sv8taHqaH8s6EeJL2k4-XJaEhi5RfSfoGfRsEerfdWLuEbEjt-sdl8vDyaoON5D_sJ-GdHgWlpcmAiF_Mwa9BR-jzUofahDhm_V-2SFnWne-KiXeeKpAd_fpuzUBj8LWqjlR2_B-aYkJw6q8nr8shapOxMSpAAN3GVzzegMqcRbzDVHyjH0tT3fkU2GK23Y3prUckzkV-why9EB_jigHJAa0DopWbeEG8_ydy7I9HrIR6iW76HmfVDnOjGM6-TdlQVBN04Y90hFurC_aJmd2-gLCFyC54TPQmGW2TO6p1O7tRyJ21KL_EYH19DvLLDxZwMdRmkV-vV9t8--yL-adWXKTkWajkANJp6hW9TATO7JWE7UDR760ULTqSSKEgYMNPEGzhqT8t42HiuEhms9bF5aPFnQRTdP-9eCa3H5qejvQq3aJW4vt-f697SgRvpUOHrLjClL9uSMRIKJPgB7xqFikgmitCzv69u93MhBY5l9hd91boTv8rSrEzP0TfqRGCLFPvbDWb9Ql6dBOgD9bhgx-2i2jsBb6lNkoNdcTXfF93YNBnG4hMX7M42kKlunnm37Fh5AGDJBmdOn_b11pjpq9OYn_EWR0=","summary":[]},{"id":"fc_0147c10bbe78f94e006a8109ed00bc819584980ea0ee6caa4c","type":"function_call","status":"completed","arguments":"{\"city\":\"Madrid\"}","call_id":"call_WA8Q0bdcI72b9znKtazj137T","name":"weather"}],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"in_memory","reasoning":{"context":"current_turn","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"default","store":true,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Get the current weather for a city.","name":"weather","output_schema":null,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":{"input_tokens":78,"input_tokens_details":{"cache_write_tokens":0,"cached_tokens":0},"output_tokens":408,"output_tokens_details":{"reasoning_tokens":384},"total_tokens":486},"user":null,"metadata":{}},"sequence_number":12}
+- request:
+    method: POST
+    uri: "https://api.openai.com/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-5-mini"
+        input:
+          - type: "message"
+            role: "system"
+            content: "Always call the weather tool before answering."
+          - type: "message"
+            role: "user"
+            content: "Call the weather tool exactly once with city Madrid. After the tool result, reply with exactly: 31 C."
+          - type: "function_call"
+            call_id: "fc_0147c10bbe78f94e006a8109ed00bc819584980ea0ee6caa4c"
+            name: "weather"
+            arguments: "{\"city\":\"Madrid\"}"
+          - type: "function_call_output"
+            call_id: "fc_0147c10bbe78f94e006a8109ed00bc819584980ea0ee6caa4c"
+            output: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            name: "weather"
+            description: "Get the current weather for a city."
+            parameters:
+              type: "object"
+              properties:
+                city:
+                  type: "string"
+              required:
+                - "city"
+              additionalProperties: false
+        max_output_tokens: 1024
+        stream: true
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "29999"
+      x-ratelimit-remaining-tokens:
+      - "179999391"
+      x-request-id:
+      - "req_b63c5be5f88e4be187afa869face53a2"
+    body:
+      type: text
+      content: |+
+        event: response.created
+        data: {"type":"response.created","response":{"id":"resp_01f4d8e27091707a006a8109ed71688195b7b28833040d707c","object":"response","created_at":1786841581,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"gpt-5-mini-2025-08-07","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"in_memory","reasoning":{"context":"current_turn","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":true,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Get the current weather for a city.","name":"weather","output_schema":null,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":0}
+
+        event: response.in_progress
+        data: {"type":"response.in_progress","response":{"id":"resp_01f4d8e27091707a006a8109ed71688195b7b28833040d707c","object":"response","created_at":1786841581,"status":"in_progress","background":false,"completed_at":null,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"gpt-5-mini-2025-08-07","moderation":null,"output":[],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"in_memory","reasoning":{"context":"current_turn","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"auto","store":true,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Get the current weather for a city.","name":"weather","output_schema":null,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}},"sequence_number":1}
+
+        event: response.output_item.added
+        data: {"type":"response.output_item.added","item":{"id":"rs_01f4d8e27091707a006a8109eddb1081958be3691e21a5292d","type":"reasoning","content":[],"encrypted_content":"gAAAAABqgQntr5TFLl9UUi-G_TCJue2BX0vjkNw0LFUMbEsn0A4-mS4E7khRL4yGgLc0PX6GWIJE2HEffM80L3dO28FfKc6BbNkobcX9R-CLCnYUMd3wzA5pVyOWP0g0ZltFSYFIx4YbBwTdNhE_CIh7fQhC-EwSk3ko8x1BxH4YKtyeeeXnA-HCmqVvRgp3vmgnHA7wLHyoVgKd4e8wVTZW4B7zGA6SlzKFu9zG63u5a3yZbXeCCLODwpqlYe8bjp23TrEeNKJ1apVi1q2Zo5ldmnBkn5aqDSx4pPJkJSWpuI3Xmn_ghYJktCld-LjDUxNO-yIfSOFbgy8A5MRspd4Y12dacbX60tiy1Do9g08JNQcxOEmfmFYS9iSyAof4eCMoKOjvKUtoLXXYnKJ2o9f4jrHcpcG74fa6I1pnLkois5gx4axco7ZIGb97dxBQdEOv2s9vDe6uXOObbjz5IDZ48adGxMtB24D5fVuvTyjfflNdn2lE22X2zos36TNThiaybJaTZhJVlbXY1LyCYYsYaE1CFsxuqMQ0UV7KfQ2rfyyLoB0cbHBcg499AVoRCPRByRCweSfHIoaj-Ntk5bjr74opGbetY1ZTGYJeXUjPA02tGnXSI8qHin4MWFHx8PuCMZhwHkNjEsegM6t45mWGTQIT77wQ6RoYzMferl51MPECcoU8un4W_8LWjLLDK8j9dZUqJX4dqIXR4X4jdYh-w9iZJFE4R1HcvbP_DV8bAi3PP5MetPL8gHXP3dgJOZFHSSNZ-rmBXsczePh0PGC0FOlEKmYCDXeasuAKUymUTJ1dbX_7ad5YwIH7y0BUYZKSJhAb_hZU9mP3H4PjrGTrrG7h8YeACR6S6SpHr4S2cH0D8kkJMdzUT-hTHw0-TM0TBvlTbdYF62kXSm9DmE_qpCl7dT0Rmt-RyT4X1myZ7OCJlutAc5sSFvBBVLHyFJ8_6UBJGuYVUYnKppHM5NhN3hPqh-i4kVyY_44ujdKauRiIWglkKbuqB0lAGD5N0sVNZVAVr2MHIvB2n363Gv7u4JFEo2TnS1B5SeV5OQDhuQunGT2eksF1d0HqBP8Z3odTKf83u-14UmCiCgDscG3Eauhuc1gzyBV7lLJee_MufhYezwErBBrRlwQE_S53-9qYDG8H3BNSzrzXbDJCy9DV1a-h-orL5RRkhznuwjoFm3VOXrIZWlA=","summary":[]},"output_index":0,"sequence_number":2}
+
+        event: response.output_item.done
+        data: {"type":"response.output_item.done","item":{"id":"rs_01f4d8e27091707a006a8109eddb1081958be3691e21a5292d","type":"reasoning","content":[],"encrypted_content":"gAAAAABqgQnv0dRSkNwbUvhq8ZA58NGBa18cHVv4HLqR0oCJlC2c8afMJaJo5eOhJ5LLccLNCxdKthDnqckAC9R8WFBtLXznV10tc9mx714LTJKrHbor0NBsQ5bEQeTaDpXm9fN17L311Aa9i6HL8DDhysA47NF-eR6BAEKjNvR5fecpqdina0uNFNWlApg0v8MF_HjobzCWxD6DjoedfKCWznot9QsF6R3ImFU00gczXF3r-eT43WyUKft24pH6kSd_Hc18sJZt3LvT-P_g-C7_zKwiJn2Vwf2dlCDPswsRrPi2aKHethZYUDSonI_LAJICrreo2LRP68a28ohU35BgeRn4km97zDFswWzuuKZUCq_b77kv2oaA8TuMSkKQLqHz3HF_pD5Qii-desINoZyh5Rloin7sPBLC_lKUCF6PFrK4fgRV65YE5ny7zmR5uRfXDi-v7m0Ydvm4vwtN6D7_s7x6CZUdTXylafegGyY4yWfakzQ84L32ux7h2vELHjNHqrJH-fBWrkx7m9lHtiJKeH_yfAjFHw8924x7DdIpWp4bI_zuhY6DPQqz8mjNCM57Z-Swe2bSdwZxwnJoxBvoNWw1L9l_bCgpT9qo_Uq4XR98WQV508wAOE0-Zno9-7Gqi85MMZaiw14HXmokXmmCFMKpEOaLHezKNU7bx_V4y18KDxaQrzW8CEaCjhWIMLa0xzxUIVsH2eA4PoZrJxNNJjAbDlPCEITEUNc84XeqIGfgEJyIRSBjCmPVhwodwi37w2Q9iUklHhns1hkhtOr0_HHS4YyfRNn4bEhF26zvxYhEE_s_z6i1oD52IsHmXnK_9GX2YYbV0tQOmadtCrzwgM0tq76cERIzcfyR7Dpq-uG6-zF_7iIk6XGsNlLM3_3rtGIBqTM4K0QAixC8VC-PlNPYwlci_dVJxrvJFSVj5tTrQoPsuGVJeBJXpSJ8AtA2iNmmQdVdXno-om-KeafNSmTa7nEyNK6KNxvWzRdcJ-vHH3kL7v43k_hF-kf2bMG91R3h-z-8awuo2GwafK6s12Z5OvZKLEK0HBySsXhdFvhvdytPaYTtN_ulphBcLsPEayrpoFo9jnd_C3aqzGZcfgogCMFY0PEAiLgLFzY2Oy9R-FwyOKPjONI5rY1Xq7TBoWxY1EmKDxPNaw4EahdXweaYMhLDKre_hWUXIN44AQmce8BM-rbmHER63itv1GD3wDSpArw1_t4JnTbhSUFqaYuL2fsw6gB8ZtYNHLkIOQDM0QjFfUahtnj80oOc3NYsBNJadNOx8UIy4Yu3VeZ4e_5Hw34kozbDr9hQiH2XvfrfHaq633opNBHNqQln_meFQIvHj-1Wk1PIvY6EanlFpbWpzwmUnnz05xeDvW1d9zgeeQ8MJ2eVkmO1bkL8CGvJIyC0FkHV0S3RKgDpXeZYZnYHw2ZeFJltRS6jxKHkml_WthLJfRmA5_rmfC33YXc7A39kF3Y98Jq6yuIH3TTE8M1kTeN8JoUyl74FhvJ_Bh9wy5qYXOxMXoBmuLC_YUOxExK2X3udsnowu1Qte7Pf-7iAh_xDDc8zIQHxvkB1Jf9aPPL2hb6Aw0WIrlDaY-KvI7q1Ooj2pMKOIAD0hC790w8KpTcgIG6bmTmY3AEQ9hsyXuhLJadXMJOWFLY0RRCsvWXiDTdxZNQPzY4TLmhKk4oBhfMzvQJu4czUpyX1n0aZbIuD8ZrMb6EPCVntcp09Xdpdz3kdzRU8_-qOP7DRjwg8N8ss4Cts1av1QWxJxfypIYok1T9Pb9bXPGRwfoaz68bZkpWOXnabwhi9xN5Y8Ri0r8g_pncR8Ozg3aJjob-RDpdakRHyvzoPuU_Ik5fQnpnQcN_0xzIH4TVCaYQR6Tbd2c_G7gEOt6RZRBVEs_9l9oGkbYWVgKQQmN1wdmYjwFcL6Rux1iJEImMRiasqb-XTCCTLyhjIRWieSPYThSOu8R9-4PtIvPBVD0t28iV2R5-aIoIpW9O_h0XEtIClyLs0_foEosWhpckPANeUHiKWq5zxcVm__VMbO3yH7xTmQdpVHdhsu6nIa1YWN9yzEvAd8VHk2z6rJ35kt59bp1z0XxcQ9bG_h4toUYYJ4AWScVqxaUh05wfBSOqrripPw4ZB0xO_KkSUrj-ZSBES2g8PCVvw164MvvR97DcTU0_DtEjqUAaCNqkA8WLaEzWC-Sev1lKNZECG7_7SPkFkvLW1aU_uEzA=","summary":[]},"output_index":0,"sequence_number":3}
+
+        event: response.output_item.added
+        data: {"type":"response.output_item.added","item":{"id":"msg_01f4d8e27091707a006a8109efafb88195991fc26e56dbb4f8","type":"message","status":"in_progress","content":[],"role":"assistant"},"output_index":1,"sequence_number":4}
+
+        event: response.content_part.added
+        data: {"type":"response.content_part.added","content_index":0,"item_id":"msg_01f4d8e27091707a006a8109efafb88195991fc26e56dbb4f8","output_index":1,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":""},"sequence_number":5}
+
+        event: response.output_text.delta
+        data: {"type":"response.output_text.delta","content_index":0,"delta":"31","item_id":"msg_01f4d8e27091707a006a8109efafb88195991fc26e56dbb4f8","logprobs":[],"obfuscation":"p7nbkEoF709PvN","output_index":1,"sequence_number":6}
+
+        event: response.output_text.delta
+        data: {"type":"response.output_text.delta","content_index":0,"delta":" C","item_id":"msg_01f4d8e27091707a006a8109efafb88195991fc26e56dbb4f8","logprobs":[],"obfuscation":"d4UsRhMeV3sWsN","output_index":1,"sequence_number":7}
+
+        event: response.output_text.done
+        data: {"type":"response.output_text.done","content_index":0,"item_id":"msg_01f4d8e27091707a006a8109efafb88195991fc26e56dbb4f8","logprobs":[],"output_index":1,"sequence_number":8,"text":"31 C"}
+
+        event: response.content_part.done
+        data: {"type":"response.content_part.done","content_index":0,"item_id":"msg_01f4d8e27091707a006a8109efafb88195991fc26e56dbb4f8","output_index":1,"part":{"type":"output_text","annotations":[],"logprobs":[],"text":"31 C"},"sequence_number":9}
+
+        event: response.output_item.done
+        data: {"type":"response.output_item.done","item":{"id":"msg_01f4d8e27091707a006a8109efafb88195991fc26e56dbb4f8","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"31 C"}],"role":"assistant"},"output_index":1,"sequence_number":10}
+
+        event: response.completed
+        data: {"type":"response.completed","response":{"id":"resp_01f4d8e27091707a006a8109ed71688195b7b28833040d707c","object":"response","created_at":1786841581,"status":"completed","background":false,"completed_at":1786841583,"error":null,"frequency_penalty":0.0,"incomplete_details":null,"instructions":null,"max_output_tokens":1024,"max_tool_calls":null,"model":"gpt-5-mini-2025-08-07","moderation":null,"output":[{"id":"rs_01f4d8e27091707a006a8109eddb1081958be3691e21a5292d","type":"reasoning","content":[],"encrypted_content":"gAAAAABqgQnvNc2LZziaoBoPXAGytmNDiRbXypbKFQhE3DgKLoF3Xv751AXlKOWfSQAp_7_WxeXxSMLllDAgoe8YVrCnGLEvi2fUnVCcas-P6cXoSDlCdiqvoy6CGblTH2umP71XaC0Ze6qV2ctFsRunf16-bBdAbIpU2WAO2oKGFALZREBPqOyAD--hWQXB5ZUEz_fA-oSzbj1K40UrJt-tr6wzfumKS6PMPBm-hc-B2kaqX9gD6cegZ3VrJZtV1uAu7qUbXV_xHM2a3GO6M4kUyOffpshNXuXqluzO9Ka8FRQ_cqqQtUFmd6ENDvuWb2I7otF0bOpsw3nhu09zHp42auCbqxCVAK816obmbn9UB39K7AgrY4A358n5AF5eXFLzmPDUGNIgXyEbna-Fg_a9enNVnBjEevzRnzIwzYGcoymMPTJo0q4W1lzcmTqqaR53jG6E2op1DLfBTLbiUaUWX-fbDyc4BILJSxccZlHqVAEnaaXzNNnrTs2f9GBX5TLK6M0a9ThGJSV1LMAIuDZVPODpc5QvQexZ15kBiEDVvTfIkVn_GVnwJY7UJ8jlYgOrn65TKZyDmN8YA5Woh34hL7Th375xeLhyHs4QHxa60BsTgilVFctdiczRIgYEVWEFQiE6ZjSrW0TvARTBe5McNG2f5-t0vOlbQmT1lU0SidA0R7J8R0nUFbABMOELa9qraad30V6SVEbirUeamUe6LDxWalFyRDUgyp4op9rrLjGF1xbyHKflsP2ZbPfvvNA7V9WDQp9VWCmA6bGOO2A0-d0xsGrt2gFeUeql0f5KvisyM_aITZipsW287rvoZqgTnlidNslzi_oM06ywpz2UBS-IJrbXrRRhqjRlVrxz981P1xLUAdd1FwmZOboR2r7Uxavm_WUSLPzv_rq8hKkrM84CfWRH7Z44Tl1MYJIsmIk2qlmRb9z6-4n8LT0nX8LQMt0hCxHz8R_Besqh6nAaHLS6pfzus9qECl-ZfNF1FegffxkdRU9wvgi2lvd-E7SEtYrcIX5wfPF9OCOyNV2aWes11vBTHvBkr_1X4vDfwLnZzu14esPkEeLBB5NbpR3B3OiG_1Pmjl3NAhjy21CD97TEZi8wkR9bvnwAs8ODstt3JKtsjaJ2yl6bsNP6VczkiV1n_71b3jdQFeZ-SsQilLisTyavjWNVtpGGQiGW0-CPwJ-0_n9tsmFbhXfLDoQbEfYFQKlZyeey5Po-tTuuqx_wq9nN5AbOOcOaVLstE0CTXHlZNE_xnszQ7CF3TqYowUu_Azd3oHeqAK8BbagrgIi5l2lXKFbZ0QgCms85IPmBjHffXb1Z-9hQ8X2aRDEKi5H5pwyhEZ0bH15ry81rJT7Ue0YHrNHg5k94KMr7hbdffFOHgE569LqBpSrApHTXyrn7fohyonMK17e7pmckOwAbMZoUcFNLh3B0gOOfLTItwHcw0wE3kwwUzZXzLvtj7uyqdX2W31oLQotqjtqUUmDTptCwCOuJV8GtC3NzkYlKCt5kcSZsUEFua7zYIMYXT9jPJDv2D13yieA53A7VQX0Y02G_MHn5da9yjz02FTkDL6X3eMxBrdyap5pi0jvSUUCmyanKQoxTno2HeXRfMNpFDrLd23bJbueu6oQsMZfQxpX_E9HGtLpy_IFr8TFA2yQSRqpPGbhyvK4ecMJ_3ZMRMjPd_zJkbkA3qAnvDfEKz63-hvmvoCNHHcZ5HERZI_axEKF_mgK-_FC4BVZ0gEWOQ9JoHlE9TIa5knmGWbLkFVbHElNvWOgdKSi7A41cBh1uE7MrC5ZdjbG7CbwdPHjOiyVkusDAIL1Ouj2ItfLf4ZBtbr4XiztUBgliQ7oSnCFFq0QBImsOUKTAZD6HaoNq5SWECsN2jf3hclG9uTroRAsZ59H5pvyze-irBNrpNUCKPrOGgnAWhC3IMUVLkzJOxUXuB8U0tCjPs6mQXK0atCxQ7xJoft2PqUf71Dub0GEefr3qJRbavtKnsvlOkuFAyCDUpsKRIaWZu1KzkiC_NAAbrJfwoMR6d1-ciqxBM0TuLxuiCUKDrqjH2Gd7GssGV12Ki8Yw_-yTmsesJuBK8BK8Gl6UjdPtxdCt-7uJp4Z8ejPtW1yxjHz7F1wVXVstKK0r0FpjxHP0HC7OMXW6Qz7PF__Ao4uXbiaSIOavaJkCJGajAePxrHxiJy6ppSVv1PHc-mJUH3Qa7WpmHPBsIZov91U=","summary":[]},{"id":"msg_01f4d8e27091707a006a8109efafb88195991fc26e56dbb4f8","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"31 C"}],"role":"assistant"}],"parallel_tool_calls":true,"presence_penalty":0.0,"previous_response_id":null,"prompt_cache_key":null,"prompt_cache_retention":"in_memory","reasoning":{"context":"current_turn","effort":"medium","mode":"standard","summary":null},"safety_identifier":null,"service_tier":"default","store":true,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tool_usage":{"image_gen":{"input_tokens":0,"input_tokens_details":{"image_tokens":0,"text_tokens":0},"output_tokens":0,"output_tokens_details":{"image_tokens":0,"text_tokens":0},"total_tokens":0},"web_search":{"num_requests":0}},"tools":[{"type":"function","description":"Get the current weather for a city.","name":"weather","output_schema":null,"parameters":{"type":"object","properties":{"city":{"type":"string"}},"required":["city"],"additionalProperties":false},"strict":true}],"top_logprobs":0,"top_p":1.0,"truncation":"disabled","usage":{"input_tokens":113,"input_tokens_details":{"cache_write_tokens":0,"cached_tokens":0},"output_tokens":179,"output_tokens_details":{"reasoning_tokens":128},"total_tokens":292},"user":null,"metadata":{}},"sequence_number":11}

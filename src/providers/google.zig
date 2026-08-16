@@ -901,71 +901,80 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
         null;
     var parts: std.ArrayList(model_types.Part) = .empty;
     if (candidate.get("content")) |content_value| {
-        const parts_value = try common.requiredArray(content_value, "parts");
-        for (parts_value.items, 0..) |part_value, index| {
-            const object = switch (part_value) {
-                .object => |value| value,
+        const content_object = switch (content_value) {
+            .object => |value| value,
+            else => return error.InvalidProviderResponse,
+        };
+        if (content_object.get("parts")) |parts_value| {
+            const part_items = switch (parts_value) {
+                .array => |value| value,
                 else => return error.InvalidProviderResponse,
             };
-            if (object.get("text")) |text_value| {
-                const value = switch (text_value) {
-                    .string => |text| text,
+            for (part_items.items, 0..) |part_value, index| {
+                const object = switch (part_value) {
+                    .object => |value| value,
                     else => return error.InvalidProviderResponse,
                 };
-                const is_thought = if (object.get("thought")) |thought_value| switch (thought_value) {
-                    .bool => |thought| thought,
-                    else => return error.InvalidProviderResponse,
-                } else false;
-                if (is_thought) {
-                    try parts.append(allocator, .{ .thinking = .{
-                        .content = value,
-                        .signature = try common.optionalObjectString(object, "thoughtSignature"),
+                if (object.get("text")) |text_value| {
+                    const value = switch (text_value) {
+                        .string => |text| text,
+                        else => return error.InvalidProviderResponse,
+                    };
+                    const is_thought = if (object.get("thought")) |thought_value| switch (thought_value) {
+                        .bool => |thought| thought,
+                        else => return error.InvalidProviderResponse,
+                    } else false;
+                    if (is_thought) {
+                        try parts.append(allocator, .{ .thinking = .{
+                            .content = value,
+                            .signature = try common.optionalObjectString(object, "thoughtSignature"),
+                        } });
+                    } else try parts.append(allocator, .{ .text = value });
+                } else if (object.get("inlineData")) |inline_value| {
+                    const inline_data = switch (inline_value) {
+                        .object => |value| value,
+                        else => return error.InvalidProviderResponse,
+                    };
+                    const content = model_types.Content{
+                        .source = .{ .bytes = try common.base64DecodeAlloc(
+                            allocator,
+                            try common.objectString(inline_data, "data"),
+                        ) },
+                        .media_type = try common.objectString(inline_data, "mimeType"),
+                        .thought_signature = try common.optionalObjectString(object, "thoughtSignature"),
+                    };
+                    try parts.append(allocator, richPart(content));
+                } else if (object.get("fileData")) |file_value| {
+                    const file_data = switch (file_value) {
+                        .object => |value| value,
+                        else => return error.InvalidProviderResponse,
+                    };
+                    const content = model_types.Content{
+                        .source = .{ .provider_file = .{
+                            .id = try common.objectString(file_data, "fileUri"),
+                            .provider = "gcp.gen_ai",
+                        } },
+                        .media_type = try common.objectString(file_data, "mimeType"),
+                        .thought_signature = try common.optionalObjectString(object, "thoughtSignature"),
+                    };
+                    try parts.append(allocator, richPart(content));
+                } else if (object.get("functionCall")) |call_value| {
+                    const call = switch (call_value) {
+                        .object => |value| value,
+                        else => return error.InvalidProviderResponse,
+                    };
+                    const args = call.get("args") orelse return error.InvalidProviderResponse;
+                    const id = if (call.get("id")) |id_value| switch (id_value) {
+                        .string => |value| value,
+                        else => return error.InvalidProviderResponse,
+                    } else try std.fmt.allocPrint(allocator, "google-call-{d}", .{index});
+                    try parts.append(allocator, .{ .tool_call = .{
+                        .id = id,
+                        .name = try common.objectString(call, "name"),
+                        .arguments_json = try std.json.Stringify.valueAlloc(allocator, args, .{}),
+                        .thought_signature = try common.optionalObjectString(object, "thoughtSignature"),
                     } });
-                } else try parts.append(allocator, .{ .text = value });
-            } else if (object.get("inlineData")) |inline_value| {
-                const inline_data = switch (inline_value) {
-                    .object => |value| value,
-                    else => return error.InvalidProviderResponse,
-                };
-                const content = model_types.Content{
-                    .source = .{ .bytes = try common.base64DecodeAlloc(
-                        allocator,
-                        try common.objectString(inline_data, "data"),
-                    ) },
-                    .media_type = try common.objectString(inline_data, "mimeType"),
-                    .thought_signature = try common.optionalObjectString(object, "thoughtSignature"),
-                };
-                try parts.append(allocator, richPart(content));
-            } else if (object.get("fileData")) |file_value| {
-                const file_data = switch (file_value) {
-                    .object => |value| value,
-                    else => return error.InvalidProviderResponse,
-                };
-                const content = model_types.Content{
-                    .source = .{ .provider_file = .{
-                        .id = try common.objectString(file_data, "fileUri"),
-                        .provider = "gcp.gen_ai",
-                    } },
-                    .media_type = try common.objectString(file_data, "mimeType"),
-                    .thought_signature = try common.optionalObjectString(object, "thoughtSignature"),
-                };
-                try parts.append(allocator, richPart(content));
-            } else if (object.get("functionCall")) |call_value| {
-                const call = switch (call_value) {
-                    .object => |value| value,
-                    else => return error.InvalidProviderResponse,
-                };
-                const args = call.get("args") orelse return error.InvalidProviderResponse;
-                const id = if (call.get("id")) |id_value| switch (id_value) {
-                    .string => |value| value,
-                    else => return error.InvalidProviderResponse,
-                } else try std.fmt.allocPrint(allocator, "google-call-{d}", .{index});
-                try parts.append(allocator, .{ .tool_call = .{
-                    .id = id,
-                    .name = try common.objectString(call, "name"),
-                    .arguments_json = try std.json.Stringify.valueAlloc(allocator, args, .{}),
-                    .thought_signature = try common.optionalObjectString(object, "thoughtSignature"),
-                } });
+                }
             }
         }
     } else if (finish_reason == null) return error.InvalidProviderResponse;
@@ -1344,6 +1353,14 @@ test "decodes Gemini text, calls with and without ids, and usage" {
     try std.testing.expectEqual(@as(u64, 0), try modalityTokens(null_details, "details", "AUDIO"));
     try std.testing.expectEqual(model_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
     try std.testing.expectEqualStrings("STOP", response.finish_reason.?.raw);
+
+    const role_only = try decodeResponse(
+        arena.allocator(),
+        "{\"candidates\":[{\"content\":{\"role\":\"model\"},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":1,\"candidatesTokenCount\":0}}",
+    );
+    try std.testing.expectEqual(@as(usize, 0), role_only.parts.len);
+    try std.testing.expectEqual(model_types.FinishReason.Kind.stop, role_only.finish_reason.?.kind);
+    try std.testing.expectEqual(@as(u64, 1), role_only.usage.input_tokens);
 }
 
 test "maps Gemini safety and malformed call reasons" {
@@ -1376,6 +1393,8 @@ test "rejects malformed Gemini responses" {
         "{\"candidates\":[]}",
         "{\"candidates\":[false]}",
         "{\"candidates\":[{}]}",
+        "{\"candidates\":[{\"content\":false}]}",
+        "{\"candidates\":[{\"content\":{\"parts\":false}}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[false]}}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":false}]}}]}",
         "{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"x\",\"thought\":1}]}}]}",

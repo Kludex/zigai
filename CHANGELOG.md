@@ -32,6 +32,10 @@
   selected credentials, and list credential readiness without exposing values.
 - Add real buffered text-response cassettes and replay coverage for the full
   24-model OpenAI, Anthropic, and Google first-party matrix.
+- Add 48 real streamed-text and streamed-function-tool cassettes for the same
+  first-party matrix, backed by shared provider-neutral event invariants and
+  JSON-semantic request replay. Preserve OpenAI function identity when argument
+  completion omits the name, and accept Gemini role-only terminal chunks.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

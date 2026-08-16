@@ -1,0 +1,24 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:streamGenerateContent?alt=sse"
+    headers: {}
+    body:
+      type: json
+      content:
+        contents:
+          - role: "user"
+            parts:
+              - text: "Reply with exactly: pong"
+        generationConfig:
+          maxOutputTokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        data: {"candidates": [{"content": {"parts": [{"text": "pong"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 6,"candidatesTokenCount": 1,"totalTokenCount": 104,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 6}],"thoughtsTokenCount": 97,"serviceTier": "standard"},"modelVersion": "gemini-3.1-pro-preview","responseId": "DwmBatrfItixxN8PxMeQCA"}
+
+        data: {"candidates": [{"content": {"parts": [{"text": "","thoughtSignature": "ErMECrAEARFNMg/8Iw8F2ClwLi0mWotHAJeOBdjplaBa6UoxdTGuBhwlSzBiYqZzJBzH8YOvvVSTjOJq8az+SvsNHR+/Zvx1P3UyiKasFXT+iQE+77ZgNMLobw+F5jrygEnBxlN+yWyZmh/cQYyFHzIK0Bh8yVVofBlIuyzFzMQOEgplcGUmH1OZmRggIhMjii0qg7XoDB2KC+XxOvsPS5NDRno6Wzl0/578UDAddSE3RRduzaj40cPIl5x1WIThv3l3PXc/wYr4Nmk+0xy+PFKvZs7+VM4NJvqTMsbTPe5MF9WBS83niYlwa0n45d6mhLjlPALeaC2nxKzXyUidnDGGlKQOlJ1wsiUEwBaph3CeAlhkd7L3OogA/GCkUIvrxp2J3lqwIh7o7Mc1ZbcIvJeaXQF6oyZ2gi64iYhMki2tCDmjoig41/hjNGbAYFhwKE1+24PTBhBwgoR8OkC4w+7UAbKo4TEGEnvoox16UZN1kt+D19z+uYMCZo0fv1vLVcXiqkUWFiw8k9uLL/oiOZCrp/3VkZA/TQj+Pv8m85NOD/F0NPNtYvb93YERKc4Fw1cBQLzKRO7Vjpss9veC6GNej8xMPSdkIqy08JTRd1Y0WvtL8Eh6/BM7lmff6d5HlKbjQiZbNUodP/HWyC40G9QnkvYJ3gTMzs0RgRcQPcVIgqMXjI1ti7EnlD5xX90Jo1FHNSU6rlZv9IhFbZfA+hiiP0msRDSrHWZptIkzEKeRgjwledY="}],"role": "model"},"finishReason": "STOP","index": 0}],"usageMetadata": {"promptTokenCount": 6,"candidatesTokenCount": 1,"totalTokenCount": 104,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 6}],"thoughtsTokenCount": 97,"serviceTier": "standard"},"modelVersion": "gemini-3.1-pro-preview","responseId": "DwmBatrfItixxN8PxMeQCA"}
