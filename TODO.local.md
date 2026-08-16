@@ -330,7 +330,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add Windows CI and cross-target compile checks; test Debug, ReleaseSafe,
   minimum Zig, current pinned Zig, downstream consumers, docs, examples, and
   package contents from a clean source archive.
-- [ ] Minimize `build.zig.zon` package paths to runtime sources, build files,
+- [x] Minimize `build.zig.zon` package paths to runtime sources, build files,
   examples, and license; keep tests/docs/automation out of consumer downloads
   unless Zig package tooling requires them.
 - [ ] Add reproducible release automation with source archive checksums,

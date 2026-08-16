@@ -73,6 +73,9 @@
   checks for `x86_64-windows`, `aarch64-linux`, and `x86_64-macos`, dedicated
   minimum/pinned Zig toolchain jobs covering docs and examples, and a clean
   source-archive job that builds and tests the extracted `git archive`.
+- Minimize the published package allowlist to `build.zig`, `build.zig.zon`,
+  `src`, `examples`, and `LICENSE` so consumer downloads exclude tests, docs,
+  fixtures, and automation.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.
