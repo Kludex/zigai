@@ -201,7 +201,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   production.
 - [x] Add versioned dataset and report serialization for JSON and readable
   Cassetter-style YAML.
-- [ ] Add comparison reports and stable machine-readable CI output.
+- [x] Add comparison reports and stable machine-readable CI output.
 - [ ] Add online evaluation hooks and sampling policies that never block the
   agent path, preserve trace correlation, bound queues, and expose dropped-work
   metrics.

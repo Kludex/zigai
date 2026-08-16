@@ -23,6 +23,7 @@ pub const history = @import("history.zig");
 pub const context_budget = @import("context_budget.zig");
 pub const evals = @import("evals.zig");
 pub const eval_io = @import("eval_io.zig");
+pub const eval_compare = @import("eval_compare.zig");
 pub const providers = @import("providers.zig");
 pub const models = @import("models.zig");
 pub const telemetry = @import("telemetry.zig");
@@ -262,6 +263,7 @@ test {
     _ = @import("context_budget.zig");
     _ = @import("evals.zig");
     _ = @import("eval_io.zig");
+    _ = @import("eval_compare.zig");
     _ = @import("providers.zig");
     _ = @import("models.zig");
     _ = @import("telemetry.zig");

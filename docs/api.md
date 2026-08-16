@@ -124,6 +124,7 @@ Use these namespaces for the rest of the API:
 | `zigai.history` | Version-2 ZigAI history serialization, version-1 migration, and processors |
 | `zigai.evals` | Datasets, evaluators, reports, and model grading |
 | `zigai.eval_io` | Versioned JSON/YAML dataset and report documents |
+| `zigai.eval_compare` | Baseline/candidate comparisons and stable CI JSON |
 | `zigai.mcp` | MCP 2026 client, server, Streamable HTTP, and stdio |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
@@ -573,6 +574,24 @@ analyses, and typed OpenTelemetry spans. Trace and span IDs are lowercase hex.
 Parsers are strict, bounded by the CLI-config JSON limits, reject duplicate YAML
 keys, and return arena-owned values that must be deinitialized.
 
+`eval_compare.compareReports` matches case runs by stable `(case_index,
+repetition)` identity and evaluator or analysis entries by name. Baseline order
+is retained, followed by candidate-only entries in candidate order. A reused
+identity with a different case name fails with `CaseIdentityMismatch`; duplicate
+identities or evaluator names are rejected before comparison.
+
+Each comparison classifies entries as `unchanged`, `improved`, `regressed`,
+`added`, or `removed`. Removed assertions and newly failing entries count as
+regressions; newly passing entries count as improvements. The report also
+contains pass-rate and finite score/value deltas plus signed token, request,
+tool, latency, and cost deltas. `regressionFree()` is true only when every
+regression category is zero.
+
+`eval_compare.stringifyCiJson` emits stable indented version-1 JSON without
+timestamps or environment-specific fields. Its top-level `conclusion` is
+`pass` exactly when `regressionFree()` is true, so callers can persist the JSON
+as an artifact and map the same predicate to their process exit status.
+
 ## Ownership
 
 ZigAI follows one rule for high-level operations: a returned type with a
@@ -586,6 +605,7 @@ ZigAI follows one rule for high-level operations: a returned type with a
 | `OwnedResumeDecisions` | Owns parsed decisions until `deinit` |
 | `eval_io.OwnedDataset` | Owns a parsed dataset graph; registry callbacks remain borrowed |
 | Parsed `evals.Report` | Owns the complete deserialized report until `deinit` |
+| `eval_compare.Report` | Owns the complete comparison graph until `deinit` |
 | `history.Owned` | Owns parsed history until `deinit` |
 | `codecs.pydantic_ai.Owned` | Owns the complete PydanticAI JSON value graph until `deinit` |
 | `capability.LoadResolution` | Owns its dependency plan and diagnostic until `deinit` |

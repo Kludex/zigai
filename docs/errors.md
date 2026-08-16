@@ -226,6 +226,11 @@ Provider construction and optional operations use these boundary errors:
 | `eval_io` | `AmbiguousEvaluator` | A registry contains more than one evaluator with the requested name. |
 | `eval_io` | `InvalidReport` | Report structure, identity, usage, score, span, or analysis data is invalid. |
 | `eval_io` | `UnsupportedReportVersion` | The report document version is unsupported. |
+| `eval_compare` | `InvalidLabel` | A baseline or candidate label is empty. |
+| `eval_compare` | `InvalidReport` | A report contains invalid identities, names, or non-finite scores/analysis values. |
+| `eval_compare` | `DuplicateCaseIdentity` | A report repeats one `(case_index, repetition)` identity. |
+| `eval_compare` | `DuplicateEvaluator` | A case or report repeats one evaluator name. |
+| `eval_compare` | `CaseIdentityMismatch` | Baseline and candidate use different names for the same stable case/run identity. |
 
 ### Agent specification errors
 

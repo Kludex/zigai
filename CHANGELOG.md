@@ -90,6 +90,9 @@
   Cassetter-style YAML. Dataset evaluator names resolve through an explicit
   registry, reports retain usage, analyses, and typed spans, and trace IDs use
   stable hexadecimal text.
+- Add deterministic baseline/candidate eval comparisons over stable case/run
+  identities, evaluator names, report analyses, pass rates, and signed usage
+  deltas, with regression classification and versioned CI JSON output.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

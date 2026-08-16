@@ -618,6 +618,20 @@ uses the same strict schema with Cassetter-style indentation and quoted scalar
 strings. Both formats are explicitly versioned and parsed through bounded,
 arena-owned graphs.
 
+Comparison is a separate pure-data stage. `eval_compare` joins baseline and
+candidate runs by `(case_index, repetition)`, then joins ordinary and trace
+results by evaluator name. It preserves baseline order and appends candidate-
+only values in candidate order, making output independent of execution
+completion order. Removed checks and pass-to-fail changes are regressions;
+fail-to-pass changes are improvements. Aggregate analyses use the same rule,
+with a null assertion ranked between false and true.
+
+The comparison owns copied labels and result metadata, carries signed aggregate
+usage deltas, and contains no clocks, process paths, or random identifiers.
+Its versioned CI JSON therefore remains byte-stable for identical inputs. The
+library reports a deterministic conclusion but leaves process exit and artifact
+storage policy to the application.
+
 `evals.ModelGrader` is optional and is itself built from an `Agent`. It sends a
 JSON-quoted task, output, expected value, and rubric to that agent, requests a
 typed pass/score/reason object, and rejects non-finite or out-of-range scores.

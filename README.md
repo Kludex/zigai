@@ -1205,6 +1205,12 @@ an explicit `EvaluatorRegistry`; callbacks and non-default per-case `RunOptions`
 are never serialized. JSON and readable YAML report files retain usage,
 evaluations, analyses, and telemetry spans.
 
+Compare a candidate report with a baseline using `zigai.eval_compare`.
+Comparisons preserve stable case/repetition order, classify evaluator and
+aggregate-analysis changes, calculate signed usage deltas, and expose
+`regressionFree()` for gating. `stringifyCiJson` emits deterministic,
+versioned JSON with a `pass` or `fail` conclusion for CI artifacts.
+
 ## Security
 
 Hosted endpoints use HTTPS-only URL validation by default. Local names,
