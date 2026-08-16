@@ -821,6 +821,18 @@ test "typed agent nodes report prepare agent and apply failures" {
         ) CallbackError!Prepared {
             return .{ .prompt = "prompt" };
         }
+        fn prepareDurableMismatch(
+            _: ?*anyopaque,
+            _: std.mem.Allocator,
+            _: *Workflow.Context,
+            _: *const u8,
+        ) CallbackError!Prepared {
+            return .{ .prompt = "prompt", .options = .{ .durable = .{
+                .runtime = undefined,
+                .run_id = "durable-run",
+                .handlers = .{},
+            } } };
+        }
         fn apply(
             context: ?*anyopaque,
             _: std.mem.Allocator,
@@ -865,7 +877,14 @@ test "typed agent nodes report prepare agent and apply failures" {
     try std.testing.expectEqual(FailurePhase.prepare, capture.phase.?);
 
     capture = .{};
+    node.prepare_fn = Callbacks.prepareDurableMismatch;
+    node.correlation = .{ .run_id = "different-run" };
+    try std.testing.expectError(error.StepFailed, Support.runNode(&node, &capture));
+    try std.testing.expectEqual(FailurePhase.prepare, capture.phase.?);
+
+    capture = .{};
     node.prepare_fn = Callbacks.prepare;
+    node.correlation = null;
     try std.testing.expectError(error.StepFailed, Support.runNode(&node, &capture));
     try std.testing.expectEqual(FailurePhase.agent, capture.phase.?);
 
@@ -1040,8 +1059,8 @@ test "agent nodes namespace durable operations and expose stable graph correlati
             _: *anyopaque,
             _: std.mem.Allocator,
             _: model_types.ModelRequest,
-        ) !model_types.ModelResponse {
-            return error.LocalModelMustNotRun;
+        ) !model_types.ModelResponse { // kcov-ignore: durable routing must bypass the local model
+            return error.LocalModelMustNotRun; // kcov-ignore: durable routing must bypass the local model
         }
 
         fn hook(context: *anyopaque, event: agent_types.LifecycleEvent) !void {
@@ -1250,6 +1269,11 @@ test "agent node controls cancel before side effects and require IO for deadline
     node.agent = &slow_agent;
     try std.testing.expectError(error.StepFailed, Support.runNode(&node, runtime.io()));
     try std.testing.expect(!slow.active.load(.seq_cst));
+
+    node.agent = &agent;
+    node.control = .{};
+    try std.testing.expectEqual(@as(u8, 0), try Support.runNode(&node, runtime.io()));
+    try std.testing.expectEqual(@as(usize, 1), scripted.request_count);
 }
 
 test "agent node failures retain their phase and stable graph error" {
