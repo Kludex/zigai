@@ -230,9 +230,9 @@ pub const LocalWorkspace = struct {
         defer file.close(self.io);
         var buffer: [4096]u8 = undefined;
         var writer = file.writer(self.io, &buffer);
-        writer.interface.writeAll(bytes) catch |failure| {
-            self.auditFailure(.write, path, null, failure);
-            return failure;
+        writer.interface.writeAll(bytes) catch |failure| { // kcov-ignore: requires an OS write failure after open
+            self.auditFailure(.write, path, null, failure); // kcov-ignore: write failure audit
+            return failure; // kcov-ignore: write failure propagation
         };
         try writer.interface.flush();
         self.auditSuccess(.write, path, null, &.{});
@@ -297,9 +297,9 @@ pub const LocalWorkspace = struct {
         if (self.disposed) return;
         self.root.close(self.io);
         self.disposed = true;
-        if (self.disposal_parent) |parent| parent.deleteTree(self.io, self.disposal_path.?) catch |failure| {
-            self.auditFailure(.dispose, self.disposal_path, null, failure);
-            return failure;
+        if (self.disposal_parent) |parent| parent.deleteTree(self.io, self.disposal_path.?) catch |failure| { // kcov-ignore: requires an OS deletion failure
+            self.auditFailure(.dispose, self.disposal_path, null, failure); // kcov-ignore: deletion failure audit
+            return failure; // kcov-ignore: deletion failure propagation
         };
         self.auditSuccess(.dispose, self.disposal_path, null, &.{});
     }
@@ -469,6 +469,15 @@ test "local execution stays rooted redacts secrets and audits operations" {
     try std.testing.expect(capture.events >= 4);
     try std.testing.expect(capture.saw_secret_name);
     try std.testing.expectError(error.InvalidExecutionPath, environment.read(std.testing.allocator, "../outside"));
+    try std.testing.expectError(error.InvalidExecutionPath, environment.read(std.testing.allocator, "/absolute"));
+    try std.testing.expectError(error.FileNotFound, environment.read(std.testing.allocator, "missing"));
+    try std.testing.expectError(error.InvalidExecutionPath, environment.write("../outside", "x"));
+    try std.testing.expectError(error.FileNotFound, environment.write("missing/file", "x"));
+    try std.testing.expectError(error.FileNotFound, environment.remove("missing"));
+    try std.testing.expectError(error.InvalidExecutionCommand, environment.execute(std.testing.allocator, .{
+        .argv = &.{},
+        .network = .unrestricted,
+    }));
     try std.testing.expectError(error.ExecutionCommandDenied, environment.execute(std.testing.allocator, .{
         .argv = &.{"/bin/echo"},
         .network = .unrestricted,
@@ -498,6 +507,13 @@ test "local shell enforces cancellation output environment and network policy" {
         .network = .unrestricted,
     }));
     workspace.command_policy.max_output_bytes = 1024;
+    try temporary.dir.createDirPath(runtime.io(), "child");
+    var child_result = try environment.execute(std.testing.allocator, .{
+        .argv = &.{ "/bin/echo", "child" },
+        .cwd = "child",
+        .network = .unrestricted,
+    });
+    child_result.deinit();
     try std.testing.expectError(error.RunTimedOut, environment.execute(std.testing.allocator, .{
         .argv = &.{ "/bin/sh", "-c", "sleep 10" },
         .network = .unrestricted,
@@ -532,7 +548,12 @@ test "disposable local and remote workspace contracts clean up" {
         error.FileNotFound,
         temporary.dir.openDir(std.testing.io, "workspace", .{}),
     );
-
+    var abandoned = try LocalWorkspace.initDisposable(std.testing.io, temporary.dir, "abandoned");
+    abandoned.deinit();
+    try std.testing.expectError(
+        error.FileNotFound,
+        temporary.dir.openDir(std.testing.io, "abandoned", .{}),
+    );
     const Remote = struct {
         disposed: bool = false,
         fn read(_: *anyopaque, gpa: std.mem.Allocator, _: []const u8) ![]u8 {
@@ -566,6 +587,8 @@ test "disposable local and remote workspace contracts clean up" {
     };
     const bytes = try remote.environment.read(std.testing.allocator, "file");
     defer std.testing.allocator.free(bytes);
+    try remote.environment.write("file", "value");
+    try remote.environment.remove("file");
     var command = try remote.environment.execute(std.testing.allocator, .{ .argv = &.{"remote"} });
     command.deinit();
     try remote.environment.dispose();
@@ -583,10 +606,31 @@ fn runLocalWithAllocator(gpa: std.mem.Allocator) !void {
     try std.testing.expectEqualStrings("content", bytes);
 }
 
+fn runCommandWithAllocator(gpa: std.mem.Allocator) !void {
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var workspace = LocalWorkspace.init(std.testing.io, temporary.dir);
+    defer workspace.deinit();
+    workspace.command_policy = .{
+        .allowed_executables = &.{"/bin/echo"},
+        .network = .unrestricted,
+    };
+    var result = try workspace.environment().execute(gpa, .{
+        .argv = &.{ "/bin/echo", "output" },
+        .network = .unrestricted,
+    });
+    result.deinit();
+}
+
 test "execution environment ownership survives every allocation failure" {
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
         runLocalWithAllocator,
+        .{},
+    );
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        runCommandWithAllocator,
         .{},
     );
 }
