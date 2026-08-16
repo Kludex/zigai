@@ -293,7 +293,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add UI event adapters for AG-UI and Vercel AI protocols with bidirectional
   tool approval, typed custom events, message sanitization, reconnection, and
   browser/server examples.
-- [ ] Add a production CLI with provider/model selection, config files, stdin,
+- [x] Add a production CLI with provider/model selection, config files, stdin,
   conversation persistence, MCP servers, tool approval, structured/JSON event
   output, exit-code contract, and shell completion.
 
