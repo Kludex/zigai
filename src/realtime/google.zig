@@ -321,6 +321,8 @@ test "Gemini Live drives audio transcripts tools turns usage and images" {
         .{ .text = "{\"goAway\":{}}" },
         .{ .text = "{\"sessionResumptionUpdate\":{\"newHandle\":\"h\"}}" },
         .{ .text = "{\"serverContent\":{\"turnComplete\":true}}" },
+        .{ .text = "{\"futureEvent\":{}}" },
+        .{ .text = "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"inlineData\":{\"data\":\"!\"}}]}}}" },
     };
     var state = State{ .frames = &frames };
     var protocol = Connector{
@@ -353,6 +355,8 @@ test "Gemini Live drives audio transcripts tools turns usage and images" {
         try std.testing.expectEqual(tag, std.meta.activeTag(event.value));
     }
     try std.testing.expectEqual(@as(u64, 5), session.usage().totalTokens());
+    try std.testing.expectError(error.UnsupportedRealtimeEvent, session.next(std.testing.allocator));
+    try std.testing.expectError(error.InvalidRealtimeFrame, session.next(std.testing.allocator));
     try std.testing.expect(state.sent >= 5);
     try std.testing.expect(session.connection.isTransportError(error.TransportDropped));
 }

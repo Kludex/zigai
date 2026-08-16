@@ -438,6 +438,9 @@ test "OpenAI protocol drives WebRTC audio transcripts tools turns and usage" {
         .{ .text = "{\"type\":\"error\",\"error\":{\"code\":\"notice\",\"message\":\"retry\"}}" },
         .{ .text = "{\"type\":\"response.function_call_arguments.done\",\"call_id\":\"c1\",\"name\":\"tool\",\"arguments\":\"{}\"}" },
         .{ .text = "{\"type\":\"response.done\",\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":3}}}" },
+        .{ .text = "{\"type\":\"response.done\",\"response\":{\"id\":\"r2\",\"status\":\"completed\"}}" },
+        .{ .text = "{\"type\":\"future.event\"}" },
+        .{ .text = "{\"type\":\"response.audio.delta\",\"delta\":\"!\"}" },
     };
     var state = State{ .frames = &frames };
     var protocol = Connector{
@@ -456,6 +459,7 @@ test "OpenAI protocol drives WebRTC audio transcripts tools turns and usage" {
     try session.sendText("question");
     try session.sendAudio("\x00\x00");
     try session.commitAudio();
+    try session.clearAudio();
     try session.createResponse();
     try session.interrupt(null);
     try session.interrupt(10);
@@ -480,7 +484,11 @@ test "OpenAI protocol drives WebRTC audio transcripts tools turns and usage" {
         try std.testing.expectEqual(tag, std.meta.activeTag(event.value));
     }
     try std.testing.expectEqual(@as(u64, 5), session.usage().totalTokens());
-    try std.testing.expect(state.sent >= 8);
+    var second_turn = try session.next(std.testing.allocator);
+    second_turn.deinit();
+    try std.testing.expectError(error.UnsupportedRealtimeEvent, session.next(std.testing.allocator));
+    try std.testing.expectError(error.InvalidRealtimeFrame, session.next(std.testing.allocator));
+    try std.testing.expect(state.sent >= 9);
     try std.testing.expect(session.connection.isTransportError(error.TransportDropped));
 
     session.close();
