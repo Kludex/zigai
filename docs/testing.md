@@ -17,6 +17,13 @@ The command enforces `zig fmt --check`, uses `zig build check` as the Zig
 compiler-backed lint/type-check gate, runs the full suite, and builds the
 downstream consumer projects.
 
+`zig build audit-cassettes` runs independently and is also part of both
+`zig build check` and `zig build test`. It requires every YAML fixture to have
+a typed manifest entry and every manifest path to exist. It rejects duplicate
+live paths or IDs, request headers, sensitive header/value shapes, real Bedrock
+regions or Azure resource hosts, unredacted multipart bodies, and unstable
+parse/stringify normalization.
+
 `tests/consumers/agent/` resolves ZigAI as a path dependency and runs the
 public agent and evaluation APIs. `tests/consumers/providers/` imports the
 unified module together with every standalone compatibility package. CI runs
@@ -115,6 +122,19 @@ Conversations; and buffered and streamed Cohere v2 Chat. The existing native
 fixtures supply the Bedrock, Azure, and Cohere function-tool loops. Bedrock
 streaming is excluded because its current adapter is buffered-only.
 
+The specialized scenario applicability is deliberate:
+
+| Native route | Buffered | Streamed text | Function tool | Retry/error |
+| --- | --- | --- | --- | --- |
+| Bedrock Converse | Live | Excluded: adapter has no ConverseStream transport | Live | Deterministic |
+| Azure Responses | Live | Live | Live | Deterministic |
+| Mistral Conversations | Live | Live | Live | Deterministic |
+| Cohere v2 Chat | Live | Live | Live | Deterministic |
+
+OpenAI-compatible providers support all three success scenarios through the
+shared Chat Completions transport. Their failures are deterministic because
+manufacturing live rate limits and server failures is unsafe and unstable.
+
 `tests/cassettes/rich/` contains one real inline-image exchange for each
 first-party provider. Replay checks the semantic answer (`red`) rather than
 accepting any non-empty model output.
@@ -190,6 +210,11 @@ omitted by default. Review request and response content before committing a new
 cassette. Replay compares JSON request bodies structurally, so harmless object
 whitespace and key formatting introduced by YAML serialization do not cause a
 mismatch; non-JSON bodies remain byte-exact.
+
+Focused deterministic codec fixtures also live in the typed manifest. This
+lets the audit reject orphaned files without presenting synthetic contracts as
+live recordings; the recorder reports them as `fixture` and never resolves
+credentials for them.
 
 File recordings use the same request filters during recording and replay.
 Multipart boundaries are normalized, uploaded bytes are replaced with an

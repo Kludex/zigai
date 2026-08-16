@@ -67,6 +67,10 @@
   Mistral Conversations, and Cohere v2 Chat. Each native request and response
   codec now replays rate-limit recovery, retry exhaustion, malformed success,
   and bounded provider-error observation.
+- Add a repository-wide cassette audit to the normal test and check gates. It
+  enforces manifest completeness, unique live fixtures and IDs, secret-safe
+  headers and values, provider endpoint and multipart normalization, and an
+  idempotent Cassetter YAML round trip across every checked-in fixture.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

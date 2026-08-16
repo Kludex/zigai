@@ -392,6 +392,19 @@ pub const specialized_errors = [_]Entry{
     deterministicEntry("cohere/command-a-03-2025/chat-provider-error", "cohere", "command-a-03-2025", "cassettes/errors/cohere_chat.yaml", .cohere_chat, .cohere),
 };
 
+/// Deterministic codec fixtures used by focused provider tests. They remain in
+/// the manifest so the audit gate can reject orphaned cassette files.
+pub const contract_fixtures = [_]Entry{
+    deterministicScenarioEntry("contracts/openai/function-tool", "openai", .function_tool, "cassettes/openai_tool_loop.yaml", .openai, .openai),
+    deterministicScenarioEntry("contracts/openai/streamed-function-tool", "openai", .streamed_function_tool, "cassettes/openai_stream_tool_loop.yaml", .openai, .openai),
+    deterministicScenarioEntry("contracts/anthropic/function-tool", "anthropic", .function_tool, "cassettes/anthropic_tool_loop.yaml", .anthropic, .anthropic),
+    deterministicScenarioEntry("contracts/anthropic/streamed-function-tool", "anthropic", .streamed_function_tool, "cassettes/anthropic_stream_tool_loop.yaml", .anthropic, .anthropic),
+    deterministicScenarioEntry("contracts/google/function-tool", "google", .function_tool, "cassettes/google_tool_loop.yaml", .google, .google),
+    deterministicScenarioEntry("contracts/google/streamed-function-tool", "google", .streamed_function_tool, "cassettes/google_stream_tool_loop.yaml", .google, .google),
+    deterministicScenarioEntry("contracts/openai-compatible/function-tool", "openai-compatible", .function_tool, "cassettes/openai_compatible_tool_loop.yaml", .compatible, .openai),
+    deterministicScenarioEntry("contracts/openai-compatible/streamed-function-tool", "openai-compatible", .streamed_function_tool, "cassettes/openai_compatible_stream_tool_loop.yaml", .compatible, .openai),
+};
+
 pub const rich = [_]Entry{
     scenarioEntry("openai/gpt-5-nano/rich-media", "openai", "gpt-5-nano", .rich_media, "cassettes/rich/openai_image.yaml", .openai_rich, .openai),
     scenarioEntry("anthropic/claude-sonnet-4-6/rich-media", "anthropic", "claude-sonnet-4-6", .rich_media, "cassettes/rich/anthropic_image.yaml", .anthropic_rich, .anthropic),
@@ -404,7 +417,7 @@ pub const files = [_]Entry{
     scenarioEntry("google/files/file-lifecycle", "google", "", .file_lifecycle, "cassettes/files/google.yaml", .google_files, .google),
 };
 
-pub const all = openai ++ anthropic ++ google ++ first_party_buffered ++ first_party_streaming ++ first_party_capabilities ++ first_party_errors ++ compatible_success ++ compatible_errors ++ native ++ specialized_success ++ specialized_errors ++ rich ++ files;
+pub const all = openai ++ anthropic ++ google ++ first_party_buffered ++ first_party_streaming ++ first_party_capabilities ++ first_party_errors ++ compatible_success ++ compatible_errors ++ native ++ specialized_success ++ specialized_errors ++ contract_fixtures ++ rich ++ files;
 
 fn modelEntry(
     id: []const u8,
@@ -540,6 +553,26 @@ fn deterministicEntry(
     };
 }
 
+fn deterministicScenarioEntry(
+    id: []const u8,
+    provider: []const u8,
+    scenario: Scenario,
+    cassette: []const u8,
+    route: Route,
+    credentials: CredentialSet,
+) Entry {
+    return .{
+        .id = id,
+        .provider = provider,
+        .model = "contract-model",
+        .scenario = scenario,
+        .cassette = cassette,
+        .route = route,
+        .credentials = credentials,
+        .source = .deterministic,
+    };
+}
+
 pub fn matches(entry: Entry, filter: []const u8) bool {
     if (std.mem.eql(u8, filter, entry.id) or
         std.mem.eql(u8, filter, entry.provider) or
@@ -551,7 +584,8 @@ pub fn matches(entry: Entry, filter: []const u8) bool {
     if (std.mem.eql(u8, filter, "first-party-buffered") and isFirstPartyBuffered(entry)) return true;
     if (std.mem.eql(u8, filter, "first-party-streaming") and isFirstPartyStreaming(entry)) return true;
     if (std.mem.eql(u8, filter, "first-party-capabilities") and isFirstPartyCapability(entry)) return true;
-    if (std.mem.eql(u8, filter, "compatible-success") and entry.route == .compatible) return true;
+    if (std.mem.eql(u8, filter, "compatible-success") and
+        entry.route == .compatible and entry.source == .live) return true;
     if (std.mem.eql(u8, filter, "compatible-streaming") and
         entry.route == .compatible and entry.scenario == .streamed_text) return true;
     if (std.mem.eql(u8, filter, "compatible-tools") and
@@ -574,6 +608,7 @@ pub fn matches(entry: Entry, filter: []const u8) bool {
 }
 
 fn isFirstPartyStreaming(entry: Entry) bool {
+    if (entry.source != .live) return false;
     if (entry.scenario != .streamed_text and entry.scenario != .streamed_function_tool) return false;
     return switch (entry.route) {
         .openai, .anthropic, .google => true,
@@ -582,6 +617,7 @@ fn isFirstPartyStreaming(entry: Entry) bool {
 }
 
 fn isFirstPartyBuffered(entry: Entry) bool {
+    if (entry.source != .live) return false;
     if (entry.scenario != .buffered) return false;
     return switch (entry.route) {
         .openai, .anthropic, .google => true,

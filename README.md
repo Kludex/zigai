@@ -1165,7 +1165,9 @@ The coverage gate is **100% of executable lines**.
 Provider tests replay checked-in HTTP cassettes. They exercise the real agent,
 provider adapter, tool loop, usage accounting, and error paths without calling
 paid APIs. Cassettes use Cassetter-compatible YAML and stay under `tests/`;
-they are not part of the library or command-line clients.
+they are not part of the library or command-line clients. The normal quality
+gate audits every fixture for manifest coverage, secret safety, and stable
+normalization.
 
 Read [Testing](docs/testing.md) for coverage and cassette details.
 

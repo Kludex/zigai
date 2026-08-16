@@ -76,6 +76,36 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_cassette_tests = b.addRunArtifact(cassette_tests);
+    const cassette_audit_module = b.createModule(.{
+        .root_source_file = b.path("tests/cassette_audit.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .error_tracing = error_tracing,
+        .imports = &.{
+            .{ .name = "zigai", .module = zigai },
+            .{ .name = "yaml", .module = yaml },
+        },
+    });
+    const cassette_audit = b.addExecutable(.{
+        .name = "zigai-cassette-audit",
+        .root_module = cassette_audit_module,
+    });
+    const run_cassette_audit = b.addRunArtifact(cassette_audit);
+    const cassette_audit_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/cassette_audit.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+            .error_tracing = error_tracing,
+            .imports = &.{
+                .{ .name = "zigai", .module = zigai },
+                .{ .name = "yaml", .module = yaml },
+            },
+        }),
+    });
+    const run_cassette_audit_tests = b.addRunArtifact(cassette_audit_tests);
+    const audit_cassettes = b.step("audit-cassettes", "Audit cassette completeness, safety, and normalization");
+    audit_cassettes.dependOn(&run_cassette_audit.step);
     const cli_common_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/cli/common.zig"),
@@ -232,6 +262,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_integration_tests.step);
     test_step.dependOn(&run_pydantic_ai_codec_tests.step);
     test_step.dependOn(&run_cassette_tests.step);
+    test_step.dependOn(&run_cassette_audit.step);
+    test_step.dependOn(&run_cassette_audit_tests.step);
     test_step.dependOn(&run_cli_common_tests.step);
     test_step.dependOn(&run_spec_cli_tests.step);
     test_step.dependOn(&run_mcp_conformance_tests.step);
@@ -243,6 +275,8 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&integration_tests.step);
     check.dependOn(&pydantic_ai_codec_tests.step);
     check.dependOn(&cassette_tests.step);
+    check.dependOn(&run_cassette_audit.step);
+    check.dependOn(&cassette_audit_tests.step);
     check.dependOn(&cli_common_tests.step);
     check.dependOn(&spec_cli_tests.step);
     check.dependOn(&mcp_conformance_tests.step);

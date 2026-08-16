@@ -179,7 +179,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
     Azure Responses, Mistral Conversations, and Cohere v2 Chat.
   - [x] Cover deterministic retry and provider-error behavior for each of those
     four specialized native wire contracts.
-- [ ] Add a cassette audit gate that proves fixture completeness against the
+- [x] Add a cassette audit gate that proves fixture completeness against the
   manifest, rejects credential-shaped values and unsafe headers, validates
   deterministic normalization, and documents intentional capability-based
   scenario exclusions.
