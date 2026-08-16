@@ -185,6 +185,20 @@ policy-transformed arguments, execution kind, and proposed decision through
 agent applies. Missing timer and approval handlers are rejected before their
 associated model or resumed-tool side effects.
 
+## Handler preflight
+
+Durable agent runs validate the buffered or streaming model handler, retry
+timer, and every application/MCP tool family before emitting `run_start` or
+calling a provider. Dynamic `Toolset` values declare their possible families in
+`durable_origins`; MCP toolsets declare `.mcp` automatically. Prepared tools are
+checked again before each model request, including after capability changes.
+Missing registrations fail as `Agent.Error.MissingDurableHandler`, while a
+dynamic toolset without a declaration fails as
+`Agent.Error.MissingDurableToolsetOrigins`.
+
+Runs without a durable binding do not execute this preflight and retain the
+ordinary provider, timer, callback, and tool paths.
+
 Agent lifecycle event routing, a concrete workflow-engine adapter, durable
 stream/approval checkpointing, and worker-restart recovery tests remain tracked
 in `TODO.local.md`.

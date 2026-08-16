@@ -259,7 +259,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
         decisions through their registered durable handlers.
       - [ ] Route agent lifecycle delivery without replaying process-local
         callbacks.
-    - [ ] Prove direct-run behavior remains unchanged and reject incomplete
+    - [x] Prove direct-run behavior remains unchanged and reject incomplete
       durable handler registration before the first side effect.
   - [ ] Implement and document one real workflow-engine adapter with explicit
     worker registration, retry policy, payload limits, and deployment rules.

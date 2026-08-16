@@ -1013,7 +1013,11 @@ pub const Client = struct {
     next_id: std.atomic.Value(u64) = .init(1),
 
     pub fn toolset(self: *Client) agent.Toolset {
-        return .{ .context = self, .prepareFn = prepareTools };
+        return .{
+            .context = self,
+            .prepareFn = prepareTools,
+            .durable_origins = &.{.mcp},
+        };
     }
 
     /// Sends any core or extension request and returns its owned JSON result.

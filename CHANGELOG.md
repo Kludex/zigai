@@ -53,6 +53,9 @@
 - Route retry timers through deterministic-jitter durable workers and journal
   paused approval or external-result decisions against original tool-call
   sequences before resumed execution.
+- Preflight durable model, timer, application-tool, MCP-tool, and dynamic
+  toolset registrations before the first lifecycle callback or provider call,
+  while leaving ordinary runs unchanged.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model

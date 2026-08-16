@@ -198,6 +198,8 @@ const AgentError = error{
     DurableOperationSuspended,
     /// A required durable operation family has no registered worker handler.
     MissingDurableHandler,
+    /// A dynamic toolset did not declare which durable tool families it emits.
+    MissingDurableToolsetOrigins,
     /// A resumed approval call has no matching decision.
     MissingDeferredToolDecision,
     /// A resume decision does not match any paused tool call.
@@ -726,6 +728,9 @@ pub const Toolset = struct {
     tools: []const model_types.Tool = &.{},
     namespace: ?[]const u8 = null,
     metadata: []const model_types.ToolMetadata = &.{},
+    /// Tool families a dynamic preparation callback may return. Durable runs
+    /// preflight these handlers before invoking the callback.
+    durable_origins: ?[]const model_types.ToolOrigin = null,
     context: ?*anyopaque = null,
     prepareFn: ?*const fn (
         context: ?*anyopaque,
@@ -1799,7 +1804,8 @@ pub const Agent = struct {
             const controlled_hooks = try ControlledHooks.init(allocator, hooks.items, control);
             defer controlled_hooks.deinit(allocator);
             return self.runConfigured(allocator, prompt, options, controlled_stream_sink, controlled_output_validator, controlled_hooks.hooks, allow_pause, resume_state, decisions, control, null) catch |err| {
-                emitLifecycle(controlled_hooks.hooks, .{ .run_error = .{ .failure = err } }) catch {};
+                if (!durablePreflightError(err))
+                    emitLifecycle(controlled_hooks.hooks, .{ .run_error = .{ .failure = err } }) catch {};
                 return err;
             };
         }
@@ -1859,7 +1865,8 @@ pub const Agent = struct {
         const controlled_hooks = try ControlledHooks.init(allocator, hooks.items, control);
         defer controlled_hooks.deinit(allocator);
         return configured.runConfigured(allocator, prompt, options, controlled_stream_sink, controlled_output_validator, controlled_hooks.hooks, allow_pause, resume_state, decisions, control, &capability_runtime) catch |err| {
-            emitLifecycle(controlled_hooks.hooks, .{ .run_error = .{ .failure = err } }) catch {};
+            if (!durablePreflightError(err))
+                emitLifecycle(controlled_hooks.hooks, .{ .run_error = .{ .failure = err } }) catch {};
             return err;
         };
     }
@@ -1888,6 +1895,13 @@ pub const Agent = struct {
             try runtime.snapshot(memory)
         else
             .{};
+        if (options.durable) |binding| try preflightDurableHandlers(
+            binding,
+            stream_sink != null,
+            active.tools,
+            active.toolsets,
+            self.retry_policy.max_retries > 0 and self.retry_policy.backoff != null,
+        );
         try requireRunModel(active.model.profile, self.system_prompt != null, stream_sink != null);
         var resolved_settings = active.model.settings
             .overrideWith(active.model_settings)
@@ -1900,13 +1914,6 @@ pub const Agent = struct {
         else
             try ensureContentSupported(active.model, self.url_policy, options.message_history);
         try ensurePromptPartsSupported(active.model, self.url_policy, options.prompt_parts);
-        if (options.durable) |binding| {
-            if (self.retry_policy.max_retries > 0 and self.retry_policy.backoff != null and
-                binding.handlers.retry_delay == null)
-            {
-                return Error.MissingDurableHandler;
-            }
-        }
         const invocation_started = monotonicNow(self.io);
         try emitLifecycle(hooks, .{ .run_start = .{ .prompt = prompt, .model = active.model } });
 
@@ -1965,6 +1972,13 @@ pub const Agent = struct {
                 active = try runtime.assemble(memory, self);
                 active_generation = runtime.generation;
                 capability_snapshot = try runtime.snapshot(memory);
+                if (options.durable) |binding| try preflightDurableHandlers(
+                    binding,
+                    stream_sink != null,
+                    active.tools,
+                    active.toolsets,
+                    self.retry_policy.max_retries > 0 and self.retry_policy.backoff != null,
+                );
                 try requireRunModel(active.model.profile, self.system_prompt != null, stream_sink != null);
                 resolved_settings = active.model.settings
                     .overrideWith(active.model_settings)
@@ -2004,6 +2018,8 @@ pub const Agent = struct {
                 active.tool_policies,
                 toolset_context,
             );
+            if (options.durable) |binding|
+                try preflightDurablePreparedTools(binding, available_tools);
             try ensureUniqueToolNames(available_tools);
             if (capability_runtime) |runtime| if (runtime.hasOnDemand() and !runtime.hasDeferred()) {
                 for (available_tools) |tool| {
@@ -5121,6 +5137,11 @@ fn emitLifecycle(hooks: []const LifecycleHook, event: LifecycleEvent) !void {
     for (hooks) |hook| try hook.emit(event);
 }
 
+fn durablePreflightError(failure: anyerror) bool {
+    return failure == Agent.Error.MissingDurableHandler or
+        failure == Agent.Error.MissingDurableToolsetOrigins;
+}
+
 fn telemetryHook(run: *telemetry_types.Run) LifecycleHook {
     const Adapter = struct {
         fn emit(context: *anyopaque, event: LifecycleEvent) !void {
@@ -5164,6 +5185,49 @@ fn emitStreamEvent(hooks: []const LifecycleHook, sink: AgentStreamSink, event: A
     try emitLifecycle(hooks, .{ .stream_event = .{ .stage = .before, .event = event } });
     try sink.emit(event);
     try emitLifecycle(hooks, .{ .stream_event = .{ .stage = .after, .event = event } });
+}
+
+fn preflightDurableHandlers(
+    binding: durable_types.Binding,
+    streaming: bool,
+    tools: []const model_types.Tool,
+    toolsets: []const Toolset,
+    retries_with_delay: bool,
+) Agent.Error!void {
+    const model_handler = if (streaming)
+        binding.handlers.model_stream
+    else
+        binding.handlers.model_request;
+    if (model_handler == null) return Agent.Error.MissingDurableHandler;
+    if (retries_with_delay and binding.handlers.retry_delay == null)
+        return Agent.Error.MissingDurableHandler;
+    try preflightDurablePreparedTools(binding, tools);
+    for (toolsets) |toolset| {
+        try preflightDurablePreparedTools(binding, toolset.tools);
+        if (toolset.prepareFn != null) {
+            const origins = toolset.durable_origins orelse
+                return Agent.Error.MissingDurableToolsetOrigins;
+            for (origins) |origin| try requireDurableToolHandler(binding, origin);
+        }
+    }
+}
+
+fn preflightDurablePreparedTools(
+    binding: durable_types.Binding,
+    tools: []const model_types.Tool,
+) Agent.Error!void {
+    for (tools) |tool| try requireDurableToolHandler(binding, tool.origin);
+}
+
+fn requireDurableToolHandler(
+    binding: durable_types.Binding,
+    origin: model_types.ToolOrigin,
+) Agent.Error!void {
+    const handler = switch (origin) {
+        .application => binding.handlers.tool_call,
+        .mcp => binding.handlers.mcp_request,
+    };
+    if (handler == null) return Agent.Error.MissingDurableHandler;
 }
 
 fn prepareTools(
@@ -6954,4 +7018,92 @@ test "durable approval resumption journals decisions before tool execution" {
     }
     try std.testing.expectEqual(@as(usize, 1), runtime_state.approval_calls);
     try std.testing.expectEqual(@as(usize, 1), runtime_state.tool_calls);
+}
+
+test "durable handler preflight covers models retries tools and toolsets" {
+    const Unused = struct {
+        fn model(context: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            const calls: *usize = @ptrCast(@alignCast(context));
+            calls.* += 1;
+            return error.ModelMustNotRun;
+        }
+        fn tool(_: *anyopaque, allocator: std.mem.Allocator, _: []const u8) ![]const u8 {
+            return allocator.dupe(u8, "unused");
+        }
+        fn prepare(
+            _: ?*anyopaque,
+            allocator: std.mem.Allocator,
+            _: ToolsetContext,
+            _: []const model_types.Tool,
+        ) ![]const ToolsetEntry {
+            return allocator.alloc(ToolsetEntry, 0);
+        }
+        fn hook(context: *anyopaque, _: LifecycleEvent) !void {
+            const calls: *usize = @ptrCast(@alignCast(context));
+            calls.* += 1;
+        }
+    };
+    var model_calls: usize = 0;
+    var hook_calls: usize = 0;
+    const missing_model = durable_types.Binding{
+        .runtime = undefined,
+        .run_id = "preflight",
+        .handlers = .{},
+    };
+    try std.testing.expectError(Agent.Error.MissingDurableHandler, (Agent{
+        .model = .{ .context = &model_calls, .profile = .{}, .requestFn = Unused.model },
+        .hooks = &.{.{ .context = &hook_calls, .eventFn = Unused.hook }},
+    }).runWithOptions(std.testing.allocator, "never", .{ .durable = missing_model }));
+    try std.testing.expectEqual(@as(usize, 0), model_calls);
+    try std.testing.expectEqual(@as(usize, 0), hook_calls);
+
+    const app_tool = model_types.Tool{
+        .definition = .{ .name = "app", .description = "", .parameters_json_schema = "{}" },
+        .context = &model_calls,
+        .executeFn = Unused.tool,
+    };
+    var mcp_tool = app_tool;
+    mcp_tool.origin = .mcp;
+    const model_only = durable_types.Binding{
+        .runtime = undefined,
+        .run_id = "preflight",
+        .handlers = .{ .model_request = "model" },
+    };
+    try std.testing.expectError(
+        Agent.Error.MissingDurableHandler,
+        preflightDurableHandlers(model_only, true, &.{}, &.{}, false),
+    );
+    try std.testing.expectError(
+        Agent.Error.MissingDurableHandler,
+        preflightDurableHandlers(model_only, false, &.{app_tool}, &.{}, false),
+    );
+    try std.testing.expectError(
+        Agent.Error.MissingDurableHandler,
+        preflightDurableHandlers(model_only, false, &.{}, &.{}, true),
+    );
+    try std.testing.expectError(
+        Agent.Error.MissingDurableToolsetOrigins,
+        preflightDurableHandlers(model_only, false, &.{}, &.{.{ .prepareFn = Unused.prepare }}, false),
+    );
+
+    const app_ready = durable_types.Binding{
+        .runtime = undefined,
+        .run_id = "preflight",
+        .handlers = .{ .model_request = "model", .tool_call = "tool", .retry_delay = "timer" },
+    };
+    try preflightDurableHandlers(app_ready, false, &.{app_tool}, &.{.{
+        .prepareFn = Unused.prepare,
+        .durable_origins = &.{.application},
+    }}, true);
+    try std.testing.expectError(
+        Agent.Error.MissingDurableHandler,
+        preflightDurablePreparedTools(app_ready, &.{mcp_tool}),
+    );
+    var all_ready = app_ready;
+    all_ready.handlers.mcp_request = "mcp";
+    all_ready.handlers.model_stream = "stream";
+    try preflightDurableHandlers(all_ready, true, &.{ mcp_tool, app_tool }, &.{.{
+        .prepareFn = Unused.prepare,
+        .durable_origins = &.{ .application, .mcp },
+    }}, true);
 }
