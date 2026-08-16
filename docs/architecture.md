@@ -569,7 +569,11 @@ preventing duplicated text or tool events.
 `graph` is a typed application-workflow boundary, not part of the agent loop.
 The generic graph type fixes state, dependencies, boundary input/output, and
 intermediate value types at compile time. Its builder validates borrowed step
-definitions and produces an owned, allocation-free routing table for runs.
+and decision definitions and produces an owned, allocation-free routing table
+for runs. Steps have one unconditional route. Decisions select one registered
+named route while preserving the graph's intermediate value type. Every node
+must have an outgoing route and be reachable from the entry before a definition
+can be built.
 
 Execution is deliberately pull-based at its lowest level. `Run.next` performs
 one callback and one route transition, latches terminal failures, and exposes
@@ -577,6 +581,12 @@ the upcoming node without a background scheduler. `Graph.run` is only the
 convenience loop over that same operation. Definition limits bound nodes,
 edges, and names; a run-specific step limit can tighten the graph ceiling so a
 cycle cannot execute forever.
+
+Decision callbacks return a borrowed branch name and the next typed value.
+Route lookup is synchronous; an unknown branch latches `UnmatchedRoute` and
+reports the attempted name to the borrowed event sink. The built graph owns its
+node, route-span, and route arrays, while node names, registered branch names,
+and callback contexts remain application-owned.
 
 Graph lifecycle events are synchronous borrowed observations. They do not
 reuse agent hooks or telemetry types: future agent nodes can bridge the two

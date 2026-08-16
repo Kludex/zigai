@@ -1,9 +1,9 @@
 //! Typed, bounded execution for application-defined graphs.
 //!
-//! Graph definitions own their node and destination arrays. Node names and
-//! callback contexts remain borrowed and must outlive the graph. Run state,
-//! dependencies, inputs, intermediate values, and outputs keep their declared
-//! Zig types; the module performs no serialization or implicit copying.
+//! Graph definitions own their node and routing arrays. Node names, branch
+//! names, and callback contexts remain borrowed and must outlive the graph.
+//! Run state, dependencies, inputs, intermediate values, and outputs keep their
+//! declared Zig types; the module performs no serialization or implicit copying.
 
 const std = @import("std");
 
@@ -28,11 +28,17 @@ pub const BuildError = std.mem.Allocator.Error || error{
     MissingEntry,
     MissingOutgoingEdge,
     DuplicateOutgoingEdge,
+    EmptyBranchName,
+    BranchNameTooLong,
+    DuplicateBranchName,
+    InvalidEdgeKind,
+    UnreachableNode,
 };
 
 /// Errors returned while advancing or completing a graph run.
 pub const RunError = CallbackError || error{
     StepLimitExceeded,
+    UnmatchedRoute,
     RunFinished,
 };
 
@@ -64,6 +70,7 @@ pub const Event = struct {
     node_id: ?NodeId = null,
     node_name: ?[]const u8 = null,
     step_number: usize = 0,
+    branch_name: ?[]const u8 = null,
     failure_name: ?[]const u8 = null,
 };
 
@@ -126,6 +133,26 @@ pub fn Graph(
             ) CallbackError!Value,
         };
 
+        /// A decision preserves the typed intermediate value while selecting
+        /// one of the node's registered named branches.
+        pub const DecisionResult = struct {
+            /// Borrowed name matched against this decision's registered routes.
+            branch: []const u8,
+            /// Typed value passed to the selected destination or end callback.
+            value: Value,
+        };
+
+        /// Selects a named outgoing branch from the current typed value.
+        pub const Decision = struct {
+            name: []const u8,
+            context: ?*anyopaque = null,
+            run_fn: *const fn (
+                context: ?*anyopaque,
+                run: *Context,
+                input: Value,
+            ) CallbackError!DecisionResult,
+        };
+
         /// Converts the terminal intermediate value to the graph output.
         pub const End = struct {
             context: ?*anyopaque = null,
@@ -141,9 +168,31 @@ pub fn Graph(
             finish,
         };
 
+        const Node = union(enum) {
+            step: Step,
+            decision: Decision,
+
+            fn name(self: Node) []const u8 {
+                return switch (self) {
+                    inline else => |node| node.name,
+                };
+            }
+        };
+
         const Edge = struct {
             from: NodeId,
+            branch: ?[]const u8 = null,
             destination: Destination,
+        };
+
+        const Route = struct {
+            branch: ?[]const u8,
+            destination: Destination,
+        };
+
+        const RouteSpan = struct {
+            start: usize,
+            len: usize,
         };
 
         /// Mutable graph definition. Call `deinit` even after a successful
@@ -153,7 +202,7 @@ pub fn Graph(
             start: ?Start = null,
             end: ?End = null,
             entry: ?NodeId = null,
-            nodes: std.ArrayList(Step) = .empty,
+            nodes: std.ArrayList(Node) = .empty,
             edges: std.ArrayList(Edge) = .empty,
 
             pub fn deinit(self: *Builder, gpa: std.mem.Allocator) void {
@@ -182,11 +231,28 @@ pub fn Graph(
                 if (step.name.len == 0) return error.EmptyNodeName;
                 if (step.name.len > self.limits.max_name_bytes) return error.NodeNameTooLong;
                 for (self.nodes.items) |existing| {
-                    if (std.mem.eql(u8, existing.name, step.name)) return error.DuplicateNodeName;
+                    if (std.mem.eql(u8, existing.name(), step.name)) return error.DuplicateNodeName;
                 }
                 if (self.nodes.items.len >= self.limits.max_nodes) return error.LimitExceeded;
                 const id = NodeId{ .index = self.nodes.items.len };
-                try self.nodes.append(gpa, step);
+                try self.nodes.append(gpa, .{ .step = step });
+                return id;
+            }
+
+            /// Registers a typed decision node with named outgoing branches.
+            pub fn addDecision(
+                self: *Builder,
+                gpa: std.mem.Allocator,
+                decision: Decision,
+            ) BuildError!NodeId {
+                if (decision.name.len == 0) return error.EmptyNodeName;
+                if (decision.name.len > self.limits.max_name_bytes) return error.NodeNameTooLong;
+                for (self.nodes.items) |existing| {
+                    if (std.mem.eql(u8, existing.name(), decision.name)) return error.DuplicateNodeName;
+                }
+                if (self.nodes.items.len >= self.limits.max_nodes) return error.LimitExceeded;
+                const id = NodeId{ .index = self.nodes.items.len };
+                try self.nodes.append(gpa, .{ .decision = decision });
                 return id;
             }
 
@@ -204,13 +270,39 @@ pub fn Graph(
             ) BuildError!void {
                 try self.validateNode(from);
                 try self.validateNode(to);
+                if (self.nodes.items[from.index] != .step) return error.InvalidEdgeKind;
                 try self.addEdge(gpa, .{ .from = from, .destination = .{ .node = to } });
             }
 
             /// Marks a step as the terminal producer consumed by `End`.
             pub fn finish(self: *Builder, gpa: std.mem.Allocator, from: NodeId) BuildError!void {
                 try self.validateNode(from);
+                if (self.nodes.items[from.index] != .step) return error.InvalidEdgeKind;
                 try self.addEdge(gpa, .{ .from = from, .destination = .finish });
+            }
+
+            /// Connects one named decision branch to another node.
+            pub fn branch(
+                self: *Builder,
+                gpa: std.mem.Allocator,
+                from: NodeId,
+                name: []const u8,
+                to: NodeId,
+            ) BuildError!void {
+                try self.validateNode(from);
+                try self.validateNode(to);
+                try self.addBranch(gpa, from, name, .{ .node = to });
+            }
+
+            /// Connects one named decision branch to the graph's end callback.
+            pub fn branchFinish(
+                self: *Builder,
+                gpa: std.mem.Allocator,
+                from: NodeId,
+                name: []const u8,
+            ) BuildError!void {
+                try self.validateNode(from);
+                try self.addBranch(gpa, from, name, .finish);
             }
 
             /// Validates and consumes the registered node and edge arrays.
@@ -219,14 +311,27 @@ pub fn Graph(
                 const end = self.end orelse return error.MissingEnd;
                 const entry = self.entry orelse return error.MissingEntry;
                 for (self.nodes.items, 0..) |_, index| {
-                    if (self.findEdge(.{ .index = index }) == null) return error.MissingOutgoingEdge;
+                    if (self.edgeCount(.{ .index = index }) == 0) return error.MissingOutgoingEdge;
                 }
 
-                const destinations = try gpa.alloc(Destination, self.nodes.items.len);
-                errdefer gpa.free(destinations);
-                for (destinations, 0..) |*destination, index| {
-                    destination.* = self.findEdge(.{ .index = index }).?.destination;
+                const route_spans = try gpa.alloc(RouteSpan, self.nodes.items.len);
+                errdefer gpa.free(route_spans);
+                const routes = try gpa.alloc(Route, self.edges.items.len);
+                errdefer gpa.free(routes);
+                var route_index: usize = 0;
+                for (route_spans, 0..) |*span, index| {
+                    span.* = .{ .start = route_index, .len = 0 };
+                    for (self.edges.items) |edge| {
+                        if (edge.from.index != index) continue;
+                        routes[route_index] = .{
+                            .branch = edge.branch,
+                            .destination = edge.destination,
+                        };
+                        route_index += 1;
+                        span.len += 1;
+                    }
                 }
+                try self.validateReachability(gpa, entry);
                 const nodes = try self.nodes.toOwnedSlice(gpa);
                 errdefer gpa.free(nodes);
                 self.edges.deinit(gpa);
@@ -240,7 +345,8 @@ pub fn Graph(
                     .end = end,
                     .entry = entry,
                     .nodes = nodes,
-                    .destinations = destinations,
+                    .route_spans = route_spans,
+                    .routes = routes,
                 };
             }
 
@@ -250,15 +356,73 @@ pub fn Graph(
 
             fn addEdge(self: *Builder, gpa: std.mem.Allocator, edge: Edge) BuildError!void {
                 if (self.edges.items.len >= self.limits.max_edges) return error.LimitExceeded;
-                if (self.findEdge(edge.from) != null) return error.DuplicateOutgoingEdge;
+                if (self.edgeCount(edge.from) != 0) return error.DuplicateOutgoingEdge;
                 try self.edges.append(gpa, edge);
             }
 
-            fn findEdge(self: Builder, from: NodeId) ?Edge {
+            fn addBranch(
+                self: *Builder,
+                gpa: std.mem.Allocator,
+                from: NodeId,
+                name: []const u8,
+                destination: Destination,
+            ) BuildError!void {
+                if (self.nodes.items[from.index] != .decision) return error.InvalidEdgeKind;
+                if (name.len == 0) return error.EmptyBranchName;
+                if (name.len > self.limits.max_name_bytes) return error.BranchNameTooLong;
+                if (self.edges.items.len >= self.limits.max_edges) return error.LimitExceeded;
                 for (self.edges.items) |edge| {
-                    if (edge.from.index == from.index) return edge;
+                    if (edge.from.index != from.index) continue;
+                    if (std.mem.eql(u8, edge.branch.?, name)) return error.DuplicateBranchName;
                 }
-                return null;
+                try self.edges.append(gpa, .{
+                    .from = from,
+                    .branch = name,
+                    .destination = destination,
+                });
+            }
+
+            fn edgeCount(self: Builder, from: NodeId) usize {
+                var count: usize = 0;
+                for (self.edges.items) |edge| {
+                    if (edge.from.index == from.index) count += 1;
+                }
+                return count;
+            }
+
+            fn validateReachability(
+                self: Builder,
+                gpa: std.mem.Allocator,
+                entry: NodeId,
+            ) BuildError!void {
+                const visited = try gpa.alloc(bool, self.nodes.items.len);
+                defer gpa.free(visited);
+                @memset(visited, false);
+                const stack = try gpa.alloc(NodeId, self.nodes.items.len);
+                defer gpa.free(stack);
+                var stack_len: usize = 1;
+                stack[0] = entry;
+                visited[entry.index] = true;
+                while (stack_len > 0) {
+                    stack_len -= 1;
+                    const current = stack[stack_len];
+                    for (self.edges.items) |edge| {
+                        if (edge.from.index != current.index) continue;
+                        switch (edge.destination) {
+                            .node => |next| {
+                                if (!visited[next.index]) {
+                                    visited[next.index] = true;
+                                    stack[stack_len] = next;
+                                    stack_len += 1;
+                                }
+                            },
+                            .finish => {},
+                        }
+                    }
+                }
+                for (visited) |reachable| {
+                    if (!reachable) return error.UnreachableNode;
+                }
             }
         };
 
@@ -301,25 +465,43 @@ pub fn Graph(
                 if (self.step_count >= self.max_steps) return self.fail(null, error.StepLimitExceeded);
 
                 const node = self.graph.nodes[self.current.index];
+                const node_name = node.name();
                 self.step_count += 1;
                 self.emit(.{
                     .kind = .step_start,
                     .node_id = self.current,
-                    .node_name = node.name,
+                    .node_name = node_name,
                     .step_number = self.step_count,
                 });
                 var run_context = self.context(self.current);
-                self.value = node.run_fn(node.context, &run_context, self.value) catch |failure|
-                    return self.fail(self.current, failure);
+                const selected_branch: ?[]const u8 = switch (node) {
+                    .step => |step| branch: {
+                        self.value = step.run_fn(step.context, &run_context, self.value) catch |failure|
+                            return self.fail(self.current, failure);
+                        break :branch null;
+                    },
+                    .decision => |decision| branch: {
+                        const result = decision.run_fn(
+                            decision.context,
+                            &run_context,
+                            self.value,
+                        ) catch |failure| return self.fail(self.current, failure);
+                        self.value = result.value;
+                        break :branch result.branch;
+                    },
+                };
                 self.emit(.{
                     .kind = .step_end,
                     .node_id = self.current,
-                    .node_name = node.name,
+                    .node_name = node_name,
                     .step_number = self.step_count,
+                    .branch_name = selected_branch,
                 });
 
                 const completed = self.current;
-                switch (self.graph.destinations[completed.index]) {
+                const destination = self.graph.findDestination(completed, selected_branch) orelse
+                    return self.failWithBranch(completed, error.UnmatchedRoute, selected_branch);
+                switch (destination) {
                     .node => |next_node| {
                         self.current = next_node;
                         return .{ .step = .{
@@ -339,8 +521,9 @@ pub fn Graph(
                         self.emit(.{
                             .kind = .run_end,
                             .node_id = completed,
-                            .node_name = node.name,
+                            .node_name = node_name,
                             .step_number = self.step_count,
+                            .branch_name = selected_branch,
                         });
                         return .{ .complete = output };
                     },
@@ -374,13 +557,23 @@ pub fn Graph(
             }
 
             fn fail(self: *Run, node_id: ?NodeId, failure: RunError) RunError {
+                return self.failWithBranch(node_id, failure, null);
+            }
+
+            fn failWithBranch(
+                self: *Run,
+                node_id: ?NodeId,
+                failure: RunError,
+                branch_name: ?[]const u8,
+            ) RunError {
                 self.status = .{ .failed = failure };
-                const node_name = if (node_id) |id| self.graph.nodes[id.index].name else null;
+                const node_name = if (node_id) |id| self.graph.nodes[id.index].name() else null;
                 self.emit(.{
                     .kind = .run_failed,
                     .node_id = node_id,
                     .node_name = node_name,
                     .step_number = self.step_count,
+                    .branch_name = branch_name,
                     .failure_name = @errorName(failure),
                 });
                 return failure;
@@ -395,13 +588,29 @@ pub fn Graph(
         start: Start,
         end: End,
         entry: NodeId,
-        nodes: []Step,
-        destinations: []Destination,
+        nodes: []Node,
+        route_spans: []RouteSpan,
+        routes: []Route,
 
         pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
             gpa.free(self.nodes);
-            gpa.free(self.destinations);
+            gpa.free(self.route_spans);
+            gpa.free(self.routes);
             self.* = undefined;
+        }
+
+        fn findDestination(
+            self: *const Self,
+            node: NodeId,
+            branch: ?[]const u8,
+        ) ?Destination {
+            const span = self.route_spans[node.index];
+            for (self.routes[span.start..][0..span.len]) |route| {
+                if (branch == null and route.branch == null) return route.destination;
+                if (branch != null and route.branch != null and
+                    std.mem.eql(u8, branch.?, route.branch.?)) return route.destination;
+            }
+            return null;
         }
 
         /// Starts a manually advanced run. The start callback executes before
@@ -435,7 +644,7 @@ pub fn Graph(
             if (options.events) |sink| sink.emit(.{
                 .kind = .run_start,
                 .node_id = self.entry,
-                .node_name = self.nodes[self.entry.index].name,
+                .node_name = self.nodes[self.entry.index].name(),
             });
             return .{
                 .graph = self,
@@ -549,6 +758,7 @@ test "graph runs typed steps and emits stable lifecycle events" {
     try std.testing.expectEqual(@as(usize, 2), capture.events[5].step_number);
 
     var manual = try graph.iter(std.testing.allocator, &state, &deps, 1, .{});
+    try std.testing.expectEqual(add, manual.nextNode().?);
     const first = (try manual.next()).step;
     try std.testing.expectEqual(add, first.completed);
     try std.testing.expectEqual(multiply, first.next);
@@ -624,7 +834,7 @@ test "graph latches callback and step-limit failures" {
     try std.testing.expectEqualStrings("StepFailed", capture.last.?.failure_name.?);
 
     var failed_step = graph;
-    failed_step.nodes[0].context = &marker;
+    failed_step.nodes[0].step.context = &marker;
     var step_run = try failed_step.iter(std.testing.allocator, &state, &deps, 0, .{});
     try std.testing.expectError(error.Cancelled, step_run.next());
     try std.testing.expectError(error.Cancelled, step_run.next());
@@ -648,6 +858,210 @@ test "graph latches callback and step-limit failures" {
         0,
         .{},
     ));
+    terminal_graph.end.context = null;
+    try std.testing.expectEqual(@as(u8, 1), try terminal_graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        0,
+        .{},
+    ));
+}
+
+test "graph decisions select named branches and latch unmatched routes" {
+    const Workflow = Graph(u8, u8, u8, u8, u8);
+    const Callbacks = struct {
+        fn start(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+
+        fn choose(context: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!Workflow.DecisionResult {
+            if (context != null) return error.Cancelled;
+            return .{
+                .branch = if (input == 0) "missing" else if (input % 2 == 0) "even" else "odd",
+                .value = input + 1,
+            };
+        }
+
+        fn identity(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+
+        fn end(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+    };
+    const Capture = struct {
+        last: ?Event = null,
+
+        fn emit(context: ?*anyopaque, event: Event) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.last = event;
+        }
+    };
+
+    var builder: Workflow.Builder = .{};
+    defer builder.deinit(std.testing.allocator);
+    try builder.setStart(.{ .run_fn = Callbacks.start });
+    try builder.setEnd(.{ .run_fn = Callbacks.end });
+    const choose = try builder.addDecision(std.testing.allocator, .{
+        .name = "choose",
+        .run_fn = Callbacks.choose,
+    });
+    const even = try builder.addStep(std.testing.allocator, .{
+        .name = "even",
+        .run_fn = Callbacks.identity,
+    });
+    try builder.setEntry(choose);
+    try builder.branch(std.testing.allocator, choose, "even", even);
+    try builder.branchFinish(std.testing.allocator, choose, "odd");
+    try builder.finish(std.testing.allocator, even);
+    var graph = try builder.build(std.testing.allocator);
+    defer graph.deinit(std.testing.allocator);
+
+    var state: u8 = 0;
+    var deps: u8 = 0;
+    try std.testing.expectEqual(@as(u8, 3), try graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        2,
+        .{},
+    ));
+    try std.testing.expectEqual(@as(u8, 2), try graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        1,
+        .{},
+    ));
+
+    var capture: Capture = .{};
+    var unmatched = try graph.iter(std.testing.allocator, &state, &deps, 0, .{
+        .events = .{ .context = &capture, .event_fn = Capture.emit },
+    });
+    try std.testing.expectError(error.UnmatchedRoute, unmatched.next());
+    try std.testing.expectError(error.UnmatchedRoute, unmatched.next());
+    try std.testing.expectEqualStrings("UnmatchedRoute", capture.last.?.failure_name.?);
+    try std.testing.expectEqualStrings("missing", capture.last.?.branch_name.?);
+
+    var marker: u8 = 0;
+    var failed = graph;
+    failed.nodes[choose.index].decision.context = &marker;
+    try std.testing.expectError(error.Cancelled, failed.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        2,
+        .{},
+    ));
+}
+
+test "graph builder validates decision branches and reachability" {
+    const Workflow = Graph(u8, u8, u8, u8, u8);
+    const Callbacks = struct {
+        fn start(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+        fn step(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+        fn decide(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!Workflow.DecisionResult {
+            return .{ .branch = "done", .value = input };
+        }
+        fn end(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+    };
+    const decision = Workflow.Decision{ .name = "decision", .run_fn = Callbacks.decide };
+    const step = Workflow.Step{ .name = "step", .run_fn = Callbacks.step };
+
+    var names: Workflow.Builder = .{ .limits = .{ .max_nodes = 1, .max_name_bytes = 8 } };
+    defer names.deinit(std.testing.allocator);
+    try std.testing.expectError(error.EmptyNodeName, names.addDecision(std.testing.allocator, .{
+        .name = "",
+        .run_fn = Callbacks.decide,
+    }));
+    try std.testing.expectError(error.NodeNameTooLong, names.addDecision(std.testing.allocator, .{
+        .name = "too-large",
+        .run_fn = Callbacks.decide,
+    }));
+    _ = try names.addStep(std.testing.allocator, step);
+    try std.testing.expectError(error.DuplicateNodeName, names.addDecision(std.testing.allocator, .{
+        .name = "step",
+        .run_fn = Callbacks.decide,
+    }));
+    try std.testing.expectError(error.LimitExceeded, names.addDecision(std.testing.allocator, decision));
+
+    var kinds: Workflow.Builder = .{ .limits = .{ .max_name_bytes = 8 } };
+    defer kinds.deinit(std.testing.allocator);
+    const route = try kinds.addDecision(std.testing.allocator, decision);
+    const target = try kinds.addStep(std.testing.allocator, step);
+    try std.testing.expectError(error.InvalidNode, kinds.branch(
+        std.testing.allocator,
+        .{ .index = 9 },
+        "done",
+        target,
+    ));
+    try std.testing.expectError(error.InvalidNode, kinds.branch(
+        std.testing.allocator,
+        route,
+        "done",
+        .{ .index = 9 },
+    ));
+    try std.testing.expectError(error.InvalidNode, kinds.branchFinish(
+        std.testing.allocator,
+        .{ .index = 9 },
+        "done",
+    ));
+    try std.testing.expectError(error.InvalidEdgeKind, kinds.connect(
+        std.testing.allocator,
+        route,
+        target,
+    ));
+    try std.testing.expectError(error.InvalidEdgeKind, kinds.finish(std.testing.allocator, route));
+    try std.testing.expectError(error.InvalidEdgeKind, kinds.branchFinish(
+        std.testing.allocator,
+        target,
+        "done",
+    ));
+    try std.testing.expectError(error.EmptyBranchName, kinds.branchFinish(
+        std.testing.allocator,
+        route,
+        "",
+    ));
+    try std.testing.expectError(error.BranchNameTooLong, kinds.branchFinish(
+        std.testing.allocator,
+        route,
+        "too-large",
+    ));
+    try kinds.branch(std.testing.allocator, route, "done", target);
+    try std.testing.expectError(error.DuplicateBranchName, kinds.branchFinish(
+        std.testing.allocator,
+        route,
+        "done",
+    ));
+
+    var bounded: Workflow.Builder = .{ .limits = .{ .max_edges = 1 } };
+    defer bounded.deinit(std.testing.allocator);
+    const bounded_decision = try bounded.addDecision(std.testing.allocator, decision);
+    try bounded.branchFinish(std.testing.allocator, bounded_decision, "first");
+    try std.testing.expectError(error.LimitExceeded, bounded.branchFinish(
+        std.testing.allocator,
+        bounded_decision,
+        "second",
+    ));
+
+    var unreachable_builder: Workflow.Builder = .{};
+    defer unreachable_builder.deinit(std.testing.allocator);
+    try unreachable_builder.setStart(.{ .run_fn = Callbacks.start });
+    try unreachable_builder.setEnd(.{ .run_fn = Callbacks.end });
+    const entry = try unreachable_builder.addDecision(std.testing.allocator, decision);
+    const orphan = try unreachable_builder.addStep(std.testing.allocator, step);
+    try unreachable_builder.setEntry(entry);
+    try unreachable_builder.branchFinish(std.testing.allocator, entry, "done");
+    try unreachable_builder.finish(std.testing.allocator, orphan);
+    try std.testing.expectError(error.UnreachableNode, unreachable_builder.build(std.testing.allocator));
 }
 
 test "graph builder rejects invalid bounded definitions" {
@@ -724,6 +1138,18 @@ test "graph builder rejects invalid bounded definitions" {
     const missing = try incomplete.addStep(std.testing.allocator, step);
     try incomplete.setEntry(missing);
     try std.testing.expectError(error.MissingOutgoingEdge, incomplete.build(std.testing.allocator));
+    try incomplete.finish(std.testing.allocator, missing);
+    var valid = try incomplete.build(std.testing.allocator);
+    defer valid.deinit(std.testing.allocator);
+    var state: u8 = 0;
+    var deps: u8 = 0;
+    try std.testing.expectEqual(@as(u8, 4), try valid.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        4,
+        .{},
+    ));
 }
 
 fn buildGraphWithAllocator(gpa: std.mem.Allocator) !void {
@@ -750,6 +1176,9 @@ fn buildGraphWithAllocator(gpa: std.mem.Allocator) !void {
     try builder.finish(gpa, second);
     var graph = try builder.build(gpa);
     defer graph.deinit(gpa);
+    var state: u8 = 0;
+    var deps: u8 = 0;
+    _ = try graph.run(gpa, &state, &deps, 0, .{});
 }
 
 test "graph builder cleans up every allocation failure" {

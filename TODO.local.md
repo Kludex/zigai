@@ -271,7 +271,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   - [x] Define a generic graph builder, typed state/dependency/input/output
     contexts, validated step registration and edges, bounded execution, stable
     step events, and manual step-by-step iteration.
-  - [ ] Add typed decision nodes with named branches, explicit unmatched-route
+  - [x] Add typed decision nodes with named branches, explicit unmatched-route
     failures, conditional edges, and graph-build reachability validation.
   - [ ] Add map and broadcast fan-out, bounded parallel scheduling, joins with
     typed reducers, deterministic source-order reduction, fail-fast cleanup,

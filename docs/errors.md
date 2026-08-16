@@ -285,17 +285,22 @@ validation never invokes it.
 
 | Error | Meaning |
 | --- | --- |
-| `EmptyNodeName` / `NodeNameTooLong` | A step name is empty or exceeds the definition limit. |
-| `DuplicateNodeName` | Two steps use the same graph-local name. |
+| `EmptyNodeName` / `NodeNameTooLong` | A step or decision name is empty or exceeds the definition limit. |
+| `DuplicateNodeName` | Two nodes use the same graph-local name. |
 | `InvalidNode` | An entry or edge references an ID outside its definition. |
+| `InvalidEdgeKind` | A step received a named route, or a decision received an unconditional route. |
+| `EmptyBranchName` / `BranchNameTooLong` | A decision branch name is empty or exceeds the definition limit. |
+| `DuplicateBranchName` | A decision registers the same branch name twice. |
 | `DuplicateStart` / `DuplicateEnd` | A boundary callback was registered twice. |
 | `MissingStart` / `MissingEnd` / `MissingEntry` | A required graph boundary is absent. |
-| `MissingOutgoingEdge` | A step has no following step or terminal route. |
+| `MissingOutgoingEdge` | A node has no following node or terminal route. |
 | `DuplicateOutgoingEdge` | A core step has more than one route. |
+| `UnreachableNode` | A registered node cannot be reached from the entry. |
 | `LimitExceeded` | A node or edge registration exceeds the graph ceiling. |
 | `StepLimitExceeded` | A run reached its bounded transition count. |
+| `UnmatchedRoute` | A decision returned a branch name that it did not register. |
 | `RunFinished` | A caller advanced a run after it returned its output. |
-| `StepFailed` / `Cancelled` | An application step failed or cooperatively cancelled. |
+| `StepFailed` / `Cancelled` | An application node failed or cooperatively cancelled. |
 
 ## MCP errors
 

@@ -519,28 +519,34 @@ slice is an explicit override, while null inherits the lower-precedence value.
 
 `graph.Graph(State, Deps, Input, Value, Output)` creates a workflow type without
 erasing application values. Its `Builder` registers one typed start callback,
-one typed end callback, named steps, an entry node, and exactly one outgoing
-edge for every step. Duplicate names, invalid IDs, incomplete routing, and
-definition limits fail before a run starts.
+one typed end callback, named steps and decisions, and an entry node. A step has
+exactly one unconditional route. A decision returns
+`DecisionResult { branch, value }` and has one or more named routes registered
+with `branch` or `branchFinish`. Duplicate names, invalid node kinds or IDs,
+incomplete routing, unreachable nodes, and definition limits fail at build
+time.
 
 `Graph.run` executes to completion. `Graph.iter` executes the start adapter and
 returns a `Run`; `Run.next` then advances one step and returns either the next
 node or the final typed output. A terminal error is latched, so later calls
 return the same failure instead of continuing a desynchronized workflow.
 `RunOptions.max_steps` may tighten, but never widen, the definition ceiling.
+Returning a branch name that was not registered latches `UnmatchedRoute`.
 
-The built graph owns only its node and destination arrays and releases them
-with `deinit(gpa)`. Names and callback contexts are borrowed for the graph's
-lifetime. State and dependencies are borrowed for the run's lifetime.
+The built graph owns only its node and routing arrays and releases them with
+`deinit(gpa)`. Node names, registered branch names, and callback contexts are
+borrowed for the graph's lifetime. A branch name returned by a decision is
+borrowed only for that synchronous callback, route lookup, and event delivery.
+State and dependencies are borrowed for the run's lifetime.
 Intermediate and output ownership follows the application-defined `Value` and
 `Output` types; callbacks receive the run allocator explicitly and must define
 their own cleanup contract for allocations they return.
 
 Event sinks are synchronous and infallible. They receive borrowed run/step
 start, end, and failure records in execution order. They must copy a node name
-before retaining it. The core currently supports linear and cyclic routing;
-decisions, parallel fan-out, reducers, snapshots, visualization, and agent-node
-adapters remain explicit roadmap steps rather than hidden behavior.
+or branch name before retaining it. The core supports linear, cyclic, and named
+conditional routing. Parallel fan-out, reducers, snapshots, visualization, and
+agent-node adapters remain explicit roadmap steps rather than hidden behavior.
 
 ## Evaluations
 

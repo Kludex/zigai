@@ -163,7 +163,7 @@ interpolation policy, and CLI options.
 ## Typed workflows
 
 Graphs are explicit. Define the state, dependencies, input, intermediate value,
-and output types once, then register named steps:
+and output types once, then register named steps and decisions:
 
 ```zig
 const Workflow = zigai.graph.Graph(State, Deps, u64, u64, u64);
@@ -187,9 +187,11 @@ const output = try workflow.run(allocator, &state, &deps, input, .{});
 ```
 
 Use `workflow.iter(...)` to inspect and advance one step at a time. Definitions
-and runs have independent node, edge, name, and step limits. Callback contexts,
-node names, state, and dependencies are borrowed; the built workflow owns only
-its node and routing arrays.
+reject incomplete or unreachable routes before execution. A decision returns a
+typed value and one borrowed branch name registered with `builder.branch(...)`
+or `builder.branchFinish(...)`; an unknown name fails with `UnmatchedRoute`.
+Callback contexts, node and branch names, state, and dependencies are borrowed;
+the built workflow owns only its node and routing arrays.
 
 ## Providers
 
