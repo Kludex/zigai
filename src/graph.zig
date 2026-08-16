@@ -3767,6 +3767,15 @@ test "graph visualization exposes stable borrowed metadata" {
     });
     var graph = try builder.build(std.testing.allocator);
     defer graph.deinit(std.testing.allocator);
+    var execution_state: u8 = 0;
+    var execution_deps: u8 = 0;
+    try std.testing.expectEqual(@as(u8, 7), try graph.run(
+        std.testing.allocator,
+        &execution_state,
+        &execution_deps,
+        7,
+        .{},
+    ));
 
     var view = try graph.visualization(std.testing.allocator);
     defer view.deinit(std.testing.allocator);
