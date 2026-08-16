@@ -3,7 +3,7 @@
 const std = @import("std");
 const zigai = @import("zigai");
 const cassettes = @import("support/cassettes.zig");
-const matrix = @import("support/model_matrix.zig");
+const manifest = @import("support/cassette_manifest.zig");
 
 const prompt = "Call the weather tool exactly once with city Madrid. Then reply with one short sentence.";
 const system_prompt = "Always use the weather tool before answering.";
@@ -13,163 +13,82 @@ const native_system_prompt = "Use the available provider-managed web tool before
 const rich_prompt = "Name the single dominant color in this image. Answer with one word.";
 const pixel_png_base64 = "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAF0lEQVR4nGP4z8BAEiJN9aiGUQ1DSgMAkPn/Afnh+ngAAAAASUVORK5CYII=";
 
-const NativeEntry = struct {
-    provider: []const u8,
-    model: []const u8,
-    cassette: []const u8,
-};
-
-const native_openai = NativeEntry{
-    .provider = "openai",
-    .model = "gpt-5-nano",
-    .cassette = "cassettes/native/openai_web_search.yaml",
-};
-const native_anthropic = NativeEntry{
-    .provider = "anthropic",
-    .model = "claude-sonnet-4-6",
-    .cassette = "cassettes/native/anthropic_web_search_fetch.yaml",
-};
-const native_google = NativeEntry{
-    .provider = "google",
-    .model = "gemini-3.5-flash",
-    .cassette = "cassettes/native/google_web_search_fetch.yaml",
-};
-const native_bedrock = NativeEntry{
-    .provider = "bedrock",
-    .model = "us.anthropic.claude-sonnet-4-6",
-    .cassette = "cassettes/native/bedrock_converse_claude_sonnet_4_6.yaml",
-};
-const native_azure = NativeEntry{
-    .provider = "azure-openai",
-    .model = "gpt-4o",
-    .cassette = "cassettes/native/azure_responses_gpt_4o.yaml",
-};
-const native_mistral = NativeEntry{
-    .provider = "mistral",
-    .model = "mistral-small-latest",
-    .cassette = "cassettes/native/mistral_conversations_web_search.yaml",
-};
-const native_cohere = NativeEntry{
-    .provider = "cohere",
-    .model = "command-a-03-2025",
-    .cassette = "cassettes/native/cohere_v2_command_a.yaml",
-};
-const rich_openai = NativeEntry{
-    .provider = "openai",
-    .model = "gpt-5-nano",
-    .cassette = "cassettes/rich/openai_image.yaml",
-};
-const rich_anthropic = NativeEntry{
-    .provider = "anthropic",
-    .model = "claude-sonnet-4-6",
-    .cassette = "cassettes/rich/anthropic_image.yaml",
-};
-const rich_google = NativeEntry{
-    .provider = "google",
-    .model = "gemini-3.5-flash",
-    .cassette = "cassettes/rich/google_image.yaml",
-};
-
 pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
-    const openai_key = requiredKey(init, "OPENAI_API_KEY");
-    const anthropic_key = requiredKey(init, "ANTHROPIC_API_KEY");
-    const google_key = init.environ_map.get("GOOGLE_API_KEY") orelse
-        requiredKey(init, "GEMINI_API_KEY");
+    const filters = args[1..];
+    manifest.validateFilters(filters) catch |failure| {
+        std.log.err("invalid cassette filter: {s}", .{@errorName(failure)});
+        std.process.exit(2);
+    };
+    if (hasArgument(filters, "--list") or hasArgument(filters, "--list-runnable")) {
+        try listRecordings(init, filters, hasArgument(filters, "--list-runnable"));
+        return;
+    }
 
     var http = zigai.transport.HttpTransport.init(init.gpa, init.io);
     defer http.deinit();
 
-    for (matrix.openai) |entry| if (selected(args, "openai", entry.model)) {
-        try recordOpenAI(init, http.transport(), openai_key, entry);
-    };
-    for (matrix.anthropic) |entry| if (selected(args, "anthropic", entry.model)) {
-        try recordAnthropic(init, http.transport(), anthropic_key, entry);
-    };
-    for (matrix.google) |entry| if (selected(args, "google", entry.model)) {
-        try recordGoogle(init, http.transport(), google_key, entry);
-    };
-    for (matrix.compatible) |entry| if (selected(args, entry.provider, entry.model)) {
-        try recordCompatible(init, http.transport(), entry);
-    };
-    if (selectedNative(args, native_openai)) {
-        try recordNativeOpenAI(init, http.transport(), openai_key, native_openai);
-    }
-    if (selectedNative(args, native_anthropic)) {
-        try recordNativeAnthropic(init, http.transport(), anthropic_key, native_anthropic);
-    }
-    if (selectedNative(args, native_google)) {
-        try recordNativeGoogle(init, http.transport(), google_key, native_google);
-    }
-    if (selectedNative(args, native_bedrock)) {
-        try recordNativeBedrock(
-            init,
-            http.transport(),
-            requiredKey(init, zigai.providers.bedrock.api_key_env),
-            requiredKey(init, zigai.providers.bedrock.region_env),
-            native_bedrock,
-        );
-    }
-    if (selectedNative(args, native_azure)) {
-        try recordNativeAzure(
-            init,
-            http.transport(),
-            requiredKey(init, zigai.providers.azure_openai.api_key_env),
-            requiredKey(init, zigai.providers.azure_openai.endpoint_env),
-            native_azure,
-        );
-    }
-    if (selectedNative(args, native_mistral)) {
-        try recordNativeMistral(
-            init,
-            http.transport(),
-            requiredKey(init, zigai.providers.mistral.api_key_env),
-            native_mistral,
-        );
-    }
-    if (selectedNative(args, native_cohere)) {
-        try recordNativeCohere(
-            init,
-            http.transport(),
-            requiredKey(init, zigai.providers.cohere.api_key_env),
-            native_cohere,
-        );
-    }
-    if (selectedRich(args, rich_openai)) {
-        try recordRichOpenAI(init, http.transport(), openai_key, rich_openai);
-    }
-    if (selectedRich(args, rich_anthropic)) {
-        try recordRichAnthropic(init, http.transport(), anthropic_key, rich_anthropic);
-    }
-    if (selectedRich(args, rich_google)) {
-        try recordRichGoogle(init, http.transport(), google_key, rich_google);
-    }
-    if (selectedFiles(args, "openai")) {
-        try recordOpenAIFileLifecycle(init, http.transport(), openai_key);
-    }
-    if (selectedFiles(args, "anthropic")) {
-        try recordAnthropicFileLifecycle(init, http.transport(), anthropic_key);
-    }
-    if (selectedFiles(args, "google")) {
-        try recordGoogleFileLifecycle(init, http.transport(), google_key);
+    for (manifest.all) |entry| {
+        if (!manifest.selected(entry, filters)) continue;
+        const key = requiredCredential(init, entry, 0);
+        switch (entry.route) {
+            .openai => switch (entry.scenario) {
+                .function_tool => try recordOpenAI(init, http.transport(), key, entry),
+                .native_tool => try recordNativeOpenAI(init, http.transport(), key, entry),
+                else => unreachable,
+            },
+            .anthropic => switch (entry.scenario) {
+                .function_tool => try recordAnthropic(init, http.transport(), key, entry),
+                .native_tool => try recordNativeAnthropic(init, http.transport(), key, entry),
+                else => unreachable,
+            },
+            .google => switch (entry.scenario) {
+                .function_tool => try recordGoogle(init, http.transport(), key, entry),
+                .native_tool => try recordNativeGoogle(init, http.transport(), key, entry),
+                else => unreachable,
+            },
+            .compatible => try recordCompatible(init, http.transport(), key, entry),
+            .bedrock_converse => try recordNativeBedrock(
+                init,
+                http.transport(),
+                key,
+                requiredCredential(init, entry, 1),
+                entry,
+            ),
+            .azure_responses => try recordNativeAzure(
+                init,
+                http.transport(),
+                key,
+                requiredCredential(init, entry, 1),
+                entry,
+            ),
+            .mistral_conversations => try recordNativeMistral(init, http.transport(), key, entry),
+            .cohere_chat => try recordNativeCohere(init, http.transport(), key, entry),
+            .openai_rich => try recordRichOpenAI(init, http.transport(), key, entry),
+            .anthropic_rich => try recordRichAnthropic(init, http.transport(), key, entry),
+            .google_rich => try recordRichGoogle(init, http.transport(), key, entry),
+            .openai_files => try recordOpenAIFileLifecycle(init, http.transport(), key),
+            .anthropic_files => try recordAnthropicFileLifecycle(init, http.transport(), key),
+            .google_files => try recordGoogleFileLifecycle(init, http.transport(), key),
+        }
     }
 }
 
 fn recordCompatible(
     init: std.process.Init,
     transport: zigai.transport.Transport,
-    entry: matrix.CompatibleEntry,
+    api_key: []const u8,
+    entry: manifest.Entry,
 ) !void {
-    const api_key = requiredKey(init, entry.api_key_env);
     const base_url = switch (entry.endpoint) {
         .fixed => entry.base_url,
         .azure_openai => try zigai.providers.azure_openai.apiBase(
             init.gpa,
-            requiredKey(init, zigai.providers.azure_openai.endpoint_env),
+            requiredCredential(init, entry, 1),
         ),
         .bedrock => try zigai.providers.bedrock.mantleApiBase(
             init.gpa,
-            requiredKey(init, zigai.providers.bedrock.region_env),
+            requiredCredential(init, entry, 1),
         ),
     };
     defer if (entry.endpoint != .fixed) init.gpa.free(base_url);
@@ -196,7 +115,7 @@ fn recordCompatible(
 fn normalizeCompatibleUrl(
     allocator: std.mem.Allocator,
     recording: *cassettes.RecordingTransport,
-    entry: matrix.CompatibleEntry,
+    entry: manifest.Entry,
 ) !void {
     const fixture_base = switch (entry.endpoint) {
         .azure_openai => "https://example.openai.azure.com/openai/v1",
@@ -225,7 +144,7 @@ fn runTextScenario(init: std.process.Init, model: zigai.Model) !void {
 fn writeCompatible(
     init: std.process.Init,
     recording: cassettes.RecordingTransport,
-    entry: matrix.CompatibleEntry,
+    entry: manifest.Entry,
 ) !void {
     const path = try std.fmt.allocPrint(init.gpa, "tests/{s}", .{entry.cassette});
     defer init.gpa.free(path);
@@ -233,85 +152,64 @@ fn writeCompatible(
     std.log.info("recorded {s} {s} -> {s}", .{ entry.provider, entry.model, path });
 }
 
-fn requiredKey(init: std.process.Init, name: []const u8) []const u8 {
-    const value = init.environ_map.get(name) orelse {
-        std.log.err("{s} is not set", .{name});
+fn hasArgument(arguments: []const []const u8, expected: []const u8) bool {
+    for (arguments) |argument| {
+        if (std.mem.eql(u8, argument, expected)) return true;
+    }
+    return false;
+}
+
+fn credentialValue(init: std.process.Init, requirement: manifest.CredentialRequirement) ?[]const u8 {
+    for (requirement.alternatives) |name| {
+        const value = init.environ_map.get(name) orelse continue;
+        if (value.len > 0) return value;
+    }
+    return null;
+}
+
+fn requiredCredential(init: std.process.Init, entry: manifest.Entry, index: usize) []const u8 {
+    const requirements = manifest.credentialRequirements(entry.credentials);
+    const requirement = requirements[index];
+    return credentialValue(init, requirement) orelse {
+        std.log.err("{s} is not runnable; set one of its credential variables", .{entry.id});
+        for (requirement.alternatives) |name| std.log.err("  {s}", .{name});
         std.process.exit(1);
     };
-    if (value.len == 0) {
-        std.log.err("{s} is empty", .{name});
-        std.process.exit(1);
-    }
-    return value;
 }
 
-fn selected(args: []const []const u8, provider: []const u8, model: []const u8) bool {
-    if (args.len <= 1) return true;
-    for (args[1..]) |argument| {
-        if (std.mem.eql(u8, argument, provider) or std.mem.eql(u8, argument, model)) return true;
+fn credentialsAvailable(init: std.process.Init, entry: manifest.Entry) bool {
+    for (manifest.credentialRequirements(entry.credentials)) |requirement| {
+        if (credentialValue(init, requirement) == null) return false;
     }
-    return false;
+    return true;
 }
 
-fn selectedNative(args: []const []const u8, entry: NativeEntry) bool {
-    if (args.len <= 1) return true;
-    for (args[1..]) |argument| {
-        const provider_filter =
-            (std.mem.eql(u8, entry.provider, "openai") and std.mem.eql(u8, argument, "native-openai")) or
-            (std.mem.eql(u8, entry.provider, "anthropic") and std.mem.eql(u8, argument, "native-anthropic")) or
-            (std.mem.eql(u8, entry.provider, "google") and std.mem.eql(u8, argument, "native-google")) or
-            (std.mem.eql(u8, entry.provider, "bedrock") and std.mem.eql(u8, argument, "native-bedrock")) or
-            (std.mem.eql(u8, entry.provider, "azure-openai") and std.mem.eql(u8, argument, "native-azure")) or
-            (std.mem.eql(u8, entry.provider, "cohere") and std.mem.eql(u8, argument, "native-cohere"));
-        if (std.mem.eql(u8, argument, "native-tools") or
-            provider_filter or
-            std.mem.eql(u8, argument, entry.provider) or
-            std.mem.eql(u8, argument, entry.model))
-        {
-            return true;
-        }
+fn listRecordings(
+    init: std.process.Init,
+    filters: []const []const u8,
+    runnable_only: bool,
+) !void {
+    var buffer: [4096]u8 = undefined;
+    var output: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
+    for (manifest.all) |entry| {
+        if (!manifest.selected(entry, filters)) continue;
+        const ready = credentialsAvailable(init, entry);
+        if (runnable_only and !ready) continue;
+        try output.interface.print("{s}\t{s}\t{s}\t{s}\n", .{
+            if (ready) "ready" else "missing-credentials",
+            entry.provider,
+            entry.scenario.name(),
+            entry.id,
+        });
     }
-    return false;
-}
-
-fn selectedRich(args: []const []const u8, entry: NativeEntry) bool {
-    if (args.len <= 1) return true;
-    for (args[1..]) |argument| {
-        const provider_filter =
-            (std.mem.eql(u8, entry.provider, "openai") and std.mem.eql(u8, argument, "rich-openai")) or
-            (std.mem.eql(u8, entry.provider, "anthropic") and std.mem.eql(u8, argument, "rich-anthropic")) or
-            (std.mem.eql(u8, entry.provider, "google") and std.mem.eql(u8, argument, "rich-google"));
-        if (std.mem.eql(u8, argument, "rich-content") or
-            provider_filter or
-            std.mem.eql(u8, argument, entry.provider) or
-            std.mem.eql(u8, argument, entry.model))
-        {
-            return true;
-        }
-    }
-    return false;
-}
-
-fn selectedFiles(args: []const []const u8, provider: []const u8) bool {
-    if (args.len <= 1) return true;
-    for (args[1..]) |argument| {
-        if (std.mem.eql(u8, argument, "files") or
-            std.mem.eql(u8, argument, provider) or
-            (std.mem.eql(u8, provider, "openai") and std.mem.eql(u8, argument, "files-openai")) or
-            (std.mem.eql(u8, provider, "anthropic") and std.mem.eql(u8, argument, "files-anthropic")) or
-            (std.mem.eql(u8, provider, "google") and std.mem.eql(u8, argument, "files-google")))
-        {
-            return true;
-        }
-    }
-    return false;
+    try output.interface.flush();
 }
 
 fn recordOpenAI(
     init: std.process.Init,
     transport: zigai.transport.Transport,
     api_key: []const u8,
-    entry: matrix.Entry,
+    entry: manifest.Entry,
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
@@ -328,7 +226,7 @@ fn recordAnthropic(
     init: std.process.Init,
     transport: zigai.transport.Transport,
     api_key: []const u8,
-    entry: matrix.Entry,
+    entry: manifest.Entry,
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
@@ -346,7 +244,7 @@ fn recordGoogle(
     init: std.process.Init,
     transport: zigai.transport.Transport,
     api_key: []const u8,
-    entry: matrix.Entry,
+    entry: manifest.Entry,
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
@@ -449,7 +347,7 @@ fn recordNativeOpenAI(
     init: std.process.Init,
     transport: zigai.transport.Transport,
     api_key: []const u8,
-    entry: NativeEntry,
+    entry: manifest.Entry,
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
@@ -466,7 +364,7 @@ fn recordNativeAnthropic(
     init: std.process.Init,
     transport: zigai.transport.Transport,
     api_key: []const u8,
-    entry: NativeEntry,
+    entry: manifest.Entry,
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
@@ -487,7 +385,7 @@ fn recordNativeGoogle(
     init: std.process.Init,
     transport: zigai.transport.Transport,
     api_key: []const u8,
-    entry: NativeEntry,
+    entry: manifest.Entry,
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
@@ -508,7 +406,7 @@ fn recordNativeBedrock(
     transport: zigai.transport.Transport,
     api_key: []const u8,
     region: []const u8,
-    entry: NativeEntry,
+    entry: manifest.Entry,
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
@@ -527,7 +425,7 @@ fn recordNativeAzure(
     transport: zigai.transport.Transport,
     api_key: []const u8,
     endpoint: []const u8,
-    entry: NativeEntry,
+    entry: manifest.Entry,
 ) !void {
     const base_url = try zigai.providers.azure_openai.apiBase(init.gpa, endpoint);
     defer init.gpa.free(base_url);
@@ -549,7 +447,7 @@ fn recordNativeMistral(
     init: std.process.Init,
     transport: zigai.transport.Transport,
     api_key: []const u8,
-    entry: NativeEntry,
+    entry: manifest.Entry,
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
@@ -571,7 +469,7 @@ fn recordNativeCohere(
     init: std.process.Init,
     transport: zigai.transport.Transport,
     api_key: []const u8,
-    entry: NativeEntry,
+    entry: manifest.Entry,
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
@@ -625,7 +523,7 @@ fn recordRichOpenAI(
     init: std.process.Init,
     transport: zigai.transport.Transport,
     api_key: []const u8,
-    entry: NativeEntry,
+    entry: manifest.Entry,
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
@@ -642,7 +540,7 @@ fn recordRichAnthropic(
     init: std.process.Init,
     transport: zigai.transport.Transport,
     api_key: []const u8,
-    entry: NativeEntry,
+    entry: manifest.Entry,
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
@@ -660,7 +558,7 @@ fn recordRichGoogle(
     init: std.process.Init,
     transport: zigai.transport.Transport,
     api_key: []const u8,
-    entry: NativeEntry,
+    entry: manifest.Entry,
 ) !void {
     var recording = cassettes.RecordingTransport.init(init.gpa, transport);
     defer recording.deinit();
@@ -757,7 +655,7 @@ fn weatherTool(calls: *u8) zigai.Tool {
 fn write(
     init: std.process.Init,
     recording: cassettes.RecordingTransport,
-    entry: matrix.Entry,
+    entry: manifest.Entry,
     provider: []const u8,
 ) !void {
     const path = try std.fmt.allocPrint(init.gpa, "tests/{s}", .{entry.cassette});
@@ -769,7 +667,7 @@ fn write(
 fn writeNative(
     init: std.process.Init,
     recording: cassettes.RecordingTransport,
-    entry: NativeEntry,
+    entry: manifest.Entry,
 ) !void {
     const path = try std.fmt.allocPrint(init.gpa, "tests/{s}", .{entry.cassette});
     defer init.gpa.free(path);
@@ -780,7 +678,7 @@ fn writeNative(
 fn writeRich(
     init: std.process.Init,
     recording: cassettes.RecordingTransport,
-    entry: NativeEntry,
+    entry: manifest.Entry,
 ) !void {
     const path = try std.fmt.allocPrint(init.gpa, "tests/{s}", .{entry.cassette});
     defer init.gpa.free(path);

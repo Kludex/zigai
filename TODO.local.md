@@ -151,7 +151,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   provider payloads to widen trusted capability profiles.
 - [x] Add a versioned generated compatibility snapshot plus an independent,
   deterministic update/check tool and documented review workflow.
-- [ ] Replace the recorder's ad-hoc filters with one typed cassette manifest.
+- [x] Replace the recorder's ad-hoc filters with one typed cassette manifest.
   Give every recording a stable provider, model, scenario, fixture path, and
   credential set; select credentials lazily; reject unknown or empty filters;
   and provide a secret-free command that lists runnable recordings.

@@ -1,7 +1,7 @@
 const std = @import("std");
 const zigai = @import("zigai");
 const cassettes = @import("support/cassettes.zig");
-const model_matrix = @import("support/model_matrix.zig");
+const cassette_manifest = @import("support/cassette_manifest.zig");
 
 const matrix_prompt = "Call the weather tool exactly once with city Madrid. Then reply with one short sentence.";
 const matrix_system_prompt = "Always use the weather tool before answering.";
@@ -58,7 +58,7 @@ fn matrixWeatherTool(state: *u8) zigai.Tool {
 }
 
 test "real OpenAI model cassettes replay complete tool loops" {
-    inline for (model_matrix.openai) |entry| {
+    inline for (cassette_manifest.openai) |entry| {
         var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
         defer cassette.deinit();
         var provider_state = zigai.openai.Provider.init("not-recorded", cassette.transport());
@@ -71,7 +71,7 @@ test "real OpenAI model cassettes replay complete tool loops" {
 }
 
 test "real Anthropic model cassettes replay complete tool loops" {
-    inline for (model_matrix.anthropic) |entry| {
+    inline for (cassette_manifest.anthropic) |entry| {
         var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
         defer cassette.deinit();
         var provider_state = zigai.anthropic.Provider.init("not-recorded", cassette.transport());
@@ -85,7 +85,7 @@ test "real Anthropic model cassettes replay complete tool loops" {
 }
 
 test "real Google model cassettes replay complete tool loops" {
-    inline for (model_matrix.google) |entry| {
+    inline for (cassette_manifest.google) |entry| {
         var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
         defer cassette.deinit();
         var provider_state = zigai.google.Provider.init("not-recorded", cassette.transport());
@@ -98,7 +98,7 @@ test "real Google model cassettes replay complete tool loops" {
 }
 
 test "real OpenAI-compatible provider cassettes replay text responses" {
-    inline for (model_matrix.compatible) |entry| {
+    inline for (cassette_manifest.compatible) |entry| {
         if (comptime std.mem.eql(u8, entry.provider, "azure-openai"))
             try replayCompatibleProvider(zigai.providers.azure_openai.Provider, zigai.providers.azure_openai.Client, entry)
         else if (comptime std.mem.eql(u8, entry.provider, "bedrock"))
@@ -200,7 +200,7 @@ test "real Cohere v2 cassette replays a complete tool loop" {
 fn replayCompatibleProvider(
     comptime ProviderType: type,
     comptime ClientType: type,
-    comptime entry: model_matrix.CompatibleEntry,
+    comptime entry: cassette_manifest.Entry,
 ) !void {
     var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
     defer cassette.deinit();

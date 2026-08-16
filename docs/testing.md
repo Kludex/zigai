@@ -49,8 +49,10 @@ The generator checks the installed package version before writing the fixture.
 
 `tests/cassettes/models/` contains real tool-loop recordings for eight models
 from each first-party provider. The matrix spans multiple model generations and
-size tiers. It is defined once in
-`tests/support/model_matrix.zig` and drives both recording and replay.
+size tiers. Every recording is defined once in the typed
+`tests/support/cassette_manifest.zig` manifest. Recording and replay share its
+stable ID, provider, model, scenario, fixture path, execution route, and
+credential requirements.
 
 `tests/cassettes/native/` contains real provider-native recordings: OpenAI web
 search, Anthropic web search plus fetch, Google Search plus URL Context, a
@@ -74,11 +76,23 @@ Record the complete matrix with real credentials:
 zig build record-cassettes
 ```
 
-Pass a provider or exact model to record only part of it:
+Inspect the manifest without making a request or exposing credential values.
+The first command reports readiness for every recording; the second prints only
+recordings whose complete credential set is present:
+
+```console
+zig build record-cassettes -- --list
+zig build record-cassettes -- --list-runnable
+```
+
+Pass a stable manifest ID, provider, exact model, or scenario to record only
+part of it:
 
 ```console
 zig build record-cassettes -- anthropic
 zig build record-cassettes -- gemini-3.5-flash
+zig build record-cassettes -- openai/gpt-5-nano/native-tool
+zig build record-cassettes -- function-tool
 zig build record-cassettes -- native-tools
 zig build record-cassettes -- native-google
 zig build record-cassettes -- native-bedrock
@@ -90,6 +104,9 @@ zig build record-cassettes -- rich-anthropic
 zig build record-cassettes -- files
 zig build record-cassettes -- files-google
 ```
+
+Unknown and empty filters fail before network I/O. Credentials are resolved
+only after selection, so recording one provider never requires unrelated keys.
 
 The recorder accepts `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and either
 `GOOGLE_API_KEY` or `GEMINI_API_KEY`. Native Bedrock recording additionally

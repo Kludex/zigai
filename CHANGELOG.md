@@ -27,6 +27,9 @@
 - Add a versioned built-in model compatibility snapshot with primary-source
   provenance and an offline deterministic update/check tool enforced by the
   normal build check.
+- Replace cassette-recorder filter tables with one typed recording manifest
+  shared by replay, add stable recording IDs and scenario filters, resolve only
+  selected credentials, and list credential readiness without exposing values.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and
