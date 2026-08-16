@@ -511,6 +511,30 @@ test "memory search isolates tenants and returns lexical semantic citations" {
         .created_unix_ms = 20,
     });
     try store.put(std.testing.allocator, .{
+        .id = "semantic-0",
+        .tenant_id = "tenant-a",
+        .kind = .semantic,
+        .content = "same score",
+        .embedding = &.{ 1, 0 },
+        .created_unix_ms = 20,
+    });
+    try store.put(std.testing.allocator, .{
+        .id = "semantic-3",
+        .tenant_id = "tenant-a",
+        .kind = .semantic,
+        .content = "newer score",
+        .embedding = &.{ 1, 0 },
+        .created_unix_ms = 25,
+    });
+    try store.put(std.testing.allocator, .{
+        .id = "semantic-2",
+        .tenant_id = "tenant-a",
+        .kind = .semantic,
+        .content = "lower score",
+        .embedding = &.{ 1, 1 },
+        .created_unix_ms = 30,
+    });
+    try store.put(std.testing.allocator, .{
         .id = "private",
         .tenant_id = "tenant-b",
         .kind = .semantic,
@@ -537,8 +561,12 @@ test "memory search isolates tenants and returns lexical semantic citations" {
         .kinds = &.{.semantic},
     });
     defer semantic.deinit();
-    try std.testing.expectEqual(@as(usize, 1), semantic.matches.len);
+    try std.testing.expectEqual(@as(usize, 4), semantic.matches.len);
     try std.testing.expectApproxEqAbs(@as(f64, 1), semantic.matches[0].citation.score, 0.000001);
+    try std.testing.expectEqualStrings("semantic-3", semantic.matches[0].entry.id);
+    try std.testing.expectEqualStrings("semantic-0", semantic.matches[1].entry.id);
+    try std.testing.expectEqualStrings("semantic-1", semantic.matches[2].entry.id);
+    try std.testing.expectEqualStrings("semantic-2", semantic.matches[3].entry.id);
     try std.testing.expectEqualStrings("tenant-a", semantic.matches[0].citation.tenant_id);
     try std.testing.expectError(
         error.MemoryEntryAlreadyExists,
@@ -561,7 +589,7 @@ test "memory retention deletion and compaction are deterministic" {
     const store = memory.store();
     inline for (.{
         .{ "one", "old one", 1 },
-        .{ "two", "old two", 2 },
+        .{ "two", "old two", 1 },
         .{ "three", "recent", 100 },
     }) |item| try store.put(std.testing.allocator, .{
         .id = item[0],
@@ -605,6 +633,15 @@ test "memory retention deletion and compaction are deterministic" {
     try std.testing.expectEqualStrings("compaction-200", compacted.matches[0].entry.id);
     try std.testing.expectEqual(@as(usize, 1), try store.retain("tenant", 300, .{ .max_age_ms = 150 }));
     try std.testing.expectEqual(@as(usize, 1), try store.deleteTenant("tenant"));
+
+    inline for (.{ "a", "b", "c" }, 0..) |id, index| try store.put(std.testing.allocator, .{
+        .id = id,
+        .tenant_id = "limited",
+        .kind = .semantic,
+        .content = id,
+        .created_unix_ms = @intCast(index),
+    });
+    try std.testing.expectEqual(@as(usize, 2), try store.retain("limited", 10, .{ .max_entries = 1 }));
 }
 
 fn runMemoryWithAllocator(gpa: std.mem.Allocator) !void {
@@ -623,10 +660,43 @@ fn runMemoryWithAllocator(gpa: std.mem.Allocator) !void {
     result.deinit();
 }
 
+fn compactMemoryWithAllocator(gpa: std.mem.Allocator) !void {
+    var memory = InMemoryStore.init(gpa, .{});
+    defer memory.deinit();
+    const store = memory.store();
+    try store.put(gpa, .{
+        .id = "one",
+        .tenant_id = "tenant",
+        .kind = .semantic,
+        .content = "one",
+        .created_unix_ms = 1,
+    });
+    try store.put(gpa, .{
+        .id = "two",
+        .tenant_id = "tenant",
+        .kind = .semantic,
+        .content = "two",
+        .created_unix_ms = 2,
+    });
+    const Compact = struct {
+        fn run(_: ?*anyopaque, allocator: std.mem.Allocator, _: []const u8, _: []const Entry) ![]u8 {
+            return allocator.dupe(u8, "summary");
+        }
+    };
+    _ = try store.compact(gpa, "tenant", 3, .{ .keep_recent_for_compaction = 1 }, .{
+        .compact_fn = Compact.run,
+    });
+}
+
 test "memory ownership survives every allocation failure" {
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
         runMemoryWithAllocator,
+        .{},
+    );
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        compactMemoryWithAllocator,
         .{},
     );
 }
