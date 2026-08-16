@@ -64,6 +64,8 @@
 - Keep deterministic workflow-origin tools inline during durable replay, so
   capability loading can update the next step before newly active side-effect
   handlers are preflighted.
+- Add versioned durable checkpoint stores, restart-safe stream cursors, and
+  persisted approval resumption with duplicate, restart, and migration tests.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model

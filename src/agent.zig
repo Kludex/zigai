@@ -361,6 +361,78 @@ pub const AgentStreamSink = struct {
     }
 };
 
+/// Persists delivery progress for one deterministic stream segment. Replaying
+/// the same segment skips events below the stored cursor. The segment ID must
+/// change when event ordering changes or a paused run starts a new stream.
+///
+/// Progress is committed after the downstream sink succeeds, providing
+/// at-least-once delivery across a crash. Use `durable.deliverEvent` when a
+/// business side effect needs workflow-engine deduplication.
+pub const CheckpointedStreamSink = struct {
+    allocator: std.mem.Allocator,
+    store: durable_types.checkpoint.Store,
+    run_id: []const u8,
+    checkpoint_id: []const u8,
+    downstream: AgentStreamSink,
+    revision: u64 = 0,
+    cursor: u64 = 0,
+    event_index: u64 = 0,
+
+    pub fn init(
+        allocator: std.mem.Allocator,
+        store: durable_types.checkpoint.Store,
+        run_id: []const u8,
+        checkpoint_id: []const u8,
+        downstream: AgentStreamSink,
+    ) !CheckpointedStreamSink {
+        var result = CheckpointedStreamSink{
+            .allocator = allocator,
+            .store = store,
+            .run_id = run_id,
+            .checkpoint_id = checkpoint_id,
+            .downstream = downstream,
+        };
+        if (try store.load(allocator, run_id, checkpoint_id)) |loaded_value| {
+            var loaded = loaded_value;
+            defer loaded.deinit();
+            if (loaded.value.kind != .stream or
+                !std.mem.eql(u8, loaded.value.state_json, "{\"version\":1}"))
+                return durable_types.checkpoint.Error.CheckpointConflict;
+            result.revision = loaded.value.revision;
+            result.cursor = loaded.value.cursor;
+        }
+        return result;
+    }
+
+    pub fn sink(self: *CheckpointedStreamSink) AgentStreamSink {
+        return .{ .context = self, .eventFn = emit };
+    }
+
+    fn emit(context: *anyopaque, event: AgentStreamEvent) !void {
+        const self: *CheckpointedStreamSink = @ptrCast(@alignCast(context));
+        const index = self.event_index;
+        self.event_index = std.math.add(u64, self.event_index, 1) catch
+            return durable_types.checkpoint.Error.InvalidCheckpoint;
+        if (index < self.cursor) return;
+        if (index != self.cursor) return durable_types.checkpoint.Error.CheckpointConflict;
+        try self.downstream.emit(event);
+        const revision = std.math.add(u64, self.revision, 1) catch
+            return durable_types.checkpoint.Error.InvalidCheckpoint;
+        const cursor = std.math.add(u64, self.cursor, 1) catch
+            return durable_types.checkpoint.Error.InvalidCheckpoint;
+        _ = try self.store.save(self.allocator, .{
+            .run_id = self.run_id,
+            .checkpoint_id = self.checkpoint_id,
+            .kind = .stream,
+            .revision = revision,
+            .cursor = cursor,
+            .state_json = "{\"version\":1}",
+        });
+        self.revision = revision;
+        self.cursor = cursor;
+    }
+};
+
 const OutputValidator = struct {
     context: *anyopaque,
     validateFn: *const fn (context: *anyopaque, allocator: std.mem.Allocator, output: []const u8) anyerror!void,
@@ -638,6 +710,27 @@ pub const PausedRun = struct {
     pub fn deinit(self: *PausedRun) void {
         self.arena.deinit();
         self.* = undefined;
+    }
+
+    /// Saves this paused run under a monotonic model-request revision. Reusing
+    /// the same ID with identical state is idempotent; divergent state fails.
+    pub fn saveCheckpoint(
+        self: PausedRun,
+        allocator: std.mem.Allocator,
+        store: durable_types.checkpoint.Store,
+        run_id: []const u8,
+        checkpoint_id: []const u8,
+    ) !durable_types.checkpoint.SaveResult {
+        const revision = std.math.add(u64, std.math.cast(u64, self.model_requests) orelse
+            return durable_types.checkpoint.Error.InvalidCheckpoint, 1) catch
+            return durable_types.checkpoint.Error.InvalidCheckpoint;
+        return store.save(allocator, .{
+            .run_id = run_id,
+            .checkpoint_id = checkpoint_id,
+            .kind = .approval,
+            .revision = revision,
+            .state_json = self.state_json,
+        });
     }
 };
 
@@ -1612,6 +1705,30 @@ pub const Agent = struct {
         return self.resumeRunInternal(allocator, state_json, decisions, options, null);
     }
 
+    /// Loads a paused approval checkpoint and continues it without requiring
+    /// the application to retain process-local state.
+    pub fn resumeCheckpoint(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        store: durable_types.checkpoint.Store,
+        run_id: []const u8,
+        checkpoint_id: []const u8,
+        decisions: []const ResumeDecision,
+        options: RunOptions,
+    ) !RunOutcome {
+        var loaded = (try store.load(allocator, run_id, checkpoint_id)) orelse
+            return Error.InvalidDeferredState;
+        defer loaded.deinit();
+        if (loaded.value.kind != .approval or loaded.value.cursor != 0)
+            return Error.InvalidDeferredState;
+        return self.resumeRunWithOptions(
+            allocator,
+            loaded.value.state_json,
+            decisions,
+            options,
+        );
+    }
+
     /// Continues a paused run and emits deferred-result and subsequent model events.
     pub fn resumeRunStream(
         self: Agent,
@@ -1632,6 +1749,31 @@ pub const Agent = struct {
         sink: AgentStreamSink,
     ) !RunOutcome {
         return self.resumeRunInternal(allocator, state_json, decisions, options, sink);
+    }
+
+    /// Streaming form of `resumeCheckpoint`.
+    pub fn resumeCheckpointStream(
+        self: Agent,
+        allocator: std.mem.Allocator,
+        store: durable_types.checkpoint.Store,
+        run_id: []const u8,
+        checkpoint_id: []const u8,
+        decisions: []const ResumeDecision,
+        options: RunOptions,
+        sink: AgentStreamSink,
+    ) !RunOutcome {
+        var loaded = (try store.load(allocator, run_id, checkpoint_id)) orelse
+            return Error.InvalidDeferredState;
+        defer loaded.deinit();
+        if (loaded.value.kind != .approval or loaded.value.cursor != 0)
+            return Error.InvalidDeferredState;
+        return self.resumeRunStreamWithOptions(
+            allocator,
+            loaded.value.state_json,
+            decisions,
+            options,
+            sink,
+        );
     }
 
     fn resumeRunInternal(
@@ -6422,6 +6564,58 @@ test "typed result decoding releases invalid untyped results" {
     try std.testing.expectError(Agent.Error.InvalidTypedOutput, decodeTypedResult(struct { value: u8 }, result));
 }
 
+test "checkpointed stream resumes after restart without redelivering committed events" {
+    const Collector = struct {
+        outputs: std.ArrayList([]const u8) = .empty,
+
+        fn emit(context: *anyopaque, event: AgentStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event) {
+                .final_result => |final| try self.outputs.append(std.testing.allocator, final.output),
+                else => return error.UnexpectedStreamEvent,
+            }
+        }
+    };
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var collector: Collector = .{};
+    defer collector.outputs.deinit(std.testing.allocator);
+    const downstream = AgentStreamSink{ .context = &collector, .eventFn = Collector.emit };
+
+    var first_store = durable_types.checkpoint.FileStore.init(
+        std.testing.io,
+        temporary.dir,
+        "checkpoints.json",
+    );
+    var first = try CheckpointedStreamSink.init(
+        std.testing.allocator,
+        first_store.store(),
+        "run-1",
+        "initial-stream",
+        downstream,
+    );
+    try first.sink().emit(.{ .final_result = .{ .output = "one" } });
+    try first.sink().emit(.{ .final_result = .{ .output = "two" } });
+
+    var restarted_store = durable_types.checkpoint.FileStore.init(
+        std.testing.io,
+        temporary.dir,
+        "checkpoints.json",
+    );
+    var restarted = try CheckpointedStreamSink.init(
+        std.testing.allocator,
+        restarted_store.store(),
+        "run-1",
+        "initial-stream",
+        downstream,
+    );
+    try restarted.sink().emit(.{ .final_result = .{ .output = "one" } });
+    try restarted.sink().emit(.{ .final_result = .{ .output = "two" } });
+    try restarted.sink().emit(.{ .final_result = .{ .output = "three" } });
+    try std.testing.expectEqual(@as(usize, 3), collector.outputs.items.len);
+    try std.testing.expectEqualStrings("three", collector.outputs.items[2]);
+}
+
 test "paused state serializes retries and rejects mismatched calls" {
     var unused: u8 = 0;
     const Stub = struct {
@@ -6991,6 +7185,13 @@ test "durable approval resumption journals decisions before tool execution" {
             .approval_resume = "approval-worker",
         },
     };
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var checkpoint_store = durable_types.checkpoint.FileStore.init(
+        std.testing.io,
+        temporary.dir,
+        "agent/checkpoints.json",
+    );
     var first = try configured.runUntilPauseWithOptions(
         std.testing.allocator,
         "publish",
@@ -6998,7 +7199,27 @@ test "durable approval resumption journals decisions before tool execution" {
     );
     const state_json = switch (first) {
         .complete => return error.ExpectedPausedRun,
-        .paused => |paused| try std.testing.allocator.dupe(u8, paused.state_json),
+        .paused => |paused| state: {
+            try std.testing.expectEqual(
+                durable_types.checkpoint.SaveResult.created,
+                try paused.saveCheckpoint(
+                    std.testing.allocator,
+                    checkpoint_store.store(),
+                    binding.run_id,
+                    "publish-approval",
+                ),
+            );
+            try std.testing.expectEqual(
+                durable_types.checkpoint.SaveResult.duplicate,
+                try paused.saveCheckpoint(
+                    std.testing.allocator,
+                    checkpoint_store.store(),
+                    binding.run_id,
+                    "publish-approval",
+                ),
+            );
+            break :state try std.testing.allocator.dupe(u8, paused.state_json);
+        },
     };
     first.deinit();
     defer std.testing.allocator.free(state_json);
@@ -7028,9 +7249,16 @@ test "durable approval resumption journals decisions before tool execution" {
     try std.testing.expectEqual(@as(usize, 1), runtime_state.approval_calls);
     try std.testing.expectEqual(@as(usize, 0), runtime_state.tool_calls);
 
-    var resumed = try configured.resumeRunWithOptions(
+    var restarted_store = durable_types.checkpoint.FileStore.init(
+        std.testing.io,
+        temporary.dir,
+        "agent/checkpoints.json",
+    );
+    var resumed = try configured.resumeCheckpoint(
         std.testing.allocator,
-        state_json,
+        restarted_store.store(),
+        binding.run_id,
+        "publish-approval",
         &.{.{ .call_id = "approval-1", .action = .approve }},
         .{ .durable = binding },
     );

@@ -127,6 +127,7 @@ Use these namespaces for the rest of the API:
 | `zigai.eval_compare` | Baseline/candidate comparisons and stable CI JSON |
 | `zigai.mcp` | MCP 2026 client, server, transports, and explicit durable request identities |
 | `zigai.durable` | Versioned durable operations, records, payloads, and runtime bindings |
+| `zigai.durable.checkpoint` | Restart-safe stream cursors and approval state stores |
 | `zigai.durable_adapters.temporal` | Temporal sidecar adapter, worker registrations, retry policy, and payload limits |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
@@ -740,6 +741,12 @@ snapshots are repaired into valid JSON, then checked against present types,
 properties/items, forbidden extras, and maximum bounds. Assertions that later
 bytes can satisfy or change, such as `required`, minimum bounds, `const`, and
 numeric limits, are deferred to final validation.
+
+Wrap a sink with `CheckpointedStreamSink` to resume one deterministic stream
+segment after a worker restart. Committed event ordinals are skipped on replay.
+Use a new checkpoint ID after an approval resume or whenever event ordering
+changes. Delivery is at least once across the small sink-success/store-write
+window; use `durable.deliverEvent` for deduplicated business side effects.
 
 Output functions and validators receive every useful partial snapshot with
 `OutputRunContext.partial_output = true`; `.retry` suppresses that snapshot and

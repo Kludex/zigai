@@ -7,6 +7,7 @@
 const std = @import("std");
 
 pub const payloads = @import("durable/root.zig");
+pub const checkpoint = @import("durable/checkpoint.zig");
 
 pub const format_version: u8 = 1;
 pub const max_payload_bytes: usize = 2 * 1024 * 1024;

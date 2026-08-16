@@ -269,6 +269,11 @@ validation never invokes it.
 | `OperationSuspended` | A runtime returned a suspension outside a resume-aware API. |
 | `RuntimeRecordMismatch` | A runtime returned a record for a different invocation. |
 | `UnsupportedRecordVersion` | A durable record uses an unsupported format version. |
+| `checkpoint.Error.InvalidCheckpoint` | A checkpoint identity, cursor, revision, state document, or snapshot is malformed. |
+| `checkpoint.Error.CheckpointTooLarge` | Checkpoint state or its file snapshot exceeds its configured bound. |
+| `checkpoint.Error.CheckpointConflict` | Equal revisions differ, the kind changed, or a stream cursor moved backward. |
+| `checkpoint.Error.StaleCheckpoint` | A save attempted to replace a newer revision. |
+| `checkpoint.Error.UnsupportedCheckpointVersion` | A checkpoint snapshot uses an unsupported format version. |
 | `durable_adapters.temporal.Error.InvalidConfiguration` | Temporal endpoint, queue, timeout, retry, limit, or registration settings are invalid. |
 | `durable_adapters.temporal.Error.MissingRegistration` | An invocation has no matching Temporal worker registration. |
 | `durable_adapters.temporal.Error.InputTooLarge` | The persisted operation input exceeds the adapter limit. |

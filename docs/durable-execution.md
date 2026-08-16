@@ -93,12 +93,12 @@ defer result.deinit();
 ```
 
 Buffered calls use the `model.request` step ID and streaming calls use
-`model.stream`; the model-request number is their sequence. The worker receives a versioned neutral JSON
-request from `zigai.durable.payloads.model`. It returns a successful model
-response encoded with `stringifyResponse`. Replayed streams emit normalized
-complete-part start/delta/end events followed by usage; preserving original
-chunk boundaries and partially completed streams belongs to the later stream
-checkpointing layer.
+`model.stream`; the model-request number is their sequence. The worker receives
+a versioned neutral JSON request from `zigai.durable.payloads.model`. It returns
+a successful model response encoded with `stringifyResponse`. Replayed streams emit normalized
+complete-part start/delta/end events followed by usage. Provider chunk
+boundaries are normalized; application delivery progress belongs to the
+checkpoint layer below.
 
 The model wire document includes all declarative request fields. It excludes
 process-local error observers and cancellation pointers; a registered worker
@@ -219,6 +219,50 @@ evaluation and may observe workflow replay. Applications that require durable
 delivery must call `deliverEvent` rather than putting a business side effect in
 a lifecycle hook.
 
+## Restart checkpoints
+
+Operation records prevent a model or tool side effect from running twice.
+Checkpoints record how far application code has consumed that replay.
+
+`zigai.durable.checkpoint.Store` loads, atomically saves, and removes records by
+run ID and checkpoint ID. Revisions only move forward. Repeating an identical
+write is safe; a stale revision or a changed payload at the same revision is an
+error. `FileStore` is the bounded, owner-only reference implementation. Its
+version-2 JSON snapshot loads version 1 and rewrites version 2 on the next save.
+
+For streams, initialize `zigai.CheckpointedStreamSink` with a stable segment ID
+and pass `sink()` to the agent. A restarted worker uses the same ID and skips
+committed event ordinals. Start a new segment after an approval resume or an
+incompatible event-order change.
+
+```zig
+var stream = try zigai.CheckpointedStreamSink.init(
+    allocator,
+    checkpoint_store,
+    binding.run_id,
+    "initial-stream-v1",
+    application_sink,
+);
+var result = try agent.runStreamWithOptions(
+    allocator,
+    prompt,
+    .{ .durable = binding },
+    stream.sink(),
+);
+defer result.deinit();
+```
+
+The cursor is committed after the sink succeeds. A crash between those actions
+may redeliver the last event, which is the at-least-once contract for a
+process-local observer. Route business events through `durable.deliverEvent`
+when workflow deduplication is required.
+
+For approvals, call `PausedRun.saveCheckpoint`. A restarted process can call
+`Agent.resumeCheckpoint` or `resumeCheckpointStream`; it does not need the
+original in-memory `PausedRun`. The saved revision derives from the model
+request number, so duplicate persistence is idempotent and divergent replay
+fails closed.
+
 ## Temporal adapter
 
 `zigai.durable_adapters.temporal` is the first concrete engine adapter. Temporal
@@ -275,6 +319,3 @@ Keep the sidecar on a private network or require
 worker build polling until its workflows drain, and use a new handler ID or task
 queue for incompatible behavior. The reference deployment lives in
 [`integrations/temporal`](../integrations/temporal/).
-
-Durable stream/approval checkpointing and worker-restart recovery tests remain
-tracked in `TODO.local.md`.
