@@ -682,6 +682,20 @@ validated and restored to source order. Gemini query/document task types,
 document titles, dimensions, and per-vector usage stay inside its adapter.
 Neither provider extension leaks into the neutral request or result.
 
+Realtime uses two boundaries. A provider connection owns WebSocket or WebRTC
+framing and translates it into the closed codec vocabulary. The session owns
+portable turn state, tools, usage, reconnect policy, history, and event
+ownership. Every received codec event first lives in a disposable controlled
+attempt arena, then is copied before that arena is released. Cancellation can
+therefore discard and drain a late receive without leaking provider memory.
+
+Audio and transcripts remain separate live events. A response terminal is the
+turn boundary; neither an audio chunk nor a tool result commits a turn.
+Finalized speech, calls, and returns enter the existing canonical message
+vocabulary, so text-agent handoff needs no second conversation format.
+Reconnects are allowed only for errors classified by the active connection and
+report whether server state survived.
+
 Graph persistence captures only settled boundaries. A snapshot stores the
 typed state and current intermediate value as application-encoded JSON plus a
 frontier containing the next node and completed transition count. Dependencies,

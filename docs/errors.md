@@ -383,6 +383,22 @@ Provider, cancellation, deadline, callback, and allocator failures preserve
 their original error. Validation failures happen before provider I/O. A failed
 later batch releases all vectors copied from earlier batches.
 
+## Realtime errors
+
+Realtime validation reports `InvalidRealtimeLimits`, `InvalidRealtimeContent`,
+`InvalidRealtimeAudio`, `InvalidRealtimeToolCall`, or
+`RealtimeContentTooLarge` before provider side effects. Profile-gated methods
+return `UnsupportedRealtimeOperation`; non-byte images return
+`UnsupportedRealtimeContent`; a missing tool dispatcher returns
+`UnknownRealtimeTool`.
+
+`RealtimeSessionClosed` rejects every operation after close.
+`RealtimeHistoryLimitExceeded` and `RealtimeUsageLimitExceeded` latch bounded
+history and token growth. `RealtimeReconnectRequiresIo` rejects delayed redial
+without a runtime, while `RealtimeReconnectExhausted` means the per-drop or
+session recovery budget ended. Unclassified provider and callback failures keep
+their original error.
+
 ## MCP errors
 
 | Error | Meaning |

@@ -242,6 +242,12 @@ uses any OpenAI-compatible provider; `embeddings.google.Client` uses Gemini
 `batchEmbedContents`. `examples/retrieval.zig` demonstrates a complete local
 query/document ranking loop.
 
+`zigai.realtime.Session` owns a persistent provider-neutral voice session over
+an explicit WebSocket or WebRTC-sideband connection. It accepts PCM16 audio,
+text, images, manual turn controls, and interruptions; emits owned audio,
+transcript, tool, turn, reconnect, and error events; and builds canonical
+message history with bounded audio retention and cumulative usage.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.

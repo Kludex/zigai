@@ -133,6 +133,7 @@ Use these namespaces for the rest of the API:
 | `zigai.graph_agent` | Explicit buffered and structured agent-node adapters for typed graphs |
 | `zigai.multi_agent` | Bounded delegation, handoff, and subagent execution scopes |
 | `zigai.embeddings` | Provider-neutral bounded text embedding and batching |
+| `zigai.realtime` | Persistent speech, transcript, turn, tool, and reconnect sessions |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
@@ -710,6 +711,37 @@ timeouts, safe error observation, and stable status classification.
 `examples/retrieval.zig` uses a deterministic local model to show the complete
 index, query, similarity, and best-document flow without credentials or network
 access.
+
+### Realtime sessions
+
+`realtime.Connector` opens a provider `Connection`. The connection declares
+whether it uses a WebSocket or WebRTC sideband, its provider/model identity, its
+audio rates and feature `Profile`, and callbacks for sending normalized input,
+receiving owned codec events, closing, and classifying transport failures.
+Provider protocol framing stays below this boundary.
+
+`Session.init` connects immediately and deep-copies optional canonical history.
+Call `sendAudio` with raw little-endian mono PCM16, `sendText` with a complete
+turn, or `sendImage` with bounded in-memory image content. Manual
+`commitAudio`, `clearAudio`, and `createResponse` calls require the profile flag.
+`interrupt` sends cancellation or output truncation according to the model
+profile. Unsupported operations fail before a frame is sent.
+
+`next` returns one independently arena-owned event. Audio chunks, input/output
+transcripts, tool completions, response interruption, turn completion,
+recoverable errors, and reconnects have explicit variants. Usage events update
+session state and do not recurse through the consumer stream. A configured tool
+handler receives bounded JSON arguments under the session cancellation/deadline
+control; its bounded result is returned to the provider and recorded beside the
+call in canonical history.
+
+`AudioRetention` controls whether raw input/output PCM is copied into finalized
+`SpeechPart` history. Transcripts are always retained. `allMessages` returns an
+independent deep copy suitable for a text-agent handoff. Limits bound text,
+chunks, images, history, retained audio, tool payloads, and cumulative tokens.
+A reconnect policy bounds per-drop attempts and total reconnects; classified
+transport failures close and redial before a `reconnect` event reports whether
+the provider restored state.
 
 ### Graph snapshots
 

@@ -27,6 +27,10 @@
   bounded source-order batching, dimensions, aggregate usage, cancellation,
   shared deadlines, full-jitter retries, arena-owned vectors, OpenAI-compatible
   and Gemini adapters, cosine similarity, and a local retrieval example.
+- Add the provider-neutral realtime session core with explicit WebSocket and
+  WebRTC-sideband boundaries, PCM16 input/output, transcripts, manual turns,
+  interruption, tools, canonical handoff history, usage, bounded reconnects,
+  cancellation, deadlines, and owned events.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.
