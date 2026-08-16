@@ -125,7 +125,7 @@ Use these namespaces for the rest of the API:
 | `zigai.evals` | Datasets, evaluators, reports, and model grading |
 | `zigai.eval_io` | Versioned JSON/YAML dataset and report documents |
 | `zigai.eval_compare` | Baseline/candidate comparisons and stable CI JSON |
-| `zigai.mcp` | MCP 2026 client, server, Streamable HTTP, and stdio |
+| `zigai.mcp` | MCP 2026 client, server, transports, and explicit durable request identities |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |

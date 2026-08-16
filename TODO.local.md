@@ -246,6 +246,11 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
       identities that remain stable under parallel scheduling.
     - [ ] Route standalone MCP client requests, discovery, pagination, task
       polling, and subscriptions through explicit durable request identities.
+      - [x] Route generic requests, discovery, pagination, and task polling as
+        complete high-level operations, with explicit concurrent identities
+        and a sequential typed-helper identity source.
+      - [ ] Route subscription events through durable event-delivery handlers
+        before enabling durable `listen` calls.
     - [ ] Route event delivery, retry delays, and approval resumption without
       duplicating callbacks, sleeps, or decisions during replay.
     - [ ] Prove direct-run behavior remains unchanged and reject incomplete

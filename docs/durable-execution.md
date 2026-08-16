@@ -128,6 +128,38 @@ Tool argument, call, and return policies still execute in the agent process and
 must be deterministic. The durable runtime owns the actual application or MCP
 tool side effect; a configured route never invokes the local tool callback.
 
-Standalone MCP client requests, event, retry-delay, and approval routing, a
-concrete workflow-engine adapter, durable stream/approval resumption, and
-worker-restart recovery tests remain tracked in `TODO.local.md`.
+## Standalone MCP requests
+
+`mcp.RequestOptions.durable` accepts an explicit `mcp.DurableRequest` identity.
+This is the concurrency-safe form: assign each identity from deterministic
+workflow state before scheduling requests. A `mcp.DurableRequestSequence` can
+instead be attached to `Client.durable_requests` for sequential workflow
+branches, which lets typed helpers such as `discover`, paginated collection
+methods, and task polling claim identities automatically.
+
+```zig
+var identities = zigai.mcp.DurableRequestSequence.init(binding, 100);
+var mcp_client = zigai.mcp.Client{
+    .transport = worker_local_transport,
+    .durable_requests = &identities,
+};
+
+const discovery = try mcp_client.discover(allocator);
+defer allocator.free(discovery);
+```
+
+One identity represents the complete high-level operation, including bounded
+MRTR input round trips performed by the registered worker. The versioned
+`zigai.durable.payloads.mcp` request carries the method, parameters, routing
+metadata, public headers, client identity, capabilities, and round-trip bound.
+It never carries transport credentials, input handlers, event sinks, or other
+process-local pointers. Sensitive per-request headers are rejected; configure
+authorization on the worker's transport.
+
+Durable subscription calls are rejected until their event sink can be replaced
+by the event-delivery handler in the next routing slice. This prevents a replay
+from invoking an ordinary callback twice.
+
+Event, retry-delay, and approval routing, a concrete workflow-engine adapter,
+durable stream/approval resumption, and worker-restart recovery tests remain
+tracked in `TODO.local.md`.

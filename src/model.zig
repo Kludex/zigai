@@ -389,7 +389,9 @@ pub const Tool = struct {
 };
 
 pub const ToolOrigin = enum {
+    /// Application-owned function or contextual callback.
     application,
+    /// Tool callback backed by a Model Context Protocol client.
     mcp,
 };
 

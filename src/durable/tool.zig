@@ -21,6 +21,7 @@ pub const Error = error{
 
 const RequestDocument = struct {
     version: u8,
+    payload_kind: enum { tool_call },
     call: model_types.ToolCall,
     arguments_json: []const u8,
     messages_json: []const u8,
@@ -58,6 +59,7 @@ pub fn stringifyRequest(
     defer allocator.free(messages_json);
     return std.json.Stringify.valueAlloc(allocator, RequestDocument{
         .version = format_version,
+        .payload_kind = .tool_call,
         .call = call,
         .arguments_json = arguments_json,
         .messages_json = messages_json,

@@ -43,6 +43,10 @@
 - Route application and MCP-backed tool calls through versioned durable tool
   payloads, preserving rich follow-up messages and assigning source-order
   identities before parallel scheduling.
+- Route standalone MCP requests, discovery, pagination, and task polling as
+  versioned high-level durable operations, with explicit concurrent identities,
+  sequential typed-helper identities, and rejection of persisted credentials
+  or non-durable event sinks.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model

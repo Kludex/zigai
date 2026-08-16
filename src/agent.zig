@@ -5479,7 +5479,7 @@ test "tool policy failure and parallel retry branches are explicit" {
     try std.testing.expect(findToolWork(&.{work}, "missing") == null);
 
     const Stub = struct {
-        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse { // kcov-ignore: durable routing guard
             return error.UnusedModel;
         }
     };
@@ -6411,7 +6411,7 @@ test "durable model routes bypass local providers and replay normalized streams"
             _: std.mem.Allocator,
             _: model_types.ModelRequest,
             _: model_types.ModelStreamSink,
-        ) !model_types.ModelResponse {
+        ) !model_types.ModelResponse { // kcov-ignore: durable routing guard
             return error.LocalModelMustNotRun; // kcov-ignore: durable routing guard
         }
     };
@@ -6503,6 +6503,10 @@ test "durable parallel tools use source-order identities and MCP operation kinds
                     }
                     break :output try durable_types.payloads.tool.stringifyResponse(allocator, .{
                         .content = request.call.name,
+                        .follow_up_messages = if (invocation.kind == .tool_call)
+                            &.{.{ .parts = &.{.{ .user_prompt = .{ .text = "durable follow-up" } }} }}
+                        else
+                            &.{},
                     });
                 },
                 else => return error.UnexpectedDurableOperation,
@@ -6515,11 +6519,11 @@ test "durable parallel tools use source-order identities and MCP operation kinds
         }
     };
     const Local = struct {
-        fn model(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+        fn model(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse { // kcov-ignore: durable routing guard
             return error.LocalModelMustNotRun; // kcov-ignore: durable routing guard
         }
 
-        fn tool(_: *anyopaque, _: std.mem.Allocator, _: []const u8) ![]const u8 {
+        fn tool(_: *anyopaque, _: std.mem.Allocator, _: []const u8) ![]const u8 { // kcov-ignore: durable routing guard
             return error.LocalToolMustNotRun; // kcov-ignore: durable routing guard
         }
     };
