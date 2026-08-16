@@ -293,6 +293,12 @@ bounded structured-concurrency tasks. Deterministic in-memory stores and a
 source-ordered executor are included; hosted services remain optional
 application implementations behind the same vtables.
 
+`zigai.acp.Client` implements Agent Client Protocol v2 sessions plus v1
+filesystem/terminal compatibility. It owns initialization, capability
+negotiation, session create/resume/list/delete/close, prompts, streamed updates,
+permission replies, cancellation, reconnect, rooted files, terminal handlers,
+and bounded stdio process framing.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.

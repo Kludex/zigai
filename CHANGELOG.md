@@ -61,6 +61,10 @@
 - Add local interfaces and deterministic backends for optimistic step
   persistence, tenant media/artifact blobs, versioned managed prompts, and
   bounded source-ordered task execution without hosted-service dependencies.
+- Add Agent Client Protocol v2 initialization/capabilities, session lifecycle,
+  prompts/updates, permission handling, cancellation, reconnect, and bounded
+  stdio process framing, plus rooted filesystem and v1 terminal compatibility
+  with official transcript fixtures.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

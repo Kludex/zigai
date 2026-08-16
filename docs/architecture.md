@@ -837,6 +837,20 @@ cancels/drains the select before any arena closes; only the coordinator copies
 source-ordered results into the returned arena. Hosted services and remote
 workers remain replaceable application adapters rather than core dependencies.
 
+## Agent Client Protocol
+
+ACP is a stateful JSON-RPC client over a replaceable transport. Initialization
+and session state are explicit, and every response is matched by ID while
+interleaved updates and client requests are dispatched. Reconnect negotiates a
+new connection and resumes the active session; it never guesses whether a
+prompt should be resent.
+
+Editor-owned operations enter through handlers. Absolute ACP paths are reduced
+to a rooted execution environment, permission choices are validated against
+the advertised options, and terminal implementations remain replaceable. The
+stdio transport owns only subprocess/framing lifecycle. This keeps ACP agent
+implementations and editor APIs outside the core dependency graph.
+
 ## Production CLI
 
 The unified CLI is composition rather than a fourth agent runtime. Provider

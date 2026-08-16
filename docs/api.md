@@ -141,6 +141,7 @@ Use these namespaces for the rest of the API:
 | `zigai.memory` | Tenant-isolated conversation and semantic memory stores |
 | `zigai.planning` | Bounded revisions, advisors, approval gates, and dynamic workflows |
 | `zigai.runtime_services` | Step, blob, prompt, and bounded-executor service contracts |
+| `zigai.acp` | Agent Client Protocol process, session, update, and client-operation support |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
@@ -1338,6 +1339,34 @@ rejects per-task output beyond its ceiling.
 single-thread workers. Production databases, object stores, prompt services,
 and thread/remote executors implement the same small vtables. No hosted
 Pydantic client or credential is imported by the core runtime-services module.
+
+## Agent Client Protocol
+
+`acp.Client.init` opens a reconnectable newline JSON-RPC transport.
+`initialize` requests ACP major version 2, validates the negotiated version, and
+records session, prompt-content, MCP, delete, additional-directory, and v1
+compatibility capabilities. Lifecycle methods cover session create, list,
+resume with optional full replay, delete, close, text prompts, session cancel,
+and `$/cancel_request`.
+
+Requests accept interleaved agent-to-client calls and `session/update`
+notifications while waiting for their response ID. `PermissionHandler` must
+select one advertised option. `FilesystemHandler` maps required absolute ACP
+paths into one rooted `execution.Environment` and rejects prefix/traversal
+escapes. Legacy v1 filesystem and terminal requests use explicit handlers; v2
+terminal state/output remains streamed through session updates.
+
+`nextUpdate` dispatches owned bounded frames to a borrowed update sink. On a
+classified transport failure, a reconnect policy closes and redials,
+renegotiates capabilities, and resumes the active session without replaying or
+resending the accepted prompt. Cancellation and request deadlines use
+`RunControl` and drain late transport calls.
+
+`acp.StdioTransport` launches an agent process with piped stdin/stdout, writes
+one UTF-8 JSON-RPC message per line, bounds reads, rejects embedded newlines,
+and kills/reaps the child during close. The tests replay the official ACP v2
+initialize/session/prompt examples through both an in-memory transcript and a
+real stdio subprocess fixture.
 
 ## Production CLI
 

@@ -464,6 +464,18 @@ Step stores report `InvalidStepRecord`, `StepRevisionConflict`,
 `ExecutorConcurrencyUnavailable`, and `ExecutorOutputTooLarge`. Backend,
 callback, cancellation, deadline, and allocator errors remain unchanged.
 
+## ACP errors
+
+`InvalidACPState`, `ACPNotInitialized`, `ACPSessionRequired`,
+`UnsupportedACPVersion`, `UnsupportedACPCapability`, `InvalidACPMessage`,
+`InvalidACPPrompt`, `InvalidACPPath`, and `ACPPathOutsideRoot` reject protocol
+or lifecycle misuse. `InvalidACPPermissionDecision` and
+`UnsupportedACPClientMethod` fail closed on agent-to-client requests.
+`ACPRequestCancelled`, `ACPRemoteError`, `ACPRequestIdExhausted`,
+`ACPProcessClosed`, `ACPMessageTooLarge`, and `ACPReconnectExhausted` preserve
+transport/runtime distinctions. Handler, execution, cancellation, deadline,
+and allocator failures remain unchanged.
+
 ## Production CLI errors
 
 `InvalidArguments`, `InvalidCLIConfig`, `InvalidPausedCLIState`, `EmptyPrompt`,
