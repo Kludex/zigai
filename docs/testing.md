@@ -88,10 +88,14 @@ complete Amazon Bedrock Converse function-tool loop, and an Azure OpenAI v1
 Responses function-tool loop. It also contains a Mistral Conversations web
 search with native execution entries, references, and connector-token usage,
 plus a Cohere v2 strict function-tool loop with citations. These recordings
-verify the native request shapes and responses.
+verify the native request shapes and responses. Replay also proves the neutral
+evidence boundary: OpenAI URL citations, Anthropic server-tool calls and
+results, Google grounding chunks and supports, and Mistral tool references are
+retained as structured provider details alongside normalized usage counters.
 
 `tests/cassettes/rich/` contains one real inline-image exchange for each
-first-party provider.
+first-party provider. Replay checks the semantic answer (`red`) rather than
+accepting any non-empty model output.
 
 `tests/cassettes/files/` contains a real lifecycle for each first-party
 provider. OpenAI covers a downloadable fine-tuning input; Anthropic records the

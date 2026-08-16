@@ -899,6 +899,10 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
         googleFinishReason(reason)
     else
         null;
+    const grounding_details = if (candidate.get("groundingMetadata")) |value|
+        try model_types.ProviderDetails.fromValue(value)
+    else
+        null;
     var parts: std.ArrayList(model_types.Part) = .empty;
     if (candidate.get("content")) |content_value| {
         const content_object = switch (content_value) {
@@ -928,6 +932,14 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
                         try parts.append(allocator, .{ .thinking = .{
                             .content = value,
                             .signature = try common.optionalObjectString(object, "thoughtSignature"),
+                        } });
+                    } else if (grounding_details) |details| {
+                        try parts.append(allocator, .{ .text_part = .{
+                            .content = value,
+                            .provider = .{
+                                .provider_name = "gcp.gen_ai",
+                                .provider_details = details,
+                            },
                         } });
                     } else try parts.append(allocator, .{ .text = value });
                 } else if (object.get("inlineData")) |inline_value| {

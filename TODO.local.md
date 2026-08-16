@@ -165,7 +165,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Record and replay retry and provider-error scenarios for OpenAI,
   Anthropic, and Google, covering rate limits, retry hints, retry exhaustion,
   malformed success bodies, and safe bounded error observation.
-- [ ] Record and replay rich-media and provider-managed-tool scenarios for every
+- [x] Record and replay rich-media and provider-managed-tool scenarios for every
   applicable native provider with an available key, including deterministic
   assertions for citations, references, usage, and provider extension metadata.
 - [ ] Record and replay buffered, streaming, function-tool, retry, and

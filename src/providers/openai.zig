@@ -1110,11 +1110,38 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
                 };
                 const content_type = try common.objectString(content_object, "type");
                 if (std.mem.eql(u8, content_type, "output_text")) {
-                    try parts.append(allocator, .{ .text = try common.objectString(content_object, "text") });
+                    const text = try common.objectString(content_object, "text");
+                    const has_annotations = if (content_object.get("annotations")) |value| switch (value) {
+                        .array => |annotations| annotations.items.len != 0,
+                        .null => false,
+                        else => return error.InvalidProviderResponse,
+                    } else false;
+                    if (has_annotations) {
+                        try parts.append(allocator, .{ .text_part = .{
+                            .content = text,
+                            .provider = .{
+                                .id = try common.optionalObjectString(object, "id"),
+                                .provider_name = "openai",
+                                .provider_details = try model_types.ProviderDetails.fromValue(content_item),
+                            },
+                        } });
+                    } else try parts.append(allocator, .{ .text = text });
                 } else if (std.mem.eql(u8, content_type, "refusal")) {
                     content_filtered = true;
                 }
             }
+        } else if (std.mem.eql(u8, kind, "web_search_call")) {
+            const action = object.get("action") orelse return error.InvalidProviderResponse;
+            try parts.append(allocator, .{ .native_tool_call = .{
+                .id = try common.objectString(object, "id"),
+                .name = "web_search",
+                .arguments_json = try std.json.Stringify.valueAlloc(allocator, action, .{}),
+                .provider = .{
+                    .id = try common.objectString(object, "id"),
+                    .provider_name = "openai",
+                    .provider_details = try model_types.ProviderDetails.fromValue(item),
+                },
+            } });
         } else if (std.mem.eql(u8, kind, "function_call")) {
             if (try common.optionalObjectString(object, "status")) |status| {
                 if (std.mem.eql(u8, status, "incomplete")) {
@@ -1139,6 +1166,26 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
             else => return error.InvalidProviderResponse,
         };
         usage = try decodeUsageObject(allocator, usage_object);
+    }
+    if (root_object.get("tool_usage")) |tool_usage_value| {
+        const tool_usage = switch (tool_usage_value) {
+            .object => |value| value,
+            .null => null,
+            else => return error.InvalidProviderResponse,
+        };
+        if (tool_usage) |value| if (value.get("web_search")) |search_value| {
+            const search = switch (search_value) {
+                .object => |entry| entry,
+                .null => null,
+                else => return error.InvalidProviderResponse,
+            };
+            if (search) |entry| if (try common.optionalObjectInteger(entry, "num_requests")) |count| {
+                const details = try allocator.alloc(model_types.UsageDetail, usage.details.len + 1);
+                @memcpy(details[0..usage.details.len], usage.details);
+                details[usage.details.len] = .{ .name = "web_search_requests", .value = count };
+                usage.details = details;
+            };
+        };
     }
     const finish_reason = if (content_filtered)
         model_types.FinishReason{ .kind = .content_filter, .raw = "refusal" }

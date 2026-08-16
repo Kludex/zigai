@@ -45,6 +45,12 @@
   provenance. OpenAI, Anthropic, and Google now replay rate-limit recovery and
   retry hints, server-error exhaustion, malformed success payloads, and safe
   bounded error observation without attempting to manufacture live failures.
+- Make native-tool and rich-media cassette replay semantic. OpenAI now retains
+  web-search calls and URL citations, Anthropic retains server-tool calls,
+  results, and request counters, Google retains grounding metadata, and the
+  native matrix asserts provider details, references, and normalized usage.
+  First-party image replay now requires the expected color instead of merely
+  accepting non-empty output.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

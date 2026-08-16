@@ -1061,7 +1061,21 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
         };
         const kind = try common.objectString(object, "type");
         if (std.mem.eql(u8, kind, "text")) {
-            try parts.append(allocator, .{ .text = try common.objectString(object, "text") });
+            const text = try common.objectString(object, "text");
+            const has_citations = if (object.get("citations")) |value| switch (value) {
+                .array => |citations| citations.items.len != 0,
+                .null => false,
+                else => return error.InvalidProviderResponse,
+            } else false;
+            if (has_citations) {
+                try parts.append(allocator, .{ .text_part = .{
+                    .content = text,
+                    .provider = .{
+                        .provider_name = "anthropic",
+                        .provider_details = try model_types.ProviderDetails.fromValue(item),
+                    },
+                } });
+            } else try parts.append(allocator, .{ .text = text });
         } else if (std.mem.eql(u8, kind, "thinking") or std.mem.eql(u8, kind, "redacted_thinking")) {
             try parts.append(allocator, .{ .thinking = .{
                 .content = if (std.mem.eql(u8, kind, "thinking"))
@@ -1078,6 +1092,34 @@ pub fn decodeResponse(allocator: std.mem.Allocator, body: []const u8) !model_typ
                 .id = try common.objectString(object, "id"),
                 .name = try common.objectString(object, "name"),
                 .arguments_json = arguments,
+            } });
+        } else if (std.mem.eql(u8, kind, "server_tool_use")) {
+            const input = object.get("input") orelse return error.InvalidProviderResponse;
+            const id = try common.objectString(object, "id");
+            try parts.append(allocator, .{ .native_tool_call = .{
+                .id = id,
+                .name = try common.objectString(object, "name"),
+                .arguments_json = try std.json.Stringify.valueAlloc(allocator, input, .{}),
+                .provider = .{
+                    .id = id,
+                    .provider_name = "anthropic",
+                    .provider_details = try model_types.ProviderDetails.fromValue(item),
+                },
+            } });
+        } else if (std.mem.eql(u8, kind, "web_search_tool_result") or
+            std.mem.eql(u8, kind, "web_fetch_tool_result"))
+        {
+            const content_value = object.get("content") orelse return error.InvalidProviderResponse;
+            const call_id = try common.objectString(object, "tool_use_id");
+            try parts.append(allocator, .{ .native_tool_return = .{
+                .call_id = call_id,
+                .name = if (std.mem.eql(u8, kind, "web_search_tool_result")) "web_search" else "web_fetch",
+                .content = try std.json.Stringify.valueAlloc(allocator, content_value, .{}),
+                .provider = .{
+                    .id = call_id,
+                    .provider_name = "anthropic",
+                    .provider_details = try model_types.ProviderDetails.fromValue(item),
+                },
             } });
         }
     }
@@ -1116,6 +1158,21 @@ fn decodeUsageObject(allocator: std.mem.Allocator, object: std.json.ObjectMap) !
         if (cache) |entry| inline for ([_]struct { raw: []const u8, name: []const u8 }{
             .{ .raw = "ephemeral_5m_input_tokens", .name = "cache_write_5m_tokens" },
             .{ .raw = "ephemeral_1h_input_tokens", .name = "cache_write_1h_tokens" },
+        }) |field| {
+            if (try common.optionalObjectInteger(entry, field.raw)) |counter| {
+                try details.append(allocator, .{ .name = field.name, .value = counter });
+            }
+        };
+    }
+    if (object.get("server_tool_use")) |value| {
+        const server_tools = switch (value) {
+            .object => |entry| entry,
+            .null => null,
+            else => return error.InvalidProviderResponse,
+        };
+        if (server_tools) |entry| inline for ([_]struct { raw: []const u8, name: []const u8 }{
+            .{ .raw = "web_search_requests", .name = "web_search_requests" },
+            .{ .raw = "web_fetch_requests", .name = "web_fetch_requests" },
         }) |field| {
             if (try common.optionalObjectInteger(entry, field.raw)) |counter| {
                 try details.append(allocator, .{ .name = field.name, .value = counter });

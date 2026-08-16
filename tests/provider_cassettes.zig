@@ -3,6 +3,7 @@ const zigai = @import("zigai");
 const cassettes = @import("support/cassettes.zig");
 const cassette_manifest = @import("support/cassette_manifest.zig");
 const error_scenarios = @import("support/error_scenarios.zig");
+const native_scenarios = @import("support/native_scenarios.zig");
 const output_scenarios = @import("support/output_scenarios.zig");
 const stream_scenarios = @import("support/stream_scenarios.zig");
 
@@ -360,6 +361,7 @@ test "real Mistral Conversations cassette replays native web search" {
         &cassette,
         &.{.{ .web_search = .{} }},
         native_google_prompt,
+        .mistral_web_search,
     );
 }
 
@@ -501,6 +503,7 @@ test "real OpenAI cassette replays native web search" {
         &cassette,
         &.{.{ .web_search = .{} }},
         native_prompt,
+        .openai_web_search,
     );
 }
 
@@ -518,6 +521,7 @@ test "real Anthropic cassette replays native web search and fetch" {
         &cassette,
         &.{ .{ .web_search = .{} }, .{ .web_fetch = .{} } },
         native_prompt,
+        .anthropic_web_fetch,
     );
 }
 
@@ -534,6 +538,7 @@ test "real Google cassette replays native web search and fetch" {
         &cassette,
         &.{ .{ .web_search = .{} }, .{ .web_fetch = .{} } },
         native_google_prompt,
+        .google_grounding,
     );
 }
 
@@ -592,6 +597,7 @@ fn replayNativeScenario(
     cassette: *cassettes.ReplayTransport,
     builtin_tools: []const zigai.BuiltinTool,
     prompt: []const u8,
+    evidence: native_scenarios.Evidence,
 ) !void {
     var result = try (zigai.Agent{
         .model = model,
@@ -602,6 +608,7 @@ fn replayNativeScenario(
     defer result.deinit();
     try std.testing.expect(result.output.len > 0);
     try std.testing.expect(result.usage.totalTokens() > 0);
+    try native_scenarios.expect(result.messages, result.usage, evidence);
     try std.testing.expectEqual(@as(usize, 0), cassette.remaining());
 }
 
@@ -619,7 +626,7 @@ fn replayRichScenario(model: zigai.Model, cassette: *cassettes.ReplayTransport) 
         .limits = .{ .max_model_requests = 1 },
     }).runWithOptions(std.testing.allocator, rich_prompt, .{ .prompt_parts = &.{image} });
     defer result.deinit();
-    try std.testing.expect(result.output.len > 0);
+    try std.testing.expect(std.ascii.eqlIgnoreCase("red", std.mem.trim(u8, result.output, " \t\r\n.")));
     try std.testing.expect(result.usage.totalTokens() > 0);
     try std.testing.expectEqual(@as(usize, 0), cassette.remaining());
 }
