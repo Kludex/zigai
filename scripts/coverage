@@ -120,7 +120,7 @@ EOF
 ANTHROPIC_API_KEY=test run_kcov "$include_path" coverage/production-cli \
     coverage/bin/production-cli --config coverage/production-anthropic.json test
 cat >coverage/production-google.json <<EOF
-{"provider":"google","model":"gemini-2.5-flash","base_url":"http://$fixture_host:18765/google"}
+{"provider":"google","model":"gemini-2.5-flash-lite","base_url":"http://$fixture_host:18765/google"}
 EOF
 GEMINI_API_KEY=test run_kcov "$include_path" coverage/production-cli \
     coverage/bin/production-cli --config coverage/production-google.json test
