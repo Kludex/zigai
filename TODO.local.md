@@ -336,7 +336,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add reproducible release automation with source archive checksums,
   provenance/attestations, SBOM, signed immutable tags, release notes, and a
   consumer smoke test against the published archive on every supported OS.
-- [ ] Add `SECURITY.md`, vulnerability-reporting contacts, supported-version
+- [x] Add `SECURITY.md`, vulnerability-reporting contacts, supported-version
   policy, threat model, dependency review/update automation, and an advisory
   response checklist.
 - [ ] Add production guides for web services, long-running workers, memory

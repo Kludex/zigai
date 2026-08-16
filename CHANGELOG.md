@@ -81,6 +81,9 @@
   SPDX SBOM, and GitHub build-provenance attestations, extracts release notes
   from the changelog, and smoke-tests consumers against the extracted archive
   on Linux, macOS, and Windows before publishing.
+- Add `SECURITY.md` with private vulnerability reporting, a supported-version
+  policy, a summarized threat model, dependency review automation via
+  Dependabot, and an advisory response checklist.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.
