@@ -1410,6 +1410,26 @@ test "rejects malformed usage" {
         arena.allocator(),
         "{\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"output_tokens_details\":false}}",
     ));
+    try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(
+        arena.allocator(),
+        "{\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"server_tool_use\":false}}",
+    ));
+}
+
+test "decodes text citations as structured provider details" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const response = try decodeResponse(
+        arena.allocator(),
+        "{\"content\":[{\"type\":\"text\",\"text\":\"answer\",\"citations\":[{\"type\":\"web_search_result_location\"}]}]}",
+    );
+    try std.testing.expectEqualStrings("answer", response.parts[0].text_part.content);
+    const citations = response.parts[0].text_part.provider.provider_details.?.value.object.get("citations").?.array;
+    try std.testing.expectEqual(@as(usize, 1), citations.items.len);
+    try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(
+        arena.allocator(),
+        "{\"content\":[{\"type\":\"text\",\"text\":\"answer\",\"citations\":false}]}",
+    ));
 }
 
 test "encodes Anthropic structured output and rejects JSON-object mode" {

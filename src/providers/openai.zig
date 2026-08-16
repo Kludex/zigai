@@ -1327,6 +1327,14 @@ test "rejects malformed nested content and usage" {
         arena_two.allocator(),
         "{\"output\":[],\"usage\":[]}",
     ));
+    try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(
+        arena_two.allocator(),
+        "{\"output\":[],\"tool_usage\":false}",
+    ));
+    try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(
+        arena_two.allocator(),
+        "{\"output\":[],\"tool_usage\":{\"web_search\":false}}",
+    ));
 }
 
 test "encodes both Responses API structured output modes" {
