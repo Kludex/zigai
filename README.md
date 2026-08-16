@@ -207,7 +207,9 @@ callbacks, or in-flight parallel work.
 
 Nodes and edges accept optional borrowed labels, descriptions, groups, and
 source locations. `graph.visualization(allocator)` returns a versioned,
-deterministic node/edge view for documentation and tooling.
+deterministic node/edge view for documentation and tooling;
+`graph.renderMermaid(allocator, options)` returns a bounded Mermaid state
+diagram with stable generated IDs.
 
 ## Providers
 

@@ -329,6 +329,10 @@ Graph snapshot operations additionally report:
 | `SnapshotStepLimitExceeded` | A requested resume ceiling is below the completed step count. |
 | `SnapshotCodecFailed` | An application encoder, decoder, or migration rejected its input. |
 
+`Graph.renderMermaid` returns `VisualizationLimitExceeded` when its title or
+encoded document exceeds the configured visualization bound, and preserves
+`OutOfMemory` for allocator failures.
+
 ## MCP errors
 
 | Error | Meaning |

@@ -182,6 +182,96 @@ pub const Visualization = struct {
     }
 };
 
+/// Mermaid state-diagram layout direction.
+pub const MermaidDirection = enum {
+    top_to_bottom,
+    left_to_right,
+    right_to_left,
+    bottom_to_top,
+
+    fn code(self: MermaidDirection) []const u8 {
+        return switch (self) {
+            .top_to_bottom => "TB",
+            .left_to_right => "LR",
+            .right_to_left => "RL",
+            .bottom_to_top => "BT",
+        };
+    }
+};
+
+/// Runtime-only Mermaid presentation controls.
+pub const MermaidOptions = struct {
+    title: ?[]const u8 = null,
+    direction: ?MermaidDirection = null,
+    include_edge_labels: bool = true,
+};
+
+/// Stable failures while allocating a bounded Mermaid document.
+pub const MermaidError = std.mem.Allocator.Error || error{
+    VisualizationLimitExceeded,
+};
+
+const MermaidOutput = struct {
+    gpa: std.mem.Allocator,
+    limit: usize,
+    bytes: std.ArrayList(u8) = .empty,
+
+    fn deinit(self: *MermaidOutput) void {
+        self.bytes.deinit(self.gpa);
+    }
+
+    fn finish(self: *MermaidOutput) std.mem.Allocator.Error![]u8 {
+        return self.bytes.toOwnedSlice(self.gpa);
+    }
+
+    fn append(self: *MermaidOutput, value: []const u8) MermaidError!void {
+        if (value.len > self.limit -| self.bytes.items.len)
+            return error.VisualizationLimitExceeded;
+        try self.bytes.appendSlice(self.gpa, value);
+    }
+
+    fn appendByte(self: *MermaidOutput, value: u8) MermaidError!void {
+        if (self.bytes.items.len >= self.limit) return error.VisualizationLimitExceeded;
+        try self.bytes.append(self.gpa, value);
+    }
+
+    fn appendUnsigned(self: *MermaidOutput, value: anytype) MermaidError!void {
+        var buffer: [32]u8 = undefined;
+        try self.append(std.fmt.bufPrint(&buffer, "{d}", .{value}) catch unreachable);
+    }
+
+    fn appendEscaped(self: *MermaidOutput, value: []const u8) MermaidError!void {
+        for (value) |byte| switch (byte) {
+            '&' => try self.append("&amp;"),
+            '<' => try self.append("&lt;"),
+            '>' => try self.append("&gt;"),
+            '"' => try self.append("&quot;"),
+            '\n' => try self.append("<br/>"),
+            '\r' => {},
+            '\t' => try self.append(" "),
+            0...8, 11, 12, 14...31, 127 => {
+                try self.append("&#x");
+                var buffer: [2]u8 = undefined;
+                _ = std.fmt.bufPrint(&buffer, "{X:0>2}", .{byte}) catch unreachable;
+                try self.append(&buffer);
+                try self.append(";");
+            },
+            else => try self.appendByte(byte),
+        };
+    }
+
+    fn appendTitle(self: *MermaidOutput, value: []const u8) MermaidError!void {
+        for (value) |byte| switch (byte) {
+            '\'' => try self.append("''"),
+            '\n' => try self.append(" "),
+            '\r' => {},
+            '\t' => try self.append(" "),
+            0...8, 11, 12, 14...31, 127 => try self.append(" "),
+            else => try self.appendByte(byte),
+        };
+    }
+};
+
 /// Safety ceilings for graph definitions and executions.
 pub const Limits = struct {
     max_nodes: usize = 1_024,
@@ -192,6 +282,8 @@ pub const Limits = struct {
     max_description_bytes: usize = 4 * 1024,
     max_group_bytes: usize = 128,
     max_source_path_bytes: usize = 1024,
+    /// Maximum bytes returned by one Mermaid rendering operation.
+    max_visualization_bytes: usize = 4 * 1024 * 1024,
     /// Maximum values one map callback may emit.
     max_fan_out_items: usize = 1_024,
     /// Maximum branch callbacks created by one fan-out execution.
@@ -1457,6 +1549,172 @@ pub fn Graph(
                 .nodes = nodes,
                 .edges = edges,
             };
+        }
+
+        /// Renders a bounded Mermaid `stateDiagram-v2` document. Generated
+        /// node and group IDs depend only on definition order; all borrowed
+        /// presentation text is escaped before it reaches Mermaid syntax.
+        pub fn renderMermaid(
+            self: *const Self,
+            gpa: std.mem.Allocator,
+            options: MermaidOptions,
+        ) MermaidError![]u8 {
+            if (options.title) |title| {
+                if (title.len > self.limits.max_description_bytes)
+                    return error.VisualizationLimitExceeded;
+            }
+            var view = try self.visualization(gpa);
+            defer view.deinit(gpa);
+            var output = MermaidOutput{
+                .gpa = gpa,
+                .limit = self.limits.max_visualization_bytes,
+            };
+            defer output.deinit();
+
+            if (options.title) |title| {
+                try output.append("---\ntitle: '");
+                try output.appendTitle(title);
+                try output.append("'\n---\n");
+            }
+            try output.append("stateDiagram-v2\n");
+            if (options.direction) |direction| {
+                try output.append("  direction ");
+                try output.append(direction.code());
+                try output.append("\n");
+            }
+
+            for (view.nodes, 0..) |node, index| {
+                if (node.kind == .start or node.kind == .end) continue;
+                const group = node.metadata.group orelse {
+                    try renderMermaidNode(&output, node, "  ");
+                    continue;
+                };
+                var already_rendered = false;
+                for (view.nodes[0..index]) |previous| {
+                    if (previous.metadata.group) |previous_group| {
+                        if (std.mem.eql(u8, previous_group, group)) {
+                            already_rendered = true;
+                            break;
+                        }
+                    }
+                }
+                if (already_rendered) continue;
+                try output.append("  state \"");
+                try output.appendEscaped(group);
+                try output.append("\" as group");
+                try output.appendUnsigned(index);
+                try output.append(" {\n");
+                for (view.nodes) |grouped| {
+                    const grouped_name = grouped.metadata.group orelse continue;
+                    if (std.mem.eql(u8, grouped_name, group))
+                        try renderMermaidNode(&output, grouped, "    ");
+                }
+                try output.append("  }\n");
+            }
+
+            try output.append("\n");
+            for (view.edges) |edge| {
+                try output.append("  ");
+                try appendMermaidNodeId(&output, edge.from);
+                try output.append(" --> ");
+                try appendMermaidNodeId(&output, edge.to);
+                if (options.include_edge_labels and edgeHasPresentation(edge)) {
+                    try output.append(": ");
+                    try appendMermaidEdgePresentation(&output, edge);
+                }
+                try output.append("\n");
+            }
+            return output.finish();
+        }
+
+        fn renderMermaidNode(
+            output: *MermaidOutput,
+            node: VisualizationNode,
+            indent: []const u8,
+        ) MermaidError!void {
+            std.debug.assert(node.id == .node);
+            try output.append(indent);
+            try output.append("state \"");
+            try output.appendEscaped(node.metadata.label orelse node.name);
+            try output.append("\" as n");
+            try output.appendUnsigned(node.id.node.index);
+            try output.append("\n");
+            switch (node.kind) {
+                .decision, .fan_out => {
+                    try output.append(indent);
+                    try output.append("state n");
+                    try output.appendUnsigned(node.id.node.index);
+                    try output.append(if (node.kind == .decision) " <<choice>>\n" else " <<fork>>\n");
+                },
+                .step => {},
+                .start, .end => unreachable,
+            }
+            if (node.metadata.description != null or node.metadata.source != null) {
+                try output.append(indent);
+                try output.append("note right of n");
+                try output.appendUnsigned(node.id.node.index);
+                try output.append(": ");
+                if (node.metadata.description) |description| {
+                    try output.appendEscaped(description);
+                    if (node.metadata.source != null) try output.append(" · ");
+                }
+                if (node.metadata.source) |source| try appendMermaidSource(output, source);
+                try output.append("\n");
+            }
+        }
+
+        fn appendMermaidNodeId(
+            output: *MermaidOutput,
+            id: VisualizationNodeId,
+        ) MermaidError!void {
+            switch (id) {
+                .start, .end => try output.append("[*]"),
+                .node => |node| {
+                    try output.append("n");
+                    try output.appendUnsigned(node.index);
+                },
+            }
+        }
+
+        fn edgeHasPresentation(edge: VisualizationEdge) bool {
+            return edge.metadata.label != null or edge.branch != null or
+                edge.metadata.description != null or edge.metadata.source != null;
+        }
+
+        fn appendMermaidEdgePresentation(
+            output: *MermaidOutput,
+            edge: VisualizationEdge,
+        ) MermaidError!void {
+            var has_value = false;
+            if (edge.metadata.label orelse edge.branch) |label| {
+                try output.appendEscaped(label);
+                has_value = true;
+            }
+            if (edge.metadata.description) |description| {
+                if (has_value) try output.append(" · ");
+                try output.appendEscaped(description);
+                has_value = true;
+            }
+            if (edge.metadata.source) |source| {
+                if (has_value) try output.append(" · ");
+                try appendMermaidSource(output, source);
+            }
+        }
+
+        fn appendMermaidSource(
+            output: *MermaidOutput,
+            source: SourceLocation,
+        ) MermaidError!void {
+            try output.append("source: ");
+            try output.appendEscaped(source.file);
+            if (source.line != 0) {
+                try output.append(":");
+                try output.appendUnsigned(source.line);
+                if (source.column != 0) {
+                    try output.append(":");
+                    try output.appendUnsigned(source.column);
+                }
+            }
         }
 
         pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
@@ -3469,8 +3727,8 @@ test "graph visualization exposes stable borrowed metadata" {
     const step = try builder.addStep(std.testing.allocator, .{
         .name = "prepare",
         .metadata = .{
-            .label = "Prepare",
-            .description = "Normalize input",
+            .label = "Prepare \"safe\" & <ready>",
+            .description = "Normalize\ninput\r\t\x01",
             .group = "Pipeline",
             .source = .{ .file = "src/workflow.zig", .line = 12, .column = 5 },
         },
@@ -3483,14 +3741,18 @@ test "graph visualization exposes stable borrowed metadata" {
     });
     const fan_out = try builder.addFanOut(std.testing.allocator, .{
         .name = "parallel",
-        .metadata = .{ .label = "Parallel work", .description = "Bounded broadcast" },
+        .metadata = .{
+            .label = "Parallel work",
+            .description = "Bounded broadcast",
+            .group = "Workers",
+            .source = .{ .file = "src/fan.zig" },
+        },
         .mode = .broadcast,
         .branches = &.{.{ .name = "worker", .run_fn = Callbacks.value }},
         .join = .{ .initial_fn = Callbacks.initial, .reduce_fn = Callbacks.reduce },
     });
     try builder.setEntry(step);
     try builder.connectWithMetadata(std.testing.allocator, step, decision, .{
-        .label = "prepared",
         .description = "Pass normalized value",
         .source = .{ .file = "src/workflow.zig", .line = 20 },
     });
@@ -3500,7 +3762,9 @@ test "graph visualization exposes stable borrowed metadata" {
     try builder.branchFinishWithMetadata(std.testing.allocator, decision, "done", .{
         .description = "Short circuit",
     });
-    try builder.finishWithMetadata(std.testing.allocator, fan_out, .{ .label = "joined" });
+    try builder.finishWithMetadata(std.testing.allocator, fan_out, .{
+        .source = .{ .file = "src/end.zig" },
+    });
     var graph = try builder.build(std.testing.allocator);
     defer graph.deinit(std.testing.allocator);
 
@@ -3525,14 +3789,76 @@ test "graph visualization exposes stable borrowed metadata" {
     try std.testing.expectEqual(@as(std.meta.Tag(VisualizationNodeId), .start), std.meta.activeTag(view.edges[0].from));
     try std.testing.expectEqual(@as(usize, 0), view.edges[0].to.node.index);
     try std.testing.expectEqual(@as(usize, 1), view.edges[1].to.node.index);
-    try std.testing.expectEqualStrings("prepared", view.edges[1].metadata.label.?);
+    try std.testing.expectEqualStrings("Pass normalized value", view.edges[1].metadata.description.?);
     try std.testing.expectEqual(@as(u32, 20), view.edges[1].metadata.source.?.line);
     try std.testing.expectEqualStrings("parallel", view.edges[2].branch.?);
     try std.testing.expectEqualStrings("fan out", view.edges[2].metadata.label.?);
     try std.testing.expectEqualStrings("done", view.edges[3].branch.?);
     try std.testing.expectEqualStrings("Short circuit", view.edges[3].metadata.description.?);
     try std.testing.expectEqual(@as(std.meta.Tag(VisualizationNodeId), .end), std.meta.activeTag(view.edges[4].to));
-    try std.testing.expectEqualStrings("joined", view.edges[4].metadata.label.?);
+    try std.testing.expectEqualStrings("src/end.zig", view.edges[4].metadata.source.?.file);
+
+    const mermaid = try graph.renderMermaid(std.testing.allocator, .{
+        .title = "Workflow's\nmap\r\t\x01",
+        .direction = .left_to_right,
+    });
+    defer std.testing.allocator.free(mermaid);
+    try std.testing.expect(std.mem.startsWith(u8, mermaid, "---\ntitle: 'Workflow''s map  '\n---\n"));
+    try std.testing.expect(std.mem.indexOf(u8, mermaid, "  direction LR\n") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        mermaid,
+        "state \"Prepare &quot;safe&quot; &amp; &lt;ready&gt;\" as n0",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(u8, mermaid, "state \"Pipeline\" as group1 {") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mermaid, "state n1 <<choice>>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mermaid, "state n2 <<fork>>") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        mermaid,
+        "Normalize<br/>input &#x01; · source: src/workflow.zig:12:5",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(u8, mermaid, "Bounded broadcast · source: src/fan.zig") != null);
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        mermaid,
+        "n0 --> n1: Pass normalized value · source: src/workflow.zig:20",
+    ) != null);
+    try std.testing.expect(std.mem.indexOf(u8, mermaid, "n1 --> n2: fan out") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mermaid, "n1 --> [*]: done · Short circuit") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mermaid, "n2 --> [*]: source: src/end.zig") != null);
+
+    inline for (.{
+        MermaidDirection.top_to_bottom,
+        MermaidDirection.right_to_left,
+        MermaidDirection.bottom_to_top,
+    }) |direction| {
+        const directed = try graph.renderMermaid(std.testing.allocator, .{ .direction = direction });
+        std.testing.allocator.free(directed);
+    }
+    const without_labels = try graph.renderMermaid(std.testing.allocator, .{
+        .include_edge_labels = false,
+    });
+    defer std.testing.allocator.free(without_labels);
+    try std.testing.expect(std.mem.indexOf(u8, without_labels, "n1 --> [*]:") == null);
+
+    var limited_graph = graph;
+    limited_graph.limits.max_visualization_bytes = 10;
+    try std.testing.expectError(error.VisualizationLimitExceeded, limited_graph.renderMermaid(
+        std.testing.allocator,
+        .{},
+    ));
+    limited_graph.limits.max_visualization_bytes = graph.limits.max_visualization_bytes;
+    limited_graph.limits.max_description_bytes = 1;
+    try std.testing.expectError(error.VisualizationLimitExceeded, limited_graph.renderMermaid(
+        std.testing.allocator,
+        .{ .title = "xx" },
+    ));
+
+    var empty_output = MermaidOutput{ .gpa = std.testing.allocator, .limit = 0 };
+    defer empty_output.deinit();
+    try std.testing.expectError(error.VisualizationLimitExceeded, empty_output.append("x"));
+    try std.testing.expectError(error.VisualizationLimitExceeded, empty_output.appendByte('x'));
 
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
     try std.testing.expectError(error.OutOfMemory, graph.visualization(failing.allocator()));
@@ -4042,6 +4368,8 @@ fn runSnapshotWithAllocator(gpa: std.mem.Allocator) !void {
     try builder.finish(gpa, step);
     var graph = try builder.build(gpa);
     defer graph.deinit(gpa);
+    const mermaid = try graph.renderMermaid(gpa, .{});
+    defer gpa.free(mermaid);
     var state: u8 = 0;
     var deps: u8 = 0;
     var run = try graph.iter(gpa, &state, &deps, 1, .{});

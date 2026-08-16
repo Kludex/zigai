@@ -278,7 +278,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
     and documented state/dependency thread-safety rules.
   - [x] Add strict versioned state/frontier snapshots, bounded JSON parsing,
     graph-definition fingerprints, resumable iteration, and migration hooks.
-  - [ ] Add node/edge labels, descriptions, groups, source locations, Mermaid
+  - [x] Add node/edge labels, descriptions, groups, source locations, Mermaid
     rendering, and stable machine-readable visualization metadata.
   - [ ] Add agent nodes with typed prompt/result adapters, history and usage
     propagation, run deadlines/cancellation, streaming events, durable bindings,

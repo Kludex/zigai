@@ -636,6 +636,15 @@ separate from presentation labels. Only the node and edge arrays are owned by
 the result. Every string is borrowed from the graph and the view must be
 deinitialized before the graph or its metadata storage is released.
 
+`Graph.renderMermaid(gpa, options)` returns a `gpa`-owned
+`stateDiagram-v2` document capped by `Limits.max_visualization_bytes`.
+`MermaidOptions` controls an optional title, `MermaidDirection`, and edge-label
+visibility. Nodes use definition-order IDs, groups use first-appearance IDs,
+decisions and fan-outs retain choice/fork shapes, and descriptions plus source
+locations render as notes. Edge labels prefer explicit metadata and otherwise
+use the decision branch identity. Newlines, quotes, markup characters, and
+control bytes are escaped before borrowed text reaches Mermaid syntax.
+
 ## Evaluations
 
 `evals.Dataset.run` executes each case once and propagates task, evaluator,

@@ -633,6 +633,13 @@ boundaries and the definition digest, and keeps route identity distinct from
 presentation labels. This provides a deterministic tooling boundary without
 copying documentation strings or coupling execution to a renderer.
 
+The Mermaid adapter consumes that same view. It never uses application names
+as syntax identifiers: definition-order node/group IDs make output stable and
+prevent identifier injection. Borrowed presentation text is escaped, grouped
+nodes are emitted once at their first group occurrence, route order stays
+deterministic, and every append checks the definition's visualization-byte
+ceiling before growing the owned output.
+
 ## Evaluations
 
 `evals.Dataset` runs ordinary `Agent` instances over named cases and produces
