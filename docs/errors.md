@@ -409,6 +409,15 @@ activity, or reasoning messages from entering canonical agent history.
 `UISequenceExhausted` prevents replay cursor wraparound. Encoder, sink, replay,
 and allocator failures retain their original error.
 
+## Agent harness errors
+
+`InvalidHarnessLimits` and `InvalidHarnessCapability` reject malformed
+compositions before an agent run. `HarnessOutputTooLarge`,
+`TooManyHarnessArtifacts`, `HarnessArtifactTooLarge`, and
+`InvalidHarnessArtifact` bound every retained result. Agent, producer,
+observer, cancellation, deadline, and allocator failures keep their original
+errors.
+
 ## Production CLI errors
 
 `InvalidArguments`, `InvalidCLIConfig`, `InvalidPausedCLIState`, `EmptyPrompt`,

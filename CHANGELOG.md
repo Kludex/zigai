@@ -41,6 +41,10 @@
   configuration, stdin, atomic conversation history, MCP stdio servers,
   persisted tool approvals, text/JSON/AG-UI output, stable exit codes, and shell
   completion.
+- Add a provider-neutral agent harness with reusable coder, researcher, and
+  custom presets, typed capability composition, lifecycle hooks, one bounded
+  deadline, owned artifacts, allocation safety, and strict agent-spec
+  integration.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

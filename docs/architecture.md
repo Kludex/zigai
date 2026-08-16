@@ -753,6 +753,20 @@ nodes are emitted once at their first group occurrence, route order stays
 deterministic, and every append checks the definition's visualization-byte
 ceiling before growing the owned output.
 
+## Agent harness
+
+The harness is a composition boundary, not a subclass or alternate loop. It
+copies a borrowed `Agent`, appends preset/custom instructions and enabled typed
+capabilities in deterministic order, and tightens existing limits. Provider,
+model, tool, and capability implementations remain unchanged.
+
+Artifacts have a separate run-scoped arena because their lifetime may differ
+from message history and typed output. Producers only see a completed borrowed
+agent result and copy through a bounded collector. One monotonic control spans
+the model/tool run and every producer. Harness lifecycle observers never own
+artifact or prompt slices. Strict `agent_spec` integration simply borrows the
+resolved agent, preserving the resolver's cleanup and secret boundaries.
+
 ## Production CLI
 
 The unified CLI is composition rather than a fourth agent runtime. Provider

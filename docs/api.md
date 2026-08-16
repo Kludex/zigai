@@ -135,6 +135,7 @@ Use these namespaces for the rest of the API:
 | `zigai.embeddings` | Provider-neutral bounded text embedding and batching |
 | `zigai.realtime` | Persistent speech, transcript, turn, tool, and reconnect sessions |
 | `zigai.ui` | AG-UI and Vercel AI SDK browser event adapters |
+| `zigai.harness` | Reusable bounded coder, researcher, and custom compositions |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
@@ -1183,6 +1184,31 @@ Every `Tool` execution and validation entry point requires `arguments_json` to
 contain one complete JSON document within the tool-payload profile. Invalid or
 oversized arguments return `error.InvalidToolArguments` before the callback is
 invoked.
+
+## Agent harness
+
+`harness.Harness.init` borrows any `Agent` and applies a `Config` for one or
+more reusable runs. `Preset.coder` adds evidence-driven code-change guidance;
+`Preset.researcher` adds evidence/source guidance; `Preset.custom` adds no
+implicit instruction. Explicit `Instruction` values and enabled
+`CapabilityConfig` entries compose after the borrowed agent's own values.
+Disabled capability entries are omitted before agent validation.
+
+Harness limits tighten model requests, tool calls, total tokens, output bytes,
+artifact count, artifact bytes, and one absolute timeout. The same
+`RunControl` bounds both the agent invocation and post-run artifact producers,
+so cancellation or timeout drains a losing producer before returning.
+
+`ArtifactProducer` receives the completed borrowed `Agent.Result` and a
+run-scoped `ArtifactCollector`. `add` validates names/media types and copies
+bytes into the result artifact arena before observation. `harness.Result` owns
+that arena and the normal `Agent.Result`; one `deinit` closes both boundaries.
+Fallible start, artifact, end, and failure observations are synchronous.
+
+`Harness.fromResolved` borrows the runnable agent inside an
+`agent_spec.Resolved`. The resolution must outlive the harness and every run.
+Provider clients, secrets, and capability implementation lifetimes remain
+owned by the existing spec resolver rather than the harness.
 
 ## Production CLI
 

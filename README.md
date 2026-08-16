@@ -256,6 +256,12 @@ message stream v1 SSE and approval responses. Typed custom data, strict browser
 message sanitization, and a bounded replay log support safe reconnecting clients.
 See `examples/ui_server.zig` and `examples/ui_browser.ts`.
 
+`zigai.harness.Harness` layers reusable coder, researcher, or custom
+instructions and typed capability selections over any provider-neutral `Agent`.
+One absolute deadline bounds the agent and artifact producers. Results own both
+the normal agent result and bounded copied artifacts. The same API accepts an
+agent assembled from a strict `agent_spec` resolution.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.
