@@ -1430,8 +1430,8 @@ test "telemetry names every agent stream event" {
 fn checkTelemetryAllocationFailure(allocator: std.mem.Allocator) !void {
     const agent_types = @import("agent.zig");
     const Sink = struct {
-        fn span(_: *anyopaque, _: Span) !void {} // kcov-ignore: allocation failures stop before this sink
-        fn metric(_: *anyopaque, _: Metric) !void {} // kcov-ignore: allocation failures stop before this sink
+        fn span(_: *anyopaque, _: Span) !void {}
+        fn metric(_: *anyopaque, _: Metric) !void {}
     };
     var unused: u8 = 0;
     const model = model_types.Model{
@@ -1569,8 +1569,8 @@ test "MCP telemetry emits semantic client and server operations" {
 test "fail-closed telemetry preserves span-name allocation errors" {
     const agent_types = @import("agent.zig");
     const Sink = struct {
-        fn span(_: *anyopaque, _: Span) !void {}
-        fn metric(_: *anyopaque, _: Metric) !void {}
+        fn span(_: *anyopaque, _: Span) !void {} // kcov-ignore: forced allocations stop before this sink
+        fn metric(_: *anyopaque, _: Metric) !void {} // kcov-ignore: forced allocations stop before this sink
     };
     var unused: u8 = 0;
     const exporter = Exporter{ .context = &unused, .spanFn = Sink.span, .metricFn = Sink.metric };
