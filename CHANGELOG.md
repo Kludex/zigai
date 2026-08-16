@@ -51,6 +51,9 @@
 - Add a reviewed capability catalog for provider web search/fetch and optional
   browser, image generation, skills, and repository backends with shared URL,
   content, filesystem-root, and output policies.
+- Add tenant-isolated durable memory contracts with canonical conversation
+  records, semantic vectors, owned citations, retention/deletion, atomic
+  compaction, pluggable stores, and a deterministic in-memory backend.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

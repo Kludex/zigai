@@ -437,6 +437,14 @@ Browser URL failures preserve the shared security taxonomy. Repository
 filesystem/root failures preserve execution-environment errors. Optional
 backend and allocator failures retain their original errors.
 
+## Durable memory errors
+
+`InvalidMemoryIdentifier`, `InvalidMemoryEntry`, `InvalidMemoryQuery`, and
+`InvalidMemoryEmbedding` reject malformed tenant, record, query, or vector
+data. `MemoryEntryTooLarge`, `MemoryEntryAlreadyExists`, and `MemoryStoreFull`
+identify bounded storage failures. Compactor, persistent-store, cosine, and
+allocator errors preserve their original categories.
+
 ## Production CLI errors
 
 `InvalidArguments`, `InvalidCLIConfig`, `InvalidPausedCLIState`, `EmptyPrompt`,

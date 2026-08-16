@@ -796,6 +796,20 @@ repository reads reuse the rooted execution environment; every result is
 bounded before returning to the model. This prevents convenience capabilities
 from becoming alternate security or content paths.
 
+## Durable memory
+
+Memory is a store contract, not hidden state on `Agent`. Every operation carries
+a tenant ID and every search result owns its citation/message copies. This keeps
+retention, deletion, and tenant authorization at the persistence boundary while
+letting agents consume results as ordinary context or tools.
+
+Conversation records reuse canonical messages; semantic records add optional
+vectors; compaction records remain distinguishable. A compactor builds its
+summary before source deletion, and stores reserve replacement capacity before
+mutation. The in-memory implementation owns one arena per record for honest
+deletions and deterministic tests; durable database/vector implementations fit
+behind the same vtable.
+
 ## Production CLI
 
 The unified CLI is composition rather than a fourth agent runtime. Provider

@@ -16,6 +16,7 @@ pub const agent_spec = @import("agent_spec.zig");
 pub const harness = @import("harness.zig");
 pub const execution = @import("execution.zig");
 pub const builtin_capabilities = @import("builtin_capabilities.zig");
+pub const memory = @import("memory.zig");
 pub const testing = @import("testing.zig");
 pub const transport = @import("transport.zig");
 pub const provider = @import("provider.zig");
@@ -305,6 +306,7 @@ test {
     _ = @import("harness.zig");
     _ = @import("execution.zig");
     _ = @import("builtin_capabilities.zig");
+    _ = @import("memory.zig");
     _ = @import("json.zig");
     _ = @import("reflect.zig");
     _ = @import("history.zig");

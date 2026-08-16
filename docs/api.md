@@ -138,6 +138,7 @@ Use these namespaces for the rest of the API:
 | `zigai.harness` | Reusable bounded coder, researcher, and custom compositions |
 | `zigai.execution` | Rooted filesystem, shell, remote sandbox, and disposable workspace contracts |
 | `zigai.builtin_capabilities` | Reviewed web, browser, image, skill, and repository bundles |
+| `zigai.memory` | Tenant-isolated conversation and semantic memory stores |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
@@ -1260,6 +1261,32 @@ non-empty `image/*` payload and is returned as explicit base64 JSON. Skill names
 accept only stable identifier bytes. Repository reads go through an
 `execution.Environment`, retaining its root, secret, audit, and cancellation
 policy; repository search is a separate optional backend.
+
+## Durable memory
+
+`memory.Store` is the application persistence boundary for `put`, `search`,
+entry deletion, tenant deletion, retention, and compaction. Implementations can
+use a database, vector service, or durable workflow store. Every method takes an
+explicit tenant ID; no query or delete API has an unscoped form.
+
+`memory.Entry` distinguishes conversation, semantic, and compaction records.
+Conversation entries retain canonical `Message` slices instead of inventing a
+second transcript shape. Semantic entries can carry finite vectors. Search uses
+bounded case-insensitive text matching or cosine similarity, filters by kind,
+and returns an arena-owned `SearchResult`. Each match contains a copied record
+and citation with entry/tenant identity, excerpt, score, and timestamp.
+
+Retention receives an explicit clock value and can remove records by age and
+per-tenant count. `delete` requires both tenant and record ID;
+`deleteTenant` removes one tenant only. `compact` keeps the newest configured
+records, passes older records in deterministic oldest-first order to a
+`Compactor`, creates a bounded summary before mutation, reserves store capacity,
+and only then replaces the sources atomically.
+
+`InMemoryStore` is the deterministic, allocation-checked test/local backend. It
+owns each record independently so deletion releases storage. It is deliberately
+single-threaded; production concurrent stores provide their own synchronization
+behind the same `Store` vtable.
 
 ## Production CLI
 

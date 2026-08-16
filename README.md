@@ -275,6 +275,12 @@ browser/image/skill/repository backends are structural interfaces, keep vendor
 SDKs outside the core, and enforce the same URL, content, root, and output
 policies as ordinary tools.
 
+`zigai.memory.Store` is the durable conversation/semantic-memory boundary.
+Records are always tenant-qualified, conversations reuse canonical messages,
+and search returns owned citations. Retention, deletion, deterministic
+compaction, semantic vectors, pluggable persistent stores, and an allocation-
+checked in-memory backend share one bounded contract.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.
