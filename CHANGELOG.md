@@ -33,6 +33,10 @@
   cancellation, deadlines, owned events, raw frame isolation, correlated
   OpenTelemetry signals, and OpenAI, Azure OpenAI, xAI, and Gemini Live
   protocol connectors.
+- Add AG-UI and Vercel AI SDK UI message stream adapters with agent event
+  translation, interrupt/tool approval round trips, typed custom events,
+  browser-message sanitization, bounded reconnect replay, and browser/server
+  examples.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

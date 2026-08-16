@@ -134,6 +134,7 @@ Use these namespaces for the rest of the API:
 | `zigai.multi_agent` | Bounded delegation, handoff, and subagent execution scopes |
 | `zigai.embeddings` | Provider-neutral bounded text embedding and batching |
 | `zigai.realtime` | Persistent speech, transcript, turn, tool, and reconnect sessions |
+| `zigai.ui` | AG-UI and Vercel AI SDK browser event adapters |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
@@ -758,6 +759,34 @@ observations. `realtime.telemetry.Config.start` adapts that stream to correlated
 OpenTelemetry events and token metrics. Keep its `Run` alive through the
 session, then call `finish` to export one parented realtime `invoke_agent` span.
 Exporter failures follow the configured fail-open policy.
+
+### Browser UI protocols
+
+`ui.Bridge` translates an `AgentStreamSink` into borrowed run, text, reasoning,
+tool, approval, result, error, and typed custom events. It validates thread,
+run, part, tool, approval, and custom identities before delivery. Deferred tool
+requests become explicit approval requests; parsed browser decisions convert to
+`Agent.ResumeDecision` for the existing pause/resume API.
+
+`ui.ag_ui.encode` emits official AG-UI event objects. Approval requests use a
+`RUN_FINISHED` interrupt outcome, and `parseApproval` consumes the matching
+`RunAgentInput.resume` entry. `ui.vercel.encode` emits AI SDK UI message stream
+v1 SSE records and exposes the required response header constants. It supports
+text/reasoning blocks, complete tool input, tool results/errors, standard tool
+approval request/response chunks, `data-*` custom values, and the `[DONE]`
+terminal marker.
+
+`customValue(T, ...)` serializes a typed Zig value under explicit JSON and name
+limits. `sanitizeMessages` accepts bounded user text and optionally assistant
+history, ignores browser IDs, rejects system/tool/activity/reasoning roles, and
+returns arena-owned canonical messages. Client-controlled history is therefore
+never mistaken for instructions or tool authorization.
+
+`ReplayBuffer` owns a bounded source-ordered window of encoded protocol records.
+Every append gets a monotonic sequence; `replayAfter` redelivers only newer
+records after browser reconnect. Oldest records are evicted by event and byte
+limits. `examples/ui_server.zig` emits a complete Vercel SSE stream, while
+`examples/ui_browser.ts` reads chunks and posts bidirectional tool approvals.
 
 ### Graph snapshots
 

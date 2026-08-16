@@ -399,6 +399,16 @@ without a runtime, while `RealtimeReconnectExhausted` means the per-drop or
 session recovery budget ended. Unclassified provider and callback failures keep
 their original error.
 
+## Browser UI errors
+
+UI adapters report `InvalidUIIdentifier`, `InvalidUIMessage`,
+`InvalidUICustomEvent`, and `InvalidUIApproval` for malformed trusted
+boundaries. `UntrustedUIMessageRole` prevents browser-controlled system, tool,
+activity, or reasoning messages from entering canonical agent history.
+`TooManyUIMessages` and `UIContentTooLarge` enforce collection and byte limits.
+`UISequenceExhausted` prevents replay cursor wraparound. Encoder, sink, replay,
+and allocator failures retain their original error.
+
 ## MCP errors
 
 | Error | Meaning |

@@ -708,6 +708,18 @@ or audio content. The realtime telemetry adapter turns it into one parented
 session span, correlated lifecycle events, and cumulative token metrics while
 preserving the standard fail-open exporter policy.
 
+Browser adapters consume the same agent stream rather than introducing another
+execution engine. A neutral bridge preserves run, part, call, approval, and
+custom identities. AG-UI and Vercel modules own only their wire names and JSON
+shapes. Approval replies return to the existing deferred-run contract, so a UI
+cannot bypass tool validation or invent a separate execution path.
+
+Client messages cross a strict trust boundary: browser IDs are discarded,
+roles are allowlisted, content is bounded, and system/tool roles are rejected.
+A bounded encoded-event replay log handles reconnects independently of agent
+state. This keeps browser delivery retries separate from model/tool retries and
+prevents an unbounded slow client from retaining the complete run.
+
 Graph persistence captures only settled boundaries. A snapshot stores the
 typed state and current intermediate value as application-encoded JSON plus a
 frontier containing the next node and completed transition count. Dependencies,

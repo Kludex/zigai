@@ -365,6 +365,7 @@ pub fn build(b: *std.Build) void {
         "zai",
         "custom_provider",
         "retrieval",
+        "ui_server",
     }) |provider| {
         const executable = addCli(
             b,

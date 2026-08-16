@@ -36,6 +36,7 @@ pub const graph_agent = @import("graph_agent.zig");
 pub const multi_agent = @import("multi_agent.zig");
 pub const embeddings = @import("embeddings/root.zig");
 pub const realtime = @import("realtime/root.zig");
+pub const ui = @import("ui/root.zig");
 pub const mcp = @import("mcp.zig");
 pub const codecs = @import("codecs/root.zig");
 // Compatibility aliases for the original top-level provider imports.
@@ -317,6 +318,7 @@ test {
     _ = @import("multi_agent.zig");
     _ = @import("embeddings/root.zig");
     _ = @import("realtime/root.zig");
+    _ = @import("ui/root.zig");
     _ = @import("mcp.zig");
     _ = @import("codecs/root.zig");
 }

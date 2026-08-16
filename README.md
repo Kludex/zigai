@@ -250,6 +250,12 @@ message history with bounded audio retention and cumulative usage. Protocol
 connectors cover OpenAI Realtime, Azure OpenAI, xAI Grok Voice, and Gemini Live
 without coupling the core session to provider JSON or credentials.
 
+`zigai.ui.Bridge` converts agent stream events into one bounded UI vocabulary.
+`ui.ag_ui` emits AG-UI JSON and interrupt resumes; `ui.vercel` emits AI SDK UI
+message stream v1 SSE and approval responses. Typed custom data, strict browser
+message sanitization, and a bounded replay log support safe reconnecting clients.
+See `examples/ui_server.zig` and `examples/ui_browser.ts`.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.
