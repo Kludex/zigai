@@ -571,6 +571,13 @@ one arena-owned report. Evaluators receive a borrowed case, output, and usage
 view. The built-in exact-match, contains, and valid-JSON checks are
 deterministic; applications can provide the same small callback interface.
 
+`Dataset.runWithOptions` expands cases into stable, source-ordered repetitions.
+Task and evaluator retries use separate policies and record their attempt counts
+in the report. Optional classifiers restrict retryable errors; optional
+pre-retry callbacks own backoff or rate-limit waiting. Borrowed lifecycle events
+cover each case, task attempt, evaluator attempt, terminal error, and completed
+result. The default `run` wrapper preserves one repetition and one attempt.
+
 `evals.ModelGrader` is optional and is itself built from an `Agent`. It sends a
 JSON-quoted task, output, expected value, and rubric to that agent, requests a
 typed pass/score/reason object, and rejects non-finite or out-of-range scores.

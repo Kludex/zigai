@@ -12,6 +12,8 @@ pub const Error = error{
     MissingExpectedOutput,
     /// A model grader returned an invalid typed grade.
     InvalidModelGrade,
+    /// An execution policy used zero attempts or repetitions.
+    InvalidExecutionOptions,
 };
 
 pub const Case = struct {
@@ -24,8 +26,114 @@ pub const Case = struct {
 
 pub const Context = struct {
     case: Case,
+    /// Zero-based index in the source dataset.
+    case_index: usize = 0,
+    /// One-based run number for this case.
+    repetition: usize = 1,
+    repetitions: usize = 1,
     output: []const u8,
     usage: model_types.RunUsage,
+};
+
+pub const RunIdentity = struct {
+    case: Case,
+    /// Zero-based index in the source dataset.
+    case_index: usize,
+    /// One-based run number for this case.
+    repetition: usize,
+    repetitions: usize,
+};
+
+pub const RetryStage = enum { task, evaluator };
+
+pub const RetryContext = struct {
+    identity: RunIdentity,
+    stage: RetryStage,
+    evaluator_name: ?[]const u8 = null,
+    /// One-based attempt that just failed.
+    attempt: usize,
+    failure: anyerror,
+};
+
+/// Independent retry policy for task or evaluator execution. A null
+/// classifier retries every error until `max_attempts`; applications can
+/// narrow that set and perform deterministic backoff in `beforeRetryFn`.
+pub const RetryPolicy = struct {
+    max_attempts: usize = 1,
+    context: *anyopaque = &builtin_context,
+    shouldRetryFn: ?*const fn (context: *anyopaque, retry: RetryContext) bool = null,
+    beforeRetryFn: ?*const fn (context: *anyopaque, retry: RetryContext) anyerror!void = null,
+
+    fn shouldRetry(self: RetryPolicy, retry: RetryContext) bool {
+        if (retry.attempt >= self.max_attempts) return false;
+        return if (self.shouldRetryFn) |classify| classify(self.context, retry) else true;
+    }
+
+    fn beforeRetry(self: RetryPolicy, retry: RetryContext) !void {
+        if (self.beforeRetryFn) |wait| try wait(self.context, retry);
+    }
+};
+
+pub const ExecutionOptions = struct {
+    repetitions: usize = 1,
+    task_retry: RetryPolicy = .{},
+    evaluator_retry: RetryPolicy = .{},
+    hooks: []const LifecycleHook = &.{},
+};
+
+pub const LifecycleEvent = union(enum) {
+    case_start: RunIdentity,
+    task_start: Attempt,
+    task_error: AttemptError,
+    task_end: TaskEnd,
+    evaluator_start: EvaluatorAttempt,
+    evaluator_error: EvaluatorAttemptError,
+    evaluator_end: EvaluatorEnd,
+    case_end: CaseEnd,
+    case_error: CaseError,
+
+    pub const Attempt = struct { identity: RunIdentity, attempt: usize };
+    pub const AttemptError = struct {
+        identity: RunIdentity,
+        attempt: usize,
+        failure: anyerror,
+        will_retry: bool,
+    };
+    pub const TaskEnd = struct {
+        identity: RunIdentity,
+        attempts: usize,
+        output: []const u8,
+        usage: model_types.RunUsage,
+    };
+    pub const EvaluatorAttempt = struct {
+        identity: RunIdentity,
+        evaluator_name: []const u8,
+        attempt: usize,
+    };
+    pub const EvaluatorAttemptError = struct {
+        identity: RunIdentity,
+        evaluator_name: []const u8,
+        attempt: usize,
+        failure: anyerror,
+        will_retry: bool,
+    };
+    pub const EvaluatorEnd = struct {
+        identity: RunIdentity,
+        evaluator_name: []const u8,
+        attempts: usize,
+        evaluation: Evaluation,
+    };
+    pub const CaseEnd = struct { identity: RunIdentity, result: CaseResult };
+    pub const CaseError = struct { identity: RunIdentity, failure: anyerror };
+};
+
+pub const LifecycleHook = struct {
+    context: *anyopaque,
+    observeFn: *const fn (context: *anyopaque, event: LifecycleEvent) anyerror!void,
+
+    pub fn observe(self: LifecycleHook, event: LifecycleEvent) !void {
+        return self.observeFn(self.context, event);
+    }
 };
 
 pub const Evaluation = struct {
@@ -53,10 +161,15 @@ pub const EvaluationResult = struct {
     passed: bool,
     score: ?f64,
     reason: ?[]const u8,
+    attempts: usize = 1,
 };
 
 pub const CaseResult = struct {
     name: []const u8,
+    case_index: usize = 0,
+    repetition: usize = 1,
+    repetitions: usize = 1,
+    task_attempts: usize = 1,
     output: []const u8,
     usage: model_types.RunUsage,
     evaluations: []const EvaluationResult,
@@ -97,40 +210,175 @@ pub const Dataset = struct {
     evaluators: []const Evaluator,
 
     pub fn run(self: Dataset, allocator: std.mem.Allocator, agent: agent_types.Agent) !Report {
+        return self.runWithOptions(allocator, agent, .{});
+    }
+
+    pub fn runWithOptions(
+        self: Dataset,
+        allocator: std.mem.Allocator,
+        agent: agent_types.Agent,
+        options: ExecutionOptions,
+    ) !Report {
+        if (options.repetitions == 0 or options.task_retry.max_attempts == 0 or
+            options.evaluator_retry.max_attempts == 0)
+            return Error.InvalidExecutionOptions;
+        const result_count = std.math.mul(usize, self.cases.len, options.repetitions) catch
+            return Error.InvalidExecutionOptions;
         var arena = std.heap.ArenaAllocator.init(allocator);
         errdefer arena.deinit();
         const memory = arena.allocator();
-        const results = try memory.alloc(CaseResult, self.cases.len);
+        const results = try memory.alloc(CaseResult, result_count);
         var total_usage: model_types.RunUsage = .{};
-        for (self.cases, results) |case, *case_result| {
-            var run_result = try agent.runWithOptions(allocator, case.prompt, case.options);
-            defer run_result.deinit();
-            try total_usage.addRun(memory, run_result.usage);
-            const output = try memory.dupe(u8, run_result.output);
-            const evaluations = try memory.alloc(EvaluationResult, self.evaluators.len);
-            for (self.evaluators, evaluations) |evaluator, *evaluation_result| {
-                const evaluation = try evaluator.evaluate(memory, .{
+        var result_index: usize = 0;
+        for (self.cases, 0..) |case, case_index| {
+            for (1..options.repetitions + 1) |repetition| {
+                const identity = RunIdentity{
                     .case = case,
+                    .case_index = case_index,
+                    .repetition = repetition,
+                    .repetitions = options.repetitions,
+                };
+                try emitLifecycle(options.hooks, .{ .case_start = identity });
+                const task = runTask(agent, allocator, case, identity, options) catch |failure| {
+                    try emitLifecycle(options.hooks, .{ .case_error = .{ .identity = identity, .failure = failure } });
+                    return failure;
+                };
+                var run_result = task.result;
+                defer run_result.deinit();
+                try emitLifecycle(options.hooks, .{ .task_end = .{
+                    .identity = identity,
+                    .attempts = task.attempts,
                     .output = run_result.output,
                     .usage = run_result.usage,
-                });
-                evaluation_result.* = .{
-                    .evaluator = try memory.dupe(u8, evaluator.name),
-                    .passed = evaluation.passed,
-                    .score = evaluation.score,
-                    .reason = if (evaluation.reason) |reason| try memory.dupe(u8, reason) else null,
+                } });
+                try total_usage.addRun(memory, run_result.usage);
+                const output = try memory.dupe(u8, run_result.output);
+                const usage = try run_result.usage.dupe(memory);
+                const evaluations = try memory.alloc(EvaluationResult, self.evaluators.len);
+                for (self.evaluators, evaluations) |evaluator, *evaluation_result| {
+                    const evaluated = runEvaluator(evaluator, memory, .{
+                        .case = case,
+                        .case_index = case_index,
+                        .repetition = repetition,
+                        .repetitions = options.repetitions,
+                        .output = run_result.output,
+                        .usage = run_result.usage,
+                    }, identity, options) catch |failure| {
+                        try emitLifecycle(options.hooks, .{ .case_error = .{ .identity = identity, .failure = failure } });
+                        return failure;
+                    };
+                    evaluation_result.* = .{
+                        .evaluator = try memory.dupe(u8, evaluator.name),
+                        .passed = evaluated.evaluation.passed,
+                        .score = evaluated.evaluation.score,
+                        .reason = if (evaluated.evaluation.reason) |reason| try memory.dupe(u8, reason) else null,
+                        .attempts = evaluated.attempts,
+                    };
+                    try emitLifecycle(options.hooks, .{ .evaluator_end = .{
+                        .identity = identity,
+                        .evaluator_name = evaluator.name,
+                        .attempts = evaluated.attempts,
+                        .evaluation = evaluated.evaluation,
+                    } });
+                }
+                results[result_index] = .{
+                    .name = try memory.dupe(u8, case.name),
+                    .case_index = case_index,
+                    .repetition = repetition,
+                    .repetitions = options.repetitions,
+                    .task_attempts = task.attempts,
+                    .output = output,
+                    .usage = usage,
+                    .evaluations = evaluations,
                 };
+                try emitLifecycle(options.hooks, .{ .case_end = .{
+                    .identity = identity,
+                    .result = results[result_index],
+                } });
+                result_index += 1;
             }
-            case_result.* = .{
-                .name = try memory.dupe(u8, case.name),
-                .output = output,
-                .usage = run_result.usage,
-                .evaluations = evaluations,
-            };
         }
         return .{ .arena = arena, .cases = results, .usage = total_usage };
     }
 };
+
+const TaskRun = struct { result: agent_types.Agent.Result, attempts: usize };
+
+fn runTask(
+    agent: agent_types.Agent,
+    allocator: std.mem.Allocator,
+    case: Case,
+    identity: RunIdentity,
+    options: ExecutionOptions,
+) !TaskRun {
+    var attempt: usize = 1;
+    while (true) : (attempt += 1) {
+        try emitLifecycle(options.hooks, .{ .task_start = .{ .identity = identity, .attempt = attempt } });
+        const result = agent.runWithOptions(allocator, case.prompt, case.options) catch |failure| {
+            const retry = RetryContext{
+                .identity = identity,
+                .stage = .task,
+                .attempt = attempt,
+                .failure = failure,
+            };
+            const will_retry = options.task_retry.shouldRetry(retry);
+            try emitLifecycle(options.hooks, .{ .task_error = .{
+                .identity = identity,
+                .attempt = attempt,
+                .failure = failure,
+                .will_retry = will_retry,
+            } });
+            if (!will_retry) return failure;
+            try options.task_retry.beforeRetry(retry);
+            continue;
+        };
+        return .{ .result = result, .attempts = attempt };
+    }
+}
+
+const EvaluatorRun = struct { evaluation: Evaluation, attempts: usize };
+
+fn runEvaluator(
+    evaluator: Evaluator,
+    allocator: std.mem.Allocator,
+    run: Context,
+    identity: RunIdentity,
+    options: ExecutionOptions,
+) !EvaluatorRun {
+    var attempt: usize = 1;
+    while (true) : (attempt += 1) {
+        try emitLifecycle(options.hooks, .{ .evaluator_start = .{
+            .identity = identity,
+            .evaluator_name = evaluator.name,
+            .attempt = attempt,
+        } });
+        const evaluation = evaluator.evaluate(allocator, run) catch |failure| {
+            const retry = RetryContext{
+                .identity = identity,
+                .stage = .evaluator,
+                .evaluator_name = evaluator.name,
+                .attempt = attempt,
+                .failure = failure,
+            };
+            const will_retry = options.evaluator_retry.shouldRetry(retry);
+            try emitLifecycle(options.hooks, .{ .evaluator_error = .{
+                .identity = identity,
+                .evaluator_name = evaluator.name,
+                .attempt = attempt,
+                .failure = failure,
+                .will_retry = will_retry,
+            } });
+            if (!will_retry) return failure;
+            try options.evaluator_retry.beforeRetry(retry);
+            continue;
+        };
+        return .{ .evaluation = evaluation, .attempts = attempt };
+    }
+}
+
+fn emitLifecycle(hooks: []const LifecycleHook, event: LifecycleEvent) !void {
+    for (hooks) |hook| try hook.observe(event);
+}
 
 var builtin_context: u8 = 0;
 
@@ -304,6 +552,214 @@ test "model grader uses typed output" {
         .output = "output",
         .usage = .{},
     }));
+}
+
+test "dataset repeats runs and retries tasks and evaluators with stable lifecycle identities" {
+    const ModelState = struct {
+        calls: usize = 0,
+
+        fn request(context: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            if (self.calls == 1) return error.ScriptExhausted;
+            return .{
+                .parts = &.{.{ .text = "ok" }},
+                .usage = .{ .input_tokens = 1, .output_tokens = 1 },
+            };
+        }
+    };
+    const EvaluatorState = struct {
+        calls: usize = 0,
+
+        fn evaluate(context: *anyopaque, _: std.mem.Allocator, run: Context) !Evaluation {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            if (self.calls == 1) return error.EvaluatorUnavailable;
+            try std.testing.expectEqual(@as(usize, 0), run.case_index);
+            try std.testing.expect(run.repetition >= 1 and run.repetition <= run.repetitions);
+            return .{ .passed = true, .score = 1 };
+        }
+    };
+    const Capture = struct {
+        events: usize = 0,
+        case_starts: usize = 0,
+        task_starts: usize = 0,
+        task_errors: usize = 0,
+        task_ends: usize = 0,
+        evaluator_starts: usize = 0,
+        evaluator_errors: usize = 0,
+        evaluator_ends: usize = 0,
+        case_ends: usize = 0,
+        case_errors: usize = 0,
+        before_retries: usize = 0,
+
+        fn observe(context: *anyopaque, event: LifecycleEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.events += 1;
+            switch (event) {
+                .case_start => |identity| {
+                    self.case_starts += 1;
+                    try std.testing.expectEqual(@as(usize, 0), identity.case_index);
+                },
+                .task_start => |value| {
+                    self.task_starts += 1;
+                    try std.testing.expect(value.attempt >= 1);
+                },
+                .task_error => |value| {
+                    self.task_errors += 1;
+                    try std.testing.expect(value.will_retry);
+                    try std.testing.expectEqual(error.ScriptExhausted, value.failure);
+                },
+                .task_end => |value| {
+                    self.task_ends += 1;
+                    try std.testing.expectEqualStrings("ok", value.output);
+                    try std.testing.expectEqual(@as(u64, 2), value.usage.totalTokens());
+                },
+                .evaluator_start => |value| {
+                    self.evaluator_starts += 1;
+                    try std.testing.expectEqualStrings("flaky", value.evaluator_name);
+                },
+                .evaluator_error => |value| {
+                    self.evaluator_errors += 1;
+                    try std.testing.expect(value.will_retry);
+                    try std.testing.expectEqual(error.EvaluatorUnavailable, value.failure);
+                },
+                .evaluator_end => |value| {
+                    self.evaluator_ends += 1;
+                    try std.testing.expect(value.evaluation.passed);
+                },
+                .case_end => |value| {
+                    self.case_ends += 1;
+                    try std.testing.expect(value.result.passed());
+                    try std.testing.expectEqual(value.identity.repetition, value.result.repetition);
+                },
+                .case_error => self.case_errors += 1,
+            }
+        }
+
+        fn beforeRetry(context: *anyopaque, retry: RetryContext) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.before_retries += 1;
+            try std.testing.expectEqual(@as(usize, 1), retry.attempt);
+            try std.testing.expect((retry.stage == .task and retry.evaluator_name == null) or
+                (retry.stage == .evaluator and std.mem.eql(u8, retry.evaluator_name.?, "flaky")));
+        }
+    };
+
+    var model_state: ModelState = .{};
+    var evaluator_state: EvaluatorState = .{};
+    var capture: Capture = .{};
+    const evaluators = [_]Evaluator{.{
+        .name = "flaky",
+        .context = &evaluator_state,
+        .evaluateFn = EvaluatorState.evaluate,
+    }};
+    const retry = RetryPolicy{
+        .max_attempts = 2,
+        .context = &capture,
+        .beforeRetryFn = Capture.beforeRetry,
+    };
+    var report = try (Dataset{
+        .cases = &.{.{ .name = "repeat", .prompt = "prompt" }},
+        .evaluators = &evaluators,
+    }).runWithOptions(std.testing.allocator, .{ .model = .{
+        .context = &model_state,
+        .profile = .{},
+        .requestFn = ModelState.request,
+    } }, .{
+        .repetitions = 2,
+        .task_retry = retry,
+        .evaluator_retry = retry,
+        .hooks = &.{.{ .context = &capture, .observeFn = Capture.observe }},
+    });
+    defer report.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), report.cases.len);
+    try std.testing.expectEqual(@as(usize, 2), report.cases[0].task_attempts);
+    try std.testing.expectEqual(@as(usize, 1), report.cases[1].task_attempts);
+    try std.testing.expectEqual(@as(usize, 2), report.cases[0].evaluations[0].attempts);
+    try std.testing.expectEqual(@as(usize, 1), report.cases[1].evaluations[0].attempts);
+    try std.testing.expectEqual(@as(usize, 1), report.cases[0].repetition);
+    try std.testing.expectEqual(@as(usize, 2), report.cases[1].repetition);
+    try std.testing.expectEqual(@as(u64, 4), report.usage.totalTokens());
+    try std.testing.expectEqual(@as(usize, 16), capture.events);
+    try std.testing.expectEqual(@as(usize, 2), capture.case_starts);
+    try std.testing.expectEqual(@as(usize, 3), capture.task_starts);
+    try std.testing.expectEqual(@as(usize, 1), capture.task_errors);
+    try std.testing.expectEqual(@as(usize, 2), capture.task_ends);
+    try std.testing.expectEqual(@as(usize, 3), capture.evaluator_starts);
+    try std.testing.expectEqual(@as(usize, 1), capture.evaluator_errors);
+    try std.testing.expectEqual(@as(usize, 2), capture.evaluator_ends);
+    try std.testing.expectEqual(@as(usize, 2), capture.case_ends);
+    try std.testing.expectEqual(@as(usize, 0), capture.case_errors);
+    try std.testing.expectEqual(@as(usize, 2), capture.before_retries);
+}
+
+test "dataset execution options reject invalid bounds and expose terminal failures" {
+    const FailureState = struct {
+        case_errors: usize = 0,
+
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            return error.PermanentFailure;
+        }
+
+        fn reject(_: *anyopaque, retry: RetryContext) bool {
+            std.testing.expectEqual(RetryStage.task, retry.stage) catch return true;
+            return false;
+        }
+
+        fn observe(context: *anyopaque, event: LifecycleEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event) {
+                .task_error => |value| try std.testing.expect(!value.will_retry),
+                .case_error => |value| {
+                    self.case_errors += 1;
+                    try std.testing.expectEqual(error.PermanentFailure, value.failure);
+                },
+                else => {},
+            }
+        }
+    };
+    var failure_state: FailureState = .{};
+    const dataset = Dataset{ .cases = &.{.{ .name = "failure", .prompt = "prompt" }}, .evaluators = &.{} };
+    const model = model_types.Model{
+        .context = &failure_state,
+        .profile = .{},
+        .requestFn = FailureState.request,
+    };
+    try std.testing.expectError(Error.InvalidExecutionOptions, dataset.runWithOptions(
+        std.testing.allocator,
+        .{ .model = model },
+        .{ .repetitions = 0 },
+    ));
+    try std.testing.expectError(Error.InvalidExecutionOptions, dataset.runWithOptions(
+        std.testing.allocator,
+        .{ .model = model },
+        .{ .task_retry = .{ .max_attempts = 0 } },
+    ));
+    try std.testing.expectError(Error.InvalidExecutionOptions, dataset.runWithOptions(
+        std.testing.allocator,
+        .{ .model = model },
+        .{ .evaluator_retry = .{ .max_attempts = 0 } },
+    ));
+    const impossible_cases = @as([*]const Case, @ptrFromInt(@alignOf(Case)))[0..std.math.maxInt(usize)];
+    try std.testing.expectError(Error.InvalidExecutionOptions, (Dataset{
+        .cases = impossible_cases,
+        .evaluators = &.{},
+    }).runWithOptions(std.testing.allocator, .{ .model = model }, .{ .repetitions = 2 }));
+    try std.testing.expectError(error.PermanentFailure, dataset.runWithOptions(
+        std.testing.allocator,
+        .{ .model = model },
+        .{
+            .task_retry = .{
+                .max_attempts = 2,
+                .context = &failure_state,
+                .shouldRetryFn = FailureState.reject,
+            },
+            .hooks = &.{.{ .context = &failure_state, .observeFn = FailureState.observe }},
+        },
+    ));
+    try std.testing.expectEqual(@as(usize, 1), failure_state.case_errors);
 }
 
 fn checkDatasetAllocationFailure(allocator: std.mem.Allocator) !void {

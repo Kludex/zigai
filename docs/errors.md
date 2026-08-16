@@ -214,6 +214,7 @@ Provider construction and optional operations use these boundary errors:
 | `context_budget` | `ContextSizeOverflow` | Byte or estimate arithmetic overflowed. |
 | `evals` | `MissingExpectedOutput` | An evaluator requires an absent expected value. |
 | `evals` | `InvalidModelGrade` | A model grader returned an invalid grade. |
+| `evals` | `InvalidExecutionOptions` | Repetitions or task/evaluator attempt limits are zero, or run-count arithmetic overflowed. |
 
 ### Agent specification errors
 

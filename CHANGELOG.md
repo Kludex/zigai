@@ -74,6 +74,9 @@
 - Add backend-neutral structured diagnostics for agent lifecycle events with
   level filtering, bounded keys/values and attribute counts, fail-open policy,
   opt-in content capture, and exact-value redaction before truncation.
+- Add eval execution options with repeated case runs, independent task and
+  evaluator retry policies, stable case/repetition/attempt identities, recorded
+  attempt counts, retry classification/backoff callbacks, and lifecycle events.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

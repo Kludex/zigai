@@ -509,6 +509,22 @@ provider-extension JSON. Those values need to live only until the model request
 returns; results and reusable history do not retain them. An empty non-null
 slice is an explicit override, while null inherits the lower-precedence value.
 
+## Evaluations
+
+`evals.Dataset.run` executes each case once and propagates task, evaluator,
+hook, and allocation errors. `runWithOptions` additionally accepts
+`evals.ExecutionOptions`: `repetitions`, independent `task_retry` and
+`evaluator_retry` policies, and borrowed lifecycle hooks. Zero repetitions or
+retry attempts return `evals.Error.InvalidExecutionOptions` before a model is
+called.
+
+`RetryPolicy.shouldRetryFn` classifies the error from the completed attempt.
+When it returns true, `beforeRetryFn` runs before the next attempt and may
+implement sleeping, rate-limit coordination, or test-controlled waiting.
+`CaseResult` records the source `case_index`, one-based `repetition`, total
+`repetitions`, and `task_attempts`; each `EvaluationResult` records its own
+attempt count. Report order is source case first, then repetition.
+
 ## Ownership
 
 ZigAI follows one rule for high-level operations: a returned type with a

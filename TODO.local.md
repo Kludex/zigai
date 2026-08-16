@@ -192,10 +192,16 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   every model/tool/MCP/hook/retry/deferred phase, with context propagation,
   configurable prompt capture/redaction, bounded attributes, and exporter
   backpressure/failure isolation.
-- [ ] Expand evals with concurrent execution, retries, repetitions, report
-  evaluators, lifecycle hooks, span/trace evaluators, statistical metrics,
-  dataset JSON/YAML serialization, comparison reports, and machine-readable
-  CI output.
+- [x] Add repeated eval runs, independent task/evaluator retry policies, stable
+  case/run identities, and lifecycle events around every attempt and outcome.
+- [ ] Add bounded concurrent eval execution with stable result ordering and
+  explicit thread-safety and allocator contracts.
+- [ ] Add report evaluators and statistical summaries across repeated runs.
+- [ ] Add span/trace evaluators that consume the same telemetry shape used in
+  production.
+- [ ] Add versioned dataset and report serialization for JSON and readable
+  Cassetter-style YAML.
+- [ ] Add comparison reports and stable machine-readable CI output.
 - [ ] Add online evaluation hooks and sampling policies that never block the
   agent path, preserve trace correlation, bound queues, and expose dropped-work
   metrics.

@@ -1151,6 +1151,24 @@ is a small callback interface for application-specific deterministic checks.
 `ModelGrader` wraps another agent, requests a typed pass/score/reason result,
 and validates that its score is between zero and one.
 
+Use `runWithOptions` when an experiment needs repeated runs or retries:
+
+```zig
+var report = try dataset.runWithOptions(allocator, agent, .{
+    .repetitions = 3,
+    .task_retry = .{ .max_attempts = 3 },
+    .evaluator_retry = .{ .max_attempts = 2 },
+    .hooks = hooks,
+});
+defer report.deinit();
+```
+
+Task and evaluator retry budgets are independent. A retry classifier can limit
+which errors are transient, while `beforeRetryFn` can apply application-owned
+backoff. Lifecycle hooks receive stable zero-based case indices, one-based
+repetition and attempt numbers, and every start, error, retry outcome, and end.
+The plain `run` method remains a single-run, single-attempt evaluation.
+
 ## Security
 
 Hosted endpoints use HTTPS-only URL validation by default. Local names,
