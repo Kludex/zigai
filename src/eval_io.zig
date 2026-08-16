@@ -1016,6 +1016,7 @@ test "report documents reject invalid versions identities numbers and structure"
         "{\"version\":1,\"cases\":[{\"name\":\"case\",\"case_index\":0,\"repetition\":1,\"repetitions\":1,\"task_attempts\":1,\"output\":\"\",\"usage\":{},\"evaluations\":[{\"evaluator\":\"\",\"passed\":true,\"score\":null,\"reason\":null,\"attempts\":1}]}],\"usage\":{}}",
         "{\"version\":1,\"cases\":[{\"name\":\"case\",\"case_index\":0,\"repetition\":1,\"repetitions\":1,\"task_attempts\":1,\"output\":\"\",\"usage\":{},\"evaluations\":[],\"spans\":[{\"name\":\"span\",\"kind\":\"internal\",\"trace_id\":\"bad\",\"span_id\":\"2222222222222222\",\"start_time_unix_nano\":2,\"end_time_unix_nano\":1,\"duration_seconds\":1,\"status\":\"ok\",\"attributes\":[]}]}],\"usage\":{}}",
         "{\"version\":1,\"cases\":[{\"name\":\"case\",\"case_index\":0,\"repetition\":1,\"repetitions\":1,\"task_attempts\":1,\"output\":\"\",\"usage\":{},\"evaluations\":[],\"spans\":[{\"name\":\"span\",\"kind\":\"internal\",\"trace_id\":\"zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\",\"span_id\":\"2222222222222222\",\"start_time_unix_nano\":1,\"end_time_unix_nano\":2,\"duration_seconds\":1,\"status\":\"ok\",\"attributes\":[]}]}],\"usage\":{}}",
+        "{\"version\":1,\"cases\":[{\"name\":\"case\",\"case_index\":0,\"repetition\":1,\"repetitions\":1,\"task_attempts\":1,\"output\":\"\",\"usage\":{},\"evaluations\":[],\"spans\":[{\"name\":\"\",\"kind\":\"internal\",\"trace_id\":\"11111111111111111111111111111111\",\"span_id\":\"2222222222222222\",\"start_time_unix_nano\":1,\"end_time_unix_nano\":2,\"duration_seconds\":-1,\"status\":\"ok\",\"attributes\":[]}]}],\"usage\":{}}",
         "{\"version\":1,\"cases\":[],\"usage\":{},\"analyses\":[{\"evaluator\":\"\",\"passed\":null,\"value\":null,\"unit\":null,\"reason\":null}]}",
     };
     for (invalid_reports) |source| try std.testing.expectError(
@@ -1092,7 +1093,7 @@ test "report validation rejects invalid live values" {
 test "YAML rendering covers scalar and nested collection forms" {
     const yaml_source = try jsonToYaml(
         std.testing.allocator,
-        "{\"null\":null,\"false\":false,\"number\":123456789012345678901,\"empty_object\":{},\"nested\":[[1,2],[],{}],\"space key\":{\"child\":[true]},\"\":0}",
+        "{\"null\":null,\"false\":false,\"number\":123456789012345678901,\"empty_object\":{},\"nested\":[[1,2],[],{}],\"objects\":[{\"nested\":{\"value\":1}}],\"space key\":{\"child\":[true]},\"\":0}",
     );
     defer std.testing.allocator.free(yaml_source);
     try std.testing.expect(std.mem.indexOf(u8, yaml_source, "null: null") != null);
@@ -1109,6 +1110,45 @@ test "YAML rendering covers scalar and nested collection forms" {
     const empty_array = try jsonToYaml(std.testing.allocator, "[]");
     defer std.testing.allocator.free(empty_array);
     try std.testing.expectEqualStrings("[]\n", empty_array);
+}
+
+test "serialized evaluator registries retain executable callbacks" {
+    const ordinary = try test_evaluator.evaluate(std.testing.allocator, .{
+        .case = .{ .name = "case", .prompt = "prompt" },
+        .output = "ok",
+        .usage = .{},
+    });
+    try std.testing.expect(ordinary.passed);
+    const span = telemetry_types.Span{
+        .name = "span",
+        .trace_id = [_]u8{1} ** 16,
+        .span_id = [_]u8{2} ** 8,
+        .start_time_unix_nano = 1,
+        .end_time_unix_nano = 2,
+        .duration_seconds = 0.1,
+        .status = .ok,
+        .attributes = &.{},
+    };
+    const traced = try test_trace_evaluator.evaluate(std.testing.allocator, .{
+        .run = .{
+            .case = .{ .name = "case", .prompt = "prompt" },
+            .output = "ok",
+            .usage = .{},
+        },
+        .spans = &.{span},
+    });
+    try std.testing.expect(traced.passed);
+    const case = evals.CaseResult{
+        .name = "case",
+        .output = "ok",
+        .usage = .{},
+        .evaluations = &.{},
+    };
+    const analyzed = try test_report_evaluator.evaluate(std.testing.allocator, .{
+        .cases = &.{case},
+        .usage = .{},
+    });
+    try std.testing.expect(analyzed.passed.?);
 }
 
 test "evaluation YAML parsers enforce the document byte limit" {
