@@ -223,4 +223,23 @@ test "AG-UI encodes every event family and parses interrupt approval" {
     defer decision.deinit();
     try std.testing.expect(decision.value.approved);
     try std.testing.expectEqualStrings("a", decision.value.approval_id);
+    try std.testing.expectError(
+        error.InvalidUIApproval,
+        parseApproval(
+            std.testing.allocator,
+            "{\"resume\":[{\"interruptId\":\"a\",\"status\":\"cancelled\"}]}",
+            .{},
+        ),
+    );
+    const Support = struct {
+        fn run(gpa: std.mem.Allocator) !void {
+            var parsed = try parseApproval(
+                gpa,
+                "{\"resume\":[{\"interruptId\":\"a\",\"status\":\"resolved\",\"payload\":{\"approved\":true}}]}",
+                .{},
+            );
+            parsed.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Support.run, .{});
 }

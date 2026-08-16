@@ -190,4 +190,15 @@ test "Vercel UI encodes event families SSE completion and approvals" {
     defer decision.deinit();
     try std.testing.expect(!decision.value.approved);
     try std.testing.expectEqual(agent_types.ResumeAction.deny, decision.value.resumeDecision().action);
+    const Support = struct {
+        fn run(gpa: std.mem.Allocator) !void {
+            var parsed = try parseApproval(
+                gpa,
+                "{\"type\":\"tool-approval-response\",\"approvalId\":\"a\",\"approved\":true}",
+                .{},
+            );
+            parsed.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Support.run, .{});
 }

@@ -1133,6 +1133,7 @@ test "realtime observer failures release ordinary and reconnect events" {
         .connect_fn = State.connect,
     }, .{ .observer = .{ .event_fn = State.observe } });
     defer session.deinit();
+    try session.sendText("text");
     try std.testing.expectError(error.ObserverFailed, session.next(std.testing.allocator));
     session.pending_reconnect = .{ .attempt = 1, .total = 1, .state_restored = false };
     try std.testing.expectError(error.ObserverFailed, session.next(std.testing.allocator));

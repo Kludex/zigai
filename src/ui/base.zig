@@ -418,6 +418,10 @@ test "UI bridge maps agent text reasoning tools approvals and custom events" {
         .arguments_delta = "{}",
     } } } } });
     try sink.emit(.{ .model = .{ .part_end = .{ .index = 2, .part = .{ .tool_call = call } } } });
+    try sink.emit(.{ .model = .{ .part_delta = .{ .index = 3, .delta = .{ .speech = .{
+        .transcript_delta = "spoken",
+    } } } } });
+    try sink.emit(.{ .function_tool_call = .{ .call = call } });
     try sink.emit(.{ .function_tool_result = .{ .result = .{
         .call_id = "call-1",
         .name = "tool",
@@ -433,7 +437,7 @@ test "UI bridge maps agent text reasoning tools approvals and custom events" {
     try bridge.finish();
     try bridge.fail(error.ProviderFailed);
     try std.testing.expectEqual(std.meta.Tag(Event).run_start, capture.tags[0]);
-    try std.testing.expectEqual(std.meta.Tag(Event).approval_request, capture.tags[11]);
+    try std.testing.expectEqual(std.meta.Tag(Event).approval_request, capture.tags[13]);
     try std.testing.expectEqual(std.meta.Tag(Event).run_error, capture.tags[capture.count - 1]);
 }
 
@@ -477,6 +481,21 @@ test "UI replay and sanitization are bounded and deterministic" {
     const custom = try customValue(struct { percent: u8 }, std.testing.allocator, "progress", .{ .percent = 50 }, .{});
     defer std.testing.allocator.free(custom);
     try std.testing.expectEqualStrings("{\"percent\":50}", custom);
+    try std.testing.expectError(
+        error.UIContentTooLarge,
+        customValue(struct { percent: u8 }, std.testing.allocator, "progress", .{ .percent = 50 }, .{
+            .max_custom_json_bytes = 1,
+        }),
+    );
     const decision = ApprovalDecision{ .approval_id = "call", .approved = false, .reason = "denied" };
     try std.testing.expectEqual(agent_types.ResumeAction.deny, decision.resumeDecision().action);
+
+    const Support = struct {
+        fn run(gpa: std.mem.Allocator) !void {
+            var buffer = ReplayBuffer.init(gpa, .{});
+            defer buffer.deinit();
+            _ = try buffer.append("owned");
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Support.run, .{});
 }
