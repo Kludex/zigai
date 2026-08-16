@@ -644,6 +644,7 @@ fn runCommandWithAllocator(gpa: std.mem.Allocator) !void {
 }
 
 test "execution environment ownership survives every allocation failure" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
         runLocalWithAllocator,

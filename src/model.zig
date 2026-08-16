@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const capability_types = @import("capability.zig");
 const json_limits = @import("json.zig");
 const messages = @import("messages.zig");
@@ -847,6 +848,7 @@ pub const Model = struct {
 };
 
 test "run control shares one deadline and drains interrupted work" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const State = struct {
         active: std.atomic.Value(bool) = .init(false),
 

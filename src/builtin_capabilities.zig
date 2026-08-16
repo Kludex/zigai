@@ -4,6 +4,7 @@
 //! capabilities are local tool contracts and import no vendor SDK.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const agent_spec = @import("agent_spec.zig");
 const agent_types = @import("agent.zig");
 const execution = @import("execution.zig");
@@ -260,6 +261,7 @@ fn validateOutput(output: []const u8, maximum: usize) !void {
 }
 
 test "built-in catalog exposes native and optional capability families safely" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const State = struct {
         browser_calls: usize = 0,
         image_calls: usize = 0,

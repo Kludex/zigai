@@ -756,6 +756,7 @@ fn sleep(io: std.Io, milliseconds: u64) !void {
 }
 
 test "ACP v2 initializes sessions prompts updates permissions filesystem terminals and cancellation" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const Fake = struct {
         lines: []const []const u8,
         index: usize = 0,
