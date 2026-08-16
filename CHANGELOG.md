@@ -17,6 +17,9 @@
   fail-closed downstream handling, and reasoned dropped-signal counters.
 - Define trace-correlated online-evaluation observations, evaluator results,
   synchronous result sinks, and deterministic validated trace-ratio sampling.
+- Add bounded online-evaluation queues with owned UTF-8-bounded observations,
+  concurrent producers, explicit overflow and shutdown, isolated off-path
+  evaluation, and reasoned dropped-work metrics.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model

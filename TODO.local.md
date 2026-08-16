@@ -215,7 +215,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   metrics.
   - [x] Define trace-correlated observation, evaluator, result-sink, and stable
     deterministic trace-ratio sampling contracts.
-  - [ ] Add bounded owned work queues, explicit saturation and shutdown
+  - [x] Add bounded owned work queues, explicit saturation and shutdown
     behavior, isolated processing, and reasoned dropped-work metrics.
   - [ ] Integrate one isolated online-eval lifecycle adapter per agent run and
     document the complete production workflow.

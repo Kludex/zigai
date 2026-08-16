@@ -1248,6 +1248,37 @@ bounded zero-to-one scores, and result sinks retain the originating trace
 context. Sampling is deterministic across processes using the same trace ID
 and policy.
 
+`OnlineEvalQueue` owns sampled observations until they are processed:
+
+```zig
+var online = try zigai.OnlineEvalQueue.init(
+    allocator,
+    io,
+    evaluators,
+    result_sink,
+    .{
+        .sampling = policy,
+        .max_pending = 128,
+        .overflow = .drop_oldest,
+        .metric_exporter = telemetry_exporter,
+    },
+);
+defer online.deinit();
+
+var sampled_run = try online.start(trace_context);
+try sampled_run.begin(prompt);
+try sampled_run.succeed(output, usage, model_requests);
+
+// Run outside the request path, or during graceful shutdown.
+_ = try online.shutdown();
+```
+
+Admission never invokes evaluators, result sinks, or metric exporters. The
+queue deep-copies bounded prompt, output, usage, and failure data. `flush` and
+`shutdown` serialize consumer callbacks; `stats` and
+`zigai.online_eval.dropped` expose backpressure, allocation, closure, and
+processing losses.
+
 Persist portable datasets and complete reports with `zigai.eval_io`:
 
 ```zig
