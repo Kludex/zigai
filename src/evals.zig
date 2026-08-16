@@ -1466,6 +1466,33 @@ test "span copies own names attributes and every typed value" {
     try std.testing.expectEqual(@as(i64, 2), copied.attributes[1].value.integer);
     try std.testing.expectEqual(@as(f64, 0.5), copied.attributes[2].value.float);
     try std.testing.expect(copied.attributes[3].value.boolean);
+
+    const Discard = struct {
+        fn span(_: *anyopaque, _: telemetry_types.Span) !void {}
+        fn metric(_: *anyopaque, _: telemetry_types.Metric) !void {}
+    };
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var capture = SpanCapture{
+        .allocator = failing.allocator(),
+        .downstream = .{
+            .context = &builtin_context,
+            .spanFn = Discard.span,
+            .metricFn = Discard.metric,
+        },
+    };
+    const exporter = capture.exporter();
+    try std.testing.expectError(error.OutOfMemory, exporter.span(.{
+        .name = "span",
+        .trace_id = [_]u8{1} ** 16,
+        .span_id = [_]u8{2} ** 8,
+        .start_time_unix_nano = 1,
+        .end_time_unix_nano = 2,
+        .duration_seconds = 0.1,
+        .status = .ok,
+        .attributes = &attributes,
+    }));
+    try std.testing.expectEqual(error.OutOfMemory, capture.failure.?);
+    try std.testing.expectError(error.OutOfMemory, exporter.span(copied));
 }
 
 test "report evaluators consume completed runs and summaries aggregate repetitions" {
