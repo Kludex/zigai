@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const zigai = @import("zigai");
+const common = @import("common.zig");
 
 pub const ExitCode = enum(u8) {
     success = 0,
@@ -30,6 +31,8 @@ pub const Config = struct {
     system_prompt: ?[]const u8 = null,
     history_path: ?[]const u8 = null,
     paused_path: ?[]const u8 = null,
+    tools_path: ?[]const u8 = null,
+    require_tool_approval: bool = false,
     output: OutputMode = .text,
     approval: ApprovalMode = .deferred,
     mcp_servers: []const MCPServerConfig = &.{},
@@ -489,9 +492,15 @@ pub fn execute(init: std.process.Init, args: []const []const u8) !ExitCode {
     );
     var mcp = try MCPRuntime.init(init.gpa, init.io, config.mcp_servers, arguments.mcp_commands);
     defer mcp.deinit();
+    var loaded_tools = try common.LoadedTools.load(init.gpa, init.io, config.tools_path);
+    defer loaded_tools.deinit();
+    if (config.require_tool_approval) {
+        for (@constCast(loaded_tools.tools)) |*tool| tool.execution = .requires_approval;
+    }
     var agent = zigai.Agent{
         .model = provider_runtime.model(),
         .system_prompt = config.system_prompt,
+        .tools = loaded_tools.tools,
         .toolsets = mcp.toolsets,
         .url_policy = url_policy,
         .io = init.io,
@@ -708,6 +717,17 @@ test "production CLI config history paused state and provider selection are owne
     var config = try loadConfig(std.testing.allocator, std.testing.io, config_path);
     defer config.deinit();
     try std.testing.expectEqual(ProviderName.google, config.value.provider);
+    const ConfigAllocation = struct {
+        fn run(gpa: std.mem.Allocator, path: []const u8) !void {
+            var loaded = try loadConfig(gpa, std.testing.io, path);
+            loaded.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        ConfigAllocation.run,
+        .{config_path},
+    );
     try std.testing.expectError(error.InvalidCLIConfig, validateConfig(.{ .model = "" }));
     try std.testing.expectError(error.InvalidCLIConfig, validateConfig(.{ .api_key_env = "BAD-NAME" }));
     try std.testing.expectError(
@@ -745,6 +765,17 @@ test "production CLI config history paused state and provider selection are owne
     var loaded_paused = try paused_store.load(std.testing.allocator, std.testing.io);
     defer loaded_paused.deinit();
     try std.testing.expectEqualStrings("call-1", loaded_paused.calls[0].call_id);
+    const PausedAllocation = struct {
+        fn run(gpa: std.mem.Allocator, path: []const u8) !void {
+            var loaded = try (PausedStore{ .path = path }).load(gpa, std.testing.io);
+            loaded.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        PausedAllocation.run,
+        .{paused_path},
+    );
 
     const Transport = struct {
         fn send(_: *anyopaque, _: std.mem.Allocator, _: zigai.transport.Request) !zigai.transport.Response {
@@ -762,6 +793,36 @@ test "production CLI config history paused state and provider selection are owne
 
     var mcp = try MCPRuntime.init(std.testing.allocator, std.testing.io, &.{}, &.{});
     mcp.deinit();
+    const MCPAllocation = struct {
+        fn run(gpa: std.mem.Allocator) !void {
+            var runtime = try MCPRuntime.init(gpa, std.testing.io, &.{}, &.{});
+            runtime.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, MCPAllocation.run, .{});
+    const script =
+        \\while IFS= read -r line; do
+        \\  case "$line" in
+        \\    *'"method":"tools/list"'*) printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","tools":[],"ttlMs":0,"cacheScope":"private"}}' ;;
+        \\  esac
+        \\done
+    ;
+    var configured_mcp = try MCPRuntime.init(
+        std.testing.allocator,
+        std.testing.io,
+        &.{.{ .command = &.{ "/bin/sh", "-c", script } }},
+        &.{},
+    );
+    var prepared_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer prepared_arena.deinit();
+    const prepared = try configured_mcp.toolsets[0].prepare(prepared_arena.allocator(), .{
+        .messages = &.{},
+        .usage = .{},
+        .model_requests = 0,
+        .dependencies = null,
+    });
+    try std.testing.expectEqual(@as(usize, 0), prepared.len);
+    configured_mcp.deinit();
     inline for (std.meta.fields(ProviderName)) |field| {
         const provider: ProviderName = @enumFromInt(field.value);
         var runtime: ProviderRuntime = undefined;
@@ -835,6 +896,16 @@ test "production CLI runs events and persists resumable tool approvals" {
     try std.testing.expectEqual(
         ExitCode.success,
         try runAgent(std.testing.allocator, std.testing.io, &event_agent, .{ .output = .events }, false, "event", false),
+    );
+
+    var inline_script = zigai.testing.ScriptedModel{ .responses = &.{
+        .{ .parts = &call_parts },
+        .{ .parts = &final_parts },
+    } };
+    var inline_agent = zigai.Agent{ .model = inline_script.model(), .tools = &.{tool} };
+    try std.testing.expectEqual(
+        ExitCode.success,
+        try runAgent(std.testing.allocator, std.testing.io, &inline_agent, .{ .approval = .approve }, false, "publish", false),
     );
 
     const external_calls = [_]PausedStore.Document.Call{.{

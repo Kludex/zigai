@@ -114,6 +114,15 @@ OPENAI_API_KEY=test run_kcov --clean "$include_path" coverage/production-cli \
     coverage/bin/production-cli --config coverage/production-config.json test
 OPENAI_API_KEY=test run_kcov "$include_path" coverage/production-cli \
     coverage/bin/production-cli --config coverage/production-config.json --events test
+printf 'test\n' | OPENAI_API_KEY=test run_kcov "$include_path" coverage/production-cli \
+    coverage/bin/production-cli --config coverage/production-config.json -
+cat >coverage/production-approval.json <<EOF
+{"provider":"openai","model":"gpt-5-mini","base_url":"http://$fixture_host:18765/openai","tools_path":"tests/cli_tools.json","require_tool_approval":true,"paused_path":"coverage/production-paused.json"}
+EOF
+OPENAI_API_KEY=test run_kcov "$include_path" coverage/production-cli \
+    coverage/bin/production-cli --config coverage/production-approval.json test || test "$?" -eq 10
+OPENAI_API_KEY=test run_kcov "$include_path" coverage/production-cli \
+    coverage/bin/production-cli --config coverage/production-approval.json --resume --approval approve
 cat >coverage/production-anthropic.json <<EOF
 {"provider":"anthropic","model":"claude-sonnet-4-5","base_url":"http://$fixture_host:18765/anthropic"}
 EOF

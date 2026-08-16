@@ -1189,8 +1189,10 @@ invoked.
 `zig-out/bin/zigai` selects OpenAI, Anthropic, or Google with `--provider` and
 `--model`. A strict bounded JSON config can set provider defaults, the API-key
 environment-variable name, base URL, system prompt, history/paused paths,
-output mode, approval policy, and multiple MCP stdio commands. CLI flags have
-higher precedence. Credentials remain environment-owned and are never accepted
+output mode, approval policy, local tool manifest, and multiple MCP stdio
+commands. `require_tool_approval` converts manifest tools into deferred tools
+before the run. CLI flags have higher precedence. Credentials remain
+environment-owned and are never accepted
 in config files.
 
 A positional `-` reads a bounded prompt from stdin. `--output text`, `--json`,

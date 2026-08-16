@@ -34,6 +34,15 @@ production_stdin_output=$(printf 'test\n' | OPENAI_API_KEY=test ./zig-out/bin/zi
 production_json_output=$(OPENAI_API_KEY=test ./zig-out/bin/zigai --config "$production_dir/config.json" --json test)
 production_events_output=$(OPENAI_API_KEY=test ./zig-out/bin/zigai --config "$production_dir/config.json" --events test)
 production_completion=$(./zig-out/bin/zigai completion bash)
+cat >"$production_dir/approval.json" <<EOF
+{"provider":"openai","model":"gpt-5-mini","base_url":"http://127.0.0.1:18765/openai","tools_path":"tests/cli_tools.json","require_tool_approval":true,"paused_path":"$production_dir/paused.json"}
+EOF
+set +e
+production_approval_output=$(OPENAI_API_KEY=test ./zig-out/bin/zigai --config "$production_dir/approval.json" test)
+production_approval_code=$?
+set -e
+test "$production_approval_code" -eq 10
+production_resume_output=$(OPENAI_API_KEY=test ./zig-out/bin/zigai --config "$production_dir/approval.json" --resume --approval approve)
 if OPENAI_API_KEY= ./zig-out/bin/zigai --config "$production_dir/config.json" test >/dev/null 2>&1; then
     echo "production CLI unexpectedly accepted an empty credential" >&2
     exit 1
@@ -55,6 +64,8 @@ test "$anthropic_stream_tool_output" = pong
 test "$google_stream_tool_output" = pong
 test "$production_output" = pong
 test "$production_stdin_output" = pong
+test "$production_resume_output" = pong
+printf '%s\n' "$production_approval_output" | grep -q '"status":"approval_required"'
 printf '%s' "$production_json_output" | python3 -c 'import json,sys; assert json.load(sys.stdin)["output"] == "pong"'
 printf '%s\n' "$production_events_output" | grep -q '"type":"RUN_STARTED"'
 printf '%s\n' "$production_events_output" | grep -q '"type":"RUN_FINISHED"'
