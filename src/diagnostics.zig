@@ -381,6 +381,10 @@ test "diagnostic run maps the complete agent lifecycle without leaking captured 
         .context = &unused,
         .executeFn = Stub.tool,
     };
+    try std.testing.expectError(error.Unused, Stub.request(&unused, std.testing.allocator, .{ .messages = &.{} }));
+    const stub_result = try Stub.tool(&unused, std.testing.allocator, "{}");
+    defer std.testing.allocator.free(stub_result);
+    try std.testing.expectEqualStrings("ok", stub_result);
     const call = model_types.ToolCall{ .id = "call", .name = "lookup", .arguments_json = "{\"value\":\"secret\"}" };
     var run = (Config{
         .sink = .{ .context = &capture, .emitFn = Capture.emit },
