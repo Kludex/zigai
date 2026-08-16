@@ -227,11 +227,11 @@ pub const Binding = struct {
 
 /// Returns a persisted success payload and maps non-success outcomes to stable
 /// framework errors. The returned slice borrows from `record`.
-pub fn successPayload(record: *const OwnedRecord) ![]const u8 {
+pub fn successPayload(record: *const OwnedRecord) error{ OperationFailed, OperationSuspended }![]const u8 {
     return switch (record.value.outcome) {
         .success => |payload| payload,
-        .failure => Error.OperationFailed,
-        .suspended => Error.OperationSuspended,
+        .failure => error.OperationFailed,
+        .suspended => error.OperationSuspended,
     };
 }
 
@@ -567,6 +567,19 @@ test "durable binding selects explicit handlers and exposes success only" {
         .run_id = "run",
         .handlers = .{ .model_request = "registered-model" },
     };
+    const all_handlers = HandlerIds{
+        .model_request = "model",
+        .model_stream = "stream",
+        .tool_call = "tool",
+        .mcp_request = "mcp",
+        .event_delivery = "event",
+        .retry_delay = "retry",
+        .approval_resume = "approval",
+    };
+    inline for (std.meta.fields(OperationKind)) |field| {
+        const kind: OperationKind = @enumFromInt(field.value);
+        try std.testing.expect(all_handlers.get(kind) != null);
+    }
     var record = try binding.execute(
         std.testing.allocator,
         .model_request,

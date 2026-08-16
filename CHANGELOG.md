@@ -40,6 +40,9 @@
 - Route buffered and streaming agent model requests through immutable durable
   bindings with explicit worker IDs, deterministic request identities, a
   strict versioned provider-neutral wire codec, and normalized stream replay.
+- Route application and MCP-backed tool calls through versioned durable tool
+  payloads, preserving rich follow-up messages and assigning source-order
+  identities before parallel scheduling.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model

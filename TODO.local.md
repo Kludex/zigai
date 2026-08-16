@@ -242,8 +242,10 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
     operations through the runtime without changing ordinary agent runs.
     - [x] Route buffered and streaming model requests through an immutable
       per-run binding with a strict provider-neutral request/response codec.
-    - [ ] Route local function tools and MCP requests with deterministic
+    - [x] Route local function and MCP-backed tool calls with deterministic
       identities that remain stable under parallel scheduling.
+    - [ ] Route standalone MCP client requests, discovery, pagination, task
+      polling, and subscriptions through explicit durable request identities.
     - [ ] Route event delivery, retry delays, and approval resumption without
       duplicating callbacks, sleeps, or decisions during replay.
     - [ ] Prove direct-run behavior remains unchanged and reject incomplete

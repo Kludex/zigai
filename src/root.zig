@@ -243,6 +243,7 @@ pub const ProviderPart = messages.ProviderPart;
 pub const UploadedFile = messages.UploadedFile;
 pub const Thinking = messages.Thinking;
 pub const ToolMetadata = model.ToolMetadata;
+pub const ToolOrigin = model.ToolOrigin;
 pub const ToolRunContext = model.ToolRunContext;
 pub const ModelStreamEvent = model.ModelStreamEvent;
 pub const ModelStreamSink = model.ModelStreamSink;

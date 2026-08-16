@@ -110,6 +110,24 @@ Runs without `RunOptions.durable` retain the direct provider path. A configured
 route never falls back to that path: missing handlers, persisted failures, and
 suspensions are explicit errors.
 
-Local-tool, MCP, event, retry-delay, and approval routing, a concrete workflow-
-engine adapter, durable stream/approval resumption, and worker-restart recovery
-tests remain tracked in `TODO.local.md`.
+## Tool routing
+
+Application tools use `tool.call`; tools discovered from `mcp.Client.toolset()`
+carry the typed `ToolOrigin.mcp` marker and use `mcp.request`. The model-visible
+function-tool protocol stays identical. The runtime worker receives a
+`zigai.durable.payloads.tool` request containing the call, policy-transformed
+arguments, replay-safe run context, retry number, and approval state. It
+returns encoded `ToolOutput`, including follow-up request messages.
+
+Every call receives its sequence from its source position in the model
+response before concurrent work is scheduled. Completion order therefore
+cannot alter idempotency keys. Approved paused calls persist that sequence in
+the paused state so later execution keeps the original identity.
+
+Tool argument, call, and return policies still execute in the agent process and
+must be deterministic. The durable runtime owns the actual application or MCP
+tool side effect; a configured route never invokes the local tool callback.
+
+Standalone MCP client requests, event, retry-delay, and approval routing, a
+concrete workflow-engine adapter, durable stream/approval resumption, and
+worker-restart recovery tests remain tracked in `TODO.local.md`.

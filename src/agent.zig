@@ -649,6 +649,7 @@ const SerializedResolvedToolCall = struct {
     model_arguments_json: []const u8,
     execution: model_types.ToolExecution,
     retry_number: usize,
+    durable_sequence: ?u64 = null,
 };
 
 const SerializedPause = struct {
@@ -2027,6 +2028,7 @@ pub const Agent = struct {
                         .deadline = control.deadline,
                     },
                     hooks,
+                    options.durable,
                 );
                 if (stream_sink) |sink| try emitStreamEvent(hooks, sink, .{
                     .deferred_tool_results = .{ .results = tool_batch.parts },
@@ -2380,6 +2382,7 @@ pub const Agent = struct {
                 tool_run_context,
                 active.tool_policies,
                 hooks,
+                total_tool_calls - tool_call_count + 1,
             );
             if (hasDeferredToolCall(tool_work)) {
                 if (!allow_pause) return Error.ToolCallRequiresDeferredRun;
@@ -2545,6 +2548,7 @@ pub const Agent = struct {
                                 tool_run_context,
                                 active.tool_policies,
                                 hooks,
+                                options.durable,
                             );
                             records[ordinal] = batch.parts[0];
                             ordinary_failure = ordinary_failure or batch.parts[0].tool_return.isError();
@@ -2619,6 +2623,7 @@ pub const Agent = struct {
                 tool_run_context,
                 active.tool_policies,
                 hooks,
+                options.durable,
             );
             if (capability_runtime) |runtime| runtime.commitPending();
             if (stream_sink) |sink| for (tool_batch.parts) |part| {
@@ -2792,6 +2797,7 @@ fn createPausedRun(
                 else
                     resolved.execution,
                 .retry_number = resolved.retry_number,
+                .durable_sequence = resolved.durable_sequence,
             };
             try resolved_calls.append(allocator, saved);
             if (saved.execution != .immediate) try calls.append(allocator, .{
@@ -2847,6 +2853,7 @@ fn executeResumedToolCalls(
     tool_retries: *ToolRetryTracker,
     run_context: model_types.ToolRunContext,
     hooks: []const LifecycleHook,
+    durable: ?durable_types.Binding,
 ) !ToolCallBatch {
     if (messages.len == 0) return Agent.Error.InvalidDeferredState;
     const assistant = switch (messages[messages.len - 1]) {
@@ -2879,6 +2886,10 @@ fn executeResumedToolCalls(
             const tool_index = findToolIndex(tools, call.name) orelse return Agent.Error.UnknownTool;
             const tool = tools[tool_index];
             const saved = saved_calls[result_index];
+            const durable_sequence = saved.durable_sequence orelse if (durable != null)
+                return Agent.Error.InvalidDeferredState
+            else
+                0;
             try emitLifecycle(hooks, .{ .tool_validation_start = .{ .call = call } });
             toolRunControl(run_context).invoke(
                 void,
@@ -2892,6 +2903,7 @@ fn executeResumedToolCalls(
                     .arguments_json = saved.arguments_json,
                     .execution = saved.execution,
                     .retry_number = saved.retry_number,
+                    .durable_sequence = durable_sequence,
                     .validation_failure = failure,
                 };
                 const processed = try toolResult(
@@ -2914,6 +2926,7 @@ fn executeResumedToolCalls(
                     try emitLifecycle(hooks, .{ .tool_execution_start = .{ .call = call, .tool = tool } });
                     const outcome = executeToolWorkControlled(
                         agent.io,
+                        durable,
                         tool,
                         effectiveToolLimits(agent.tool_limits, tool.limits),
                         allocator,
@@ -2924,6 +2937,7 @@ fn executeResumedToolCalls(
                             .arguments_json = saved.arguments_json,
                             .execution = saved.execution,
                             .retry_number = saved.retry_number,
+                            .durable_sequence = durable_sequence,
                         },
                         agent.tool_policies,
                     );
@@ -2938,6 +2952,7 @@ fn executeResumedToolCalls(
                             .arguments_json = saved.arguments_json,
                             .execution = saved.execution,
                             .retry_number = saved.retry_number,
+                            .durable_sequence = durable_sequence,
                         },
                         tool_retries,
                         outcome,
@@ -2952,6 +2967,7 @@ fn executeResumedToolCalls(
                             try emitLifecycle(hooks, .{ .tool_execution_start = .{ .call = call, .tool = tool } });
                             const outcome = executeToolWorkControlled(
                                 agent.io,
+                                durable,
                                 tool,
                                 effectiveToolLimits(agent.tool_limits, tool.limits),
                                 allocator,
@@ -2962,6 +2978,7 @@ fn executeResumedToolCalls(
                                     .arguments_json = saved.arguments_json,
                                     .execution = saved.execution,
                                     .retry_number = saved.retry_number,
+                                    .durable_sequence = durable_sequence,
                                 },
                                 agent.tool_policies,
                             );
@@ -2976,6 +2993,7 @@ fn executeResumedToolCalls(
                                     .arguments_json = saved.arguments_json,
                                     .execution = saved.execution,
                                     .retry_number = saved.retry_number,
+                                    .durable_sequence = durable_sequence,
                                 },
                                 tool_retries,
                                 outcome,
@@ -3334,6 +3352,7 @@ const ToolWork = struct {
     arguments_json: []const u8,
     execution: model_types.ToolExecution,
     retry_number: usize = 0,
+    durable_sequence: u64 = 0,
     validation_failure: ?anyerror = null,
     retry_message: ?[]const u8 = null,
 };
@@ -3376,11 +3395,14 @@ fn resolveToolCalls(
     run_context: model_types.ToolRunContext,
     policies: []const tool_policy.Policy,
     hooks: []const LifecycleHook,
+    first_durable_sequence: usize,
 ) ![]const ToolWork {
     const work = try allocator.alloc(ToolWork, call_count);
     var work_index: usize = 0;
+    var call_ordinal: usize = 0;
     for (response_parts) |part| switch (part) {
         .tool_call => |call| {
+            defer call_ordinal += 1;
             if (prepared_output.findToolChoice(call.name) != null) continue;
             try emitLifecycle(hooks, .{ .tool_validation_start = .{ .call = call } });
             const tool_index = findToolIndex(tools, call.name) orelse {
@@ -3397,6 +3419,7 @@ fn resolveToolCalls(
                 .arguments_json = call.arguments_json,
                 .execution = tool.execution,
                 .retry_number = tool_retries.current(call.name),
+                .durable_sequence = @intCast(first_durable_sequence + call_ordinal),
             };
             toolRunControl(run_context).invoke(
                 void,
@@ -3489,6 +3512,7 @@ fn executeToolCalls(
     run_context: model_types.ToolRunContext,
     policies: []const tool_policy.Policy,
     hooks: []const LifecycleHook,
+    durable: ?durable_types.Binding,
 ) !ToolCallBatch {
     const call_count = work.len;
     const result_parts = try allocator.alloc(RequestPart, call_count);
@@ -3506,6 +3530,7 @@ fn executeToolCalls(
             } });
             const executed = executeToolWorkControlled(
                 agent.io,
+                durable,
                 tools[work[0].tool_index],
                 limits,
                 allocator,
@@ -3585,6 +3610,7 @@ fn executeToolCalls(
             } });
             future.* = io.concurrent(executeToolWorkControlled, .{
                 @as(?std.Io, io),
+                durable,
                 tools[item.tool_index],
                 limits,
                 concurrent_allocator,
@@ -3699,6 +3725,7 @@ fn emitToolOutcome(
 }
 
 fn executeToolWork(
+    durable: ?durable_types.Binding,
     tool: model_types.Tool,
     limits: model_types.ToolLimits,
     allocator: std.mem.Allocator,
@@ -3719,7 +3746,14 @@ fn executeToolWork(
     };
     tool_policy.applyAll(policies, allocator, .{ .call = &call }) catch |failure|
         return .{ .failure = failure };
-    const output = call.output orelse tool.executeOutputWithContext(
+    const output = call.output orelse if (durable) |binding| executeToolDurable(
+        binding,
+        allocator,
+        tool,
+        run_context,
+        work,
+        call.arguments_json,
+    ) catch |failure| return .{ .failure = failure } else tool.executeOutputWithContext(
         allocator,
         run_context,
         call.arguments_json,
@@ -3734,6 +3768,50 @@ fn executeToolWork(
     if (returned.retry_message) |message| return .{ .retry = message };
     validateToolOutput(returned.output, limits) catch |failure| return .{ .failure = failure };
     return .{ .success = returned.output };
+}
+
+fn executeToolDurable(
+    binding: durable_types.Binding,
+    allocator: std.mem.Allocator,
+    tool: model_types.Tool,
+    run_context: model_types.ToolRunContext,
+    work: ToolWork,
+    arguments_json: []const u8,
+) !model_types.ToolOutput {
+    var call = work.call;
+    call.arguments_json = arguments_json;
+    const input_json = try durable_types.payloads.tool.stringifyRequest(
+        allocator,
+        call,
+        arguments_json,
+        run_context,
+        work.retry_number,
+        work.execution == .requires_approval,
+    );
+    defer allocator.free(input_json);
+    const kind: durable_types.OperationKind = switch (tool.origin) {
+        .application => .tool_call,
+        .mcp => .mcp_request,
+    };
+    var record = try binding.execute(
+        allocator,
+        kind,
+        if (kind == .mcp_request) "mcp.request" else "tool.call",
+        work.durable_sequence,
+        input_json,
+    );
+    defer record.deinit();
+    const output_json = try durableSuccessPayload(&record);
+    var parsed = try durable_types.payloads.tool.parseResponse(allocator, output_json);
+    defer parsed.deinit();
+    const follow_ups = try allocator.alloc(model_types.RequestMessage, parsed.value.follow_up_messages.len);
+    for (parsed.value.follow_up_messages, follow_ups) |message, *copy| {
+        copy.* = try copyRequestMessage(allocator, message);
+    }
+    return .{
+        .content = try allocator.dupe(u8, parsed.value.content),
+        .follow_up_messages = follow_ups,
+    };
 }
 
 fn validateToolArguments(
@@ -3769,6 +3847,7 @@ const ToolControlOutcome = union(enum) {
 
 fn executeToolWorkControlled(
     maybe_io: ?std.Io,
+    durable: ?durable_types.Binding,
     tool: model_types.Tool,
     limits: model_types.ToolLimits,
     allocator: std.mem.Allocator,
@@ -3778,12 +3857,12 @@ fn executeToolWorkControlled(
 ) ToolOutcome {
     if (limits.max_concurrency == 0) return .{ .failure = Agent.Error.ToolQueueOverflow };
     if (limits.timeout_ms == null and run_context.cancellation == null and run_context.deadline == null)
-        return executeToolWork(tool, limits, allocator, run_context, work, policies);
+        return executeToolWork(durable, tool, limits, allocator, run_context, work, policies);
     const io = maybe_io orelse return .{ .failure = Agent.Error.ToolIsolationRequiresIo };
     var buffer: [4]ToolControlOutcome = undefined;
     var select: std.Io.Select(ToolControlOutcome) = .init(io, &buffer);
     defer select.cancelDiscard();
-    select.concurrent(.tool, executeToolWork, .{ tool, limits, allocator, run_context, work, policies }) catch
+    select.concurrent(.tool, executeToolWork, .{ durable, tool, limits, allocator, run_context, work, policies }) catch
         return .{ .failure = Agent.Error.ToolConcurrencyUnavailable };
     if (limits.timeout_ms) |milliseconds|
         select.concurrent(.timeout, waitForToolTimeout, .{ io, milliseconds }) catch
@@ -4359,11 +4438,7 @@ fn executeModelDurable(
         input_json,
     );
     defer record.deinit();
-    const output_json = durable_types.successPayload(&record) catch |failure| return switch (failure) {
-        durable_types.Error.OperationFailed => Agent.Error.DurableOperationFailed,
-        durable_types.Error.OperationSuspended => Agent.Error.DurableOperationSuspended,
-        else => failure,
-    };
+    const output_json = try durableSuccessPayload(&record);
     var parsed = try durable_types.payloads.model.parseResponse(allocator, output_json);
     defer parsed.deinit();
     if (sink) |stream_sink| {
@@ -4373,6 +4448,13 @@ fn executeModelDurable(
         try stream_sink.emit(.{ .usage = parsed.value.usage });
     }
     return copyResponseMessage(allocator, parsed.value);
+}
+
+fn durableSuccessPayload(record: *const durable_types.OwnedRecord) ![]const u8 {
+    return durable_types.successPayload(record) catch |failure| switch (failure) {
+        error.OperationFailed => Agent.Error.DurableOperationFailed,
+        error.OperationSuspended => Agent.Error.DurableOperationSuspended,
+    };
 }
 
 const ProviderErrorCapture = struct {
@@ -5334,6 +5416,7 @@ test "tool policy failure and parallel retry branches are explicit" {
         .{},
         &.{},
         &.{},
+        1,
     );
     try std.testing.expectEqual(error.InvalidToolArguments, malformed[0].validation_failure.?);
 
@@ -5363,6 +5446,7 @@ test "tool policy failure and parallel retry branches are explicit" {
         .{},
         &.{policy},
         &.{},
+        1,
     ));
 
     const work = ToolWork{
@@ -5373,6 +5457,7 @@ test "tool policy failure and parallel retry branches are explicit" {
     };
     failure.stage = .call;
     try std.testing.expectEqual(error.CallPolicyFailed, executeToolWork(
+        null,
         tool,
         .{},
         allocator,
@@ -5382,6 +5467,7 @@ test "tool policy failure and parallel retry branches are explicit" {
     ).failure);
     failure.stage = .return_value;
     try std.testing.expectEqual(error.ReturnPolicyFailed, executeToolWork(
+        null,
         tool,
         .{},
         allocator,
@@ -5436,6 +5522,7 @@ test "tool policy failure and parallel retry branches are explicit" {
         .{ .io = io },
         &.{},
         &.{},
+        null,
     );
     try std.testing.expectEqualStrings("retry", batch.parts[0].tool_return.content);
     try std.testing.expect(batch.parts[1].tool_return.is_error);
@@ -5519,7 +5606,7 @@ test "tool control drains work at deadlines and cancellation" {
         .raw = .fromSeconds(1),
         .clock = .awake,
     });
-    const outcome = executeToolWorkControlled(io, tool, .{}, std.testing.allocator, .{
+    const outcome = executeToolWorkControlled(io, null, tool, .{}, std.testing.allocator, .{
         .io = io,
         .deadline = deadline,
     }, .{
@@ -5535,7 +5622,7 @@ test "tool control drains work at deadlines and cancellation" {
     var cancel_runtime = std.Io.Threaded.init(std.testing.allocator, .{});
     defer cancel_runtime.deinit();
     var cancel = try cancel_runtime.io().concurrent(State.cancelAfter, .{ cancel_runtime.io(), &token, &state });
-    const cancelled = executeToolWorkControlled(io, tool, .{}, std.testing.allocator, .{
+    const cancelled = executeToolWorkControlled(io, null, tool, .{}, std.testing.allocator, .{
         .io = io,
         .cancellation = &token,
     }, .{
@@ -5561,7 +5648,7 @@ test "tool control drains work at deadlines and cancellation" {
         .context = &state,
         .executeFn = Fast.execute,
     };
-    const succeeded = executeToolWorkControlled(success_io, fast_tool, .{ .timeout_ms = 10_000 }, std.testing.allocator, .{ .io = success_io }, .{
+    const succeeded = executeToolWorkControlled(success_io, null, fast_tool, .{ .timeout_ms = 10_000 }, std.testing.allocator, .{ .io = success_io }, .{
         .call = .{ .id = "fast", .name = "fast", .arguments_json = "{}" },
         .tool_index = 0,
         .arguments_json = "{}",
@@ -6145,6 +6232,7 @@ test "paused state serializes retries and rejects mismatched calls" {
         &retries,
         .{},
         &.{},
+        null,
     ));
 }
 
@@ -6269,6 +6357,7 @@ test "capability load is atomic across instruction and allocation failures" {
 test "durable model routes bypass local providers and replay normalized streams" {
     const RuntimeState = struct {
         calls: usize = 0,
+        outcome: enum { success, failure, suspended } = .success,
 
         fn execute(
             context: *anyopaque,
@@ -6285,6 +6374,20 @@ test "durable model routes bypass local providers and replay normalized streams"
             var request = try durable_types.payloads.model.parseRequest(allocator, invocation.input_json);
             defer request.deinit();
             try std.testing.expectEqualStrings("hello", request.value.messages[0].request.parts[0].user_prompt.text);
+            switch (self.outcome) {
+                .success => {},
+                .failure => return durable_types.OwnedRecord.copy(
+                    allocator,
+                    durable_types.Record.init(invocation, .{ .failure = .{ .error_name = "Unavailable" } }),
+                ),
+                .suspended => return durable_types.OwnedRecord.copy(
+                    allocator,
+                    durable_types.Record.init(invocation, .{ .suspended = .{
+                        .reason = .provider_resume,
+                        .state_json = "{}",
+                    } }),
+                ),
+            }
             const output_json = try durable_types.payloads.model.stringifyResponse(allocator, .{
                 .parts = &.{.{ .text = "durable" }},
                 .usage = .{ .input_tokens = 1, .output_tokens = 1 },
@@ -6300,7 +6403,7 @@ test "durable model routes bypass local providers and replay normalized streams"
     };
     const LocalModel = struct {
         fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
-            return error.LocalModelMustNotRun;
+            return error.LocalModelMustNotRun; // kcov-ignore: durable routing guard
         }
 
         fn stream(
@@ -6309,7 +6412,7 @@ test "durable model routes bypass local providers and replay normalized streams"
             _: model_types.ModelRequest,
             _: model_types.ModelStreamSink,
         ) !model_types.ModelResponse {
-            return error.LocalModelMustNotRun;
+            return error.LocalModelMustNotRun; // kcov-ignore: durable routing guard
         }
     };
     const Sink = struct {
@@ -6355,4 +6458,108 @@ test "durable model routes bypass local providers and replay normalized streams"
     try std.testing.expectEqualStrings("durable", streamed.output);
     try std.testing.expectEqual(@as(usize, 4), sink_state.model_events);
     try std.testing.expectEqual(@as(usize, 2), runtime_state.calls);
+
+    runtime_state.outcome = .failure;
+    try std.testing.expectError(
+        Agent.Error.DurableOperationFailed,
+        durable_agent.runWithOptions(std.testing.allocator, "hello", .{ .durable = binding }),
+    );
+    runtime_state.outcome = .suspended;
+    try std.testing.expectError(
+        Agent.Error.DurableOperationSuspended,
+        durable_agent.runWithOptions(std.testing.allocator, "hello", .{ .durable = binding }),
+    );
+}
+
+test "durable parallel tools use source-order identities and MCP operation kinds" {
+    const RuntimeState = struct {
+        seen_tools: std.atomic.Value(u8) = .init(0),
+
+        fn execute(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            invocation: durable_types.Invocation,
+        ) !durable_types.OwnedRecord {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const output_json = switch (invocation.kind) {
+                .model_request => try durable_types.payloads.model.stringifyResponse(allocator, if (invocation.sequence == 1)
+                    .{ .parts = &.{
+                        .{ .tool_call = .{ .id = "app-1", .name = "app", .arguments_json = "{}" } },
+                        .{ .tool_call = .{ .id = "mcp-1", .name = "mcp", .arguments_json = "{}" } },
+                    } }
+                else
+                    .{ .parts = &.{.{ .text = "complete" }} }),
+                .tool_call, .mcp_request => output: {
+                    var request = try durable_types.payloads.tool.parseRequest(allocator, invocation.input_json);
+                    defer request.deinit();
+                    if (invocation.kind == .tool_call) {
+                        try std.testing.expectEqualStrings("app", request.call.name);
+                        try std.testing.expectEqual(@as(u64, 1), invocation.sequence);
+                        _ = self.seen_tools.fetchOr(1, .seq_cst);
+                    } else {
+                        try std.testing.expectEqualStrings("mcp", request.call.name);
+                        try std.testing.expectEqual(@as(u64, 2), invocation.sequence);
+                        _ = self.seen_tools.fetchOr(2, .seq_cst);
+                    }
+                    break :output try durable_types.payloads.tool.stringifyResponse(allocator, .{
+                        .content = request.call.name,
+                    });
+                },
+                else => return error.UnexpectedDurableOperation,
+            };
+            defer allocator.free(output_json);
+            return durable_types.OwnedRecord.copy(
+                allocator,
+                durable_types.Record.init(invocation, .{ .success = output_json }),
+            );
+        }
+    };
+    const Local = struct {
+        fn model(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            return error.LocalModelMustNotRun; // kcov-ignore: durable routing guard
+        }
+
+        fn tool(_: *anyopaque, _: std.mem.Allocator, _: []const u8) ![]const u8 {
+            return error.LocalToolMustNotRun; // kcov-ignore: durable routing guard
+        }
+    };
+
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var runtime_state: RuntimeState = .{};
+    var local_state: u8 = 0;
+    const configured = Agent{
+        .model = .{
+            .context = &local_state,
+            .profile = .{},
+            .requestFn = Local.model,
+        },
+        .tools = &.{
+            .{
+                .definition = .{ .name = "app", .description = "", .parameters_json_schema = "{}" },
+                .context = &local_state,
+                .executeFn = Local.tool,
+            },
+            .{
+                .definition = .{ .name = "mcp", .description = "", .parameters_json_schema = "{}" },
+                .origin = .mcp,
+                .context = &local_state,
+                .executeFn = Local.tool,
+            },
+        },
+        .io = threaded.io(),
+    };
+    const binding = durable_types.Binding{
+        .runtime = .{ .context = &runtime_state, .executeFn = RuntimeState.execute },
+        .run_id = "parallel-run",
+        .handlers = .{
+            .model_request = "model-worker",
+            .tool_call = "tool-worker",
+            .mcp_request = "mcp-worker",
+        },
+    };
+    var result = try configured.runWithOptions(std.testing.allocator, "run", .{ .durable = binding });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("complete", result.output);
+    try std.testing.expectEqual(@as(u8, 3), runtime_state.seen_tools.load(.seq_cst));
 }

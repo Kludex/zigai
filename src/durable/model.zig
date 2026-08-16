@@ -118,6 +118,7 @@ pub const OwnedResponse = struct {
 };
 
 pub fn parseResponse(allocator: std.mem.Allocator, source: []const u8) !OwnedResponse {
+    if (source.len > max_document_bytes) return Error.InvalidModelResponse;
     var parsed = history.parse(allocator, source) catch |failure| return switch (failure) {
         error.OutOfMemory => error.OutOfMemory,
         else => Error.InvalidModelResponse,
@@ -189,4 +190,64 @@ test "durable model response requires exactly one response message" {
     );
     defer std.testing.allocator.free(changed_version);
     try std.testing.expectError(Error.InvalidModelResponse, parseResponse(std.testing.allocator, changed_version));
+
+    const valid_request = try stringifyRequest(std.testing.allocator, .{ .messages = &.{} });
+    defer std.testing.allocator.free(valid_request);
+    const unsupported_request = try std.mem.replaceOwned(
+        u8,
+        std.testing.allocator,
+        valid_request,
+        "\"version\":1",
+        "\"version\":2",
+    );
+    defer std.testing.allocator.free(unsupported_request);
+    try std.testing.expectError(
+        Error.UnsupportedModelWireVersion,
+        parseRequest(std.testing.allocator, unsupported_request),
+    );
+    var request_value = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, valid_request, .{});
+    defer request_value.deinit();
+    try request_value.value.object.put(std.testing.allocator, "messages_json", .{ .string = "{}" });
+    const invalid_history = try std.json.Stringify.valueAlloc(std.testing.allocator, request_value.value, .{});
+    defer std.testing.allocator.free(invalid_history);
+    try std.testing.expectError(Error.InvalidModelRequest, parseRequest(std.testing.allocator, invalid_history));
+
+    const oversized = try std.testing.allocator.alloc(u8, max_document_bytes + 1);
+    defer std.testing.allocator.free(oversized);
+    @memset(oversized, ' ');
+    try std.testing.expectError(Error.InvalidModelRequest, parseRequest(std.testing.allocator, oversized));
+    try std.testing.expectError(Error.InvalidModelResponse, parseResponse(std.testing.allocator, oversized));
+}
+
+fn checkRequestAllocationFailure(allocator: std.mem.Allocator) !void {
+    const encoded = stringifyRequest(allocator, .{ .messages = &.{} }) catch |failure| return switch (failure) {
+        error.WriteFailed => error.OutOfMemory,
+        else => failure,
+    };
+    defer allocator.free(encoded);
+    var parsed = try parseRequest(allocator, encoded);
+    parsed.deinit();
+}
+
+fn checkResponseAllocationFailure(allocator: std.mem.Allocator) !void {
+    const encoded = stringifyResponse(allocator, .{ .parts = &.{.{ .text = "ok" }} }) catch |failure| return switch (failure) {
+        error.WriteFailed => error.OutOfMemory,
+        else => failure,
+    };
+    defer allocator.free(encoded);
+    var parsed = try parseResponse(allocator, encoded);
+    parsed.deinit();
+}
+
+test "durable model payloads release every partial allocation" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        checkRequestAllocationFailure,
+        .{},
+    );
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        checkResponseAllocationFailure,
+        .{},
+    );
 }

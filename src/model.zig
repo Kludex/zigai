@@ -261,6 +261,9 @@ pub fn ToolReturn(comptime Value: type) type {
 
 pub const Tool = struct {
     definition: ToolDefinition,
+    /// Execution backend used for durable operation classification. Both kinds
+    /// remain ordinary function tools in provider protocols.
+    origin: ToolOrigin = .application,
     /// Metadata for application policy and observability; providers do not receive it.
     metadata: []const ToolMetadata = &.{},
     execution: ToolExecution = .immediate,
@@ -383,6 +386,11 @@ pub const Tool = struct {
             else => true,
         };
     }
+};
+
+pub const ToolOrigin = enum {
+    application,
+    mcp,
 };
 
 fn validateToolArgumentsJson(allocator: std.mem.Allocator, arguments_json: []const u8) !void {

@@ -714,6 +714,11 @@ Malformed supported vocabulary returns `InvalidJsonSchema`; unsupported valid
 vocabulary returns `UnsupportedJsonSchema`; a valid output that misses an
 assertion returns `OutputSchemaValidationFailed`.
 
+`Tool.origin` is `ToolOrigin.application` by default. Tools prepared by an MCP
+client use `ToolOrigin.mcp`; providers still see both as ordinary function
+tools. Durable agents use the origin only to select `tool_call` or
+`mcp_request` routing.
+
 ## Streaming events
 
 `ModelStreamEvent` represents provider response parts with `part_start`,

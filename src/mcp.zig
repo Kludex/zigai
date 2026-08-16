@@ -1519,6 +1519,7 @@ pub const Client = struct {
                         .description = try allocator.dupe(u8, description),
                         .parameters_json_schema = try allocator.dupe(u8, schema),
                     },
+                    .origin = .mcp,
                     .context = tool_context,
                     .executeFn = executeTool,
                 } });
@@ -7494,6 +7495,7 @@ test "toolset paginates, mirrors headers, and renders rich results" {
         .dependencies = null,
     });
     try std.testing.expectEqual(@as(usize, 1), tools.len);
+    try std.testing.expectEqual(model.ToolOrigin.mcp, tools[0].tool.origin);
     const output = try tools[0].tool.execute(std.testing.allocator, "{\"city\":\"Madrid\"}");
     defer std.testing.allocator.free(output);
     try std.testing.expect(std.mem.indexOf(u8, output, "sunny") != null);
