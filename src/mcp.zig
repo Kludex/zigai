@@ -8010,6 +8010,49 @@ test "MCP telemetry propagates client context to server spans" {
     try std.testing.expect(capture.saw_tool);
     try std.testing.expectEqualSlices(u8, &capture.client_span_id, &capture.server_parent_id);
     try std.testing.expectEqualSlices(u8, &capture.client_trace_id, &capture.server_trace_id);
+    try std.testing.expect(mcpTelemetryTarget(methods.list_tools, "ignored") == null);
+
+    const FailingTransport = struct {
+        fn send(_: *anyopaque, _: std.mem.Allocator, _: WireRequest) ![]const u8 {
+            return error.McpProcessClosed;
+        }
+    };
+    client.transport = .{ .context = &unused, .sendFn = FailingTransport.send };
+    try std.testing.expectError(
+        error.McpProcessClosed,
+        client.notify(std.testing.allocator, methods.tool_list_changed, "{}"),
+    );
+
+    const FailingExporter = struct {
+        fn span(_: *anyopaque, _: telemetry_types.Span) !void {
+            return error.ExportFailed;
+        }
+        fn metric(_: *anyopaque, _: telemetry_types.Metric) !void {}
+    };
+    server.telemetry = .{
+        .io = std.testing.io,
+        .exporter = .{
+            .context = &unused,
+            .spanFn = FailingExporter.span,
+            .metricFn = FailingExporter.metric,
+        },
+        .fail_open = false,
+    };
+    const server_request = try buildRequestWithMetadata(
+        std.testing.allocator,
+        9,
+        methods.call_tool,
+        "{\"name\":\"weather\",\"arguments\":{}}",
+        "test",
+        "1",
+        "{}",
+        .{},
+    );
+    defer std.testing.allocator.free(server_request);
+    try std.testing.expectError(
+        error.ExportFailed,
+        server.handle(std.testing.allocator, server_request, null),
+    );
 
     var envelope_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer envelope_arena.deinit();

@@ -1224,7 +1224,7 @@ test "telemetry propagates valid parents and bounds exporter attributes" {
                 .provider_name = "provider",
                 .model_name = "model",
                 .requestFn = struct {
-                    fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+                    fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse { // kcov-ignore
                         return .{ .parts = &.{} }; // kcov-ignore
                     }
                 }.request,
@@ -1284,7 +1284,7 @@ test "telemetry redacts captured prompts and isolates capture failures" {
         .context = &unused,
         .profile = .{},
         .requestFn = struct {
-            fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse { // kcov-ignore
                 return .{ .parts = &.{} }; // kcov-ignore
             }
         }.request,
@@ -1363,7 +1363,7 @@ test "telemetry exporter failures follow fail-open policy" {
         .context = &unused,
         .profile = .{},
         .requestFn = struct {
-            fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse { // kcov-ignore
                 return .{ .parts = &.{} }; // kcov-ignore
             }
         }.request,
@@ -1374,6 +1374,16 @@ test "telemetry exporter failures follow fail-open policy" {
         .metricFn = Failing.metric,
         .eventFn = Failing.event,
     };
+    try std.testing.expectError(error.ExportFailed, exporter.span(.{
+        .name = "failure",
+        .trace_id = [_]u8{1} ** 16,
+        .span_id = [_]u8{2} ** 8,
+        .start_time_unix_nano = 1,
+        .end_time_unix_nano = 2,
+        .duration_seconds = 0.000000001,
+        .status = .error_status,
+        .attributes = &.{},
+    }));
     var fail_open = (OpenTelemetry{ .io = std.testing.io, .exporter = exporter }).start(std.testing.allocator);
     defer fail_open.deinit();
     try fail_open.observe(agent_types.LifecycleEvent{ .run_start = .{ .prompt = "prompt", .model = model } });
@@ -1490,7 +1500,7 @@ fn checkTelemetryAllocationFailure(allocator: std.mem.Allocator) !void {
         .profile = .{},
         .model_name = "allocation-model",
         .requestFn = struct {
-            fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse { // kcov-ignore
                 return .{ .parts = &.{} }; // kcov-ignore
             }
         }.request,
@@ -1615,4 +1625,55 @@ test "MCP telemetry emits semantic client and server operations" {
     try std.testing.expectEqual(@as(usize, 1), capture.server_spans);
     try std.testing.expectEqual(@as(usize, 2), capture.metrics);
     try std.testing.expectEqual(@as(usize, 1), capture.errors);
+}
+
+test "fail-closed telemetry preserves span-name allocation errors" {
+    const agent_types = @import("agent.zig");
+    const Sink = struct {
+        fn span(_: *anyopaque, _: Span) !void {}
+        fn metric(_: *anyopaque, _: Metric) !void {}
+    };
+    var unused: u8 = 0;
+    const exporter = Exporter{ .context = &unused, .spanFn = Sink.span, .metricFn = Sink.metric };
+    const call = model_types.ToolCall{ .id = "call", .name = "weather", .arguments_json = "{}" };
+
+    var validation_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var validation = (OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = exporter,
+        .fail_open = false,
+    }).start(validation_allocator.allocator());
+    defer validation.deinit();
+    try validation.observe(agent_types.LifecycleEvent{ .tool_validation_start = .{ .call = call } });
+    try std.testing.expectError(error.OutOfMemory, validation.observe(agent_types.LifecycleEvent{
+        .tool_validation_end = .{ .call = call, .tool = undefined },
+    }));
+
+    var execution_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    var execution = (OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = exporter,
+        .fail_open = false,
+    }).start(execution_allocator.allocator());
+    defer execution.deinit();
+    try execution.observe(agent_types.LifecycleEvent{ .tool_execution_start = .{ .call = call, .tool = undefined } });
+    try std.testing.expectError(error.OutOfMemory, execution.observe(agent_types.LifecycleEvent{
+        .tool_execution_end = .{ .call = call, .content = "ok" },
+    }));
+
+    var mcp_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    var mcp_run = (McpTelemetry{
+        .io = std.testing.io,
+        .exporter = exporter,
+        .fail_open = false,
+    }).start(
+        mcp_allocator.allocator(),
+        .client,
+        "tools/call",
+        .{ .kind = .tool, .value = "weather" },
+        "1",
+        null,
+        "2026-07-28",
+    );
+    try std.testing.expectError(error.OutOfMemory, mcp_run.finish(null));
 }
