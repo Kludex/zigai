@@ -6,6 +6,8 @@
 
 const std = @import("std");
 
+pub const payloads = @import("durable/root.zig");
+
 pub const format_version: u8 = 1;
 pub const max_payload_bytes: usize = 2 * 1024 * 1024;
 pub const max_record_bytes: usize = 8 * 1024 * 1024;
@@ -18,6 +20,9 @@ pub const Error = error{
     UnsupportedRecordVersion,
     InputDigestMismatch,
     RuntimeRecordMismatch,
+    MissingHandler,
+    OperationFailed,
+    OperationSuspended,
 };
 
 /// Closed operation vocabulary understood by ZigAI and durable runtimes.
@@ -167,6 +172,68 @@ pub const Runtime = struct {
         return result;
     }
 };
+
+/// Worker registration IDs for each durable operation family. A runtime may
+/// register the same ID for multiple kinds, but each enabled route is explicit.
+pub const HandlerIds = struct {
+    model_request: ?[]const u8 = null,
+    model_stream: ?[]const u8 = null,
+    tool_call: ?[]const u8 = null,
+    mcp_request: ?[]const u8 = null,
+    event_delivery: ?[]const u8 = null,
+    retry_delay: ?[]const u8 = null,
+    approval_resume: ?[]const u8 = null,
+
+    pub fn get(self: HandlerIds, kind: OperationKind) ?[]const u8 {
+        return switch (kind) {
+            .model_request => self.model_request,
+            .model_stream => self.model_stream,
+            .tool_call => self.tool_call,
+            .mcp_request => self.mcp_request,
+            .event_delivery => self.event_delivery,
+            .retry_delay => self.retry_delay,
+            .approval_resume => self.approval_resume,
+        };
+    }
+};
+
+/// Immutable routing configuration for one replayable agent invocation.
+/// Callers choose semantic step IDs and deterministic sequence numbers; this
+/// value deliberately owns no mutable counter that could depend on scheduling.
+pub const Binding = struct {
+    runtime: Runtime,
+    run_id: []const u8,
+    handlers: HandlerIds,
+
+    pub fn execute(
+        self: Binding,
+        allocator: std.mem.Allocator,
+        kind: OperationKind,
+        step_id: []const u8,
+        sequence: u64,
+        input_json: []const u8,
+    ) !OwnedRecord {
+        const handler_id = self.handlers.get(kind) orelse return Error.MissingHandler;
+        return self.runtime.execute(allocator, .{
+            .run_id = self.run_id,
+            .step_id = step_id,
+            .sequence = sequence,
+            .kind = kind,
+            .handler_id = handler_id,
+            .input_json = input_json,
+        });
+    }
+};
+
+/// Returns a persisted success payload and maps non-success outcomes to stable
+/// framework errors. The returned slice borrows from `record`.
+pub fn successPayload(record: *const OwnedRecord) ![]const u8 {
+    return switch (record.value.outcome) {
+        .success => |payload| payload,
+        .failure => Error.OperationFailed,
+        .suspended => Error.OperationSuspended,
+    };
+}
 
 pub fn stringifyRecord(allocator: std.mem.Allocator, record: Record) ![]u8 {
     try record.validate(allocator);
@@ -482,4 +549,53 @@ test "durable runtime accepts only matching validated records" {
         Error.RuntimeRecordMismatch,
         runtime.execute(std.testing.allocator, invocation),
     );
+}
+
+test "durable binding selects explicit handlers and exposes success only" {
+    const State = struct {
+        fn execute(
+            _: *anyopaque,
+            allocator: std.mem.Allocator,
+            invocation: Invocation,
+        ) !OwnedRecord {
+            return OwnedRecord.copy(allocator, Record.init(invocation, .{ .success = "{\"ok\":true}" }));
+        }
+    };
+    var marker: u8 = 0;
+    const binding = Binding{
+        .runtime = .{ .context = &marker, .executeFn = State.execute },
+        .run_id = "run",
+        .handlers = .{ .model_request = "registered-model" },
+    };
+    var record = try binding.execute(
+        std.testing.allocator,
+        .model_request,
+        "model.request",
+        1,
+        "{}",
+    );
+    defer record.deinit();
+    try std.testing.expectEqualStrings("registered-model", record.value.invocation.handler_id);
+    try std.testing.expectEqualStrings("{\"ok\":true}", try successPayload(&record));
+    try std.testing.expectError(
+        Error.MissingHandler,
+        binding.execute(std.testing.allocator, .tool_call, "tool.call", 2, "{}"),
+    );
+
+    var failed = try OwnedRecord.copy(std.testing.allocator, Record.init(
+        record.value.invocation,
+        .{ .failure = .{ .error_name = "Unavailable", .retryable = true } },
+    ));
+    defer failed.deinit();
+    try std.testing.expectError(Error.OperationFailed, successPayload(&failed));
+    var suspended = try OwnedRecord.copy(std.testing.allocator, Record.init(
+        record.value.invocation,
+        .{ .suspended = .{ .reason = .provider_resume, .state_json = "{}" } },
+    ));
+    defer suspended.deinit();
+    try std.testing.expectError(Error.OperationSuspended, successPayload(&suspended));
+}
+
+test {
+    _ = payloads;
 }

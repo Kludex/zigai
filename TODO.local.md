@@ -240,6 +240,14 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
     strict versioned record format, ownership rules, and runtime boundary.
   - [ ] Route model, stream, tool, MCP, event, retry-delay, and approval-resume
     operations through the runtime without changing ordinary agent runs.
+    - [x] Route buffered and streaming model requests through an immutable
+      per-run binding with a strict provider-neutral request/response codec.
+    - [ ] Route local function tools and MCP requests with deterministic
+      identities that remain stable under parallel scheduling.
+    - [ ] Route event delivery, retry delays, and approval resumption without
+      duplicating callbacks, sleeps, or decisions during replay.
+    - [ ] Prove direct-run behavior remains unchanged and reject incomplete
+      durable handler registration before the first side effect.
   - [ ] Implement and document one real workflow-engine adapter with explicit
     worker registration, retry policy, payload limits, and deployment rules.
   - [ ] Persist and resume stream/approval state and prove replay safety with

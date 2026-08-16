@@ -68,6 +68,48 @@ Application-owned external side effects therefore still need an idempotency
 key or an engine transaction. ZigAI's contract makes that key stable but does
 not claim exactly-once semantics for an arbitrary remote system.
 
-The current module defines and tests this wire/runtime boundary. Agent routing,
-a concrete workflow-engine adapter, durable stream/approval resumption, and
-worker-restart recovery tests are tracked as the next implementation steps.
+## Agent model routing
+
+`RunOptions.durable` accepts an immutable `zigai.DurableBinding`. A binding
+combines one run ID, runtime, and explicit worker registration IDs. Sequence
+numbers are derived from deterministic agent-loop state rather than a mutable
+global counter, so a replay uses the same identity even when another run is
+executing concurrently.
+
+```zig
+const binding = zigai.DurableBinding{
+    .runtime = workflow_runtime,
+    .run_id = "support-0192",
+    .handlers = .{
+        .model_request = "support-model-request",
+        .model_stream = "support-model-stream",
+    },
+};
+
+var result = try support_agent.runWithOptions(allocator, "Where is my order?", .{
+    .durable = binding,
+});
+defer result.deinit();
+```
+
+Buffered calls use the `model.request` step ID and streaming calls use
+`model.stream`; the model-request number is their sequence. The worker receives a versioned neutral JSON
+request from `zigai.durable.payloads.model`. It returns a successful model
+response encoded with `stringifyResponse`. Replayed streams emit normalized
+complete-part start/delta/end events followed by usage; preserving original
+chunk boundaries and partially completed streams belongs to the later stream
+checkpointing layer.
+
+The model wire document includes all declarative request fields. It excludes
+process-local error observers and cancellation pointers; a registered worker
+attaches its own controls. Because durable inputs are persisted, applications
+must use workflow-engine encryption and avoid request-scoped secret headers or
+authorization values in durable payloads.
+
+Runs without `RunOptions.durable` retain the direct provider path. A configured
+route never falls back to that path: missing handlers, persisted failures, and
+suspensions are explicit errors.
+
+Local-tool, MCP, event, retry-delay, and approval routing, a concrete workflow-
+engine adapter, durable stream/approval resumption, and worker-restart recovery
+tests remain tracked in `TODO.local.md`.

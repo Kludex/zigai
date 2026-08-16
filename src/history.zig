@@ -625,9 +625,16 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Owned {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
     const memory = arena.allocator();
+    const messages = try parseLeaky(memory, source);
+    return .{ .arena = arena, .messages = messages };
+}
+
+/// Parses history into caller-owned arena storage. All returned slices die
+/// when `arena` is released; no independent deinitializer is required.
+pub fn parseLeaky(arena: std.mem.Allocator, source: []const u8) ![]const message_types.Message {
     const root = try json_limits.parseLeaky(
         std.json.Value,
-        memory,
+        arena,
         source,
         json_limits.defaults.history,
         .{ .allocate = .alloc_always },
@@ -637,11 +644,11 @@ pub fn parse(allocator: std.mem.Allocator, source: []const u8) !Owned {
     const version = try jsonInteger(object, "version");
     const values = try jsonArray(object, "messages");
     const messages = switch (version) {
-        1 => try parseV1(memory, values),
-        2 => try parseV2(memory, values),
+        1 => try parseV1(arena, values),
+        2 => try parseV2(arena, values),
         else => return Error.UnsupportedVersion,
     };
-    return .{ .arena = arena, .messages = messages };
+    return messages;
 }
 
 fn parseV2(allocator: std.mem.Allocator, values: []const std.json.Value) ![]const message_types.Message {

@@ -17,6 +17,7 @@ const transport = @import("transport.zig");
 const security = @import("security.zig");
 const usage_types = @import("usage.zig");
 const pricing_types = @import("pricing.zig");
+const durable_types = @import("durable.zig");
 
 const Message = model_types.Message;
 const PromptPart = model_types.PromptPart;
@@ -191,6 +192,10 @@ const AgentError = error{
     ToolTimedOut,
     /// A normal run encountered a tool requiring approval or external execution.
     ToolCallRequiresDeferredRun,
+    /// A durable runtime returned a persisted failure outcome.
+    DurableOperationFailed,
+    /// A durable runtime suspended an operation not handled by this run API.
+    DurableOperationSuspended,
     /// A resumed approval call has no matching decision.
     MissingDeferredToolDecision,
     /// A resume decision does not match any paused tool call.
@@ -442,6 +447,9 @@ pub const RunOptions = struct {
     /// A one-run, thread-safe queue for request messages submitted while the
     /// agent is working. The caller owns and deinitializes the queue.
     pending_messages: ?*PendingMessageQueue = null,
+    /// Routes side effects through a durable runtime. The binding is immutable;
+    /// operation identities are derived from deterministic agent-loop state.
+    durable: ?durable_types.Binding = null,
 };
 
 /// A one-run FIFO for injecting owned request messages at safe agent-loop
@@ -2128,7 +2136,20 @@ pub const Agent = struct {
                     .streaming = stream_sink != null,
                 } });
                 const request_started = monotonicNow(self.io);
-                const attempt = if (stream_sink != null)
+                const attempt = if (options.durable) |binding|
+                    if (stream_sink != null)
+                        control.invoke(
+                            model_types.ModelResponse,
+                            streamModelDurable,
+                            .{ binding, memory, model_request, model_requests, forwarder.modelSink() },
+                        )
+                    else
+                        control.invoke(
+                            model_types.ModelResponse,
+                            requestModelDurable,
+                            .{ binding, memory, model_request, model_requests },
+                        )
+                else if (stream_sink != null)
                     control.invoke(
                         model_types.ModelResponse,
                         streamModel,
@@ -4301,6 +4322,59 @@ fn streamModel(
     return model.stream(allocator, request, sink);
 }
 
+fn requestModelDurable(
+    binding: durable_types.Binding,
+    allocator: std.mem.Allocator,
+    request: model_types.ModelRequest,
+    sequence: usize,
+) !model_types.ModelResponse {
+    return executeModelDurable(binding, allocator, request, sequence, .model_request, null);
+}
+
+fn streamModelDurable(
+    binding: durable_types.Binding,
+    allocator: std.mem.Allocator,
+    request: model_types.ModelRequest,
+    sequence: usize,
+    sink: model_types.ModelStreamSink,
+) !model_types.ModelResponse {
+    return executeModelDurable(binding, allocator, request, sequence, .model_stream, sink);
+}
+
+fn executeModelDurable(
+    binding: durable_types.Binding,
+    allocator: std.mem.Allocator,
+    request: model_types.ModelRequest,
+    sequence: usize,
+    kind: durable_types.OperationKind,
+    sink: ?model_types.ModelStreamSink,
+) !model_types.ModelResponse {
+    const input_json = try durable_types.payloads.model.stringifyRequest(allocator, request);
+    defer allocator.free(input_json);
+    var record = try binding.execute(
+        allocator,
+        kind,
+        if (kind == .model_stream) "model.stream" else "model.request",
+        @intCast(sequence),
+        input_json,
+    );
+    defer record.deinit();
+    const output_json = durable_types.successPayload(&record) catch |failure| return switch (failure) {
+        durable_types.Error.OperationFailed => Agent.Error.DurableOperationFailed,
+        durable_types.Error.OperationSuspended => Agent.Error.DurableOperationSuspended,
+        else => failure,
+    };
+    var parsed = try durable_types.payloads.model.parseResponse(allocator, output_json);
+    defer parsed.deinit();
+    if (sink) |stream_sink| {
+        for (parsed.value.parts, 0..) |part, index| {
+            try model_types.emitCompletePart(stream_sink, index, part);
+        }
+        try stream_sink.emit(.{ .usage = parsed.value.usage });
+    }
+    return copyResponseMessage(allocator, parsed.value);
+}
+
 const ProviderErrorCapture = struct {
     target: ?model_types.ProviderErrorObserver,
     retry_after_seconds: ?u64 = null,
@@ -6190,4 +6264,95 @@ test "capability load is atomic across instruction and allocation failures" {
         checkCapabilityLoadAllocationFailure,
         .{},
     );
+}
+
+test "durable model routes bypass local providers and replay normalized streams" {
+    const RuntimeState = struct {
+        calls: usize = 0,
+
+        fn execute(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            invocation: durable_types.Invocation,
+        ) !durable_types.OwnedRecord {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            try std.testing.expectEqual(@as(u64, 1), invocation.sequence);
+            try std.testing.expectEqualStrings(
+                if (invocation.kind == .model_stream) "model.stream" else "model.request",
+                invocation.step_id,
+            );
+            var request = try durable_types.payloads.model.parseRequest(allocator, invocation.input_json);
+            defer request.deinit();
+            try std.testing.expectEqualStrings("hello", request.value.messages[0].request.parts[0].user_prompt.text);
+            const output_json = try durable_types.payloads.model.stringifyResponse(allocator, .{
+                .parts = &.{.{ .text = "durable" }},
+                .usage = .{ .input_tokens = 1, .output_tokens = 1 },
+                .provider_name = "durable",
+                .model_name = "worker-model",
+            });
+            defer allocator.free(output_json);
+            return durable_types.OwnedRecord.copy(
+                allocator,
+                durable_types.Record.init(invocation, .{ .success = output_json }),
+            );
+        }
+    };
+    const LocalModel = struct {
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            return error.LocalModelMustNotRun;
+        }
+
+        fn stream(
+            _: *anyopaque,
+            _: std.mem.Allocator,
+            _: model_types.ModelRequest,
+            _: model_types.ModelStreamSink,
+        ) !model_types.ModelResponse {
+            return error.LocalModelMustNotRun;
+        }
+    };
+    const Sink = struct {
+        model_events: usize = 0,
+
+        fn emit(context: *anyopaque, event: AgentStreamEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            switch (event) {
+                .model => self.model_events += 1,
+                else => {},
+            }
+        }
+    };
+
+    var runtime_state: RuntimeState = .{};
+    var local_state: u8 = 0;
+    const binding = durable_types.Binding{
+        .runtime = .{ .context = &runtime_state, .executeFn = RuntimeState.execute },
+        .run_id = "run-1",
+        .handlers = .{
+            .model_request = "model-worker",
+            .model_stream = "model-stream-worker",
+        },
+    };
+    const durable_agent = Agent{ .model = .{
+        .context = &local_state,
+        .profile = .{ .supports_streaming = true },
+        .requestFn = LocalModel.request,
+        .streamFn = LocalModel.stream,
+    } };
+    var buffered = try durable_agent.runWithOptions(std.testing.allocator, "hello", .{ .durable = binding });
+    defer buffered.deinit();
+    try std.testing.expectEqualStrings("durable", buffered.output);
+
+    var sink_state: Sink = .{};
+    var streamed = try durable_agent.runStreamWithOptions(
+        std.testing.allocator,
+        "hello",
+        .{ .durable = binding },
+        .{ .context = &sink_state, .eventFn = Sink.emit },
+    );
+    defer streamed.deinit();
+    try std.testing.expectEqualStrings("durable", streamed.output);
+    try std.testing.expectEqual(@as(usize, 4), sink_state.model_events);
+    try std.testing.expectEqual(@as(usize, 2), runtime_state.calls);
 }

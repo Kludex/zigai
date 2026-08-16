@@ -37,6 +37,9 @@
   kinds, stable idempotency identities, SHA-256 input binding, strict versioned
   records, explicit suspension states, owned parsing, and a runtime vtable for
   workflow-engine adapters.
+- Route buffered and streaming agent model requests through immutable durable
+  bindings with explicit worker IDs, deterministic request identities, a
+  strict versioned provider-neutral wire codec, and normalized stream replay.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model

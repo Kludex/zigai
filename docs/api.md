@@ -764,6 +764,8 @@ The public named error categories are:
 
 - `Agent.Error` (also `zigai.AgentError`) for agent validation, limits, and
   lifecycle failures;
+- `durable.Error` for invalid durable records, missing worker registrations,
+  runtime mismatches, and persisted failure or suspension outcomes;
 - `zigai.ProviderRequestError` for normalized rate-limit, server, and other
   non-success provider responses;
 - `providers.<name>.Error` for provider encoding and decoding failures plus the

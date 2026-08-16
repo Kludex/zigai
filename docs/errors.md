@@ -252,6 +252,20 @@ Provider construction and optional operations use these boundary errors:
 client-construction, and application errors propagate unchanged. Dry-run
 validation never invokes it.
 
+## Durable execution errors
+
+| Error | Meaning |
+| --- | --- |
+| `InputDigestMismatch` | A persisted operation key was reused with changed input. |
+| `InvalidInvocation` | A run, step, or handler identity is malformed. |
+| `InvalidPayload` | An operation input or output is not bounded valid JSON. |
+| `InvalidRecord` | A persisted record is malformed or ambiguous. |
+| `MissingHandler` | No worker registration ID was configured for the operation kind. |
+| `OperationFailed` | A runtime returned a persisted failure outcome. |
+| `OperationSuspended` | A runtime returned a suspension outside a resume-aware API. |
+| `RuntimeRecordMismatch` | A runtime returned a record for a different invocation. |
+| `UnsupportedRecordVersion` | A durable record uses an unsupported format version. |
+
 ## MCP errors
 
 | Error | Meaning |
