@@ -82,6 +82,7 @@ pub const HistoryContext = history.Context;
 pub const OwnedHistory = history.Owned;
 pub const OpenTelemetry = telemetry.OpenTelemetry;
 pub const TelemetryExporter = telemetry.Exporter;
+pub const BufferedTelemetryExporter = telemetry.BufferedExporter;
 pub const TelemetrySpan = telemetry.Span;
 pub const TelemetryMetric = telemetry.Metric;
 pub const TelemetryEvent = telemetry.Event;

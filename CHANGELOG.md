@@ -12,6 +12,9 @@
 - Add OpenTelemetry MCP client/server spans and duration metrics with W3C
   `traceparent` propagation in request and notification `_meta`, semantic
   method/protocol/transport/session/target attributes, and bounded task IDs.
+- Add a thread-safe bounded telemetry exporter with owned signals, three
+  explicit overflow policies, serialized flush and shutdown, fail-open or
+  fail-closed downstream handling, and reasoned dropped-signal counters.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model

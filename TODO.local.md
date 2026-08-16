@@ -188,7 +188,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 
 ## P1 — Observability, evals, and operations
 
-- [ ] Emit semantic-convention OpenTelemetry traces, metrics, and events for
+- [x] Emit semantic-convention OpenTelemetry traces, metrics, and events for
   every model/tool/MCP/hook/retry/deferred phase, with context propagation,
   configurable prompt capture/redaction, bounded attributes, and exporter
   backpressure/failure isolation.
@@ -198,7 +198,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
     deferred phase with spans, events, and low-cardinality metrics.
   - [x] Instrument MCP client and server operations with protocol, method,
     transport, session, task, and correlated trace attributes.
-  - [ ] Add bounded exporter buffering, explicit backpressure policies,
+  - [x] Add bounded exporter buffering, explicit backpressure policies,
     shutdown/flush semantics, failure isolation, and dropped-signal metrics.
 - [x] Add repeated eval runs, independent task/evaluator retry policies, stable
   case/run identities, and lifecycle events around every attempt and outcome.

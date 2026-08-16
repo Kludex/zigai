@@ -911,6 +911,35 @@ transport, session, tool, prompt, resource, and task attributes, and propagates
 W3C `traceparent` through `params._meta`. Resource and task IDs stay out of span
 names to avoid high-cardinality operation names.
 
+Keep exporter work away from the agent path with a bounded buffer:
+
+```zig
+var buffered = zigai.BufferedTelemetryExporter.init(
+    allocator,
+    init.io,
+    my_otel_exporter,
+    1_024,
+);
+defer buffered.deinit();
+buffered.overflow = .drop_oldest;
+
+const agent = zigai.Agent{
+    .model = model,
+    .telemetry = .{
+        .io = init.io,
+        .exporter = buffered.exporter(),
+    },
+};
+
+// Run during graceful shutdown, after agent work has stopped.
+_ = try buffered.shutdown();
+```
+
+The buffer deep-copies admitted signals. Choose `.drop_newest`, `.drop_oldest`,
+or `.reject` for saturation. `flush` and `shutdown` serialize downstream calls,
+and `stats` reports pending and dropped work. Drops also emit the
+`zigai.telemetry.dropped` counter with a bounded `reason` attribute.
+
 Prompt capture is disabled by default. Set `content.prompts` to `.raw` or
 `.redacted` only when the destination and data policy are ready. Redacted mode
 uses an application callback, and both modes enforce configured content and
