@@ -240,7 +240,10 @@ pub const Client = struct {
         try self.requireInitialized();
         try validateAbsolutePath(cwd);
         try validateJson(self.gpa, mcp_servers_json);
-        const params = try buildSessionParams(self.gpa, null, cwd, mcp_servers_json, false);
+        const params = buildSessionParams(self.gpa, null, cwd, mcp_servers_json, false) catch |failure| return switch (failure) {
+            error.WriteFailed => error.OutOfMemory,
+            else => failure,
+        };
         defer self.gpa.free(params);
         const result = try self.request("session/new", params);
         defer self.gpa.free(result);
@@ -260,7 +263,10 @@ pub const Client = struct {
         try self.requireInitialized();
         try validateAbsolutePath(cwd);
         try validateJson(self.gpa, mcp_servers_json);
-        const params = try buildSessionParams(self.gpa, session_id, cwd, mcp_servers_json, replay);
+        const params = buildSessionParams(self.gpa, session_id, cwd, mcp_servers_json, replay) catch |failure| return switch (failure) {
+            error.WriteFailed => error.OutOfMemory,
+            else => failure,
+        };
         defer self.gpa.free(params);
         const result = try self.request("session/resume", params);
         self.gpa.free(result);
@@ -856,6 +862,8 @@ test "ACP stdio process follows the official initialize session and prompt fixtu
     ;
     var stdio = try StdioTransport.init(std.testing.io, &.{ "/bin/sh", "-c", script });
     defer stdio.deinit();
+    try std.testing.expectError(error.InvalidACPMessage, stdio.transport().send("bad\nline"));
+    try std.testing.expect(stdio.transport().isTransportError(error.ACPProcessClosed));
     const ConnectorState = struct {
         transport_value: Transport,
         fn open(context: *anyopaque, _: std.mem.Allocator) !Transport {
@@ -886,6 +894,130 @@ test "ACP stdio process follows the official initialize session and prompt fixtu
     try std.testing.expectEqual(@as(usize, 1), updates.count);
 }
 
+test "ACP resume reconnect renegotiates and restores the active session" {
+    const ReconnectState = struct {
+        lines: []const []const u8,
+        index: usize = 0,
+        opens: usize = 0,
+        drop_next: bool = false,
+        updates: usize = 0,
+
+        fn open(context: *anyopaque, _: std.mem.Allocator) !Transport {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.opens += 1;
+            return .{
+                .context = self,
+                .send_fn = send,
+                .receive_fn = receive,
+                .close_fn = close,
+                .is_transport_error_fn = isTransportError,
+            };
+        }
+        fn send(_: *anyopaque, _: []const u8) !void {}
+        fn receive(context: *anyopaque, gpa: std.mem.Allocator) !OwnedLine {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (self.drop_next) {
+                self.drop_next = false;
+                return error.TransportDropped;
+            }
+            const line = self.lines[self.index];
+            self.index += 1;
+            return .{ .bytes = try gpa.dupe(u8, line), .gpa = gpa };
+        }
+        fn close(_: *anyopaque) void {}
+        fn isTransportError(_: *anyopaque, failure: anyerror) bool {
+            return failure == error.TransportDropped;
+        }
+        fn update(context: ?*anyopaque, _: Update) !void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.updates += 1;
+        }
+    };
+    const lines = [_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":2,\"capabilities\":{\"session\":{}},\"info\":{\"name\":\"agent\",\"version\":\"1\"}}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"protocolVersion\":2,\"capabilities\":{\"session\":{}},\"info\":{\"name\":\"agent\",\"version\":\"1\"}}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":4,\"result\":{}}",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"resumed\",\"update\":{\"sessionUpdate\":\"state_update\",\"state\":\"idle\"}}}",
+    };
+    var state = ReconnectState{ .lines = &lines };
+    var client = try Client.init(std.testing.allocator, std.testing.io, .{
+        .context = &state,
+        .open_fn = ReconnectState.open,
+    });
+    defer client.deinit();
+    client.reconnect_policy = .{ .max_attempts = 2, .delay_ms = 1 };
+    client.handlers.updates = .{ .context = &state, .update_fn = ReconnectState.update };
+    _ = try client.initialize();
+    try client.resumeSession("resumed", "/workspace", "[]", true);
+    state.drop_next = true;
+    try client.nextUpdate();
+    try std.testing.expectEqual(@as(usize, 2), state.opens);
+    try std.testing.expectEqual(@as(usize, 1), state.updates);
+}
+
+test "ACP remote errors and version negotiation fail explicitly" {
+    const ErrorState = struct {
+        line: []const u8,
+        fn open(context: *anyopaque, _: std.mem.Allocator) !Transport {
+            return .{ .context = context, .send_fn = send, .receive_fn = receive, .close_fn = close };
+        }
+        fn send(_: *anyopaque, _: []const u8) !void {}
+        fn receive(context: *anyopaque, gpa: std.mem.Allocator) !OwnedLine {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return .{ .bytes = try gpa.dupe(u8, self.line), .gpa = gpa };
+        }
+        fn close(_: *anyopaque) void {}
+    };
+    var state = ErrorState{ .line = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":3,\"capabilities\":{}}}" };
+    var client = try Client.init(std.testing.allocator, std.testing.io, .{ .context = &state, .open_fn = ErrorState.open });
+    defer client.deinit();
+    try std.testing.expectError(error.UnsupportedACPVersion, client.initialize());
+    state.line = "{\"jsonrpc\":\"2.0\",\"id\":2,\"error\":{\"code\":-32800,\"message\":\"cancelled\"}}";
+    client.state = .connected;
+    client.next_id = 2;
+    try std.testing.expectError(error.ACPRequestCancelled, client.initialize());
+    state.line = "{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32000,\"message\":\"failed\"}}";
+    client.state = .connected;
+    client.next_id = 3;
+    try std.testing.expectError(error.ACPRemoteError, client.initialize());
+}
+
+fn runACPWithAllocator(gpa: std.mem.Allocator) !void {
+    const AllocationState = struct {
+        lines: []const []const u8,
+        index: usize = 0,
+        fn open(context: *anyopaque, _: std.mem.Allocator) !Transport {
+            return .{ .context = context, .send_fn = send, .receive_fn = receive, .close_fn = close };
+        }
+        fn send(_: *anyopaque, _: []const u8) !void {}
+        fn receive(context: *anyopaque, allocator: std.mem.Allocator) !OwnedLine {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const line = self.lines[self.index];
+            self.index += 1;
+            return .{ .bytes = try allocator.dupe(u8, line), .gpa = allocator };
+        }
+        fn close(_: *anyopaque) void {}
+    };
+    const lines = [_][]const u8{
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":2,\"capabilities\":{\"session\":{}}}}",
+        "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"session\"}}",
+    };
+    var state = AllocationState{ .lines = &lines };
+    var client = try Client.init(gpa, std.testing.io, .{ .context = &state, .open_fn = AllocationState.open });
+    defer client.deinit();
+    _ = try client.initialize();
+    _ = try client.newSession("/workspace", "[]");
+}
+
+test "ACP ownership survives every allocation failure" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        runACPWithAllocator,
+        .{},
+    );
+}
+
 test "ACP v1 capability compatibility path and filesystem roots fail closed" {
     const Handler = struct {
         fn read(_: *anyopaque, gpa: std.mem.Allocator, _: []const u8) ![]u8 {
@@ -893,8 +1025,8 @@ test "ACP v1 capability compatibility path and filesystem roots fail closed" {
         }
         fn write(_: *anyopaque, _: []const u8, _: []const u8) !void {}
         fn remove(_: *anyopaque, _: []const u8) !void {}
-        fn execute(_: *anyopaque, _: std.mem.Allocator, _: execution.Command) !execution.CommandResult {
-            return error.Unsupported;
+        fn execute(_: *anyopaque, _: std.mem.Allocator, _: execution.Command) !execution.CommandResult { // kcov-ignore: path-only handler
+            return error.Unsupported; // kcov-ignore: path-only handler
         }
     };
     var marker: u8 = 0;

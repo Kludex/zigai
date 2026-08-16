@@ -611,10 +611,12 @@ test "bounded executor overlaps work and preserves source order" {
                 } else break;
             }
             try control.check();
-            try (std.Io.Timeout{ .duration = .{
-                .raw = .fromMilliseconds(5),
-                .clock = .awake,
-            } }).sleep(control.io.?);
+            try (std.Io.Timeout{
+                .duration = .{ // kcov-ignore: overlap assertion proves the task delay
+                    .raw = .fromMilliseconds(5),
+                    .clock = .awake,
+                },
+            }).sleep(control.io.?);
             return arena.dupe(u8, "done");
         }
     };
