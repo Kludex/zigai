@@ -23,6 +23,7 @@ fn auditRepository(allocator: std.mem.Allocator, io: std.Io) !void {
         fixture_count += 1;
         const cassette_path = try std.fmt.allocPrint(allocator, "cassettes/{s}", .{entry.path});
         defer allocator.free(cassette_path);
+        std.mem.replaceScalar(u8, cassette_path, std.fs.path.sep_windows, '/');
         if (!manifestContains(cassette_path)) {
             std.log.err("cassette is not declared in the manifest: {s}", .{cassette_path});
             return error.OrphanedCassette;
