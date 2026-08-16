@@ -8027,7 +8027,7 @@ test "MCP telemetry propagates client context to server spans" {
         fn span(_: *anyopaque, _: telemetry_types.Span) !void {
             return error.ExportFailed;
         }
-        fn metric(_: *anyopaque, _: telemetry_types.Metric) !void {}
+        fn metric(_: *anyopaque, _: telemetry_types.Metric) !void {} // kcov-ignore: fail-closed span export stops before metric export
     };
     server.telemetry = .{
         .io = std.testing.io,

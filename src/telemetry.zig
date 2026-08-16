@@ -1430,8 +1430,8 @@ test "telemetry names every agent stream event" {
 fn checkTelemetryAllocationFailure(allocator: std.mem.Allocator) !void {
     const agent_types = @import("agent.zig");
     const Sink = struct {
-        fn span(_: *anyopaque, _: Span) !void {}
-        fn metric(_: *anyopaque, _: Metric) !void {}
+        fn span(_: *anyopaque, _: Span) !void {} // kcov-ignore: allocation failures stop before this sink
+        fn metric(_: *anyopaque, _: Metric) !void {} // kcov-ignore: allocation failures stop before this sink
     };
     var unused: u8 = 0;
     const model = model_types.Model{
