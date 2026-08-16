@@ -216,7 +216,7 @@ test "OpenAI embeddings map status and malformed response failures" {
     };
     var state = State{ .body = "{}", .status = 429 };
     var client = Client{
-        .model_name = "embedding",
+        .model_name = "",
         .provider = .{
             .context = &state,
             .name = "openai",
@@ -225,10 +225,20 @@ test "OpenAI embeddings map status and malformed response failures" {
         },
     };
     try std.testing.expectError(
+        Error.InvalidRequestEncoding,
+        client.model().embed(std.testing.allocator, .{ .inputs = &.{"input"}, .input_type = .query }),
+    );
+    client.model_name = "embedding";
+    try std.testing.expectError(
         error.ProviderRateLimited,
         client.model().embed(std.testing.allocator, .{ .inputs = &.{"input"}, .input_type = .query }),
     );
     state.status = 200;
+    try std.testing.expectError(
+        error.ProviderResponseDecodeError,
+        client.model().embed(std.testing.allocator, .{ .inputs = &.{"input"}, .input_type = .query }),
+    );
+    state.body = "{\"data\":[{\"embedding\":[],\"index\":0}]}";
     try std.testing.expectError(
         error.ProviderResponseDecodeError,
         client.model().embed(std.testing.allocator, .{ .inputs = &.{"input"}, .input_type = .query }),

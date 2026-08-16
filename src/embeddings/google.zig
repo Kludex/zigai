@@ -240,6 +240,7 @@ test "Google embedding ownership survives every allocation failure" {
 test "Google embeddings reject unsafe models and malformed response counts" {
     const State = struct {
         calls: usize = 0,
+        status: u16 = 500,
 
         fn request(
             context: *anyopaque,
@@ -248,7 +249,7 @@ test "Google embeddings reject unsafe models and malformed response counts" {
         ) !transport.Response {
             const self: *@This() = @ptrCast(@alignCast(context));
             self.calls += 1;
-            return .{ .status = 200, .body = try gpa.dupe(u8, "{\"embeddings\":[]}") };
+            return .{ .status = self.status, .body = try gpa.dupe(u8, "{\"embeddings\":[]}") };
         }
     };
     var state: State = .{};
@@ -267,6 +268,18 @@ test "Google embeddings reject unsafe models and malformed response counts" {
     );
     try std.testing.expectEqual(@as(usize, 0), state.calls);
     client.model_name = "embedding";
+    client.query_task_type = "";
+    try std.testing.expectError(
+        Error.InvalidRequestEncoding,
+        client.model().embed(std.testing.allocator, .{ .inputs = &.{"input"}, .input_type = .query }),
+    );
+    try std.testing.expectEqual(@as(usize, 0), state.calls);
+    client.query_task_type = "RETRIEVAL_QUERY";
+    try std.testing.expectError(
+        error.ProviderServerError,
+        client.model().embed(std.testing.allocator, .{ .inputs = &.{"input"}, .input_type = .query }),
+    );
+    state.status = 200;
     try std.testing.expectError(
         error.ProviderResponseDecodeError,
         client.model().embed(std.testing.allocator, .{ .inputs = &.{"input"}, .input_type = .query }),
