@@ -10,6 +10,7 @@ const reflect = @import("reflect.zig");
 const history = @import("history.zig");
 const context_budget = @import("context_budget.zig");
 const telemetry_types = @import("telemetry.zig");
+const diagnostic_types = @import("diagnostics.zig");
 const json_limits = @import("json.zig");
 const transport = @import("transport.zig");
 const security = @import("security.zig");
@@ -1432,6 +1433,8 @@ pub const Agent = struct {
     io: ?std.Io = null,
     /// Optional per-run OpenTelemetry spans and metrics.
     telemetry: ?telemetry_types.OpenTelemetry = null,
+    /// Optional backend-neutral structured diagnostic events.
+    diagnostics: ?diagnostic_types.Config = null,
     /// Optional deterministic pricing snapshot. Unknown or incompletely
     /// priced models retain a null cost.
     price_table: ?pricing_types.Table = null,
@@ -1757,6 +1760,10 @@ pub const Agent = struct {
         else
             null;
         defer if (telemetry_run) |*instrumentation| instrumentation.deinit();
+        var diagnostic_run: ?diagnostic_types.Run = if (self.diagnostics) |configured|
+            configured.start(allocator)
+        else
+            null;
 
         if (self.capabilities.len == 0 and options.capabilities.len == 0 and options.capability_layers.len == 0) {
             try ensureUniqueToolNames(self.tools);
@@ -1764,6 +1771,7 @@ pub const Agent = struct {
             defer hooks.deinit(allocator);
             try hooks.appendSlice(allocator, self.hooks);
             if (telemetry_run) |*instrumentation| try hooks.append(allocator, telemetryHook(instrumentation));
+            if (diagnostic_run) |*diagnostics| try hooks.append(allocator, diagnosticHook(diagnostics));
             const controlled_hooks = try ControlledHooks.init(allocator, hooks.items, control);
             defer controlled_hooks.deinit(allocator);
             return self.runConfigured(allocator, prompt, options, controlled_stream_sink, controlled_output_validator, controlled_hooks.hooks, allow_pause, resume_state, decisions, control, null) catch |err| {
@@ -1819,6 +1827,9 @@ pub const Agent = struct {
         configured.capabilities = &.{};
         if (telemetry_run) |*instrumentation| {
             try hooks.append(capability_memory, telemetryHook(instrumentation));
+        }
+        if (diagnostic_run) |*diagnostics| {
+            try hooks.append(capability_memory, diagnosticHook(diagnostics));
         }
         const controlled_hooks = try ControlledHooks.init(allocator, hooks.items, control);
         defer controlled_hooks.deinit(allocator);
@@ -4779,6 +4790,16 @@ fn telemetryHook(run: *telemetry_types.Run) LifecycleHook {
         fn emit(context: *anyopaque, event: LifecycleEvent) !void {
             const telemetry_run: *telemetry_types.Run = @ptrCast(@alignCast(context));
             return telemetry_run.observe(event);
+        }
+    };
+    return .{ .context = run, .eventFn = Adapter.emit };
+}
+
+fn diagnosticHook(run: *diagnostic_types.Run) LifecycleHook {
+    const Adapter = struct {
+        fn emit(context: *anyopaque, event: LifecycleEvent) !void {
+            const diagnostic_run: *diagnostic_types.Run = @ptrCast(@alignCast(context));
+            return diagnostic_run.observe(event);
         }
     };
     return .{ .context = run, .eventFn = Adapter.emit };

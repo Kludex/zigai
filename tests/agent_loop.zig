@@ -4728,6 +4728,51 @@ test "OpenTelemetry records runs requests tools retries tokens cost and latency"
     try std.testing.expectEqual(@as(usize, 1), result.usage.tool_calls);
 }
 
+test "structured diagnostics instrument ordinary and capability runs with redaction" {
+    const Capture = struct {
+        starts: usize = 0,
+        ends: usize = 0,
+        redactions: usize = 0,
+
+        fn emit(context: *anyopaque, event: zigai.DiagnosticEvent) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (std.mem.eql(u8, event.name, "zigai.run.start")) self.starts += 1;
+            if (std.mem.eql(u8, event.name, "zigai.run.end")) self.ends += 1;
+            self.redactions += event.sensitive_values_redacted;
+            for (event.attributes) |attribute| switch (attribute.value) {
+                .string => |value| try std.testing.expect(std.mem.indexOf(u8, value, "private") == null),
+                else => {},
+            };
+        }
+    };
+    const parts = [_]zigai.model.Part{.{ .text = "private answer" }};
+    const responses = [_]zigai.model.ModelResponse{.{ .parts = &parts }};
+    var first_model = zigai.testing.ScriptedModel{ .responses = &responses };
+    var second_model = zigai.testing.ScriptedModel{ .responses = &responses };
+    var capture: Capture = .{};
+    const diagnostics = zigai.Diagnostics{
+        .sink = .{ .context = &capture, .emitFn = Capture.emit },
+        .minimum_level = .trace,
+        .capture_content = true,
+        .sensitive_values = &.{"private"},
+    };
+    var first = try (zigai.Agent{
+        .model = first_model.model(),
+        .diagnostics = diagnostics,
+    }).run(std.testing.allocator, "private prompt");
+    defer first.deinit();
+    var second = try (zigai.Agent{
+        .model = second_model.model(),
+        .capabilities = &.{.{}},
+        .diagnostics = diagnostics,
+    }).run(std.testing.allocator, "private prompt");
+    defer second.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), capture.starts);
+    try std.testing.expectEqual(@as(usize, 2), capture.ends);
+    try std.testing.expect(capture.redactions >= 4);
+}
+
 test "agent applies an explicit versioned price table" {
     const Model = struct {
         fn request(_: *anyopaque, _: std.mem.Allocator, _: zigai.ModelRequest) !zigai.model.ModelResponse {

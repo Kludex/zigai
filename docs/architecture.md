@@ -95,6 +95,13 @@ start/end or before/after events plus an error event where failure is possible.
 Hook payloads are borrowed. Hook failures stop the run; terminal failures emit
 `run_error` before returning.
 
+Structured diagnostics adapt that lifecycle stream to a backend-neutral sink.
+Level filtering happens before allocation. Content fields are opt-in, exact
+application-supplied sensitive values are redacted before truncation, and both
+attribute count and byte sizes are bounded. The sink receives borrowed values
+and may choose fail-open or fail-closed delivery without coupling the core to a
+logging implementation.
+
 OpenTelemetry instrumentation is attached as an isolated lifecycle observer
 for each run. It emits one trace with agent, model-request, and tool-call spans,
 plus counters and histograms for calls, retries, latency, cached/reasoning/audio

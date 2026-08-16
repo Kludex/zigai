@@ -125,6 +125,7 @@ Use these namespaces for the rest of the API:
 | `zigai.evals` | Datasets, evaluators, reports, and model grading |
 | `zigai.mcp` | MCP 2026 client, server, Streamable HTTP, and stdio |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
+| `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
 | `zigai.transport` | Pluggable buffered and line-streaming HTTP transport |
 | `zigai.json` | Pre-allocation validation and boundary-specific JSON limits |
@@ -555,6 +556,12 @@ by the caller's allocator.
 Direct `Model.request`, `Model.stream`, and provider decoder calls build nested
 response data with the supplied allocator. Use an arena and release the arena
 as one unit. Normal `Agent` calls already provide this ownership boundary.
+
+`Agent.diagnostics` borrows its sink and configured sensitive values. The sink
+receives a sanitized event whose strings live only for the callback. Content
+capture is opt-in; configured sensitive values are replaced before the value
+limit is applied, so truncation cannot expose a secret prefix. `max_attributes`,
+`max_key_bytes`, and `max_value_bytes` bound every event before delivery.
 
 ## Output strategies
 

@@ -202,7 +202,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [ ] Add deterministic benchmarks for request encoding/decoding, streaming,
   history processing, schema reflection/validation, MCP, and parallel tools;
   publish baselines and fail CI only on reviewed regression thresholds.
-- [ ] Add structured diagnostic logging with levels and a secret-redaction
+- [x] Add structured diagnostic logging with levels and a secret-redaction
   contract, while keeping the core independent of a concrete logging backend.
 
 ## P2 — Production application surfaces

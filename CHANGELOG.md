@@ -71,6 +71,9 @@
   enforces manifest completeness, unique live fixtures and IDs, secret-safe
   headers and values, provider endpoint and multipart normalization, and an
   idempotent Cassetter YAML round trip across every checked-in fixture.
+- Add backend-neutral structured diagnostics for agent lifecycle events with
+  level filtering, bounded keys/values and attribute counts, fail-open policy,
+  opt-in content capture, and exact-value redaction before truncation.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

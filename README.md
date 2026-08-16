@@ -834,6 +834,26 @@ validation, errors, retries, and stream events before and after delivery.
 Hook values are borrowed and callbacks run synchronously. Copy only what you
 need to retain. A hook error stops the run and is reported through `run_error`.
 
+## Structured diagnostics
+
+`Agent.diagnostics` maps lifecycle activity to structured, leveled events. It
+does not depend on a logging package; provide a `DiagnosticSink` callback that
+bridges to the backend used by the application.
+
+```zig
+.diagnostics = .{
+    .sink = my_diagnostic_sink,
+    .minimum_level = .info,
+    .sensitive_values = &.{api_token},
+},
+```
+
+Prompt, output, tool arguments, and tool results are omitted unless
+`capture_content = true`. String values are redacted before truncation, and
+attribute counts, keys, and values have explicit byte limits. Sink failures are
+fail-open by default; set `fail_open = false` when diagnostics are required for
+the run to proceed. Events and attributes are borrowed for the callback only.
+
 ## Usage and cost
 
 Every provider response has `RequestUsage`. Agent results have `RunUsage`,

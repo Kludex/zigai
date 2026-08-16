@@ -96,10 +96,13 @@ them. Custom transports receive raw values because they must send the request;
 they are trusted application code. Diagnostic code should use
 `Header.redactedValue()`.
 
-Lifecycle and telemetry events never contain provider authentication headers
-or API keys. Prompt capture remains disabled by default because prompts and
-tool data may themselves contain secrets. Treat a telemetry exporter as a
-trusted sink when capture is enabled.
+Lifecycle, telemetry, and diagnostic events never contain provider
+authentication headers or API keys. Prompt and tool content capture remains
+disabled by default because application data may itself contain secrets.
+Structured diagnostics replace configured sensitive values before truncation;
+the application must list any secrets that can occur in captured content.
+Treat telemetry exporters and diagnostic sinks as trusted when capture is
+enabled.
 
 Provider error bodies are hidden by default and bounded when enabled. Native
 and compatible adapters always suppress their configured API key if a provider

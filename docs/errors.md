@@ -270,8 +270,9 @@ validation never invokes it.
 ## Application errors
 
 Tool functions, lifecycle hooks, stream sinks, dynamic instructions, history
-processors, selectors, evaluators, transports, telemetry exporters, and MCP
-handlers may return application-defined errors. ZigAI propagates them unchanged.
+processors, selectors, evaluators, transports, telemetry exporters, diagnostic
+sinks, and MCP handlers may return application-defined errors. ZigAI propagates
+them unchanged.
 They are intentionally not converted to `ProviderConnectionError` or another
 framework category.
 
@@ -283,7 +284,7 @@ The public callback contracts are split deliberately:
 | Token estimator | Infallible | It performs borrowed, allocation-free counting. |
 | Tool recovery classifier | Infallible | It classifies an error already produced. |
 | Tool, model, and transport operations | Fallible | They perform application or external I/O work. |
-| Stream, lifecycle, retry, and telemetry sinks | Fallible | Applications may stop a run when delivery fails. |
+| Stream, lifecycle, retry, telemetry, and diagnostic sinks | Fallible | Applications may stop a run when delivery fails. |
 | Instructions, history, toolsets, selectors, and evaluators | Fallible | They may allocate or call application services. |
 | MCP handlers and event sinks | Fallible | They cross application and protocol boundaries. |
 
