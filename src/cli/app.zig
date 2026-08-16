@@ -809,7 +809,7 @@ test "production CLI config history paused state and provider selection are owne
                 if (failure == error.EmptyCommand) return;
                 return failure;
             };
-            runtime.deinit();
+            runtime.deinit(); // kcov-ignore: invalid empty command cannot initialize a runtime
         }
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, MCPAllocation.run, .{});

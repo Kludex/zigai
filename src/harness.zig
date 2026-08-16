@@ -321,6 +321,7 @@ test "coder harness composes capabilities hooks and owned artifacts" {
     const agent = Agent{
         .model = .{ .context = &state, .profile = .{}, .requestFn = State.request },
         .instructions = &base_instructions,
+        .io = std.testing.io,
     };
     const capability_instructions = [_]agent_types.Instruction{.{ .text = "capability" }};
     const selections = [_]CapabilityConfig{
@@ -335,7 +336,8 @@ test "coder harness composes capabilities hooks and owned artifacts" {
         .instructions = &custom_instructions,
         .artifact_producers = &producers,
         .observer = .{ .context = &state, .event_fn = State.observe },
-    })).run(std.testing.allocator, "build", .{});
+        .limits = .{ .timeout_ms = 100, .max_total_tokens = 1_000 },
+    })).run(std.testing.allocator, "build", .{ .timeout_ms = 50 });
     defer result.deinit();
     try std.testing.expectEqualStrings("answer.txt", result.artifacts[0].name);
     try std.testing.expectEqualStrings("artifact body", result.artifacts[0].bytes);
@@ -380,6 +382,51 @@ test "harness limits failures and agent-spec integration are explicit" {
     defer resolved.deinit();
     const harness = Harness.fromResolved(&resolved, .{});
     try std.testing.expect(harness.agent == &resolved.agent);
+
+    const FailureCapture = struct {
+        failures: usize = 0,
+        fn observe(context: ?*anyopaque, event: Event) !void {
+            if (event != .failure) return;
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.failures += 1;
+        }
+    };
+    var failure_capture: FailureCapture = .{};
+    var empty = testing_types.ScriptedModel{ .responses = &.{} };
+    const failing_agent = Agent{ .model = empty.model() };
+    try std.testing.expectError(
+        error.ScriptExhausted,
+        (Harness.init(&failing_agent, .{
+            .observer = .{ .context = &failure_capture, .event_fn = FailureCapture.observe },
+        })).run(std.testing.allocator, "fail", .{}),
+    );
+    try std.testing.expectEqual(@as(usize, 1), failure_capture.failures);
+}
+
+test "artifact collector rejects every ownership limit" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var collector = ArtifactCollector{
+        .arena = arena.allocator(),
+        .limits = .{
+            .max_artifacts = 1,
+            .max_artifact_bytes = 2,
+            .max_total_artifact_bytes = 2,
+        },
+        .observer = null,
+    };
+    try std.testing.expectError(error.InvalidHarnessArtifact, collector.add("", "text/plain", "x"));
+    try std.testing.expectError(error.InvalidHarnessArtifact, collector.add("bad\nname", "text/plain", "x"));
+    try std.testing.expectError(error.HarnessArtifactTooLarge, collector.add("large", "text/plain", "abc"));
+    try collector.add("ok", "text/plain", "ab");
+    try std.testing.expectError(error.TooManyHarnessArtifacts, collector.add("second", "text/plain", ""));
+
+    var total_collector = ArtifactCollector{
+        .arena = arena.allocator(),
+        .limits = .{ .max_artifact_bytes = 2, .max_total_artifact_bytes = 1 },
+        .observer = null,
+    };
+    try std.testing.expectError(error.HarnessArtifactTooLarge, total_collector.add("total", "text/plain", "ab"));
 }
 
 fn runHarnessWithAllocator(gpa: std.mem.Allocator) !void {
