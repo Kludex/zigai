@@ -168,6 +168,23 @@ The event handler is preflighted before the MCP request runs. Ordinary event
 sinks on durable requests and durable event delivery on direct requests are
 both rejected rather than silently changing semantics.
 
-Agent lifecycle event, retry-delay, and approval routing, a concrete
-workflow-engine adapter, durable stream/approval resumption, and worker-restart
-recovery tests remain tracked in `TODO.local.md`.
+## Retry timers and paused decisions
+
+When backoff is enabled, durable runs derive full jitter from the stable run ID,
+retry number, and failed model-request number. Replaying the workflow therefore
+reconstructs the same `retry_delay` input instead of drawing fresh entropy. The
+timer worker receives `zigai.durable.payloads.retry`, including the chosen
+delay, cumulative delay, stable error name, and bounded provider retry metadata.
+The agent process never sleeps on this path.
+
+Approval and external-result resumptions retain the original tool-call
+sequence. Before executing or accepting a resumed call, ZigAI routes the
+proposed decision through `approval_resume`. The worker receives the call,
+policy-transformed arguments, execution kind, and proposed decision through
+`zigai.durable.payloads.approval`; its persisted response is the decision the
+agent applies. Missing timer and approval handlers are rejected before their
+associated model or resumed-tool side effects.
+
+Agent lifecycle event routing, a concrete workflow-engine adapter, durable
+stream/approval checkpointing, and worker-restart recovery tests remain tracked
+in `TODO.local.md`.

@@ -196,6 +196,8 @@ const AgentError = error{
     DurableOperationFailed,
     /// A durable runtime suspended an operation not handled by this run API.
     DurableOperationSuspended,
+    /// A required durable operation family has no registered worker handler.
+    MissingDurableHandler,
     /// A resumed approval call has no matching decision.
     MissingDeferredToolDecision,
     /// A resume decision does not match any paused tool call.
@@ -1898,6 +1900,13 @@ pub const Agent = struct {
         else
             try ensureContentSupported(active.model, self.url_policy, options.message_history);
         try ensurePromptPartsSupported(active.model, self.url_policy, options.prompt_parts);
+        if (options.durable) |binding| {
+            if (self.retry_policy.max_retries > 0 and self.retry_policy.backoff != null and
+                binding.handlers.retry_delay == null)
+            {
+                return Error.MissingDurableHandler;
+            }
+        }
         const invocation_started = monotonicNow(self.io);
         try emitLifecycle(hooks, .{ .run_start = .{ .prompt = prompt, .model = active.model } });
 
@@ -2168,12 +2177,21 @@ pub const Agent = struct {
                     const retry_candidate = !stream_emitted and retries < self.retry_policy.max_retries and
                         shouldRetry(err, self.retry_policy);
                     const delay_ms = if (retry_candidate) if (self.retry_policy.backoff) |backoff|
-                        backoffDelayMilliseconds(
-                            self.io orelse return Error.RetryBackoffRequiresIo,
-                            backoff,
-                            retries + 1, // kcov-ignore
-                            provider_errors.retry_after_seconds,
-                        )
+                        if (options.durable) |binding|
+                            durableBackoffDelayMilliseconds(
+                                binding,
+                                backoff,
+                                retries + 1,
+                                model_requests,
+                                provider_errors.retry_after_seconds,
+                            )
+                        else
+                            backoffDelayMilliseconds(
+                                self.io orelse return Error.RetryBackoffRequiresIo,
+                                backoff,
+                                retries + 1, // kcov-ignore
+                                provider_errors.retry_after_seconds,
+                            )
                     else
                         0 else 0;
                     const within_budget = if (self.retry_policy.max_total_delay_ms) |maximum|
@@ -2190,23 +2208,31 @@ pub const Agent = struct {
                     if (will_retry) {
                         retries += 1;
                         total_retry_delay_ms += delay_ms;
+                        const retry_event = RetryEvent{
+                            .failure = err,
+                            .retry_number = retries,
+                            .model_requests = model_requests,
+                            .retry_after_seconds = provider_errors.retry_after_seconds,
+                            .rate_limit_remaining_requests = provider_errors.rate_limit_remaining_requests,
+                            .rate_limit_remaining_tokens = provider_errors.rate_limit_remaining_tokens,
+                            .provider_request_id = provider_errors.requestId(),
+                            .delay_ms = delay_ms,
+                            .total_delay_ms = total_retry_delay_ms,
+                        };
                         if (self.retry_policy.before_retry) |hook| {
-                            const retry_event = RetryEvent{
-                                .failure = err,
-                                .retry_number = retries,
-                                .model_requests = model_requests,
-                                .retry_after_seconds = provider_errors.retry_after_seconds,
-                                .rate_limit_remaining_requests = provider_errors.rate_limit_remaining_requests,
-                                .rate_limit_remaining_tokens = provider_errors.rate_limit_remaining_tokens,
-                                .provider_request_id = provider_errors.requestId(),
-                                .delay_ms = delay_ms,
-                                .total_delay_ms = total_retry_delay_ms,
-                            };
                             try control.invoke(void, invokeRetryHook, .{ hook, retry_event });
                         }
                         if (self.retry_policy.backoff != null) {
-                            const io = self.io orelse return Error.RetryBackoffRequiresIo;
-                            try sleepBackoff(io, delay_ms, control);
+                            if (options.durable) |binding| {
+                                try control.invoke(
+                                    void,
+                                    waitRetryDurable,
+                                    .{ binding, memory, retry_event },
+                                );
+                            } else {
+                                const io = self.io orelse return Error.RetryBackoffRequiresIo;
+                                try sleepBackoff(io, delay_ms, control);
+                            }
                         }
                         continue;
                     }
@@ -2866,6 +2892,13 @@ fn executeResumedToolCalls(
         else => {},
     };
     if (call_count == 0) return Agent.Error.InvalidDeferredState;
+    if (durable) |binding| {
+        for (saved_calls) |saved| if (saved.execution != .immediate and
+            binding.handlers.approval_resume == null)
+        {
+            return Agent.Error.MissingDurableHandler;
+        };
+    }
     for (decisions, 0..) |decision, index| {
         for (decisions[index + 1 ..]) |other| {
             if (std.mem.eql(u8, decision.call_id, other.call_id)) return Agent.Error.UnexpectedDeferredToolDecision;
@@ -2921,6 +2954,24 @@ fn executeResumedToolCalls(
             };
             try emitLifecycle(hooks, .{ .tool_validation_end = .{ .call = call, .tool = tool } });
 
+            var durable_decision: ?durable_types.payloads.approval.OwnedResponse = null;
+            defer if (durable_decision) |*owned| owned.deinit();
+            const deferred_decision: ?ResumeDecision = if (saved.execution != .immediate) decision: {
+                const proposed = try requireResumeDecision(decisions, call.id);
+                if (durable) |binding| {
+                    durable_decision = try resolveResumeDecisionDurable(
+                        binding,
+                        allocator,
+                        call,
+                        saved,
+                        proposed,
+                        durable_sequence,
+                    );
+                    break :decision resumeDecisionFromDurable(durable_decision.?.decision);
+                }
+                break :decision proposed;
+            } else null;
+
             switch (saved.execution) {
                 .immediate => {
                     try emitLifecycle(hooks, .{ .tool_execution_start = .{ .call = call, .tool = tool } });
@@ -2961,7 +3012,7 @@ fn executeResumedToolCalls(
                     try follow_up_messages.appendSlice(allocator, processed.follow_up_messages);
                 },
                 .requires_approval => {
-                    const approved = try requireResumeDecision(decisions, call.id);
+                    const approved = deferred_decision.?;
                     switch (approved.action) {
                         .approve => {
                             try emitLifecycle(hooks, .{ .tool_execution_start = .{ .call = call, .tool = tool } });
@@ -3016,7 +3067,7 @@ fn executeResumedToolCalls(
                     }
                 },
                 .external => {
-                    const supplied = try requireResumeDecision(decisions, call.id);
+                    const supplied = deferred_decision.?;
                     switch (supplied.action) {
                         .approve => return Agent.Error.DeferredToolRequiresResult,
                         .deny => results[result_index] = .{ .tool_return = .{
@@ -3066,6 +3117,64 @@ fn validateDeferredCalls(
         else => {},
     };
     if (saved_index != saved_calls.len) return Agent.Error.InvalidDeferredState;
+}
+
+fn resolveResumeDecisionDurable(
+    binding: durable_types.Binding,
+    allocator: std.mem.Allocator,
+    call: model_types.ToolCall,
+    saved: SerializedResolvedToolCall,
+    proposed: ResumeDecision,
+    sequence: u64,
+) !durable_types.payloads.approval.OwnedResponse {
+    const input_json = try durable_types.payloads.approval.stringifyRequest(
+        allocator,
+        call,
+        saved.execution,
+        saved.arguments_json,
+        durableDecisionFromResume(proposed),
+    );
+    defer allocator.free(input_json);
+    var record = try binding.execute(
+        allocator,
+        .approval_resume,
+        "approval.resume",
+        sequence,
+        input_json,
+    );
+    defer record.deinit();
+    const output_json = try durableSuccessPayload(&record);
+    var parsed = try durable_types.payloads.approval.parseResponse(allocator, output_json);
+    errdefer parsed.deinit();
+    if (!std.mem.eql(u8, parsed.decision.call_id, call.id))
+        return Agent.Error.InvalidDeferredState;
+    return parsed;
+}
+
+fn durableDecisionFromResume(decision: ResumeDecision) durable_types.payloads.approval.Decision {
+    return .{
+        .call_id = decision.call_id,
+        .action = switch (decision.action) {
+            .approve => .approve,
+            .deny => .deny,
+            .result => .result,
+        },
+        .content = decision.content,
+        .is_error = decision.is_error,
+    };
+}
+
+fn resumeDecisionFromDurable(decision: durable_types.payloads.approval.Decision) ResumeDecision {
+    return .{
+        .call_id = decision.call_id,
+        .action = switch (decision.action) {
+            .approve => .approve,
+            .deny => .deny,
+            .result => .result,
+        },
+        .content = decision.content,
+        .is_error = decision.is_error,
+    };
 }
 
 fn requireResumeDecision(decisions: []const ResumeDecision, call_id: []const u8) Agent.Error!ResumeDecision {
@@ -4630,13 +4739,41 @@ fn backoffDelayMilliseconds(io: std.Io, backoff: Agent.Backoff, retry_number: us
     if (backoff.respect_retry_after) if (retry_after_seconds) |seconds| {
         return @min(std.math.mul(u64, seconds, 1000) catch std.math.maxInt(u64), backoff.maximum_delay_ms);
     };
+    const delay = maximumBackoffDelay(backoff, retry_number);
+    var random_source = std.Random.IoSource{ .io = io };
+    return random_source.interface().uintAtMost(u64, delay);
+}
+
+fn durableBackoffDelayMilliseconds(
+    binding: durable_types.Binding,
+    backoff: Agent.Backoff,
+    retry_number: usize,
+    model_requests: usize,
+    retry_after_seconds: ?u64,
+) u64 {
+    if (backoff.respect_retry_after) if (retry_after_seconds) |seconds| {
+        return @min(std.math.mul(u64, seconds, 1000) catch std.math.maxInt(u64), backoff.maximum_delay_ms);
+    };
+    const delay = maximumBackoffDelay(backoff, retry_number);
+    var seed_source_buffer: [256]u8 = undefined;
+    const seed_source = std.fmt.bufPrint(&seed_source_buffer, "{s}/{d}/{d}", .{
+        binding.run_id,
+        retry_number,
+        model_requests,
+    }) catch unreachable;
+    var digest: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(seed_source, &digest, .{});
+    const value = std.mem.readInt(u64, digest[0..8], .little);
+    return if (delay == std.math.maxInt(u64)) value else value % (delay + 1);
+}
+
+fn maximumBackoffDelay(backoff: Agent.Backoff, retry_number: usize) u64 {
     var delay = @min(backoff.initial_delay_ms, backoff.maximum_delay_ms);
     var exponent = retry_number -| 1;
     while (exponent > 0 and delay < backoff.maximum_delay_ms) : (exponent -= 1) {
         delay = @min(std.math.mul(u64, delay, 2) catch std.math.maxInt(u64), backoff.maximum_delay_ms);
     }
-    var random_source = std.Random.IoSource{ .io = io };
-    return random_source.interface().uintAtMost(u64, delay);
+    return delay;
 }
 
 fn generateIdempotencyKey(io: std.Io, output: *[32]u8) []const u8 {
@@ -4648,6 +4785,35 @@ fn generateIdempotencyKey(io: std.Io, output: *[32]u8) []const u8 {
 
 fn sleepBackoff(io: std.Io, delay_ms: u64, control: model_types.RunControl) !void {
     return control.invoke(void, sleepBackoffDuration, .{ io, delay_ms });
+}
+
+fn waitRetryDurable(
+    binding: durable_types.Binding,
+    allocator: std.mem.Allocator,
+    event: RetryEvent,
+) !void {
+    const input_json = try durable_types.payloads.retry.stringifyRequest(
+        allocator,
+        event.delay_ms,
+        event.retry_number,
+        event.model_requests,
+        event.total_delay_ms,
+        @errorName(event.failure),
+        event.retry_after_seconds,
+        event.rate_limit_remaining_requests,
+        event.rate_limit_remaining_tokens,
+        event.provider_request_id,
+    );
+    defer allocator.free(input_json);
+    var record = try binding.execute(
+        allocator,
+        .retry_delay,
+        "retry.delay",
+        event.model_requests,
+        input_json,
+    );
+    defer record.deinit();
+    _ = try durableSuccessPayload(&record);
 }
 
 fn sleepBackoffDuration(io: std.Io, delay_ms: u64) !void {
@@ -5694,6 +5860,21 @@ test "backoff applies full jitter, caps growth, and honors Retry-After" {
         .respect_retry_after = false,
     }, 1, 2) <= 100);
     try std.testing.expectEqual(@as(u64, 350), backoffDelayMilliseconds(std.testing.io, policy, 1, std.math.maxInt(u64)));
+    const durable_binding = durable_types.Binding{
+        .runtime = undefined,
+        .run_id = "stable-run",
+        .handlers = .{},
+    };
+    const durable_delay = durableBackoffDelayMilliseconds(durable_binding, policy, 2, 3, null);
+    try std.testing.expectEqual(
+        durable_delay,
+        durableBackoffDelayMilliseconds(durable_binding, policy, 2, 3, null),
+    );
+    try std.testing.expect(durable_delay <= 200);
+    _ = durableBackoffDelayMilliseconds(durable_binding, .{
+        .initial_delay_ms = std.math.maxInt(u64),
+        .maximum_delay_ms = std.math.maxInt(u64),
+    }, 1, 1, null);
     var idempotency_key: [32]u8 = undefined;
     try std.testing.expectEqual(@as(usize, 32), generateIdempotencyKey(std.testing.io, &idempotency_key).len);
     try std.testing.expectEqual(Agent.Error.Cancelled, normalizeBackoffSleepError(error.Canceled));
@@ -6566,4 +6747,211 @@ test "durable parallel tools use source-order identities and MCP operation kinds
     defer result.deinit();
     try std.testing.expectEqualStrings("complete", result.output);
     try std.testing.expectEqual(@as(u8, 3), runtime_state.seen_tools.load(.seq_cst));
+}
+
+test "durable retry timers run in workers and preflight registration" {
+    const RuntimeState = struct {
+        model_calls: usize = 0,
+        retry_calls: usize = 0,
+
+        fn execute(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            invocation: durable_types.Invocation,
+        ) !durable_types.OwnedRecord {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const output_json = switch (invocation.kind) {
+                .model_request => output: {
+                    self.model_calls += 1;
+                    if (self.model_calls == 1) return error.ProviderServerError;
+                    break :output try durable_types.payloads.model.stringifyResponse(allocator, .{
+                        .parts = &.{.{ .text = "recovered" }},
+                    });
+                },
+                .retry_delay => output: {
+                    self.retry_calls += 1;
+                    var request = try durable_types.payloads.retry.parseRequest(allocator, invocation.input_json);
+                    defer request.deinit();
+                    try std.testing.expectEqual(@as(u64, 0), request.delay_ms);
+                    try std.testing.expectEqual(@as(usize, 1), request.retry_number);
+                    try std.testing.expectEqual(@as(usize, 1), request.model_requests);
+                    try std.testing.expectEqualStrings("ProviderServerError", request.error_name);
+                    try std.testing.expectEqual(@as(u64, 1), invocation.sequence);
+                    break :output try allocator.dupe(u8, "{}");
+                },
+                else => return error.UnexpectedDurableOperation,
+            };
+            defer allocator.free(output_json);
+            return durable_types.OwnedRecord.copy(
+                allocator,
+                durable_types.Record.init(invocation, .{ .success = output_json }),
+            );
+        }
+    };
+    const Local = struct {
+        fn model(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse { // kcov-ignore: durable routing guard
+            return error.LocalModelMustNotRun; // kcov-ignore: durable routing guard
+        }
+    };
+    var threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer threaded.deinit();
+    var runtime_state: RuntimeState = .{};
+    var local_state: u8 = 0;
+    const configured = Agent{
+        .model = .{ .context = &local_state, .profile = .{}, .requestFn = Local.model },
+        .retry_policy = .{
+            .max_retries = 1,
+            .backoff = .{ .initial_delay_ms = 0, .maximum_delay_ms = 0 },
+        },
+        .io = threaded.io(),
+    };
+    const binding = durable_types.Binding{
+        .runtime = .{ .context = &runtime_state, .executeFn = RuntimeState.execute },
+        .run_id = "retry-run",
+        .handlers = .{
+            .model_request = "model-worker",
+            .retry_delay = "timer-worker",
+        },
+    };
+    var result = try configured.runWithOptions(std.testing.allocator, "retry", .{ .durable = binding });
+    defer result.deinit();
+    try std.testing.expectEqualStrings("recovered", result.output);
+    try std.testing.expectEqual(@as(usize, 2), runtime_state.model_calls);
+    try std.testing.expectEqual(@as(usize, 1), runtime_state.retry_calls);
+
+    runtime_state.model_calls = 0;
+    const missing = durable_types.Binding{
+        .runtime = binding.runtime,
+        .run_id = "missing-timer",
+        .handlers = .{ .model_request = "model-worker" },
+    };
+    try std.testing.expectError(
+        Agent.Error.MissingDurableHandler,
+        configured.runWithOptions(std.testing.allocator, "retry", .{ .durable = missing }),
+    );
+    try std.testing.expectEqual(@as(usize, 0), runtime_state.model_calls);
+}
+
+test "durable approval resumption journals decisions before tool execution" {
+    const RuntimeState = struct {
+        model_calls: usize = 0,
+        approval_calls: usize = 0,
+        tool_calls: usize = 0,
+
+        fn execute(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            invocation: durable_types.Invocation,
+        ) !durable_types.OwnedRecord {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const output_json = switch (invocation.kind) {
+                .model_request => output: {
+                    self.model_calls += 1;
+                    break :output try durable_types.payloads.model.stringifyResponse(allocator, if (self.model_calls == 1)
+                        .{ .parts = &.{.{ .tool_call = .{
+                            .id = "approval-1",
+                            .name = "publish",
+                            .arguments_json = "{}",
+                        } }} }
+                    else
+                        .{ .parts = &.{.{ .text = "published" }} });
+                },
+                .approval_resume => output: {
+                    self.approval_calls += 1;
+                    try std.testing.expectEqualStrings("approval.resume", invocation.step_id);
+                    try std.testing.expectEqual(@as(u64, 1), invocation.sequence);
+                    var request = try durable_types.payloads.approval.parseRequest(allocator, invocation.input_json);
+                    defer request.deinit();
+                    try std.testing.expectEqual(model_types.ToolExecution.requires_approval, request.execution);
+                    try std.testing.expectEqual(durable_types.payloads.approval.Action.approve, request.proposed.action);
+                    break :output try durable_types.payloads.approval.stringifyResponse(
+                        allocator,
+                        request.proposed,
+                    );
+                },
+                .tool_call => output: {
+                    self.tool_calls += 1;
+                    var request = try durable_types.payloads.tool.parseRequest(allocator, invocation.input_json);
+                    defer request.deinit();
+                    try std.testing.expect(request.approved);
+                    break :output try durable_types.payloads.tool.stringifyResponse(allocator, .{
+                        .content = "sent",
+                    });
+                },
+                else => return error.UnexpectedDurableOperation,
+            };
+            defer allocator.free(output_json);
+            return durable_types.OwnedRecord.copy(
+                allocator,
+                durable_types.Record.init(invocation, .{ .success = output_json }),
+            );
+        }
+    };
+    const Local = struct {
+        fn model(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse { // kcov-ignore: durable routing guard
+            return error.LocalModelMustNotRun; // kcov-ignore: durable routing guard
+        }
+        fn tool(_: *anyopaque, _: std.mem.Allocator, _: []const u8) ![]const u8 { // kcov-ignore: durable routing guard
+            return error.LocalToolMustNotRun; // kcov-ignore: durable routing guard
+        }
+    };
+    var runtime_state: RuntimeState = .{};
+    var local_state: u8 = 0;
+    const configured = Agent{
+        .model = .{ .context = &local_state, .profile = .{}, .requestFn = Local.model },
+        .tools = &.{.{
+            .definition = .{ .name = "publish", .description = "", .parameters_json_schema = "{}" },
+            .execution = .requires_approval,
+            .context = &local_state,
+            .executeFn = Local.tool,
+        }},
+    };
+    const binding = durable_types.Binding{
+        .runtime = .{ .context = &runtime_state, .executeFn = RuntimeState.execute },
+        .run_id = "approval-run",
+        .handlers = .{
+            .model_request = "model-worker",
+            .tool_call = "tool-worker",
+            .approval_resume = "approval-worker",
+        },
+    };
+    var first = try configured.runUntilPauseWithOptions(
+        std.testing.allocator,
+        "publish",
+        .{ .durable = binding },
+    );
+    const state_json = switch (first) {
+        .complete => return error.ExpectedPausedRun,
+        .paused => |paused| try std.testing.allocator.dupe(u8, paused.state_json),
+    };
+    first.deinit();
+    defer std.testing.allocator.free(state_json);
+
+    const missing = durable_types.Binding{
+        .runtime = binding.runtime,
+        .run_id = "missing-approval",
+        .handlers = .{ .model_request = "model-worker", .tool_call = "tool-worker" },
+    };
+    try std.testing.expectError(Agent.Error.MissingDurableHandler, configured.resumeRunWithOptions(
+        std.testing.allocator,
+        state_json,
+        &.{.{ .call_id = "approval-1", .action = .approve }},
+        .{ .durable = missing },
+    ));
+    try std.testing.expectEqual(@as(usize, 0), runtime_state.approval_calls);
+    try std.testing.expectEqual(@as(usize, 0), runtime_state.tool_calls);
+
+    var resumed = try configured.resumeRunWithOptions(
+        std.testing.allocator,
+        state_json,
+        &.{.{ .call_id = "approval-1", .action = .approve }},
+        .{ .durable = binding },
+    );
+    defer resumed.deinit();
+    switch (resumed) {
+        .paused => return error.ExpectedCompleteRun,
+        .complete => |completed| try std.testing.expectEqualStrings("published", completed.output),
+    }
+    try std.testing.expectEqual(@as(usize, 1), runtime_state.approval_calls);
+    try std.testing.expectEqual(@as(usize, 1), runtime_state.tool_calls);
 }

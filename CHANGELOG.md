@@ -50,6 +50,9 @@
 - Route durable MCP subscription batches through independently deduplicated
   event-delivery workers, with notification validation, stable parent/index
   identities, handler preflight, and no replayed process-local callbacks.
+- Route retry timers through deterministic-jitter durable workers and journal
+  paused approval or external-result decisions against original tool-call
+  sequences before resumed execution.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model

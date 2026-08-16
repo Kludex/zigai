@@ -255,8 +255,10 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
       duplicating callbacks, sleeps, or decisions during replay.
       - [x] Route bounded MCP subscription event batches through worker-owned,
         replay-deduplicated event delivery operations.
-      - [ ] Route agent lifecycle delivery, retry delays, and approval
-        resumption through their registered durable handlers.
+      - [x] Route deterministic retry timers and paused approval/external
+        decisions through their registered durable handlers.
+      - [ ] Route agent lifecycle delivery without replaying process-local
+        callbacks.
     - [ ] Prove direct-run behavior remains unchanged and reject incomplete
       durable handler registration before the first side effect.
   - [ ] Implement and document one real workflow-engine adapter with explicit
