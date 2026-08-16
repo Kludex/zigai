@@ -1481,6 +1481,14 @@ test "span copies own names attributes and every typed value" {
         },
     };
     const exporter = capture.exporter();
+    try capture.downstream.span(copied);
+    try capture.downstream.metric(.{
+        .name = "metric",
+        .kind = .counter,
+        .value = 1,
+        .unit = "{event}",
+        .attributes = &.{},
+    });
     try std.testing.expectError(error.OutOfMemory, exporter.span(.{
         .name = "span",
         .trace_id = [_]u8{1} ** 16,
