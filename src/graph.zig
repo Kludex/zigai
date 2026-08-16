@@ -1041,6 +1041,21 @@ test "graph builder validates decision branches and reachability" {
         route,
         "done",
     ));
+    try kinds.setStart(.{ .run_fn = Callbacks.start });
+    try kinds.setEnd(.{ .run_fn = Callbacks.end });
+    try kinds.setEntry(route);
+    try kinds.finish(std.testing.allocator, target);
+    var valid = try kinds.build(std.testing.allocator);
+    defer valid.deinit(std.testing.allocator);
+    var state: u8 = 0;
+    var deps: u8 = 0;
+    try std.testing.expectEqual(@as(u8, 7), try valid.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        7,
+        .{},
+    ));
 
     var bounded: Workflow.Builder = .{ .limits = .{ .max_edges = 1 } };
     defer bounded.deinit(std.testing.allocator);
