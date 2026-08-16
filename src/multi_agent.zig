@@ -762,7 +762,80 @@ test "multi-agent tool scopes propagate cancellation deadlines and failures" {
         error.RunTimedOut,
         expired.subagent(&agent, "expired", std.testing.allocator, "work", .{}),
     );
+
+    var live = Scope.root(&session);
+    live.io = std.testing.io;
+    live.deadline = std.Io.Clock.Timestamp.fromNow(std.testing.io, .{
+        .raw = .fromSeconds(1),
+        .clock = .awake,
+    });
+    var result = try live.handoff(&agent, "live", std.testing.allocator, "work", .{
+        .run = .{ .timeout_ms = 100 },
+    });
+    result.deinit();
     try std.testing.expectEqual(@as(usize, 2), capture.failures);
+}
+
+test "multi-agent usage captures tools and failed-run budget errors" {
+    const testing_types = @import("testing.zig");
+    const call_parts = [_]model_types.Part{.{ .tool_call = .{
+        .id = "call-1",
+        .name = "work",
+        .arguments_json = "{}",
+    } }};
+    const final_parts = [_]model_types.Part{.{ .text = "done" }};
+    var scripted = testing_types.ScriptedModel{ .responses = &.{
+        .{ .parts = &call_parts },
+        .{ .parts = &final_parts },
+    } };
+    var executions: usize = 0;
+    const tool = model_types.Tool{
+        .definition = .{ .name = "work", .description = "", .parameters_json_schema = "{}" },
+        .context = &executions,
+        .executeFn = struct {
+            fn execute(context: *anyopaque, gpa: std.mem.Allocator, _: []const u8) ![]const u8 {
+                const count: *usize = @ptrCast(@alignCast(context));
+                count.* += 1;
+                return gpa.dupe(u8, "ok");
+            }
+        }.execute,
+    };
+    const agent = Agent{ .model = scripted.model(), .tools = &.{tool} };
+    var session = try Session.init(std.testing.allocator, "tools", .{}, null);
+    defer session.deinit();
+    var result = try Scope.root(&session).handoff(&agent, "worker", std.testing.allocator, "work", .{});
+    result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), executions);
+    try std.testing.expectEqual(@as(usize, 1), session.usage().tool_calls);
+
+    var failed_session = try Session.init(std.testing.allocator, "failed", .{ .max_requests = 0 }, null);
+    defer failed_session.deinit();
+    var empty_script = testing_types.ScriptedModel{ .responses = &.{} };
+    const empty_agent = Agent{ .model = empty_script.model() };
+    try std.testing.expectError(
+        Error.RequestLimitExceeded,
+        Scope.root(&failed_session).handoff(&empty_agent, "empty", std.testing.allocator, "work", .{}),
+    );
+
+    const Answer = struct { value: u8 };
+    var typed_session = try Session.init(std.testing.allocator, "typed-failed", .{ .max_requests = 0 }, null);
+    defer typed_session.deinit();
+    var typed_script = testing_types.ScriptedModel{
+        .responses = &.{},
+        .profile = .{ .supports_json_schema_output = true },
+    };
+    const typed_agent = Agent{ .model = typed_script.model() };
+    try std.testing.expectError(
+        Error.RequestLimitExceeded,
+        Scope.root(&typed_session).handoffTyped(
+            Answer,
+            &typed_agent,
+            "empty",
+            std.testing.allocator,
+            "work",
+            .{},
+        ),
+    );
 }
 
 test "typed multi-agent runs preserve output and every failure boundary" {
@@ -866,10 +939,31 @@ fn runMultiAgentWithAllocator(gpa: std.mem.Allocator) !void {
     try std.testing.expectEqualStrings("owned", result.output);
 }
 
+fn runTypedMultiAgentWithAllocator(gpa: std.mem.Allocator) !void {
+    const testing_types = @import("testing.zig");
+    const Answer = struct { value: u8 };
+    const parts = [_]model_types.Part{.{ .text = "{\"value\":1}" }};
+    var scripted = testing_types.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .profile = .{ .supports_json_schema_output = true },
+    };
+    const agent = Agent{ .model = scripted.model() };
+    var session = try Session.init(gpa, "typed-allocation", .{}, null);
+    defer session.deinit();
+    var result = try Scope.root(&session).handoffTyped(Answer, &agent, "agent", gpa, "prompt", .{});
+    defer result.deinit();
+    try std.testing.expectEqual(@as(u8, 1), result.output.value);
+}
+
 test "multi-agent invocation ownership survives every allocation failure" {
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
         runMultiAgentWithAllocator,
+        .{},
+    );
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        runTypedMultiAgentWithAllocator,
         .{},
     );
 }
