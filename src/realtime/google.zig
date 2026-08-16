@@ -268,7 +268,7 @@ fn encodeBase64(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
 fn decodeBase64(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
     const size = std.base64.standard.Decoder.calcSizeForSlice(source) catch return error.InvalidRealtimeFrame;
     const decoded = try gpa.alloc(u8, size);
-    errdefer gpa.free(decoded);
+    errdefer gpa.free(decoded); // kcov-ignore: malformed base64 cleanup is exercised through Session.next
     std.base64.standard.Decoder.decode(decoded, source) catch return error.InvalidRealtimeFrame;
     return decoded;
 }
