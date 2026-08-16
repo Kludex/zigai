@@ -324,7 +324,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 
 ## P2 — Release and ecosystem hardening
 
-- [ ] Freeze a documented `0.x` compatibility policy, API review checklist,
+- [x] Freeze a documented `0.x` compatibility policy, API review checklist,
   deprecation mechanism, history/state migration guarantees, and supported Zig
   version/target matrix before expanding the public surface further.
 - [ ] Add Windows CI and cross-target compile checks; test Debug, ReleaseSafe,
