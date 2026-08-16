@@ -76,6 +76,11 @@
 - Minimize the published package allowlist to `build.zig`, `build.zig.zon`,
   `src`, `examples`, and `LICENSE` so consumer downloads exclude tests, docs,
   fixtures, and automation.
+- Add reproducible release automation: a tag-driven workflow that rebuilds and
+  compares the deterministic source archive, publishes SHA-256 checksums, a
+  SPDX SBOM, and GitHub build-provenance attestations, extracts release notes
+  from the changelog, and smoke-tests consumers against the extracted archive
+  on Linux, macOS, and Windows before publishing.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

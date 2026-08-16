@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.archive.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Verify the tag is on main and immutable
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: Build the reproducible source archive
+        id: archive
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          ./scripts/release-archive "$GITHUB_REF_NAME" dist
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+      - name: Prove the archive is reproducible
+        run: |
+          ./scripts/release-archive "$GITHUB_REF_NAME" dist-verify
+          cmp "dist/zigai-${{ steps.archive.outputs.version }}.tar.gz" \
+            "dist-verify/zigai-${{ steps.archive.outputs.version }}.tar.gz"
+      - name: Generate the SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/zigai-${{ steps.archive.outputs.version }}.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-path: dist/zigai-${{ steps.archive.outputs.version }}.tar.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist
+
+  smoke:
+    needs: build
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/download-artifact@v6
+        with:
+          name: release-dist
+          path: dist
+      - name: Verify the archive checksum
+        shell: bash
+        run: cd dist && shasum -a 256 -c "zigai-${{ needs.build.outputs.version }}.tar.gz.sha256"
+      - name: Run the consumer smoke test against the archive
+        shell: bash
+        run: ./scripts/release-smoke "dist/zigai-${{ needs.build.outputs.version }}.tar.gz"
+
+  publish:
+    needs: [build, smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v6
+        with:
+          name: release-dist
+          path: dist
+      - name: Extract release notes from the changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          awk -v version="$version" '
+            $0 ~ "^## " version " " || $0 ~ "^## " version "$" { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md >dist/release-notes.md
+          if ! grep -q '[^[:space:]]' dist/release-notes.md; then
+            echo "CHANGELOG.md has no section for $version" >&2
+            exit 1
+          fi
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          gh release create "$GITHUB_REF_NAME" \
+            --title "zigai $version" \
+            --notes-file dist/release-notes.md \
+            --verify-tag \
+            "dist/zigai-$version.tar.gz" \
+            "dist/zigai-$version.tar.gz.sha256" \
+            "dist/zigai-$version.spdx.json"

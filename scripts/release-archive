@@ -1,0 +1,35 @@
+#!/bin/sh
+# Build the reproducible release source archive and its checksum for one tag.
+set -eu
+
+if [ "$#" -ne 2 ]; then
+    echo "usage: scripts/release-archive <tag> <output-directory>" >&2
+    exit 2
+fi
+
+tag=$1
+output_dir=$2
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+case $tag in
+v[0-9]*.[0-9]*.[0-9]*) ;;
+*)
+    echo "release tag must look like vMAJOR.MINOR.PATCH: $tag" >&2
+    exit 2
+    ;;
+esac
+
+version=${tag#v}
+cd "$project_dir"
+git show "$tag:build.zig.zon" | grep -q "\.version = \"$version\"" || {
+    echo "build.zig.zon version does not match tag $tag" >&2
+    exit 1
+}
+
+mkdir -p "$output_dir"
+archive="$output_dir/zigai-$version.tar.gz"
+# Fixed mtime, sorted entries, and no owner metadata keep the archive byte-identical for one commit.
+git archive --format=tar --prefix="zigai-$version/" "$tag" |
+    gzip -n >"$archive"
+(cd "$output_dir" && shasum -a 256 "zigai-$version.tar.gz" >"zigai-$version.tar.gz.sha256")
+echo "$archive"

@@ -1,0 +1,31 @@
+#!/bin/sh
+# Build and run a consumer against an extracted release archive.
+set -eu
+
+if [ "$#" -ne 1 ]; then
+    echo "usage: scripts/release-smoke <archive.tar.gz>" >&2
+    exit 2
+fi
+
+archive=$(CDPATH= cd -- "$(dirname -- "$1")" && pwd)/$(basename -- "$1")
+project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cache_dir="${ZIGAI_GLOBAL_CACHE_DIR:-$project_dir/.zig-global-cache}"
+workspace=$(mktemp -d)
+trap 'rm -rf "$workspace"' EXIT
+
+tar -xzf "$archive" -C "$workspace"
+package=$(find "$workspace" -mindepth 1 -maxdepth 1 -type d -name 'zigai-*' -print -quit)
+if [ -z "$package" ]; then
+    echo "archive does not contain a zigai-<version> directory" >&2
+    exit 1
+fi
+
+for consumer in agent providers; do
+    cp -R "$project_dir/tests/consumers/$consumer" "$workspace/consumer-$consumer"
+    cd "$workspace/consumer-$consumer"
+    ln -s "$package" zigai-package
+    sed 's|\.path = "\.\./\.\./\.\."|.path = "zigai-package"|' build.zig.zon >build.zig.zon.tmp
+    mv build.zig.zon.tmp build.zig.zon
+    ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build run
+done
+echo "release smoke test passed for $archive"

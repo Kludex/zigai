@@ -333,7 +333,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Minimize `build.zig.zon` package paths to runtime sources, build files,
   examples, and license; keep tests/docs/automation out of consumer downloads
   unless Zig package tooling requires them.
-- [ ] Add reproducible release automation with source archive checksums,
+- [x] Add reproducible release automation with source archive checksums,
   provenance/attestations, SBOM, signed immutable tags, release notes, and a
   consumer smoke test against the published archive on every supported OS.
 - [ ] Add `SECURITY.md`, vulnerability-reporting contacts, supported-version
