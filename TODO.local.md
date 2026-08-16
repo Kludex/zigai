@@ -311,7 +311,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add durable knowledge and memory primitives for conversation search,
   semantic memory, retention and deletion, tenant isolation, citations,
   compaction, pluggable stores, and deterministic test backends.
-- [ ] Add explicit planning, advisory, and dynamic-workflow capabilities with
+- [x] Add explicit planning, advisory, and dynamic-workflow capabilities with
   bounded plans, user-visible revisions, approval gates, nested usage/deadline
   propagation, and trace-linked execution events.
 - [ ] Add execution-runtime services for step persistence, media/artifact
