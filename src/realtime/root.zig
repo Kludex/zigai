@@ -5,6 +5,7 @@ pub const wire = @import("wire.zig");
 pub const openai = @import("openai.zig");
 pub const azure = @import("azure.zig");
 pub const google = @import("google.zig");
+pub const telemetry = @import("telemetry.zig");
 pub const xai = @import("xai.zig");
 
 pub const AudioRetention = base.AudioRetention;
@@ -14,6 +15,8 @@ pub const Connector = base.Connector;
 pub const Event = base.Event;
 pub const Input = base.Input;
 pub const Limits = base.Limits;
+pub const Observation = base.Observation;
+pub const Observer = base.Observer;
 pub const Options = base.Options;
 pub const OwnedCodecEvent = base.OwnedCodecEvent;
 pub const OwnedEvent = base.OwnedEvent;
@@ -31,5 +34,6 @@ test {
     _ = openai;
     _ = azure;
     _ = google;
+    _ = telemetry;
     _ = xai;
 }

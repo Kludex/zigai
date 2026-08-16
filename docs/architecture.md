@@ -703,6 +703,11 @@ setup/content/media/tool codec. Both decode bounded JSON and base64 before
 publishing owned codec events; unknown frame shapes fail rather than silently
 disappearing.
 
+A borrowed session observer sees control-safe event metadata, never raw prompt
+or audio content. The realtime telemetry adapter turns it into one parented
+session span, correlated lifecycle events, and cumulative token metrics while
+preserving the standard fail-open exporter policy.
+
 Graph persistence captures only settled boundaries. A snapshot stores the
 typed state and current intermediate value as application-encoded JSON plus a
 frontier containing the next node and completed transition count. Dependencies,

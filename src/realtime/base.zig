@@ -209,6 +209,31 @@ pub const ToolHandler = struct {
     }
 };
 
+/// Borrowed realtime lifecycle observation.
+pub const Observation = union(enum) {
+    connected: Connected,
+    input: std.meta.Tag(Input),
+    event: Event,
+    usage: usage_types.RunUsage,
+
+    pub const Connected = struct {
+        transport_kind: TransportKind,
+        provider_name: []const u8,
+        model_name: []const u8,
+        profile: Profile,
+    };
+};
+
+/// Fallible synchronous lifecycle observer. Nested slices are borrowed.
+pub const Observer = struct {
+    context: ?*anyopaque = null,
+    event_fn: *const fn (context: ?*anyopaque, observation: Observation) anyerror!void,
+
+    pub fn emit(self: Observer, observation: Observation) !void {
+        return self.event_fn(self.context, observation);
+    }
+};
+
 /// Session construction and control policy.
 pub const Options = struct {
     io: ?std.Io = null,
@@ -218,6 +243,7 @@ pub const Options = struct {
     audio_retention: AudioRetention = .transcript_only,
     limits: Limits = .{},
     tool_handler: ?ToolHandler = null,
+    observer: ?Observer = null,
     message_history: []const Message = &.{},
 };
 
@@ -308,6 +334,12 @@ pub const Session = struct {
         };
         errdefer result.deinit();
         for (options.message_history) |message| try result.appendMessage(message);
+        try result.observe(.{ .connected = .{
+            .transport_kind = connection.transport_kind,
+            .provider_name = connection.provider_name,
+            .model_name = connection.model_name,
+            .profile = connection.profile,
+        } });
         return result;
     }
 
@@ -412,14 +444,22 @@ pub const Session = struct {
         while (true) {
             if (self.pending_reconnect) |reconnect_event| {
                 self.pending_reconnect = null;
-                return ownEvent(gpa, .{ .reconnect = reconnect_event });
+                var event = try ownEvent(gpa, .{ .reconnect = reconnect_event });
+                errdefer event.deinit();
+                try self.observe(.{ .event = event.value });
+                return event;
             }
             var codec = self.receiveControlled(gpa) catch |failure| {
                 try self.reconnect(failure);
                 continue;
             };
             defer codec.deinit();
-            if (try self.handle(gpa, codec.value)) |event| return event;
+            if (try self.handle(gpa, codec.value)) |event_value| {
+                var event = event_value;
+                errdefer event.deinit();
+                try self.observe(.{ .event = event.value });
+                return event;
+            }
         }
     }
 
@@ -467,6 +507,7 @@ pub const Session = struct {
                 try self.usage_total.recordRequest(null);
                 try self.usage_total.addRequest(self.history_arena.allocator(), request_usage);
                 try self.enforceUsage();
+                try self.observe(.{ .usage = self.usage_total });
                 break :blk null;
             },
             .input_speech_start => try ownEvent(gpa, .input_speech_start),
@@ -576,7 +617,12 @@ pub const Session = struct {
     }
 
     fn send(self: *Session, input: Input) !void {
-        return self.control.invoke(void, invokeSend, .{ self.connection, input });
+        try self.control.invoke(void, invokeSend, .{ self.connection, input });
+        try self.observe(.{ .input = std.meta.activeTag(input) });
+    }
+
+    fn observe(self: *Session, observation: Observation) !void {
+        if (self.options.observer) |observer| try observer.emit(observation);
     }
 
     fn receiveControlled(self: *Session, gpa: std.mem.Allocator) !OwnedCodecEvent {
@@ -795,6 +841,7 @@ test "realtime sessions stream media tools turns usage and canonical history" {
         sent_count: usize = 0,
         closes: usize = 0,
         connects: usize = 0,
+        observations: usize = 0,
 
         fn connect(context: *anyopaque, _: std.mem.Allocator) !Connection {
             const self: *@This() = @ptrCast(@alignCast(context));
@@ -840,6 +887,10 @@ test "realtime sessions stream media tools turns usage and canonical history" {
             try std.testing.expectEqualStrings("lookup", call.name);
             return gpa.dupe(u8, "tool-ok");
         }
+        fn observe(context: ?*anyopaque, _: Observation) !void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.observations += 1;
+        }
     };
     const events = [_]CodecEvent{
         .{ .input_transcript = .{ .text = "hello", .final = true, .item_id = "user-1" } },
@@ -862,6 +913,7 @@ test "realtime sessions stream media tools turns usage and canonical history" {
     }, .{
         .audio_retention = .all,
         .tool_handler = .{ .execute_fn = State.tool },
+        .observer = .{ .context = &state, .event_fn = State.observe },
     });
     defer session.deinit();
     try std.testing.expectEqual(TransportKind.websocket, session.transportKind());
@@ -905,6 +957,7 @@ test "realtime sessions stream media tools turns usage and canonical history" {
     session.close();
     try std.testing.expectError(error.RealtimeSessionClosed, session.sendText("closed"));
     try std.testing.expectEqual(@as(usize, 1), state.closes);
+    try std.testing.expect(state.observations > 10);
 }
 
 test "realtime sessions reconnect only classified transport failures" {

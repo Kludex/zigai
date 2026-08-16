@@ -753,6 +753,12 @@ realtime media, transcriptions, tools, usage, interruption, and turn terminals.
 Credentials, HTTP upgrades, SDP exchange, ICE, and media tracks remain owned by
 the raw dialer rather than leaking into session state.
 
+Set `Options.observer` for synchronous connected, input, public-event, and usage
+observations. `realtime.telemetry.Config.start` adapts that stream to correlated
+OpenTelemetry events and token metrics. Keep its `Run` alive through the
+session, then call `finish` to export one parented realtime `invoke_agent` span.
+Exporter failures follow the configured fail-open policy.
+
 ### Graph snapshots
 
 Graph snapshots are opt-in. Set `Builder.definition_id` to a stable borrowed
