@@ -1354,6 +1354,7 @@ Read [Testing](docs/testing.md) for coverage and cassette details.
 - [Architecture](docs/architecture.md)
 - [Public API and ownership](docs/api.md)
 - [Security](docs/security.md)
+- [Durable execution](docs/durable-execution.md)
 - [Release notes](CHANGELOG.md)
 - [Testing](docs/testing.md)
 - [Releasing](docs/releasing.md)

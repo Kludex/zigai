@@ -33,6 +33,10 @@
 - Publish environment-bound Linux x86_64 and macOS ARM64 benchmark baselines
   and isolated CI reports. Structural and semantic drift always fails, while
   timing gates remain opt-in through explicitly reviewed basis-point limits.
+- Define a backend-neutral durable-execution contract with fixed operation
+  kinds, stable idempotency identities, SHA-256 input binding, strict versioned
+  records, explicit suspension states, owned parsing, and a runtime vtable for
+  workflow-engine adapters.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model

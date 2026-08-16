@@ -236,6 +236,14 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [ ] Add a durable-execution contract and adapters for at least one workflow
   engine. Persist step inputs/results, make retries replay-safe, resume streams
   and approvals, version serialized state, and test worker restart recovery.
+  - [x] Define the fixed operation vocabulary, stable idempotency identity,
+    strict versioned record format, ownership rules, and runtime boundary.
+  - [ ] Route model, stream, tool, MCP, event, retry-delay, and approval-resume
+    operations through the runtime without changing ordinary agent runs.
+  - [ ] Implement and document one real workflow-engine adapter with explicit
+    worker registration, retry policy, payload limits, and deployment rules.
+  - [ ] Persist and resume stream/approval state and prove replay safety with
+    worker-restart, duplicate-delivery, and schema-migration tests.
 - [ ] Add a typed graph/workflow module with steps, decisions, joins/reducers,
   parallel branches, state snapshots, visualization metadata, and agent nodes.
 - [ ] Add multi-agent primitives for delegation, handoff, subagents, shared and

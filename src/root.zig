@@ -29,6 +29,7 @@ pub const providers = @import("providers.zig");
 pub const models = @import("models.zig");
 pub const telemetry = @import("telemetry.zig");
 pub const diagnostics = @import("diagnostics.zig");
+pub const durable = @import("durable.zig");
 pub const mcp = @import("mcp.zig");
 pub const codecs = @import("codecs/root.zig");
 // Compatibility aliases for the original top-level provider imports.
@@ -105,6 +106,12 @@ pub const DiagnosticSink = diagnostics.Sink;
 pub const DiagnosticEvent = diagnostics.Event;
 pub const DiagnosticAttribute = diagnostics.Attribute;
 pub const DiagnosticLevel = diagnostics.Level;
+pub const DurableInvocation = durable.Invocation;
+pub const DurableOperationKind = durable.OperationKind;
+pub const DurableOutcome = durable.Outcome;
+pub const DurableRecord = durable.Record;
+pub const OwnedDurableRecord = durable.OwnedRecord;
+pub const DurableRuntime = durable.Runtime;
 pub const Toolset = agent.Toolset;
 pub const ToolsetContext = agent.ToolsetContext;
 pub const ToolsetEntry = agent.ToolsetEntry;
@@ -285,6 +292,7 @@ test {
     _ = @import("models.zig");
     _ = @import("telemetry.zig");
     _ = @import("diagnostics.zig");
+    _ = @import("durable.zig");
     _ = @import("mcp.zig");
     _ = @import("codecs/root.zig");
 }
