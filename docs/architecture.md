@@ -578,6 +578,14 @@ pre-retry callbacks own backoff or rate-limit waiting. Borrowed lifecycle events
 cover each case, task attempt, evaluator attempt, terminal error, and completed
 result. The default `run` wrapper preserves one repetition and one attempt.
 
+Concurrent evaluation is opt-in through `max_concurrency` and a `std.Io`
+runtime. A bounded select loop admits no more than the configured number of
+case runs, but each completion is written to its preassigned source-order slot.
+One shared mutex protects both the caller allocator used by temporary agent
+results and the report arena used by persistent results. Provider/model state,
+evaluators, retry callbacks, and lifecycle hooks remain application-owned and
+must be thread-safe when concurrency is enabled.
+
 `evals.ModelGrader` is optional and is itself built from an `Agent`. It sends a
 JSON-quoted task, output, expected value, and rubric to that agent, requests a
 typed pass/score/reason object, and rejects non-finite or out-of-range scores.

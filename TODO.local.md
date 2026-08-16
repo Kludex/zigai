@@ -194,7 +194,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   backpressure/failure isolation.
 - [x] Add repeated eval runs, independent task/evaluator retry policies, stable
   case/run identities, and lifecycle events around every attempt and outcome.
-- [ ] Add bounded concurrent eval execution with stable result ordering and
+- [x] Add bounded concurrent eval execution with stable result ordering and
   explicit thread-safety and allocator contracts.
 - [ ] Add report evaluators and statistical summaries across repeated runs.
 - [ ] Add span/trace evaluators that consume the same telemetry shape used in

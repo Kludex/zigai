@@ -1156,6 +1156,8 @@ Use `runWithOptions` when an experiment needs repeated runs or retries:
 ```zig
 var report = try dataset.runWithOptions(allocator, agent, .{
     .repetitions = 3,
+    .max_concurrency = 4,
+    .io = io,
     .task_retry = .{ .max_attempts = 3 },
     .evaluator_retry = .{ .max_attempts = 2 },
     .hooks = hooks,
@@ -1168,6 +1170,11 @@ which errors are transient, while `beforeRetryFn` can apply application-owned
 backoff. Lifecycle hooks receive stable zero-based case indices, one-based
 repetition and attempt numbers, and every start, error, retry outcome, and end.
 The plain `run` method remains a single-run, single-attempt evaluation.
+When `max_concurrency` is greater than one, ZigAI admits at most that many case
+runs through the supplied `std.Io` runtime, writes them into stable source-order
+slots, and aggregates usage after all work is joined. The model, evaluators,
+retry callbacks, and lifecycle hooks must be thread-safe in this mode. ZigAI
+serializes access to the caller allocator and the report arena.
 
 ## Security
 

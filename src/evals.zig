@@ -14,6 +14,10 @@ pub const Error = error{
     InvalidModelGrade,
     /// An execution policy used zero attempts or repetitions.
     InvalidExecutionOptions,
+    /// More than one run was requested without an I/O runtime.
+    ConcurrentExecutionRequiresIo,
+    /// The configured I/O runtime could not admit concurrent work.
+    ConcurrentExecutionUnavailable,
 };
 
 pub const Case = struct {
@@ -76,6 +80,10 @@ pub const RetryPolicy = struct {
 
 pub const ExecutionOptions = struct {
     repetitions: usize = 1,
+    /// Maximum case runs in flight. Values above one require `io`. Models,
+    /// evaluators, retry callbacks, and hooks must then be thread-safe.
+    max_concurrency: usize = 1,
+    io: ?std.Io = null,
     task_retry: RetryPolicy = .{},
     evaluator_retry: RetryPolicy = .{},
     hooks: []const LifecycleHook = &.{},
@@ -219,7 +227,8 @@ pub const Dataset = struct {
         agent: agent_types.Agent,
         options: ExecutionOptions,
     ) !Report {
-        if (options.repetitions == 0 or options.task_retry.max_attempts == 0 or
+        if (options.repetitions == 0 or options.max_concurrency == 0 or
+            options.task_retry.max_attempts == 0 or
             options.evaluator_retry.max_attempts == 0)
             return Error.InvalidExecutionOptions;
         const result_count = std.math.mul(usize, self.cases.len, options.repetitions) catch
@@ -228,77 +237,234 @@ pub const Dataset = struct {
         errdefer arena.deinit();
         const memory = arena.allocator();
         const results = try memory.alloc(CaseResult, result_count);
-        var total_usage: model_types.RunUsage = .{};
-        var result_index: usize = 0;
-        for (self.cases, 0..) |case, case_index| {
-            for (1..options.repetitions + 1) |repetition| {
-                const identity = RunIdentity{
-                    .case = case,
-                    .case_index = case_index,
-                    .repetition = repetition,
-                    .repetitions = options.repetitions,
-                };
-                try emitLifecycle(options.hooks, .{ .case_start = identity });
-                const task = runTask(agent, allocator, case, identity, options) catch |failure| {
-                    try emitLifecycle(options.hooks, .{ .case_error = .{ .identity = identity, .failure = failure } });
-                    return failure;
-                };
-                var run_result = task.result;
-                defer run_result.deinit();
-                try emitLifecycle(options.hooks, .{ .task_end = .{
-                    .identity = identity,
-                    .attempts = task.attempts,
-                    .output = run_result.output,
-                    .usage = run_result.usage,
-                } });
-                try total_usage.addRun(memory, run_result.usage);
-                const output = try memory.dupe(u8, run_result.output);
-                const usage = try run_result.usage.dupe(memory);
-                const evaluations = try memory.alloc(EvaluationResult, self.evaluators.len);
-                for (self.evaluators, evaluations) |evaluator, *evaluation_result| {
-                    const evaluated = runEvaluator(evaluator, memory, .{
-                        .case = case,
-                        .case_index = case_index,
-                        .repetition = repetition,
-                        .repetitions = options.repetitions,
-                        .output = run_result.output,
-                        .usage = run_result.usage,
-                    }, identity, options) catch |failure| {
-                        try emitLifecycle(options.hooks, .{ .case_error = .{ .identity = identity, .failure = failure } });
-                        return failure;
-                    };
-                    evaluation_result.* = .{
-                        .evaluator = try memory.dupe(u8, evaluator.name),
-                        .passed = evaluated.evaluation.passed,
-                        .score = evaluated.evaluation.score,
-                        .reason = if (evaluated.evaluation.reason) |reason| try memory.dupe(u8, reason) else null,
-                        .attempts = evaluated.attempts,
-                    };
-                    try emitLifecycle(options.hooks, .{ .evaluator_end = .{
-                        .identity = identity,
-                        .evaluator_name = evaluator.name,
-                        .attempts = evaluated.attempts,
-                        .evaluation = evaluated.evaluation,
-                    } });
-                }
-                results[result_index] = .{
-                    .name = try memory.dupe(u8, case.name),
-                    .case_index = case_index,
-                    .repetition = repetition,
-                    .repetitions = options.repetitions,
-                    .task_attempts = task.attempts,
-                    .output = output,
-                    .usage = usage,
-                    .evaluations = evaluations,
-                };
-                try emitLifecycle(options.hooks, .{ .case_end = .{
-                    .identity = identity,
-                    .result = results[result_index],
-                } });
-                result_index += 1;
+        if (result_count > 1 and options.max_concurrency > 1) {
+            const io = options.io orelse return Error.ConcurrentExecutionRequiresIo;
+            try runConcurrent(self, allocator, memory, agent, options, io, results);
+        } else {
+            for (results, 0..) |*result, index| {
+                result.* = try runCase(
+                    self,
+                    allocator,
+                    memory,
+                    agent,
+                    options,
+                    identityAt(self, options, index),
+                );
             }
         }
+        var total_usage: model_types.RunUsage = .{};
+        for (results) |result| try total_usage.addRun(memory, result.usage);
         return .{ .arena = arena, .cases = results, .usage = total_usage };
+    }
+};
+
+fn identityAt(dataset: Dataset, options: ExecutionOptions, index: usize) RunIdentity {
+    const case_index = index / options.repetitions;
+    return .{
+        .case = dataset.cases[case_index],
+        .case_index = case_index,
+        .repetition = index % options.repetitions + 1,
+        .repetitions = options.repetitions,
+    };
+}
+
+fn runCase(
+    dataset: Dataset,
+    task_allocator: std.mem.Allocator,
+    result_allocator: std.mem.Allocator,
+    agent: agent_types.Agent,
+    options: ExecutionOptions,
+    identity: RunIdentity,
+) !CaseResult {
+    try emitLifecycle(options.hooks, .{ .case_start = identity });
+    return runCaseAfterStart(dataset, task_allocator, result_allocator, agent, options, identity) catch |failure| {
+        try emitLifecycle(options.hooks, .{ .case_error = .{ .identity = identity, .failure = failure } });
+        return failure;
+    };
+}
+
+fn runCaseAfterStart(
+    dataset: Dataset,
+    task_allocator: std.mem.Allocator,
+    result_allocator: std.mem.Allocator,
+    agent: agent_types.Agent,
+    options: ExecutionOptions,
+    identity: RunIdentity,
+) !CaseResult {
+    const case = identity.case;
+    const task = try runTask(agent, task_allocator, case, identity, options);
+    var run_result = task.result;
+    defer run_result.deinit();
+    try emitLifecycle(options.hooks, .{ .task_end = .{
+        .identity = identity,
+        .attempts = task.attempts,
+        .output = run_result.output,
+        .usage = run_result.usage,
+    } });
+    const output = try result_allocator.dupe(u8, run_result.output);
+    const usage = try run_result.usage.dupe(result_allocator);
+    const evaluations = try result_allocator.alloc(EvaluationResult, dataset.evaluators.len);
+    for (dataset.evaluators, evaluations) |evaluator, *evaluation_result| {
+        const evaluated = try runEvaluator(evaluator, result_allocator, .{
+            .case = case,
+            .case_index = identity.case_index,
+            .repetition = identity.repetition,
+            .repetitions = identity.repetitions,
+            .output = run_result.output,
+            .usage = run_result.usage,
+        }, identity, options);
+        evaluation_result.* = .{
+            .evaluator = try result_allocator.dupe(u8, evaluator.name),
+            .passed = evaluated.evaluation.passed,
+            .score = evaluated.evaluation.score,
+            .reason = if (evaluated.evaluation.reason) |reason| try result_allocator.dupe(u8, reason) else null,
+            .attempts = evaluated.attempts,
+        };
+        try emitLifecycle(options.hooks, .{ .evaluator_end = .{
+            .identity = identity,
+            .evaluator_name = evaluator.name,
+            .attempts = evaluated.attempts,
+            .evaluation = evaluated.evaluation,
+        } });
+    }
+    const result = CaseResult{
+        .name = try result_allocator.dupe(u8, case.name),
+        .case_index = identity.case_index,
+        .repetition = identity.repetition,
+        .repetitions = identity.repetitions,
+        .task_attempts = task.attempts,
+        .output = output,
+        .usage = usage,
+        .evaluations = evaluations,
+    };
+    try emitLifecycle(options.hooks, .{ .case_end = .{ .identity = identity, .result = result } });
+    return result;
+}
+
+const ConcurrentOutcome = struct { index: usize, failure: ?anyerror = null };
+const ConcurrentSelection = union(enum) { case_run: ConcurrentOutcome };
+
+fn runConcurrent(
+    dataset: Dataset,
+    allocator: std.mem.Allocator,
+    report_memory: std.mem.Allocator,
+    agent: agent_types.Agent,
+    options: ExecutionOptions,
+    io: std.Io,
+    results: []CaseResult,
+) !void {
+    const concurrency = @min(options.max_concurrency, results.len);
+    const selection_buffer = try allocator.alloc(ConcurrentSelection, concurrency);
+    defer allocator.free(selection_buffer);
+    const failures = try allocator.alloc(?anyerror, results.len);
+    defer allocator.free(failures);
+    @memset(failures, null);
+
+    var allocator_lock = AllocatorLock{ .io = io };
+    var task_allocator = LockedAllocator{ .child = allocator, .lock = &allocator_lock };
+    var result_allocator = LockedAllocator{ .child = report_memory, .lock = &allocator_lock };
+    var select: std.Io.Select(ConcurrentSelection) = .init(io, selection_buffer);
+    defer select.cancelDiscard();
+    var next: usize = 0;
+    var running: usize = 0;
+    var completed: usize = 0;
+    while (completed < results.len) {
+        while (next < results.len and running < concurrency) : (next += 1) {
+            select.concurrent(.case_run, runCaseConcurrent, .{
+                dataset,
+                task_allocator.allocator(),
+                result_allocator.allocator(),
+                agent,
+                options,
+                identityAt(dataset, options, next),
+                next,
+                &results[next],
+            }) catch return Error.ConcurrentExecutionUnavailable;
+            running += 1;
+        }
+        const outcome = switch (try select.await()) {
+            .case_run => |value| value,
+        };
+        failures[outcome.index] = outcome.failure;
+        running -= 1;
+        completed += 1;
+    }
+    for (failures) |failure| if (failure) |value| return value;
+}
+
+fn runCaseConcurrent(
+    dataset: Dataset,
+    task_allocator: std.mem.Allocator,
+    result_allocator: std.mem.Allocator,
+    agent: agent_types.Agent,
+    options: ExecutionOptions,
+    identity: RunIdentity,
+    index: usize,
+    result: *CaseResult,
+) ConcurrentOutcome {
+    result.* = runCase(dataset, task_allocator, result_allocator, agent, options, identity) catch |failure|
+        return .{ .index = index, .failure = failure };
+    return .{ .index = index };
+}
+
+const AllocatorLock = struct {
+    io: std.Io,
+    mutex: std.Io.Mutex = .init,
+};
+
+const LockedAllocator = struct {
+    child: std.mem.Allocator,
+    lock: *AllocatorLock,
+
+    fn allocator(self: *LockedAllocator) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &vtable };
+    }
+
+    const vtable: std.mem.Allocator.VTable = .{
+        .alloc = alloc,
+        .resize = resize,
+        .remap = remap,
+        .free = free,
+    };
+
+    fn alloc(context: *anyopaque, len: usize, alignment: std.mem.Alignment, return_address: usize) ?[*]u8 {
+        const self: *LockedAllocator = @ptrCast(@alignCast(context));
+        self.lock.mutex.lockUncancelable(self.lock.io);
+        defer self.lock.mutex.unlock(self.lock.io);
+        return self.child.rawAlloc(len, alignment, return_address);
+    }
+
+    fn resize(
+        context: *anyopaque,
+        memory: []u8,
+        alignment: std.mem.Alignment,
+        new_len: usize,
+        return_address: usize,
+    ) bool {
+        const self: *LockedAllocator = @ptrCast(@alignCast(context));
+        self.lock.mutex.lockUncancelable(self.lock.io);
+        defer self.lock.mutex.unlock(self.lock.io);
+        return self.child.rawResize(memory, alignment, new_len, return_address);
+    }
+
+    fn remap(
+        context: *anyopaque,
+        memory: []u8,
+        alignment: std.mem.Alignment,
+        new_len: usize,
+        return_address: usize,
+    ) ?[*]u8 {
+        const self: *LockedAllocator = @ptrCast(@alignCast(context));
+        self.lock.mutex.lockUncancelable(self.lock.io);
+        defer self.lock.mutex.unlock(self.lock.io);
+        return self.child.rawRemap(memory, alignment, new_len, return_address);
+    }
+
+    fn free(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, return_address: usize) void {
+        const self: *LockedAllocator = @ptrCast(@alignCast(context));
+        self.lock.mutex.lockUncancelable(self.lock.io);
+        defer self.lock.mutex.unlock(self.lock.io);
+        self.child.rawFree(memory, alignment, return_address);
     }
 };
 
@@ -735,6 +901,11 @@ test "dataset execution options reject invalid bounds and expose terminal failur
     try std.testing.expectError(Error.InvalidExecutionOptions, dataset.runWithOptions(
         std.testing.allocator,
         .{ .model = model },
+        .{ .max_concurrency = 0 },
+    ));
+    try std.testing.expectError(Error.InvalidExecutionOptions, dataset.runWithOptions(
+        std.testing.allocator,
+        .{ .model = model },
         .{ .task_retry = .{ .max_attempts = 0 } },
     ));
     try std.testing.expectError(Error.InvalidExecutionOptions, dataset.runWithOptions(
@@ -760,6 +931,108 @@ test "dataset execution options reject invalid bounds and expose terminal failur
         },
     ));
     try std.testing.expectEqual(@as(usize, 1), failure_state.case_errors);
+}
+
+test "dataset bounds concurrent work and preserves source result order" {
+    const State = struct {
+        io: std.Io,
+        active: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+        maximum: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+
+        fn request(context: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const active = self.active.fetchAdd(1, .seq_cst) + 1;
+            _ = self.maximum.fetchMax(active, .seq_cst);
+            defer _ = self.active.fetchSub(1, .seq_cst);
+            try (std.Io.Timeout{ .duration = .{
+                .raw = .fromMilliseconds(10),
+                .clock = .awake,
+            } }).sleep(self.io);
+            return .{
+                .parts = &.{.{ .text = "ok" }},
+                .usage = .{ .input_tokens = 1, .output_tokens = 1 },
+            };
+        }
+    };
+
+    var runtime = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+    const io = runtime.io();
+    var state = State{ .io = io };
+    var report = try (Dataset{
+        .cases = &.{
+            .{ .name = "alpha", .prompt = "a" },
+            .{ .name = "beta", .prompt = "b" },
+            .{ .name = "gamma", .prompt = "c" },
+        },
+        .evaluators = &.{},
+    }).runWithOptions(std.testing.allocator, .{ .model = .{
+        .context = &state,
+        .profile = .{},
+        .requestFn = State.request,
+    } }, .{ .repetitions = 2, .max_concurrency = 2, .io = io });
+    defer report.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), state.maximum.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 0), state.active.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 6), report.cases.len);
+    try std.testing.expectEqualStrings("alpha", report.cases[0].name);
+    try std.testing.expectEqualStrings("alpha", report.cases[1].name);
+    try std.testing.expectEqualStrings("beta", report.cases[2].name);
+    try std.testing.expectEqualStrings("beta", report.cases[3].name);
+    try std.testing.expectEqualStrings("gamma", report.cases[4].name);
+    try std.testing.expectEqualStrings("gamma", report.cases[5].name);
+    try std.testing.expectEqual(@as(u64, 12), report.usage.totalTokens());
+}
+
+test "dataset concurrency requires an available runtime and drains failures" {
+    const Stub = struct {
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            return error.ConcurrentCaseFailure;
+        }
+    };
+    var unused: u8 = 0;
+    const dataset = Dataset{
+        .cases = &.{
+            .{ .name = "first", .prompt = "first" },
+            .{ .name = "second", .prompt = "second" },
+        },
+        .evaluators = &.{},
+    };
+    const agent = agent_types.Agent{ .model = .{
+        .context = &unused,
+        .profile = .{},
+        .requestFn = Stub.request,
+    } };
+    try std.testing.expectError(Error.ConcurrentExecutionRequiresIo, dataset.runWithOptions(
+        std.testing.allocator,
+        agent,
+        .{ .max_concurrency = 2 },
+    ));
+
+    var unavailable = std.Io.Threaded.init(std.testing.allocator, .{ .concurrent_limit = .nothing });
+    defer unavailable.deinit();
+    try std.testing.expectError(Error.ConcurrentExecutionUnavailable, dataset.runWithOptions(
+        std.testing.allocator,
+        agent,
+        .{ .max_concurrency = 2, .io = unavailable.io() },
+    ));
+
+    var runtime = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+    try std.testing.expectError(error.ConcurrentCaseFailure, dataset.runWithOptions(
+        std.testing.allocator,
+        agent,
+        .{ .max_concurrency = 2, .io = runtime.io() },
+    ));
+
+    var empty_report = try (Dataset{ .cases = &.{}, .evaluators = &.{} }).runWithOptions(
+        std.testing.allocator,
+        agent,
+        .{ .max_concurrency = 2 },
+    );
+    defer empty_report.deinit();
+    try std.testing.expectEqual(@as(usize, 0), empty_report.cases.len);
 }
 
 fn checkDatasetAllocationFailure(allocator: std.mem.Allocator) !void {

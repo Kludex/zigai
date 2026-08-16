@@ -77,6 +77,9 @@
 - Add eval execution options with repeated case runs, independent task and
   evaluator retry policies, stable case/repetition/attempt identities, recorded
   attempt counts, retry classification/backoff callbacks, and lifecycle events.
+- Add bounded concurrent eval execution through `std.Io`, with stable
+  source-order reports, joined failures, shared allocator protection, and an
+  explicit thread-safety contract for application callbacks.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

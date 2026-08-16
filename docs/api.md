@@ -514,9 +514,11 @@ slice is an explicit override, while null inherits the lower-precedence value.
 `evals.Dataset.run` executes each case once and propagates task, evaluator,
 hook, and allocation errors. `runWithOptions` additionally accepts
 `evals.ExecutionOptions`: `repetitions`, independent `task_retry` and
-`evaluator_retry` policies, and borrowed lifecycle hooks. Zero repetitions or
-retry attempts return `evals.Error.InvalidExecutionOptions` before a model is
-called.
+`evaluator_retry` policies, bounded `max_concurrency` with an optional `io`
+runtime, and borrowed lifecycle hooks. Zero repetitions, concurrency, or retry
+attempts return `evals.Error.InvalidExecutionOptions` before a model is called.
+More than one effective concurrent run without `io` returns
+`ConcurrentExecutionRequiresIo`.
 
 `RetryPolicy.shouldRetryFn` classifies the error from the completed attempt.
 When it returns true, `beforeRetryFn` runs before the next attempt and may
@@ -524,6 +526,12 @@ implement sleeping, rate-limit coordination, or test-controlled waiting.
 `CaseResult` records the source `case_index`, one-based `repetition`, total
 `repetitions`, and `task_attempts`; each `EvaluationResult` records its own
 attempt count. Report order is source case first, then repetition.
+
+With `max_concurrency > 1`, the `Model` implementation, evaluators, retry
+callbacks, and lifecycle hooks must be thread-safe. ZigAI locks access to the
+caller allocator and report arena; application callback state remains outside
+that boundary. All admitted work is joined before success or failure returns,
+and the lowest source-order task/evaluator failure is propagated.
 
 ## Ownership
 
