@@ -554,13 +554,15 @@ test "runtime stores persist steps blobs and managed prompts" {
     try std.testing.expect((try steps.load(std.testing.allocator, "run", "missing")) == null);
 
     const blobs = stores.blobStore();
-    try blobs.put(std.testing.allocator, .{
+    const image_blob = Blob{
         .tenant_id = "tenant-a",
         .id = "image",
         .kind = .media,
         .media_type = "image/png",
         .bytes = "png",
-    });
+    };
+    try blobs.put(std.testing.allocator, image_blob);
+    try std.testing.expectError(error.BlobAlreadyExists, blobs.put(std.testing.allocator, image_blob));
     try std.testing.expect((try blobs.get(std.testing.allocator, "tenant-b", "image")) == null);
     var blob = (try blobs.get(std.testing.allocator, "tenant-a", "image")).?;
     defer blob.deinit();
@@ -569,7 +571,14 @@ test "runtime stores persist steps blobs and managed prompts" {
     try std.testing.expect(!(try blobs.delete("tenant-a", "image")));
 
     try stores.putPrompt(.{ .name = "welcome", .version = 1, .template = "Hello {{name}}" });
+    try std.testing.expectError(
+        error.ManagedPromptAlreadyExists,
+        stores.putPrompt(.{ .name = "welcome", .version = 1, .template = "duplicate" }),
+    );
     try stores.putPrompt(.{ .name = "welcome", .version = 2, .template = "Hi {{name}}" });
+    var exact_prompt = (try stores.promptStore().get(std.testing.allocator, "welcome", 1)).?;
+    defer exact_prompt.deinit();
+    try std.testing.expectEqual(@as(u64, 1), exact_prompt.value.version);
     var prompt = (try stores.promptStore().get(std.testing.allocator, "welcome", null)).?;
     defer prompt.deinit();
     try std.testing.expectEqual(@as(u64, 2), prompt.value.version);
@@ -634,6 +643,17 @@ test "bounded executor overlaps work and preserves source order" {
             null,
         ),
     );
+    var unavailable = std.Io.Threaded.init(std.testing.allocator, .{ .concurrent_limit = .nothing });
+    defer unavailable.deinit();
+    try std.testing.expectError(
+        error.ExecutorConcurrencyUnavailable,
+        (BoundedExecutor{ .io = unavailable.io() }).run(
+            std.testing.allocator,
+            tasks[0..1],
+            null,
+            null,
+        ),
+    );
 }
 
 fn runStoresWithAllocator(gpa: std.mem.Allocator) !void {
@@ -656,10 +676,30 @@ fn runStoresWithAllocator(gpa: std.mem.Allocator) !void {
     try stores.putPrompt(.{ .name = "prompt", .version = 1, .template = "text" });
 }
 
+fn runExecutorWithAllocator(gpa: std.mem.Allocator) !void {
+    const Work = struct {
+        fn run(_: ?*anyopaque, arena: std.mem.Allocator, _: model_types.RunControl) ![]const u8 {
+            return arena.dupe(u8, "output");
+        }
+    };
+    var result = try (BoundedExecutor{ .io = std.testing.io }).run(
+        gpa,
+        &.{.{ .id = "task", .run_fn = Work.run }},
+        null,
+        null,
+    );
+    result.deinit();
+}
+
 test "runtime service ownership survives every allocation failure" {
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
         runStoresWithAllocator,
+        .{},
+    );
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        runExecutorWithAllocator,
         .{},
     );
 }

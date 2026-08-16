@@ -615,6 +615,12 @@ test "dynamic plans pause revise advise execute and propagate usage traces" {
     try std.testing.expectEqual(@as(usize, 2), completed.complete.usage.requests);
     try std.testing.expect(state.saw_trace);
     try std.testing.expect(state.saw_nested);
+    try State.observe(&state, .{ .failure = .{
+        .plan_id = revised.id,
+        .revision = revised.revision,
+        .failure_name = "Synthetic",
+        .trace = parent,
+    } });
 
     var adapter = CapabilityAdapter{
         .plan = &revised,
