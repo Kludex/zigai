@@ -679,6 +679,15 @@ test "typed agent nodes report prepare agent and apply failures" {
     node.context = &capture;
     try std.testing.expectError(error.StepFailed, Support.runNode(&node, &capture));
     try std.testing.expectEqual(FailurePhase.apply, capture.phase.?);
+
+    var final_script = testing_types.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .profile = .{ .supports_json_schema_output = true },
+    };
+    const final_agent = Agent{ .model = final_script.model() };
+    node.agent = &final_agent;
+    node.context = null;
+    try std.testing.expectEqual(@as(u8, 0), try Support.runNode(&node, &capture));
 }
 
 test "agent node failures retain their phase and stable graph error" {
@@ -840,7 +849,10 @@ test "buffered agent nodes release adapted output when usage propagation fails" 
         }
     };
     const parts = [_]model_types.Part{.{ .text = "answer" }};
-    var scripted = testing_types.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    var scripted = testing_types.ScriptedModel{ .responses = &.{
+        .{ .parts = &parts },
+        .{ .parts = &parts },
+    } };
     const agent = Agent{ .model = scripted.model() };
     var node = BufferedNode(Workflow){
         .agent = &agent,
@@ -864,6 +876,11 @@ test "buffered agent nodes release adapted output when usage propagation fails" 
     try std.testing.expectError(
         error.StepFailed,
         graph.run(std.testing.allocator, &state, &deps, 0, .{}),
+    );
+    state.conversation.usage.requests = 0;
+    try std.testing.expectEqual(
+        @as(u8, 0),
+        try graph.run(std.testing.allocator, &state, &deps, 0, .{}),
     );
 }
 
