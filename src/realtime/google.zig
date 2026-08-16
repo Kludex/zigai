@@ -286,6 +286,7 @@ test "Gemini Live drives audio transcripts tools turns usage and images" {
                 .send_text_fn = sendText,
                 .receive_fn = receive,
                 .close_fn = close,
+                .is_transport_error_fn = isTransportError,
             };
         }
         fn sendText(context: *anyopaque, text: []const u8) !void {
@@ -300,6 +301,9 @@ test "Gemini Live drives audio transcripts tools turns usage and images" {
             return wire.OwnedFrame.copy(gpa, frame);
         }
         fn close(_: *anyopaque) void {}
+        fn isTransportError(_: *anyopaque, failure: anyerror) bool {
+            return failure == error.TransportDropped;
+        }
         fn tool(_: ?*anyopaque, gpa: std.mem.Allocator, _: base.CodecEvent.ToolCall) ![]u8 {
             return gpa.dupe(u8, "result");
         }
@@ -307,10 +311,15 @@ test "Gemini Live drives audio transcripts tools turns usage and images" {
     const frames = [_]wire.Frame{
         .{ .text = "{\"setupComplete\":{}}" },
         .{ .text = "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"inlineData\":{\"data\":\"AQI=\"}}]}}}" },
+        .{ .text = "{\"serverContent\":{\"modelTurn\":{\"parts\":[{\"text\":\"partial\"}]}}}" },
         .{ .text = "{\"serverContent\":{\"inputTranscription\":{\"text\":\"hi\"}}}" },
         .{ .text = "{\"serverContent\":{\"outputTranscription\":{\"text\":\"hello\"}}}" },
         .{ .text = "{\"toolCall\":{\"functionCalls\":[{\"id\":\"c1\",\"name\":\"tool\",\"args\":{}}]}}" },
+        .{ .text = "{\"toolCallCancellation\":{\"ids\":[\"c2\"]}}" },
         .{ .text = "{\"usageMetadata\":{\"promptTokenCount\":2,\"responseTokenCount\":3}}" },
+        .{ .text = "{\"serverContent\":{\"interrupted\":true}}" },
+        .{ .text = "{\"goAway\":{}}" },
+        .{ .text = "{\"sessionResumptionUpdate\":{\"newHandle\":\"h\"}}" },
         .{ .text = "{\"serverContent\":{\"turnComplete\":true}}" },
     };
     var state = State{ .frames = &frames };
@@ -327,7 +336,17 @@ test "Gemini Live drives audio transcripts tools turns usage and images" {
     try session.sendText("question");
     try session.sendAudio("\x00\x00");
     try session.sendImage(.{ .source = .{ .bytes = "jpeg" }, .media_type = "image/jpeg" });
-    const expected = [_]std.meta.Tag(base.Event){ .audio, .input_transcript, .output_transcript, .tool, .turn_complete };
+    const expected = [_]std.meta.Tag(base.Event){
+        .audio,
+        .output_transcript,
+        .input_transcript,
+        .output_transcript,
+        .tool,
+        .session_error,
+        .response_interrupted,
+        .session_error,
+        .turn_complete,
+    };
     for (expected) |tag| {
         var event = try session.next(std.testing.allocator);
         defer event.deinit();
@@ -335,4 +354,5 @@ test "Gemini Live drives audio transcripts tools turns usage and images" {
     }
     try std.testing.expectEqual(@as(u64, 5), session.usage().totalTokens());
     try std.testing.expect(state.sent >= 5);
+    try std.testing.expect(session.connection.isTransportError(error.TransportDropped));
 }

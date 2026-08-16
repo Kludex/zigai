@@ -398,6 +398,7 @@ test "OpenAI protocol drives WebRTC audio transcripts tools turns and usage" {
                 .send_text_fn = sendText,
                 .receive_fn = receive,
                 .close_fn = close,
+                .is_transport_error_fn = isTransportError,
             };
         }
         fn sendText(context: *anyopaque, text: []const u8) !void {
@@ -415,6 +416,9 @@ test "OpenAI protocol drives WebRTC audio transcripts tools turns and usage" {
             const self: *@This() = @ptrCast(@alignCast(context));
             self.closed += 1;
         }
+        fn isTransportError(_: *anyopaque, failure: anyerror) bool {
+            return failure == error.TransportDropped;
+        }
         fn tool(_: ?*anyopaque, gpa: std.mem.Allocator, _: base.CodecEvent.ToolCall) ![]u8 {
             return gpa.dupe(u8, "result");
         }
@@ -422,8 +426,16 @@ test "OpenAI protocol drives WebRTC audio transcripts tools turns and usage" {
     const frames = [_]wire.Frame{
         .{ .text = "{\"type\":\"session.created\"}" },
         .{ .text = "{\"type\":\"response.audio.delta\",\"delta\":\"AQI=\"}" },
+        .{ .text = "{\"type\":\"conversation.item.input_audio_transcription.delta\",\"delta\":\"h\"}" },
         .{ .text = "{\"type\":\"conversation.item.input_audio_transcription.completed\",\"transcript\":\"hi\"}" },
+        .{ .text = "{\"type\":\"response.audio_transcript.delta\",\"delta\":\"hel\"}" },
         .{ .text = "{\"type\":\"response.audio_transcript.done\",\"transcript\":\"hello\"}" },
+        .{ .text = "{\"type\":\"input_audio_buffer.speech_started\"}" },
+        .{ .text = "{\"type\":\"input_audio_buffer.speech_stopped\"}" },
+        .{ .text = "{\"type\":\"response.output_audio.started\"}" },
+        .{ .text = "{\"type\":\"response.output_audio.done\"}" },
+        .{ .text = "{\"type\":\"response.cancelled\"}" },
+        .{ .text = "{\"type\":\"error\",\"error\":{\"code\":\"notice\",\"message\":\"retry\"}}" },
         .{ .text = "{\"type\":\"response.function_call_arguments.done\",\"call_id\":\"c1\",\"name\":\"tool\",\"arguments\":\"{}\"}" },
         .{ .text = "{\"type\":\"response.done\",\"response\":{\"id\":\"r1\",\"status\":\"completed\",\"usage\":{\"input_tokens\":2,\"output_tokens\":3}}}" },
     };
@@ -447,7 +459,21 @@ test "OpenAI protocol drives WebRTC audio transcripts tools turns and usage" {
     try session.createResponse();
     try session.interrupt(null);
     try session.interrupt(10);
-    const expected = [_]std.meta.Tag(base.Event){ .audio, .input_transcript, .output_transcript, .tool, .turn_complete };
+    const expected = [_]std.meta.Tag(base.Event){
+        .audio,
+        .input_transcript,
+        .input_transcript,
+        .output_transcript,
+        .output_transcript,
+        .input_speech_start,
+        .input_speech_end,
+        .output_speech_start,
+        .output_speech_end,
+        .response_interrupted,
+        .session_error,
+        .tool,
+        .turn_complete,
+    };
     for (expected) |tag| {
         var event = try session.next(std.testing.allocator);
         defer event.deinit();
@@ -455,4 +481,11 @@ test "OpenAI protocol drives WebRTC audio transcripts tools turns and usage" {
     }
     try std.testing.expectEqual(@as(u64, 5), session.usage().totalTokens());
     try std.testing.expect(state.sent >= 8);
+    try std.testing.expect(session.connection.isTransportError(error.TransportDropped));
+
+    session.close();
+    protocol.dialect = .openai;
+    var image_session = try base.Session.init(std.testing.allocator, protocol.connector(), .{});
+    defer image_session.deinit();
+    try image_session.sendImage(.{ .source = .{ .bytes = "jpeg" }, .media_type = "image/jpeg" });
 }
