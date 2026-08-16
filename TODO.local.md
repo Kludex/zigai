@@ -155,9 +155,16 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   Give every recording a stable provider, model, scenario, fixture path, and
   credential set; select credentials lazily; reject unknown or empty filters;
   and provide a secret-free command that lists runnable recordings.
-- [ ] Record and replay buffered, streaming, function-tool, structured-output,
-  thinking, retry, and provider-error scenarios for every applicable first-party
-  OpenAI, Anthropic, and Google model with an available key.
+- [ ] Record and replay one minimal buffered text response for every first-party
+  OpenAI, Anthropic, and Google model in the manifest with an available key.
+- [ ] Record and replay streamed text plus a streamed function-tool loop for
+  every applicable first-party model in the manifest with an available key.
+- [ ] Record and replay structured-output and thinking scenarios for every
+  applicable first-party capability profile, asserting provider-specific wire
+  fields and the provider-neutral message/event representation.
+- [ ] Record and replay retry and provider-error scenarios for OpenAI,
+  Anthropic, and Google, covering rate limits, retry hints, retry exhaustion,
+  malformed success bodies, and safe bounded error observation.
 - [ ] Record and replay rich-media and provider-managed-tool scenarios for every
   applicable native provider with an available key, including deterministic
   assertions for citations, references, usage, and provider extension metadata.
