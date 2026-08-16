@@ -1231,6 +1231,23 @@ status into `CaseResult.spans`, and forwards spans and metrics unchanged. Trace
 evaluators use the ordinary evaluator retry policy and add results to the same
 ordered evaluation list after output evaluators.
 
+For production sampling, `OnlineEvalSamplingPolicy` makes a stable decision
+from the OpenTelemetry trace ID:
+
+```zig
+const policy = zigai.OnlineEvalSamplingPolicy{
+    .trace_ratio = .{ .numerator = 1, .denominator = 100 },
+};
+if (try policy.includes(trace_context.trace_id)) {
+    // Submit a trace-correlated OnlineEvalObservation to your evaluator path.
+}
+```
+
+Online observations distinguish successful and failed runs. Evaluators return
+bounded zero-to-one scores, and result sinks retain the originating trace
+context. Sampling is deterministic across processes using the same trace ID
+and policy.
+
 Persist portable datasets and complete reports with `zigai.eval_io`:
 
 ```zig

@@ -213,6 +213,12 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [ ] Add online evaluation hooks and sampling policies that never block the
   agent path, preserve trace correlation, bound queues, and expose dropped-work
   metrics.
+  - [x] Define trace-correlated observation, evaluator, result-sink, and stable
+    deterministic trace-ratio sampling contracts.
+  - [ ] Add bounded owned work queues, explicit saturation and shutdown
+    behavior, isolated processing, and reasoned dropped-work metrics.
+  - [ ] Integrate one isolated online-eval lifecycle adapter per agent run and
+    document the complete production workflow.
 - [ ] Add deterministic benchmarks for request encoding/decoding, streaming,
   history processing, schema reflection/validation, MCP, and parallel tools;
   publish baselines and fail CI only on reviewed regression thresholds.
