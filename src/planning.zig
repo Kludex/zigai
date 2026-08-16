@@ -625,11 +625,28 @@ test "dynamic plans pause revise advise execute and propagate usage traces" {
     try std.testing.expectEqual(model_types.ToolExecution.requires_approval, capability.tools[0].execution);
     const encoded = try capability.tools[0].executeWithContext(
         std.testing.allocator,
-        .{ .io = std.testing.io },
+        .{
+            .io = std.testing.io,
+            .deadline = std.Io.Clock.Timestamp.fromNow(std.testing.io, .{
+                .raw = .fromSeconds(1),
+                .clock = .awake,
+            }),
+        },
         "{}",
     );
     defer std.testing.allocator.free(encoded);
     try std.testing.expect(std.mem.indexOf(u8, encoded, "done:change") != null);
+
+    var ungated = try Plan.init(std.testing.allocator, "ungated", &.{.{ .id = "step", .title = "Step" }}, .{});
+    defer ungated.deinit();
+    var ungated_adapter = CapabilityAdapter{
+        .plan = &ungated,
+        .executor = .{ .context = &state, .execute_fn = State.execute },
+    };
+    try std.testing.expectEqual(
+        model_types.ToolExecution.immediate,
+        ungated_adapter.capability().tools[0].execution,
+    );
 }
 
 test "plan validation approvals and execution failures remain explicit" {
@@ -641,6 +658,14 @@ test "plan validation approvals and execution failures remain explicit" {
             .dependencies = &.{"cycle"},
         }}, .{}),
     );
+    try std.testing.expectError(
+        error.InvalidPlan,
+        Plan.init(std.testing.allocator, "plan", &.{.{
+            .id = "step",
+            .title = "Missing",
+            .dependencies = &.{"missing"},
+        }}, .{}),
+    );
     var plan = try Plan.init(std.testing.allocator, "plan", &.{.{
         .id = "approved",
         .title = "Approved",
@@ -648,10 +673,17 @@ test "plan validation approvals and execution failures remain explicit" {
     }}, .{});
     defer plan.deinit();
     const ExecutorState = struct {
+        failures: usize = 0,
         fn execute(_: ?*anyopaque, _: std.mem.Allocator, _: StepContext) !StepResult {
             return error.StepFailed;
         }
+        fn observe(context: ?*anyopaque, event: Event) !void {
+            if (event != .failure) return;
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            self.failures += 1;
+        }
     };
+    var executor_state: ExecutorState = .{};
     try std.testing.expectError(
         error.PlanApprovalDenied,
         run(std.testing.allocator, &plan, .{ .execute_fn = ExecutorState.execute }, .{
@@ -662,8 +694,10 @@ test "plan validation approvals and execution failures remain explicit" {
         error.StepFailed,
         run(std.testing.allocator, &plan, .{ .execute_fn = ExecutorState.execute }, .{
             .approvals = &.{.{ .step_id = "approved", .approved = true }},
+            .observer = .{ .context = &executor_state, .event_fn = ExecutorState.observe },
         }),
     );
+    try std.testing.expectEqual(@as(usize, 1), executor_state.failures);
 }
 
 fn runPlanWithAllocator(gpa: std.mem.Allocator) !void {
@@ -678,10 +712,31 @@ fn runPlanWithAllocator(gpa: std.mem.Allocator) !void {
     outcome.deinit();
 }
 
+fn pausePlanWithAllocator(gpa: std.mem.Allocator) !void {
+    var plan = try Plan.init(gpa, "plan", &.{.{
+        .id = "step",
+        .title = "Step",
+        .requires_approval = true,
+    }}, .{});
+    defer plan.deinit();
+    const Execute = struct {
+        fn run(_: ?*anyopaque, _: std.mem.Allocator, _: StepContext) !StepResult { // kcov-ignore: approval blocks execution
+            return error.MustNotExecute; // kcov-ignore: approval blocks execution
+        }
+    };
+    var outcome = try run(gpa, &plan, .{ .execute_fn = Execute.run }, .{});
+    outcome.deinit();
+}
+
 test "planning ownership survives every allocation failure" {
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
         runPlanWithAllocator,
+        .{},
+    );
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        pausePlanWithAllocator,
         .{},
     );
 }
