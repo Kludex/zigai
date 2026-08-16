@@ -39,7 +39,9 @@ conversation.
 
 ## Quick start
 
-ZigAI targets Zig 0.16.0.
+ZigAI targets Zig 0.16.0. Linux x86_64 and Apple Silicon macOS are the
+currently supported targets. See the [`0.x` compatibility, deprecation,
+migration, and API review policy](docs/compatibility.md).
 
 ```console
 zig build

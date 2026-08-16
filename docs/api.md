@@ -142,6 +142,7 @@ Use these namespaces for the rest of the API:
 | `zigai.planning` | Bounded revisions, advisors, approval gates, and dynamic workflows |
 | `zigai.runtime_services` | Step, blob, prompt, and bounded-executor service contracts |
 | `zigai.acp` | Agent Client Protocol process, session, update, and client-operation support |
+| `zigai.compatibility` | Public deprecations and persisted-format migration guarantees |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |

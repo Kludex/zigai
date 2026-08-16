@@ -20,6 +20,7 @@ pub const memory = @import("memory.zig");
 pub const planning = @import("planning.zig");
 pub const runtime_services = @import("runtime_services.zig");
 pub const acp = @import("acp.zig");
+pub const compatibility = @import("compatibility.zig");
 pub const testing = @import("testing.zig");
 pub const transport = @import("transport.zig");
 pub const provider = @import("provider.zig");
@@ -213,6 +214,7 @@ pub const OutputValidator = output.Validator;
 pub const OutputValidatorResult = output.ValidatorResult;
 pub const OutputEndStrategy = output.EndStrategy;
 pub const FinishReason = messages.FinishReason;
+/// Deprecated: use `RequestUsage`. This alias remains through the 0.x series.
 pub const Usage = messages.Usage;
 pub const RequestUsage = usage.RequestUsage;
 pub const RunUsage = usage.RunUsage;
@@ -313,6 +315,7 @@ test {
     _ = @import("planning.zig");
     _ = @import("runtime_services.zig");
     _ = @import("acp.zig");
+    _ = @import("compatibility.zig");
     _ = @import("json.zig");
     _ = @import("reflect.zig");
     _ = @import("history.zig");

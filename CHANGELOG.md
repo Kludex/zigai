@@ -65,6 +65,10 @@
   prompts/updates, permission handling, cancellation, reconnect, and bounded
   stdio process framing, plus rooted filesystem and v1 terminal compatibility
   with official transcript fixtures.
+- Freeze the pre-1.0 compatibility policy, public API review checklist,
+  machine-readable deprecation schedule, persisted-format migration guarantees,
+  and supported Zig/target matrix. Deprecate `zigai.Usage` in favor of
+  `zigai.RequestUsage` without removing the alias before 1.0.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.
