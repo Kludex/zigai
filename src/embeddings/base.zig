@@ -342,7 +342,7 @@ pub const Embedder = struct {
                     .total_delay_ms = next_total,
                 };
                 if (options.retry.before_retry) |hook| try hook.emit(event);
-                if (delay_ms > 0) {
+                if (options.retry.initial_delay_ms > 0 and options.retry.maximum_delay_ms > 0) {
                     const io = options.io orelse return Error.RetryBackoffRequiresIo;
                     try control.invoke(void, sleep, .{ io, delay_ms });
                 }

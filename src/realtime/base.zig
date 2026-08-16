@@ -848,6 +848,12 @@ test "realtime sessions stream media tools turns usage and canonical history" {
         .{ .usage = .{ .input_tokens = 2, .output_tokens = 3 } },
         .{ .tool_call = .{ .id = "call-1", .name = "lookup", .arguments_json = "{}" } },
         .{ .response_done = .{ .response_id = "response-1" } },
+        .{ .tool_cancelled = &.{"call-2"} },
+        .input_speech_end,
+        .output_speech_start,
+        .output_speech_end,
+        .response_interrupted,
+        .{ .session_error = .{ .code = "notice", .message = "recoverable", .recoverable = true } },
     };
     var state = State{ .events = &events };
     var session = try Session.init(std.testing.allocator, .{
@@ -875,6 +881,12 @@ test "realtime sessions stream media tools turns usage and canonical history" {
         .output_transcript,
         .tool,
         .turn_complete,
+        .session_error,
+        .input_speech_end,
+        .output_speech_start,
+        .output_speech_end,
+        .response_interrupted,
+        .session_error,
     };
     for (expected_tags) |expected| {
         var event = try session.next(std.testing.allocator);
@@ -885,7 +897,7 @@ test "realtime sessions stream media tools turns usage and canonical history" {
     try std.testing.expectEqual(@as(usize, 1), session.usage().tool_calls);
     var history = try session.allMessages(std.testing.allocator);
     defer history.deinit();
-    try std.testing.expectEqual(@as(usize, 6), history.messages.len);
+    try std.testing.expectEqual(@as(usize, 7), history.messages.len);
     try std.testing.expectEqualStrings(
         "answer",
         history.messages[5].response.parts[0].speech.transcript.?,
@@ -945,8 +957,86 @@ test "realtime sessions reconnect only classified transport failures" {
     defer reconnect_event.deinit();
     try std.testing.expectEqual(std.meta.Tag(Event).reconnect, std.meta.activeTag(reconnect_event.value));
     try std.testing.expect(reconnect_event.value.reconnect.state_restored);
+    try session.sendText("after reconnect");
     var speech = try session.next(std.testing.allocator);
     defer speech.deinit();
     try std.testing.expectEqual(std.meta.Tag(Event).input_speech_start, std.meta.activeTag(speech.value));
     try std.testing.expectEqual(@as(usize, 2), state.connects);
+}
+
+test "realtime sessions reject unsupported operations and every configured limit" {
+    const State = struct {
+        profile_value: Profile = .{},
+        events: []const CodecEvent = &.{},
+        index: usize = 0,
+
+        fn connect(context: *anyopaque, _: std.mem.Allocator) !Connection {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            return .{
+                .context = self,
+                .transport_kind = .websocket,
+                .profile = self.profile_value,
+                .provider_name = "test",
+                .model_name = "voice",
+                .send_fn = send,
+                .receive_fn = receive,
+                .close_fn = close,
+            };
+        }
+        fn send(_: *anyopaque, _: Input) !void {}
+        fn receive(context: *anyopaque, gpa: std.mem.Allocator) !OwnedCodecEvent {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const event = self.events[self.index];
+            self.index += 1;
+            return OwnedCodecEvent.copy(gpa, event);
+        }
+        fn close(_: *anyopaque) void {}
+    };
+    var state: State = .{};
+    const connector = Connector{ .context = &state, .connect_fn = State.connect };
+    try std.testing.expectError(
+        error.InvalidRealtimeLimits,
+        Session.init(std.testing.allocator, connector, .{ .limits = .{ .max_text_bytes = 0 } }),
+    );
+    try std.testing.expectError(
+        error.InvalidRealtimeLimits,
+        Session.init(std.testing.allocator, connector, .{ .reconnect = .{ .max_attempts = 0 } }),
+    );
+    var session = try Session.init(std.testing.allocator, connector, .{});
+    defer session.deinit();
+    try std.testing.expectError(error.InvalidRealtimeContent, session.sendText(""));
+    session.connection.profile.supports_text_input = false;
+    try std.testing.expectError(error.UnsupportedRealtimeOperation, session.sendText("text"));
+    try std.testing.expectError(error.InvalidRealtimeAudio, session.sendAudio("x"));
+    try std.testing.expectError(
+        error.UnsupportedRealtimeOperation,
+        session.sendImage(.{ .source = .{ .bytes = "x" }, .media_type = "image/jpeg" }),
+    );
+    try std.testing.expectError(error.UnsupportedRealtimeOperation, session.commitAudio());
+    session.connection.profile.supports_interruption = false;
+    try std.testing.expectError(error.UnsupportedRealtimeOperation, session.interrupt(null));
+    session.connection.profile.supports_interruption = true;
+    try std.testing.expectError(error.UnsupportedRealtimeOperation, session.interrupt(1));
+
+    state.events = &.{.{ .usage = .{ .input_tokens = 2 } }};
+    session.options.limits.max_total_tokens = 1;
+    try std.testing.expectError(error.RealtimeUsageLimitExceeded, session.next(std.testing.allocator));
+}
+
+fn copyRealtimeEventWithAllocator(gpa: std.mem.Allocator) !void {
+    var event = try OwnedCodecEvent.copy(gpa, .{ .session_error = .{
+        .code = "code",
+        .message = "message",
+        .recoverable = true,
+    } });
+    defer event.deinit();
+    try std.testing.expectEqualStrings("message", event.value.session_error.message);
+}
+
+test "realtime event ownership survives every allocation failure" {
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        copyRealtimeEventWithAllocator,
+        .{},
+    );
 }
