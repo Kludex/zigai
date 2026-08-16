@@ -2,7 +2,7 @@
 
 This is the implementation checklist for taking ZigAI from an experimental
 `0.x` library to a production-ready agent framework. It reflects the repository
-state and the stable PydanticAI v2 surface reviewed on 2026-08-15.
+state and the stable PydanticAI v2 surface reviewed on 2026-08-16.
 
 Every checkbox is one reviewable delivery step and one commit. Check an item
 only after its API, ownership rules, tests, documentation, changelog entry, and
@@ -268,6 +268,21 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
     worker-restart, duplicate-delivery, and schema-migration tests.
 - [ ] Add a typed graph/workflow module with steps, decisions, joins/reducers,
   parallel branches, state snapshots, visualization metadata, and agent nodes.
+  - [ ] Define a generic graph builder, typed state/dependency/input/output
+    contexts, validated step registration and edges, bounded execution, stable
+    step events, and manual step-by-step iteration.
+  - [ ] Add typed decision nodes with named branches, explicit unmatched-route
+    failures, conditional edges, and graph-build reachability validation.
+  - [ ] Add map and broadcast fan-out, bounded parallel scheduling, joins with
+    typed reducers, deterministic source-order reduction, fail-fast cleanup,
+    and documented state/dependency thread-safety rules.
+  - [ ] Add strict versioned state/frontier snapshots, bounded JSON parsing,
+    graph-definition fingerprints, resumable iteration, and migration hooks.
+  - [ ] Add node/edge labels, descriptions, groups, source locations, Mermaid
+    rendering, and stable machine-readable visualization metadata.
+  - [ ] Add agent nodes with typed prompt/result adapters, history and usage
+    propagation, run deadlines/cancellation, streaming events, durable bindings,
+    and graph/agent trace correlation.
 - [ ] Add multi-agent primitives for delegation, handoff, subagents, shared and
   isolated context, usage/deadline propagation, recursion limits, and tracing.
 - [ ] Add embeddings with provider-neutral requests, batching, dimensions,
@@ -281,6 +296,31 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [ ] Add a production CLI with provider/model selection, config files, stdin,
   conversation persistence, MCP servers, tool approval, structured/JSON event
   output, exit-code contract, and shell completion.
+
+## P2 — Capability harness and execution runtime
+
+- [ ] Add a provider-neutral agent harness for reusable coder, researcher, and
+  custom compositions, with typed capability configuration, lifecycle hooks,
+  artifact ownership, bounded execution, and agent-spec integration.
+- [ ] Add execution-environment contracts for filesystem and shell access plus
+  remote sandboxes, with explicit roots, command/network policy, output limits,
+  cancellation, audit events, secret handling, and disposable workspaces.
+- [ ] Add a reviewed built-in capability catalog for web search/fetch, browser
+  use, image generation, skills, and repository context, while keeping vendor
+  SDKs optional and enforcing the same URL/content/security policies as tools.
+- [ ] Add durable knowledge and memory primitives for conversation search,
+  semantic memory, retention and deletion, tenant isolation, citations,
+  compaction, pluggable stores, and deterministic test backends.
+- [ ] Add explicit planning, advisory, and dynamic-workflow capabilities with
+  bounded plans, user-visible revisions, approval gates, nested usage/deadline
+  propagation, and trace-linked execution events.
+- [ ] Add execution-runtime services for step persistence, media/artifact
+  stores, managed prompts, and bounded thread executors, with local interfaces
+  that do not make hosted Pydantic services a core dependency.
+- [ ] Add Agent Client Protocol support with process lifecycle, initialization,
+  sessions, prompts, streamed updates, tool approval, filesystem/terminal
+  operations, cancellation, reconnect, capability negotiation, and fixtures
+  against the official ACP implementations.
 
 ## P2 — Release and ecosystem hardening
 
@@ -309,6 +349,8 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 ## Reference baseline
 
 - PydanticAI stable v2 overview: <https://pydantic.dev/docs/ai/overview/>
+- Pydantic Graph builder: <https://pydantic.dev/docs/ai/graph/builder/>
+- PydanticAI capabilities: <https://pydantic.dev/docs/ai/capabilities/>
 - PydanticAI messages API: <https://pydantic.dev/docs/ai/api/pydantic-ai/messages/>
 - PydanticAI models/providers: <https://pydantic.dev/docs/ai/models/overview/>
 - MCP client documentation: <https://pydantic.dev/docs/ai/mcp/client/>
