@@ -162,7 +162,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Record and replay structured-output and thinking scenarios for every
   applicable first-party capability profile, asserting provider-specific wire
   fields and the provider-neutral message/event representation.
-- [ ] Record and replay retry and provider-error scenarios for OpenAI,
+- [x] Record and replay retry and provider-error scenarios for OpenAI,
   Anthropic, and Google, covering rate limits, retry hints, retry exhaustion,
   malformed success bodies, and safe bounded error observation.
 - [ ] Record and replay rich-media and provider-managed-tool scenarios for every

@@ -1,0 +1,100 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.anthropic.com/v1/messages"
+    headers: {}
+    body: &body
+      type: json
+      content:
+        model: "claude-sonnet-5"
+        max_tokens: 64
+        messages:
+          - role: "user"
+            content:
+              - type: "text"
+                text: "Reply with exactly: pong"
+  response:
+    status: 429
+    headers:
+      retry-after:
+      - "3"
+      x-ratelimit-remaining-requests:
+      - "0"
+      x-ratelimit-remaining-tokens:
+      - "12"
+      x-request-id:
+      - "req_rate_anthropic"
+    body:
+      type: json
+      content:
+        error:
+          type: "rate_limit"
+          message: "slow down"
+- request:
+    method: POST
+    uri: "https://api.anthropic.com/v1/messages"
+    headers: {}
+    body: *body
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        content:
+          - type: "text"
+            text: "pong"
+        stop_reason: "end_turn"
+        usage:
+          input_tokens: 1
+          output_tokens: 1
+- request:
+    method: POST
+    uri: "https://api.anthropic.com/v1/messages"
+    headers: {}
+    body: *body
+  response: &server_error
+    status: 503
+    headers:
+      x-request-id:
+      - "req_server_anthropic"
+    body:
+      type: json
+      content:
+        error:
+          type: "overloaded_error"
+          message: "temporarily unavailable"
+- request:
+    method: POST
+    uri: "https://api.anthropic.com/v1/messages"
+    headers: {}
+    body: *body
+  response: *server_error
+- request:
+    method: POST
+    uri: "https://api.anthropic.com/v1/messages"
+    headers: {}
+    body: *body
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content: {}
+- request:
+    method: POST
+    uri: "https://api.anthropic.com/v1/messages"
+    headers: {}
+    body: *body
+  response:
+    status: 400
+    headers:
+      x-request-id:
+      - "req_bad_anthropic"
+    body:
+      type: json
+      content:
+        error:
+          type: "bad_request_code"
+          message: "provider failure message that is intentionally longer than the observer limit"

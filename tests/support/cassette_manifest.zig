@@ -7,6 +7,7 @@ pub const Scenario = enum {
     streamed_function_tool,
     structured_output,
     thinking,
+    provider_error,
     native_tool,
     rich_media,
     file_lifecycle,
@@ -19,6 +20,7 @@ pub const Scenario = enum {
             .streamed_function_tool => "streamed-function-tool",
             .structured_output => "structured-output",
             .thinking => "thinking",
+            .provider_error => "provider-error",
             .native_tool => "native-tool",
             .rich_media => "rich-media",
             .file_lifecycle => "file-lifecycle",
@@ -110,6 +112,11 @@ pub const CompatibleEndpoint = enum {
     bedrock,
 };
 
+pub const FixtureSource = enum {
+    live,
+    deterministic,
+};
+
 pub const Entry = struct {
     id: []const u8,
     provider: []const u8,
@@ -121,6 +128,7 @@ pub const Entry = struct {
     base_url: []const u8 = "",
     endpoint: CompatibleEndpoint = .fixed,
     api_key_header: bool = false,
+    source: FixtureSource = .live,
 };
 
 pub const openai = [_]Entry{
@@ -278,6 +286,12 @@ pub const google_capabilities = [_]Entry{
 
 pub const first_party_capabilities = openai_capabilities ++ anthropic_capabilities ++ google_capabilities;
 
+pub const first_party_errors = [_]Entry{
+    deterministicEntry("openai/gpt-5.6-sol/provider-error", "openai", "gpt-5.6-sol", "cassettes/errors/openai.yaml", .openai, .openai),
+    deterministicEntry("anthropic/claude-sonnet-5/provider-error", "anthropic", "claude-sonnet-5", "cassettes/errors/anthropic.yaml", .anthropic, .anthropic),
+    deterministicEntry("google/gemini-3.7-flash/provider-error", "google", "gemini-3.7-flash", "cassettes/errors/google.yaml", .google, .google),
+};
+
 pub const compatible = [_]Entry{
     compatibleEntry("azure-openai/gpt-4o/buffered", "azure-openai", "gpt-4o", "cassettes/providers/azure_openai_gpt_4o.yaml", .azure_openai, "", .azure_openai, true),
     compatibleEntry("bedrock/openai.gpt-oss-20b/buffered", "bedrock", "openai.gpt-oss-20b", "cassettes/providers/bedrock_gpt_oss_20b.yaml", .bedrock, "", .bedrock, false),
@@ -314,7 +328,7 @@ pub const files = [_]Entry{
     scenarioEntry("google/files/file-lifecycle", "google", "", .file_lifecycle, "cassettes/files/google.yaml", .google_files, .google),
 };
 
-pub const all = openai ++ anthropic ++ google ++ first_party_buffered ++ first_party_streaming ++ first_party_capabilities ++ compatible ++ native ++ rich ++ files;
+pub const all = openai ++ anthropic ++ google ++ first_party_buffered ++ first_party_streaming ++ first_party_capabilities ++ first_party_errors ++ compatible ++ native ++ rich ++ files;
 
 fn modelEntry(
     id: []const u8,
@@ -392,6 +406,26 @@ fn scenarioEntry(
         .cassette = cassette,
         .route = route,
         .credentials = credentials,
+    };
+}
+
+fn deterministicEntry(
+    id: []const u8,
+    provider: []const u8,
+    model: []const u8,
+    cassette: []const u8,
+    route: Route,
+    credentials: CredentialSet,
+) Entry {
+    return .{
+        .id = id,
+        .provider = provider,
+        .model = model,
+        .scenario = .provider_error,
+        .cassette = cassette,
+        .route = route,
+        .credentials = credentials,
+        .source = .deterministic,
     };
 }
 

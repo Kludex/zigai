@@ -1,0 +1,102 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent"
+    headers: {}
+    body: &body
+      type: json
+      content:
+        contents:
+          - role: "user"
+            parts:
+              - text: "Reply with exactly: pong"
+        generationConfig:
+          maxOutputTokens: 64
+  response:
+    status: 429
+    headers:
+      retry-after:
+      - "3"
+      x-ratelimit-remaining-requests:
+      - "0"
+      x-ratelimit-remaining-tokens:
+      - "12"
+      x-request-id:
+      - "req_rate_google"
+    body:
+      type: json
+      content:
+        error:
+          code: "429"
+          message: "slow down"
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent"
+    headers: {}
+    body: *body
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        candidates:
+          - content:
+              role: "model"
+              parts:
+                - text: "pong"
+            finishReason: "STOP"
+        usageMetadata:
+          promptTokenCount: 1
+          candidatesTokenCount: 1
+          totalTokenCount: 2
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent"
+    headers: {}
+    body: *body
+  response: &server_error
+    status: 503
+    headers:
+      x-request-id:
+      - "req_server_google"
+    body:
+      type: json
+      content:
+        error:
+          code: "503"
+          message: "temporarily unavailable"
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent"
+    headers: {}
+    body: *body
+  response: *server_error
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent"
+    headers: {}
+    body: *body
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content: {}
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent"
+    headers: {}
+    body: *body
+  response:
+    status: 400
+    headers:
+      x-request-id:
+      - "req_bad_google"
+    body:
+      type: json
+      content:
+        error:
+          status: "bad_request_code"
+          message: "provider failure message that is intentionally longer than the observer limit"

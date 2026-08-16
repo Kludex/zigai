@@ -32,20 +32,27 @@ pub fn main(init: std.process.Init) !void {
 
     for (manifest.all) |entry| {
         if (!manifest.selected(entry, filters)) continue;
+        if (entry.source == .deterministic) {
+            std.log.info("skipped deterministic fixture {s}", .{entry.id});
+            continue;
+        }
         const key = requiredCredential(init, entry, 0);
         switch (entry.route) {
             .openai => switch (entry.scenario) {
                 .buffered, .function_tool, .streamed_text, .streamed_function_tool, .structured_output, .thinking => try recordOpenAI(init, http.transport(), key, entry),
+                .provider_error => unreachable,
                 .native_tool => try recordNativeOpenAI(init, http.transport(), key, entry),
                 else => unreachable,
             },
             .anthropic => switch (entry.scenario) {
                 .buffered, .function_tool, .streamed_text, .streamed_function_tool, .structured_output, .thinking => try recordAnthropic(init, http.transport(), key, entry),
+                .provider_error => unreachable,
                 .native_tool => try recordNativeAnthropic(init, http.transport(), key, entry),
                 else => unreachable,
             },
             .google => switch (entry.scenario) {
                 .buffered, .function_tool, .streamed_text, .streamed_function_tool, .structured_output, .thinking => try recordGoogle(init, http.transport(), key, entry),
+                .provider_error => unreachable,
                 .native_tool => try recordNativeGoogle(init, http.transport(), key, entry),
                 else => unreachable,
             },
@@ -196,6 +203,14 @@ fn listRecordings(
     var output: std.Io.File.Writer = .init(.stdout(), init.io, &buffer);
     for (manifest.all) |entry| {
         if (!manifest.selected(entry, filters)) continue;
+        if (entry.source == .deterministic) {
+            if (!runnable_only) try output.interface.print("fixture\t{s}\t{s}\t{s}\n", .{
+                entry.provider,
+                entry.scenario.name(),
+                entry.id,
+            });
+            continue;
+        }
         const ready = credentialsAvailable(init, entry);
         if (runnable_only and !ready) continue;
         try output.interface.print("{s}\t{s}\t{s}\t{s}\n", .{

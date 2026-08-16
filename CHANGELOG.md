@@ -41,6 +41,10 @@
   provider's wire controls, typed output, neutral reasoning usage, and
   Anthropic thinking events, signatures, and history. Preserve Anthropic
   `thinking_tokens` in buffered and streamed usage.
+- Add deterministic first-party provider-error cassettes with typed fixture
+  provenance. OpenAI, Anthropic, and Google now replay rate-limit recovery and
+  retry hints, server-error exhaustion, malformed success payloads, and safe
+  bounded error observation without attempting to manufacture live failures.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

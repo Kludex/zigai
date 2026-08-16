@@ -52,7 +52,8 @@ from each first-party provider. The matrix spans multiple model generations and
 size tiers. Every recording is defined once in the typed
 `tests/support/cassette_manifest.zig` manifest. Recording and replay share its
 stable ID, provider, model, scenario, fixture path, execution route, and
-credential requirements.
+credential requirements. Its source field distinguishes live recordings from
+deterministic failure injections.
 
 `tests/cassettes/buffered/` contains a separate minimal text response for the
 same 24-model first-party matrix. These fixtures isolate ordinary request
@@ -72,6 +73,14 @@ Thinking fixtures validate each provider's high-effort wire control and
 normalized reasoning usage. Anthropic additionally proves streamed thinking
 parts, deltas, opaque signatures, and durable message history; OpenAI and
 Google keep provider-hidden reasoning out of neutral content parts.
+
+`tests/cassettes/errors/` contains deterministic OpenAI, Anthropic, and Google
+failure sequences. Each one covers a 429 recovery with retry hints and rate
+metadata, retry exhaustion after two 503 responses, malformed-success
+classification, and a non-retryable 400 observed through strict message, code,
+and body bounds. These fixtures use provider-realistic wire envelopes but are
+not live recordings: manufacturing upstream failures would be unsafe and
+nondeterministic.
 
 `tests/cassettes/native/` contains real provider-native recordings: OpenAI web
 search, Anthropic web search plus fetch, Google Search plus URL Context, a
@@ -119,6 +128,7 @@ zig build record-cassettes -- streamed-text
 zig build record-cassettes -- streamed-function-tool
 zig build record-cassettes -- structured-output
 zig build record-cassettes -- thinking
+zig build record-cassettes -- provider-error
 zig build record-cassettes -- native-tools
 zig build record-cassettes -- native-google
 zig build record-cassettes -- native-bedrock
@@ -133,6 +143,9 @@ zig build record-cassettes -- files-google
 
 Unknown and empty filters fail before network I/O. Credentials are resolved
 only after selection, so recording one provider never requires unrelated keys.
+Deterministic fixtures are reported as `fixture` by `--list`, omitted by
+`--list-runnable`, and explicitly skipped by the recorder without resolving a
+credential or making a request.
 
 The recorder accepts `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, and either
 `GOOGLE_API_KEY` or `GEMINI_API_KEY`. Native Bedrock recording additionally

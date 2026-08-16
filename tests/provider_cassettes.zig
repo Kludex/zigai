@@ -2,6 +2,7 @@ const std = @import("std");
 const zigai = @import("zigai");
 const cassettes = @import("support/cassettes.zig");
 const cassette_manifest = @import("support/cassette_manifest.zig");
+const error_scenarios = @import("support/error_scenarios.zig");
 const output_scenarios = @import("support/output_scenarios.zig");
 const stream_scenarios = @import("support/stream_scenarios.zig");
 
@@ -244,6 +245,37 @@ test "real Google capability cassettes replay structured output and thinking" {
         try replayCapabilityScenario(client.model(), &cassette, entry.scenario, false);
         try expectCapabilityWire(.google, entry.scenario, fixture);
     }
+}
+
+test "OpenAI error cassette covers retries exhaustion malformed success and bounded observation" {
+    const entry = cassette_manifest.first_party_errors[0];
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+    defer cassette.deinit();
+    var provider_state = zigai.openai.Provider.init("not-recorded", cassette.transport());
+    var client = zigai.openai.Client{ .model_name = entry.model, .provider = provider_state.provider() };
+    try error_scenarios.replay(client.model(), &cassette, "openai");
+}
+
+test "Anthropic error cassette covers retries exhaustion malformed success and bounded observation" {
+    const entry = cassette_manifest.first_party_errors[1];
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+    defer cassette.deinit();
+    var provider_state = zigai.anthropic.Provider.init("not-recorded", cassette.transport());
+    var client = zigai.anthropic.Client{
+        .model_name = entry.model,
+        .provider = provider_state.provider(),
+        .max_tokens = 64,
+    };
+    try error_scenarios.replay(client.model(), &cassette, "anthropic");
+}
+
+test "Google error cassette covers retries exhaustion malformed success and bounded observation" {
+    const entry = cassette_manifest.first_party_errors[2];
+    var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+    defer cassette.deinit();
+    var provider_state = zigai.google.Provider.init("not-recorded", cassette.transport());
+    var client = zigai.google.Client{ .model_name = entry.model, .provider = provider_state.provider() };
+    try error_scenarios.replay(client.model(), &cassette, "gcp.gen_ai");
 }
 
 test "real OpenAI-compatible provider cassettes replay text responses" {
