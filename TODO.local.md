@@ -299,7 +299,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 
 ## P2 — Capability harness and execution runtime
 
-- [ ] Add a provider-neutral agent harness for reusable coder, researcher, and
+- [x] Add a provider-neutral agent harness for reusable coder, researcher, and
   custom compositions, with typed capability configuration, lifecycle hooks,
   artifact ownership, bounded execution, and agent-spec integration.
 - [ ] Add execution-environment contracts for filesystem and shell access plus
