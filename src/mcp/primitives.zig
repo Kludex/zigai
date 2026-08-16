@@ -397,6 +397,10 @@ pub const RequestMetadata = struct {
     progress_token: ?RequestId = null,
     /// Deprecated protocol logging opt-in retained by MCP 2026-07-28.
     log_level: ?LoggingLevel = null,
+    /// W3C Trace Context propagated through the MCP `_meta` property bag.
+    traceparent: ?[]const u8 = null,
+    tracestate: ?[]const u8 = null,
+    baggage: ?[]const u8 = null,
 };
 
 pub const CancelledNotification = struct {

@@ -905,6 +905,12 @@ when the agent has no provider-reported or price-table cost. The exporter is a
 small synchronous bridge to your OpenTelemetry SDK or OTLP pipeline.
 `Exporter.eventFn` is optional for existing span-and-metric bridges.
 
+MCP clients and servers accept `McpTelemetry`. It emits semantic client/server
+operation spans and duration metrics, adds method, JSON-RPC, protocol,
+transport, session, tool, prompt, resource, and task attributes, and propagates
+W3C `traceparent` through `params._meta`. Resource and task IDs stay out of span
+names to avoid high-cardinality operation names.
+
 Prompt capture is disabled by default. Set `content.prompts` to `.raw` or
 `.redacted` only when the destination and data policy are ready. Redacted mode
 uses an application callback, and both modes enforce configured content and

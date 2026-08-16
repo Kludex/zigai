@@ -196,7 +196,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
     opt-in raw/redacted prompt capture, and hard attribute/content bounds.
   - [x] Cover every agent model, tool, hook, retry, validation, stream, and
     deferred phase with spans, events, and low-cardinality metrics.
-  - [ ] Instrument MCP client and server operations with protocol, method,
+  - [x] Instrument MCP client and server operations with protocol, method,
     transport, session, task, and correlated trace attributes.
   - [ ] Add bounded exporter buffering, explicit backpressure policies,
     shutdown/flush semantics, failure isolation, and dropped-signal metrics.

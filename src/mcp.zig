@@ -11,6 +11,7 @@ const agent = @import("agent.zig");
 const model = @import("model.zig");
 const http = @import("transport.zig");
 const json_limits = @import("json.zig");
+const telemetry_types = @import("telemetry.zig");
 
 /// OAuth 2.1 and deployment-security contracts for Streamable HTTP.
 pub const auth = @import("mcp/auth.zig");
@@ -86,6 +87,23 @@ pub const methods = struct {
     pub const subscriptions_acknowledged = "notifications/subscriptions/acknowledged";
     pub const tool_list_changed = "notifications/tools/list_changed";
 };
+
+fn mcpTelemetryTarget(method: []const u8, routing_name: ?[]const u8) ?telemetry_types.McpRun.Target {
+    const value = routing_name orelse return null;
+    if (std.mem.eql(u8, method, methods.call_tool)) return .{ .kind = .tool, .value = value };
+    if (std.mem.eql(u8, method, methods.get_prompt)) return .{ .kind = .prompt, .value = value };
+    if (std.mem.eql(u8, method, tasks.methods.get) or
+        std.mem.eql(u8, method, tasks.methods.update) or
+        std.mem.eql(u8, method, tasks.methods.cancel) or
+        std.mem.eql(u8, method, tasks.methods.status_notification))
+        return .{ .kind = .task, .value = value };
+    if (std.mem.eql(u8, method, methods.read_resource) or
+        std.mem.eql(u8, method, "resources/subscribe") or
+        std.mem.eql(u8, method, "resources/unsubscribe") or
+        std.mem.eql(u8, method, methods.resource_updated))
+        return .{ .kind = .resource, .value = value };
+    return null;
+}
 
 /// Classifies a `server/discover` stdio probe without initiating a legacy session.
 pub fn classifyStdioCompatibility(
@@ -922,6 +940,8 @@ pub const TaskWaitOptions = struct {
 /// Stateless MCP client with generic extension support and ZigAI toolset adaptation.
 pub const Client = struct {
     transport: Transport,
+    /// Optional MCP semantic-convention spans and operation metrics.
+    telemetry: ?telemetry_types.McpTelemetry = null,
     name: []const u8 = "zigai",
     version: []const u8 = "0.1.0",
     capabilities_json: []const u8 = "{}",
@@ -981,14 +1001,33 @@ pub const Client = struct {
         method: []const u8,
         params_json: []const u8,
     ) !void {
-        const message = try buildNotification(allocator, method, params_json);
+        var instrumentation: ?telemetry_types.McpRun = if (self.telemetry) |configured|
+            configured.start(allocator, .client, method, null, null, null, protocol_version)
+        else
+            null;
+        var metadata: RequestMetadata = .{};
+        var traceparent_buffer: [telemetry_types.traceparent_length]u8 = undefined;
+        if (instrumentation) |run| {
+            metadata.traceparent = telemetry_types.formatTraceparent(
+                run.spanContext(),
+                &traceparent_buffer,
+            ) catch null;
+        }
+        const message = buildNotificationWithMetadata(allocator, method, params_json, metadata) catch |failure| {
+            if (instrumentation) |*run| try run.finish(@errorName(failure));
+            return failure;
+        };
         defer allocator.free(message);
-        const response = try self.transport.send(allocator, .{
+        const response = self.transport.send(allocator, .{
             .message = message,
             .method = method,
             .expects_response = false,
-        });
+        }) catch |failure| {
+            if (instrumentation) |*run| try run.finish(@errorName(failure));
+            return failure;
+        };
         allocator.free(response);
+        if (instrumentation) |*run| try run.finish(null);
     }
 
     /// Discovers server versions, capabilities, and instructions.
@@ -1321,6 +1360,31 @@ pub const Client = struct {
             }
         }
         const id = self.next_id.fetchAdd(1, .monotonic);
+        var id_buffer: [24]u8 = undefined;
+        const id_text = try std.fmt.bufPrint(&id_buffer, "{d}", .{id});
+        var instrumentation: ?telemetry_types.McpRun = if (self.telemetry) |configured|
+            configured.start(
+                allocator,
+                .client,
+                method,
+                mcpTelemetryTarget(method, options.routing_name),
+                id_text,
+                null,
+                protocol_version,
+            )
+        else
+            null;
+        errdefer {
+            if (instrumentation) |*run| run.finish("mcp_client_error") catch {};
+        }
+        var instrumented_options = options;
+        var traceparent_buffer: [telemetry_types.traceparent_length]u8 = undefined;
+        if (instrumentation) |run| {
+            instrumented_options.metadata.traceparent = telemetry_types.formatTraceparent(
+                run.spanContext(),
+                &traceparent_buffer,
+            ) catch null;
+        }
         const message = try buildRequestWithMetadata(
             allocator,
             id,
@@ -1329,15 +1393,15 @@ pub const Client = struct {
             self.name,
             self.version,
             self.capabilities_json,
-            options.metadata,
+            instrumented_options.metadata,
         );
         defer allocator.free(message);
         const body = try self.transport.send(allocator, .{
             .message = message,
             .method = method,
-            .routing_name = options.routing_name,
-            .headers = options.headers,
-            .events = options.events,
+            .routing_name = instrumented_options.routing_name,
+            .headers = instrumented_options.headers,
+            .events = instrumented_options.events,
         });
         defer allocator.free(body);
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -1363,18 +1427,19 @@ pub const Client = struct {
                         defer created.deinit();
                         store.save(allocator, .{
                             .task_id = created.value.created.metadata.task_id,
-                        }) catch |failure| {
+                        }) catch |save_failure| {
                             cancelTaskBestEffort(
                                 self,
                                 allocator,
                                 created.value.created.metadata.task_id,
                             );
-                            return failure;
+                            return save_failure;
                         };
                     }
                 }
             }
         }
+        if (instrumentation) |*run| try run.finish(null);
         return result_json;
     }
 
@@ -1561,9 +1626,70 @@ pub const ServerResponse = struct {
     }
 };
 
+const McpTelemetryEnvelope = struct {
+    method: []const u8,
+    request_id: ?[]const u8,
+    target: ?telemetry_types.McpRun.Target,
+    parent: ?telemetry_types.SpanContext,
+};
+
+fn inspectMcpTelemetryEnvelope(allocator: std.mem.Allocator, message_json: []const u8) !McpTelemetryEnvelope {
+    const root = try json_limits.parseLeaky(
+        std.json.Value,
+        allocator,
+        message_json,
+        json_limits.defaults.mcp_message,
+        .{},
+        error.InvalidMcpMessage,
+    );
+    const object = try requiredObject(root);
+    const method = optionalString(object, "method") orelse return error.InvalidMcpMessage;
+    const params = try requiredObject(object.get("params") orelse .{ .object = .{} });
+    const routing_name = if (std.mem.eql(u8, method, methods.call_tool) or std.mem.eql(u8, method, methods.get_prompt))
+        optionalString(params, "name")
+    else if (std.mem.eql(u8, method, tasks.methods.get) or
+        std.mem.eql(u8, method, tasks.methods.update) or
+        std.mem.eql(u8, method, tasks.methods.cancel) or
+        std.mem.eql(u8, method, tasks.methods.status_notification))
+        optionalString(params, "taskId")
+    else if (std.mem.eql(u8, method, methods.read_resource) or
+        std.mem.eql(u8, method, "resources/subscribe") or
+        std.mem.eql(u8, method, "resources/unsubscribe") or
+        std.mem.eql(u8, method, methods.resource_updated))
+        optionalString(params, "uri")
+    else
+        null;
+    const request_id: ?[]const u8 = if (object.get("id")) |id| switch (id) {
+        .integer => |value| try std.fmt.allocPrint(allocator, "{d}", .{value}),
+        .string => |value| value,
+        else => null,
+    } else null;
+    const parent = if (params.get("_meta")) |meta_value| parent: {
+        const meta = requiredObject(meta_value) catch break :parent null;
+        const traceparent = optionalString(meta, "traceparent") orelse break :parent null;
+        break :parent telemetry_types.parseTraceparent(traceparent) catch null;
+    } else null;
+    return .{
+        .method = method,
+        .request_id = request_id,
+        .target = mcpTelemetryTarget(method, routing_name),
+        .parent = parent,
+    };
+}
+
+fn mcpResponseErrorType(response: ServerResponse, buffer: *[32]u8) ?[]const u8 {
+    if (response.status >= 400) return std.fmt.bufPrint(buffer, "{d}", .{response.status}) catch "http_error";
+    if (response.body) |body| {
+        if (std.mem.indexOf(u8, body, "\"error\"") != null) return "jsonrpc_error";
+    }
+    return null;
+}
+
 /// Transport-neutral MCP server dispatcher with discovery and validation.
 pub const Server = struct {
     handler: ServerHandler,
+    /// Optional MCP semantic-convention spans and operation metrics.
+    telemetry: ?telemetry_types.McpTelemetry = null,
     name: []const u8 = "zigai-mcp-server",
     version: []const u8 = "0.1.0",
     description: ?[]const u8 = null,
@@ -1579,6 +1705,42 @@ pub const Server = struct {
 
     /// Validates and dispatches one JSON-RPC message.
     pub fn handle(
+        self: *Server,
+        allocator: std.mem.Allocator,
+        message_json: []const u8,
+        metadata: ?HttpMetadata,
+    ) !ServerResponse {
+        var telemetry_arena = std.heap.ArenaAllocator.init(allocator);
+        defer telemetry_arena.deinit();
+        const envelope = inspectMcpTelemetryEnvelope(telemetry_arena.allocator(), message_json) catch null;
+        var instrumentation: ?telemetry_types.McpRun = if (self.telemetry) |configured|
+            if (envelope) |value| configured.start(
+                allocator,
+                .server,
+                value.method,
+                value.target,
+                value.request_id,
+                value.parent,
+                protocol_version,
+            ) else null
+        else
+            null;
+        const response = self.handleInstrumented(allocator, message_json, metadata) catch |failure| {
+            if (instrumentation) |*run| try run.finish(@errorName(failure));
+            return failure;
+        };
+        if (instrumentation) |*run| {
+            var error_buffer: [32]u8 = undefined;
+            const error_type = mcpResponseErrorType(response, &error_buffer);
+            run.finish(error_type) catch |failure| {
+                response.deinit(allocator);
+                return failure;
+            };
+        }
+        return response;
+    }
+
+    fn handleInstrumented(
         self: *Server,
         allocator: std.mem.Allocator,
         message_json: []const u8,
@@ -2021,6 +2183,9 @@ fn buildRequestWithMetadata(
     if (request_metadata.log_level) |level| {
         try meta.put(memory, "io.modelcontextprotocol/logLevel", .{ .string = @tagName(level) });
     }
+    if (request_metadata.traceparent) |value| try meta.put(memory, "traceparent", .{ .string = value });
+    if (request_metadata.tracestate) |value| try meta.put(memory, "tracestate", .{ .string = value });
+    if (request_metadata.baggage) |value| try meta.put(memory, "baggage", .{ .string = value });
     try validateRequestMeta(meta, error.InvalidMcpMessage);
     try params.put(memory, "_meta", .{ .object = meta });
     params_value = .{ .object = params };
@@ -2037,9 +2202,18 @@ fn buildNotification(
     method: []const u8,
     params_json: []const u8,
 ) ![]u8 {
+    return buildNotificationWithMetadata(allocator, method, params_json, .{});
+}
+
+fn buildNotificationWithMetadata(
+    allocator: std.mem.Allocator,
+    method: []const u8,
+    params_json: []const u8,
+    metadata: RequestMetadata,
+) ![]u8 {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
-    const params = try json_limits.parseLeaky(
+    var params = try json_limits.parseLeaky(
         std.json.Value,
         arena.allocator(),
         params_json,
@@ -2047,11 +2221,24 @@ fn buildNotification(
         .{},
         error.InvalidMcpMessage,
     );
-    const params_object = switch (params) {
+    var params_object = switch (params) {
         .object => |object| object,
         else => return error.InvalidMcpMessage,
     };
     try validateNotificationMethodParams(method, params_object, error.InvalidMcpMessage);
+    if (metadata.traceparent != null or metadata.tracestate != null or metadata.baggage != null) {
+        const memory = arena.allocator();
+        var meta = if (params_object.get("_meta")) |existing|
+            try requiredObject(existing)
+        else
+            std.json.ObjectMap{};
+        if (metadata.traceparent) |value| try meta.put(memory, "traceparent", .{ .string = value });
+        if (metadata.tracestate) |value| try meta.put(memory, "tracestate", .{ .string = value });
+        if (metadata.baggage) |value| try meta.put(memory, "baggage", .{ .string = value });
+        try validateMetaKeys(meta, error.InvalidMcpMessage);
+        try params_object.put(memory, "_meta", .{ .object = meta });
+        params = .{ .object = params_object };
+    }
     return std.json.Stringify.valueAlloc(allocator, .{
         .jsonrpc = "2.0",
         .method = method,
@@ -2969,6 +3156,15 @@ fn validateRequestMeta(object: std.json.ObjectMap, comptime invalid_error: anyty
         };
         if (!validLoggingLevel(level)) return invalid_error;
     }
+    if (object.get("traceparent")) |traceparent_value| {
+        const traceparent = switch (traceparent_value) {
+            .string => |string| string,
+            else => return invalid_error,
+        };
+        _ = telemetry_types.parseTraceparent(traceparent) catch return invalid_error;
+    }
+    try validateOptionalString(object, "tracestate", invalid_error);
+    try validateOptionalString(object, "baggage", invalid_error);
 }
 
 fn validateImplementation(value: std.json.Value, comptime invalid_error: anytype) !void {
@@ -7709,4 +7905,134 @@ test "fuzz MCP SSE and JSON-RPC framing" {
     try std.testing.fuzz({}, fuzzSseAndJsonRpcFraming, .{ .corpus = &.{
         "\x1e\x00\x00\x00data: {\"jsonrpc\":\"2.0\",\"id\":1}\n",
     } });
+}
+
+test "MCP telemetry propagates client context to server spans" {
+    const Capture = struct {
+        client_spans: usize = 0,
+        server_spans: usize = 0,
+        metrics: usize = 0,
+        client_span_id: [8]u8 = [_]u8{0} ** 8,
+        server_parent_id: [8]u8 = [_]u8{0} ** 8,
+        client_trace_id: [16]u8 = [_]u8{0} ** 16,
+        server_trace_id: [16]u8 = [_]u8{0} ** 16,
+        saw_tool: bool = false,
+
+        fn span(context: *anyopaque, value: telemetry_types.Span) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (value.kind == .client) {
+                self.client_spans += 1;
+                self.client_span_id = value.span_id;
+                self.client_trace_id = value.trace_id;
+            } else if (value.kind == .server) {
+                self.server_spans += 1;
+                self.server_parent_id = value.parent_span_id orelse [_]u8{0} ** 8;
+                self.server_trace_id = value.trace_id;
+            }
+            for (value.attributes) |attribute| {
+                if (std.mem.eql(u8, attribute.key, "gen_ai.tool.name")) {
+                    try std.testing.expectEqualStrings("weather", attribute.value.string);
+                    self.saw_tool = true;
+                }
+                if (std.mem.eql(u8, attribute.key, "mcp.protocol.version")) {
+                    try std.testing.expectEqualStrings(protocol_version, attribute.value.string);
+                }
+            }
+        }
+
+        fn metric(context: *anyopaque, value: telemetry_types.Metric) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expect(std.mem.endsWith(u8, value.name, ".operation.duration"));
+            self.metrics += 1;
+        }
+    };
+    const Handler = struct {
+        fn handle(
+            _: *anyopaque,
+            allocator: std.mem.Allocator,
+            method: []const u8,
+            _: []const u8,
+        ) ![]u8 {
+            return allocator.dupe(u8, if (std.mem.eql(u8, method, methods.call_tool))
+                "{\"resultType\":\"complete\",\"content\":[{\"type\":\"text\",\"text\":\"sunny\"}]}"
+            else
+                "{}");
+        }
+    };
+    const Bridge = struct {
+        server: *Server,
+        saw_traceparent: bool = false,
+
+        fn send(context: *anyopaque, allocator: std.mem.Allocator, request: WireRequest) ![]const u8 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.saw_traceparent = std.mem.indexOf(u8, request.message, "\"traceparent\":\"00-") != null;
+            var response = try self.server.handle(allocator, request.message, null);
+            defer response.deinit(allocator);
+            const body = response.body orelse return allocator.dupe(u8, "");
+            response.body = null;
+            return body;
+        }
+    };
+    var capture: Capture = .{};
+    var unused: u8 = 0;
+    const exporter = telemetry_types.Exporter{
+        .context = &capture,
+        .spanFn = Capture.span,
+        .metricFn = Capture.metric,
+    };
+    var server = Server{
+        .handler = .{ .context = &unused, .handleFn = Handler.handle },
+        .capabilities_json = "{\"tools\":{\"listChanged\":true}}",
+        .telemetry = .{
+            .io = std.testing.io,
+            .exporter = exporter,
+            .network_transport = "pipe",
+        },
+    };
+    var bridge = Bridge{ .server = &server };
+    var client = Client{
+        .transport = .{ .context = &bridge, .sendFn = Bridge.send },
+        .telemetry = .{
+            .io = std.testing.io,
+            .exporter = exporter,
+            .network_transport = "pipe",
+        },
+    };
+
+    const tool_result = try client.callTool(std.testing.allocator, "weather", "{}");
+    defer std.testing.allocator.free(tool_result);
+    try client.notify(std.testing.allocator, methods.tool_list_changed, "{}");
+
+    try std.testing.expect(bridge.saw_traceparent);
+    try std.testing.expectEqual(@as(usize, 2), capture.client_spans);
+    try std.testing.expectEqual(@as(usize, 2), capture.server_spans);
+    try std.testing.expectEqual(@as(usize, 4), capture.metrics);
+    try std.testing.expect(capture.saw_tool);
+    try std.testing.expectEqualSlices(u8, &capture.client_span_id, &capture.server_parent_id);
+    try std.testing.expectEqualSlices(u8, &capture.client_trace_id, &capture.server_trace_id);
+
+    var envelope_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer envelope_arena.deinit();
+    const envelope = try inspectMcpTelemetryEnvelope(
+        envelope_arena.allocator(),
+        "{\"jsonrpc\":\"2.0\",\"id\":\"request-7\",\"method\":\"resources/read\",\"params\":{\"uri\":\"file:///tmp/value\"}}",
+    );
+    try std.testing.expectEqualStrings("request-7", envelope.request_id.?);
+    try std.testing.expectEqual(telemetry_types.McpRun.Target.Kind.resource, envelope.target.?.kind);
+    try std.testing.expectEqualStrings("file:///tmp/value", envelope.target.?.value);
+    try std.testing.expectError(error.InvalidMcpMessage, inspectMcpTelemetryEnvelope(
+        envelope_arena.allocator(),
+        "{}",
+    ));
+    var error_body = "{\"error\":{}}".*;
+    var unused_error_buffer: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("jsonrpc_error", mcpResponseErrorType(.{
+        .status = 200,
+        .body = &error_body,
+    }, &unused_error_buffer).?);
+    var status_buffer: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("500", mcpResponseErrorType(.{
+        .status = 500,
+        .body = null,
+    }, &status_buffer).?);
 }

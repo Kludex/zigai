@@ -19,6 +19,29 @@ pub const SpanContext = struct {
     }
 };
 
+pub const traceparent_length = 55;
+
+/// Formats a sampled W3C Trace Context header value.
+pub fn formatTraceparent(context: SpanContext, output: *[traceparent_length]u8) ![]const u8 {
+    if (!context.isValid()) return error.InvalidTraceparent;
+    const trace_hex = std.fmt.bytesToHex(context.trace_id, .lower);
+    const span_hex = std.fmt.bytesToHex(context.span_id, .lower);
+    return std.fmt.bufPrint(output, "00-{s}-{s}-01", .{ &trace_hex, &span_hex });
+}
+
+/// Parses the W3C version-00 traceparent form used in MCP `_meta` bags.
+pub fn parseTraceparent(value: []const u8) !SpanContext {
+    if (value.len != traceparent_length or value[2] != '-' or value[35] != '-' or value[52] != '-' or
+        !std.mem.eql(u8, value[0..2], "00"))
+        return error.InvalidTraceparent;
+    var context: SpanContext = undefined;
+    _ = std.fmt.hexToBytes(&context.trace_id, value[3..35]) catch return error.InvalidTraceparent;
+    _ = std.fmt.hexToBytes(&context.span_id, value[36..52]) catch return error.InvalidTraceparent;
+    _ = std.fmt.parseInt(u8, value[53..55], 16) catch return error.InvalidTraceparent;
+    if (!context.isValid()) return error.InvalidTraceparent;
+    return context;
+}
+
 /// Sensitive content categories presented to an application redactor.
 pub const ContentKind = enum { prompt };
 
@@ -83,7 +106,7 @@ pub const Span = struct {
     status: Status,
     attributes: []const Attribute,
 
-    pub const Kind = enum { internal, client };
+    pub const Kind = enum { internal, client, server };
     pub const Status = enum { ok, error_status };
 };
 
@@ -177,6 +200,173 @@ pub const OpenTelemetry = struct {
             .run_span_id = randomId(8, self.io),
             .run_parent_span_id = if (inherited) |value| value.span_id else null,
         };
+    }
+};
+
+/// MCP signal configuration shared by clients and servers. Transport values
+/// follow OpenTelemetry's `network.transport` vocabulary (`pipe`, `tcp`, ...).
+pub const McpTelemetry = struct {
+    io: std.Io,
+    exporter: Exporter,
+    parent: ?SpanContext = null,
+    network_transport: ?[]const u8 = null,
+    network_protocol_name: ?[]const u8 = null,
+    session_id: ?[]const u8 = null,
+    limits: Limits = .{},
+    fail_open: bool = true,
+
+    pub fn start(
+        self: McpTelemetry,
+        allocator: std.mem.Allocator,
+        role: McpRun.Role,
+        method: []const u8,
+        target: ?McpRun.Target,
+        request_id: ?[]const u8,
+        remote_parent: ?SpanContext,
+        protocol: []const u8,
+    ) McpRun {
+        const configured_parent = if (remote_parent) |value|
+            if (value.isValid()) value else null
+        else if (self.parent) |value|
+            if (value.isValid()) value else null
+        else
+            null;
+        return .{
+            .allocator = allocator,
+            .config = self,
+            .role = role,
+            .method = method,
+            .target = target,
+            .request_id = request_id,
+            .protocol = protocol,
+            .trace_id = if (configured_parent) |value| value.trace_id else randomId(16, self.io),
+            .span_id = randomId(8, self.io),
+            .parent_span_id = if (configured_parent) |value| value.span_id else null,
+            .start_time = .{
+                .real_ns = @intCast(std.Io.Clock.real.now(self.io).nanoseconds),
+                .awake_ns = @intCast(std.Io.Clock.awake.now(self.io).nanoseconds),
+            },
+        };
+    }
+};
+
+/// One MCP request or notification span.
+pub const McpRun = struct {
+    allocator: std.mem.Allocator,
+    config: McpTelemetry,
+    role: Role,
+    method: []const u8,
+    target: ?Target,
+    request_id: ?[]const u8,
+    protocol: []const u8,
+    trace_id: [16]u8,
+    span_id: [8]u8,
+    parent_span_id: ?[8]u8,
+    start_time: Run.Start,
+
+    pub const Role = enum { client, server };
+    pub const Target = struct {
+        kind: Kind,
+        value: []const u8,
+
+        pub const Kind = enum { tool, prompt, resource, task };
+    };
+
+    pub fn spanContext(self: McpRun) SpanContext {
+        return .{ .trace_id = self.trace_id, .span_id = self.span_id };
+    }
+
+    /// Completes the operation. A non-null low-cardinality error type marks the
+    /// span as failed. All processing honors `fail_open`.
+    pub fn finish(self: *McpRun, error_type: ?[]const u8) !void {
+        self.finishFallible(error_type) catch |failure| {
+            if (!self.config.fail_open) return failure;
+        };
+    }
+
+    fn finishFallible(self: *McpRun, error_type: ?[]const u8) !void {
+        const end = Run.Start{
+            .real_ns = @intCast(std.Io.Clock.real.now(self.config.io).nanoseconds),
+            .awake_ns = @intCast(std.Io.Clock.awake.now(self.config.io).nanoseconds),
+        };
+        var attributes: [12]Attribute = undefined;
+        var count: usize = 0;
+        attributes[count] = .{ .key = "mcp.method.name", .value = .{ .string = self.method } };
+        count += 1;
+        attributes[count] = .{ .key = "mcp.protocol.version", .value = .{ .string = self.protocol } };
+        count += 1;
+        if (self.request_id) |id| {
+            attributes[count] = .{ .key = "jsonrpc.request.id", .value = .{ .string = id } };
+            count += 1;
+        }
+        if (self.target) |target| {
+            attributes[count] = .{
+                .key = switch (target.kind) {
+                    .tool => "gen_ai.tool.name",
+                    .prompt => "gen_ai.prompt.name",
+                    .resource => "mcp.resource.uri",
+                    .task => "zigai.mcp.task.id",
+                },
+                .value = .{ .string = target.value },
+            };
+            count += 1;
+            if (target.kind == .tool) {
+                attributes[count] = .{ .key = "gen_ai.operation.name", .value = .{ .string = "execute_tool" } };
+                count += 1;
+            }
+        }
+        if (self.config.session_id) |session_id| {
+            attributes[count] = .{ .key = "mcp.session.id", .value = .{ .string = session_id } };
+            count += 1;
+        }
+        if (self.config.network_transport) |transport| {
+            attributes[count] = .{ .key = "network.transport", .value = .{ .string = transport } };
+            count += 1;
+        }
+        if (self.config.network_protocol_name) |network_protocol| {
+            attributes[count] = .{ .key = "network.protocol.name", .value = .{ .string = network_protocol } };
+            count += 1;
+        }
+        if (error_type) |failure| {
+            attributes[count] = .{ .key = "error.type", .value = .{ .string = failure } };
+            count += 1;
+        }
+        const include_target = if (self.target) |target|
+            target.kind == .tool or target.kind == .prompt
+        else
+            false;
+        const owned_name = if (include_target)
+            std.fmt.allocPrint(self.allocator, "{s} {s}", .{ self.method, self.target.?.value }) catch |failure| name: {
+                if (!self.config.fail_open) return failure;
+                break :name null;
+            }
+        else
+            null;
+        defer if (owned_name) |name| self.allocator.free(name);
+        var bounded_storage: [maximum_export_attributes]Attribute = undefined;
+        const bounded = boundedAttributes(attributes[0..count], self.config.limits, &bounded_storage);
+        try self.config.exporter.span(makeSpan(
+            owned_name orelse self.method,
+            if (self.role == .client) .client else .server,
+            self.trace_id,
+            self.span_id,
+            self.parent_span_id,
+            self.start_time,
+            end,
+            if (error_type == null) .ok else .error_status,
+            bounded,
+        ));
+        const metric_name = if (self.role == .client)
+            "mcp.client.operation.duration"
+        else
+            "mcp.server.operation.duration";
+        try self.config.exporter.metric(.{
+            .name = metric_name,
+            .kind = .histogram,
+            .value = durationSeconds(self.start_time, end),
+            .unit = "s",
+            .attributes = bounded,
+        });
     }
 };
 
@@ -1332,4 +1522,97 @@ test "telemetry fail-open processing releases failed allocations" {
     try checkTelemetryAllocationFailure(failing.allocator());
     try std.testing.expect(failing.has_induced_failure);
     try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
+}
+
+test "traceparent round trips and rejects malformed identities" {
+    const context = SpanContext{
+        .trace_id = [_]u8{0x11} ** 16,
+        .span_id = [_]u8{0x22} ** 8,
+    };
+    var buffer: [traceparent_length]u8 = undefined;
+    const encoded = try formatTraceparent(context, &buffer);
+    try std.testing.expectEqualStrings(
+        "00-11111111111111111111111111111111-2222222222222222-01",
+        encoded,
+    );
+    const parsed = try parseTraceparent(encoded);
+    try std.testing.expectEqualSlices(u8, &context.trace_id, &parsed.trace_id);
+    try std.testing.expectEqualSlices(u8, &context.span_id, &parsed.span_id);
+
+    const invalid = [_][]const u8{
+        "",
+        "01-11111111111111111111111111111111-2222222222222222-01",
+        "00-zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz-2222222222222222-01",
+        "00-11111111111111111111111111111111-zzzzzzzzzzzzzzzz-01",
+        "00-11111111111111111111111111111111-2222222222222222-zz",
+        "00-00000000000000000000000000000000-2222222222222222-01",
+    };
+    for (invalid) |value| try std.testing.expectError(error.InvalidTraceparent, parseTraceparent(value));
+    var zero_buffer: [traceparent_length]u8 = undefined;
+    try std.testing.expectError(error.InvalidTraceparent, formatTraceparent(.{
+        .trace_id = [_]u8{0} ** 16,
+        .span_id = [_]u8{0} ** 8,
+    }, &zero_buffer));
+}
+
+test "MCP telemetry emits semantic client and server operations" {
+    const Capture = struct {
+        client_spans: usize = 0,
+        server_spans: usize = 0,
+        metrics: usize = 0,
+        errors: usize = 0,
+
+        fn span(context: *anyopaque, value: Span) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (value.kind == .client) self.client_spans += 1;
+            if (value.kind == .server) self.server_spans += 1;
+            if (value.status == .error_status) self.errors += 1;
+            try std.testing.expect(value.attributes.len <= 8);
+        }
+
+        fn metric(context: *anyopaque, value: Metric) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expect(std.mem.startsWith(u8, value.name, "mcp."));
+            self.metrics += 1;
+        }
+    };
+    var capture: Capture = .{};
+    const exporter = Exporter{ .context = &capture, .spanFn = Capture.span, .metricFn = Capture.metric };
+    const parent = SpanContext{ .trace_id = [_]u8{1} ** 16, .span_id = [_]u8{2} ** 8 };
+    var client = (McpTelemetry{
+        .io = std.testing.io,
+        .exporter = exporter,
+        .parent = parent,
+        .network_transport = "pipe",
+        .network_protocol_name = "stdio",
+        .session_id = "session",
+        .limits = .{ .max_attributes = 8, .max_attribute_value_bytes = 64 },
+    }).start(
+        std.testing.allocator,
+        .client,
+        "tools/call",
+        .{ .kind = .tool, .value = "weather" },
+        "7",
+        null,
+        "2026-07-28",
+    );
+    try client.finish(null);
+    var server = (McpTelemetry{
+        .io = std.testing.io,
+        .exporter = exporter,
+    }).start(
+        std.testing.allocator,
+        .server,
+        "resources/read",
+        .{ .kind = .resource, .value = "file:///bounded" },
+        null,
+        client.spanContext(),
+        "2026-07-28",
+    );
+    try server.finish("-32603");
+
+    try std.testing.expectEqual(@as(usize, 1), capture.client_spans);
+    try std.testing.expectEqual(@as(usize, 1), capture.server_spans);
+    try std.testing.expectEqual(@as(usize, 2), capture.metrics);
+    try std.testing.expectEqual(@as(usize, 1), capture.errors);
 }

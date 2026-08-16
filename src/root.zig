@@ -89,6 +89,7 @@ pub const TelemetrySpanContext = telemetry.SpanContext;
 pub const TelemetryContentPolicy = telemetry.ContentPolicy;
 pub const TelemetryRedactor = telemetry.Redactor;
 pub const TelemetryLimits = telemetry.Limits;
+pub const McpTelemetry = telemetry.McpTelemetry;
 pub const Diagnostics = diagnostics.Config;
 pub const DiagnosticSink = diagnostics.Sink;
 pub const DiagnosticEvent = diagnostics.Event;
