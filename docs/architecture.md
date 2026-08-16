@@ -641,6 +641,27 @@ failure detail is observable at the bridge, while the provider-neutral graph
 retains its narrow `OutOfMemory`, `Cancelled`, and `StepFailed` callback
 contract.
 
+The `multi_agent` layer is programmatic orchestration over ordinary `Agent`
+runs. A session owns only bounded identity, cumulative usage, and lifecycle
+observation. Scopes borrow dependencies, canonical history, cancellation,
+deadlines, and trace parents. Shared and isolated context are explicit tagged
+choices; no child can accidentally inherit an application pointer or message
+history through ambient state.
+
+Delegation and subagent calls increase depth and return control. Handoffs keep
+the current depth because application code transfers the next turn rather than
+recursing. Every started run receives a deterministic correlation ID and
+contributes usage to the session. A temporary lifecycle hook captures request,
+response, and tool usage even when the target agent fails before returning a
+result. Completed runs use their canonical `RunUsage`, avoiding double counts.
+
+One absolute deadline is converted to remaining per-run time immediately before
+each child starts. The same cancellation token and missing `std.Io` runtime are
+propagated to the copied target agent. OpenTelemetry receives the scope's trace
+parent, while lifecycle correlation records the session, kind, depth, run
+index, and target. Sessions are single-threaded by contract; concurrent trees
+use independent sessions so budget checks and identities stay deterministic.
+
 Graph persistence captures only settled boundaries. A snapshot stores the
 typed state and current intermediate value as application-encoded JSON plus a
 frontier containing the next node and completed transition count. Dependencies,

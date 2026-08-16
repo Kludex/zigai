@@ -342,6 +342,25 @@ an available `std.Io` runtime map to `StepFailed` before provider work. A
 stream sink may return only the graph callback errors; its failure prevents
 result adaptation and transition commit.
 
+## Multi-agent errors
+
+| Error | Meaning |
+| --- | --- |
+| `InvalidIdentity` | A session or target ID is empty, too long, or contains unsupported bytes. |
+| `InvalidLimits` | The session cannot start any run. |
+| `DepthLimitExceeded` | A delegation or subagent exceeds `Limits.max_depth`. |
+| `RunLimitExceeded` | The session already started `Limits.max_runs` agents. |
+| `RequestLimitExceeded` | Cumulative successful and failed request attempts exceed the ceiling. |
+| `ToolCallLimitExceeded` | Cumulative observed tool calls exceed the ceiling. |
+| `TokenLimitExceeded` | Cumulative input plus output tokens exceed the ceiling. |
+| `CostLimitExceeded` | Cumulative exact nano-USD cost exceeds the ceiling. |
+| `UsageOverflow` | A usage counter or exact cost cannot be represented. |
+
+Target agent failures keep their original error. The session emits a borrowed
+`failure` event with the transition identity. Cancellation and deadline errors
+therefore remain `Cancelled`, `RunTimedOut`, or `RunControlRequiresIo` rather
+than becoming a multi-agent wrapper error.
+
 ## MCP errors
 
 | Error | Meaning |

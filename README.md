@@ -226,6 +226,13 @@ agent nodes cannot reuse one operation identity during replay.
 `graph_agent.Conversation` deep-copies canonical messages and cumulative usage
 for state that must survive the agent result's `deinit` boundary.
 
+`zigai.multi_agent.Session` bounds one multi-agent execution tree and owns its
+cumulative usage. A borrowed `Scope` runs explicit `delegate`, `handoff`, or
+`subagent` transitions with shared or isolated dependencies and history. The
+scope propagates cancellation, one absolute deadline, trace parents, and stable
+run correlation. Depth, run, request, tool, token, and cost limits prevent
+recursive or unexpectedly expensive trees.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.

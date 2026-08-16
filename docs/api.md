@@ -131,6 +131,7 @@ Use these namespaces for the rest of the API:
 | `zigai.durable_adapters.temporal` | Temporal sidecar adapter, worker registrations, retry policy, and payload limits |
 | `zigai.graph` | Typed graph definitions, bounded execution, lifecycle events, and manual iteration |
 | `zigai.graph_agent` | Explicit buffered and structured agent-node adapters for typed graphs |
+| `zigai.multi_agent` | Bounded delegation, handoff, and subagent execution scopes |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
@@ -628,6 +629,43 @@ Concurrent fan-out callbacks share `State`, `Deps`, branch contexts, and input
 values. The scheduler makes only `Context.gpa` safe for concurrent use.
 Applications must synchronize all other shared mutation, use immutable data,
 or keep `max_concurrency = 1`.
+
+### Multi-agent scopes
+
+`multi_agent.Session.init` creates one bounded, arena-owned execution tree with
+a stable run ID. It owns cumulative usage and counts every started invocation,
+including failures. Successful results contribute complete `RunUsage`. Failed
+runs contribute observed request attempts, successful response usage, and tool
+validation starts before their terminal error. Use `recordUsage` to include
+parent work that you deliberately executed outside a session scope.
+
+`multi_agent.Scope.root` creates the application scope. `delegate` and
+`subagent` run at the next depth and return control to their caller. `handoff`
+runs another programmatic turn at the same depth. Their `Typed` variants retain
+`Agent.TypedResult(Output)` without erasing the application type. `child`
+creates the scope occupied by a completed nested run. `withHistory` continues a
+same-depth handoff with replacement canonical history.
+
+`CallOptions.context = .shared` passes the scope's dependency pointer and
+history. `.isolated` uses an explicit dependency pointer and history boundary.
+`Scope.fromToolContext` copies an active contextual tool's dependencies,
+history, cancellation token, `std.Io`, and absolute deadline. This is the
+explicit bridge for delegation from an agent tool.
+
+The scope copies the target agent for one invocation. It fills a missing agent
+runtime, propagates the tree cancellation token, tightens `RunOptions.timeout_ms`
+to the remaining absolute deadline, and preserves an explicitly supplied
+shorter timeout. It also passes the scope trace parent and emits an
+`Agent.RunCorrelation` containing the session ID, transition kind, depth, run
+index, and target name. Agent hooks and OpenTelemetry can reconstruct the
+complete tree.
+
+`Limits.max_depth` bounds nested delegation and subagents; handoffs do not
+increase depth. `max_runs` counts successful and failed starts. Optional
+request, tool, token, and exact nano-USD ceilings apply to cumulative usage.
+The session is intentionally single-threaded. Use one session per concurrent
+execution tree so ordering, budgets, and correlation IDs remain deterministic.
+All returned agent results keep their normal independent `deinit` boundary.
 
 ### Graph snapshots
 

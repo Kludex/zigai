@@ -19,6 +19,10 @@
   history, cumulative usage, ordered streaming, deadline and cancellation
   propagation, node-namespaced durable replay, graph/agent trace correlation,
   lifecycle observation, and allocation-safe ownership.
+- Add bounded multi-agent sessions with explicit delegation, programmatic
+  handoff, typed subagents, shared or isolated dependencies and history,
+  cumulative success and failure usage, deadline and cancellation propagation,
+  recursion/run/cost limits, lifecycle events, and trace correlation.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.
