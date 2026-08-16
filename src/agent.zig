@@ -6633,8 +6633,8 @@ test "checkpointed stream resumes after restart without redelivering committed e
         ),
     );
     const Stub = struct {
-        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
-            return error.ModelMustNotRun;
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse { // kcov-ignore: invalid checkpoint must not run the model
+            return error.ModelMustNotRun; // kcov-ignore: invalid checkpoint must not run the model
         }
     };
     var unused: u8 = 0;
@@ -6646,6 +6646,15 @@ test "checkpointed stream resumes after restart without redelivering committed e
         "initial-stream",
         &.{},
         .{},
+    ));
+    try std.testing.expectError(Agent.Error.InvalidDeferredState, agent.resumeCheckpointStream(
+        std.testing.allocator,
+        restarted_store.store(),
+        "run-1",
+        "initial-stream",
+        &.{},
+        .{},
+        downstream,
     ));
 }
 
@@ -7283,6 +7292,15 @@ test "durable approval resumption journals decisions before tool execution" {
                     "publish-approval",
                 ),
             );
+            try std.testing.expectEqual(
+                durable_types.checkpoint.SaveResult.created,
+                try paused.saveCheckpoint(
+                    std.testing.allocator,
+                    checkpoint_store.store(),
+                    binding.run_id,
+                    "publish-approval-stream",
+                ),
+            );
             break :state try std.testing.allocator.dupe(u8, paused.state_json);
         },
     };
@@ -7319,12 +7337,25 @@ test "durable approval resumption journals decisions before tool execution" {
         temporary.dir,
         "agent/checkpoints.json",
     );
+    var buffered = try configured.resumeCheckpoint(
+        std.testing.allocator,
+        restarted_store.store(),
+        binding.run_id,
+        "publish-approval",
+        &.{.{ .call_id = "approval-1", .action = .approve }},
+        .{ .durable = binding },
+    );
+    defer buffered.deinit();
+    switch (buffered) {
+        .paused => return error.ExpectedCompleteRun,
+        .complete => |completed| try std.testing.expectEqualStrings("published", completed.output),
+    }
     var resume_events: ResumeEvents = .{};
     var resumed = try configured.resumeCheckpointStream(
         std.testing.allocator,
         restarted_store.store(),
         binding.run_id,
-        "publish-approval",
+        "publish-approval-stream",
         &.{.{ .call_id = "approval-1", .action = .approve }},
         .{ .durable = binding },
         .{ .context = &resume_events, .eventFn = ResumeEvents.emit },
@@ -7335,8 +7366,8 @@ test "durable approval resumption journals decisions before tool execution" {
         .complete => |completed| try std.testing.expectEqualStrings("published", completed.output),
     }
     try std.testing.expect(resume_events.count > 0);
-    try std.testing.expectEqual(@as(usize, 2), runtime_state.approval_calls);
-    try std.testing.expectEqual(@as(usize, 1), runtime_state.tool_calls);
+    try std.testing.expectEqual(@as(usize, 3), runtime_state.approval_calls);
+    try std.testing.expectEqual(@as(usize, 2), runtime_state.tool_calls);
 }
 
 test "durable handler preflight covers models retries tools and toolsets" {
