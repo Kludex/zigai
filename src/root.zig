@@ -34,6 +34,7 @@ pub const durable_adapters = @import("durable/adapters.zig");
 pub const graph = @import("graph.zig");
 pub const graph_agent = @import("graph_agent.zig");
 pub const multi_agent = @import("multi_agent.zig");
+pub const embeddings = @import("embeddings/root.zig");
 pub const mcp = @import("mcp.zig");
 pub const codecs = @import("codecs/root.zig");
 // Compatibility aliases for the original top-level provider imports.
@@ -313,6 +314,7 @@ test {
     _ = @import("graph.zig");
     _ = @import("graph_agent.zig");
     _ = @import("multi_agent.zig");
+    _ = @import("embeddings/root.zig");
     _ = @import("mcp.zig");
     _ = @import("codecs/root.zig");
 }

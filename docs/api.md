@@ -132,6 +132,7 @@ Use these namespaces for the rest of the API:
 | `zigai.graph` | Typed graph definitions, bounded execution, lifecycle events, and manual iteration |
 | `zigai.graph_agent` | Explicit buffered and structured agent-node adapters for typed graphs |
 | `zigai.multi_agent` | Bounded delegation, handoff, and subagent execution scopes |
+| `zigai.embeddings` | Provider-neutral bounded text embedding and batching |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
@@ -666,6 +667,33 @@ request, tool, token, and exact nano-USD ceilings apply to cumulative usage.
 The session is intentionally single-threaded. Use one session per concurrent
 execution tree so ordering, budgets, and correlation IDs remain deterministic.
 All returned agent results keep their normal independent `deinit` boundary.
+
+### Embeddings
+
+`embeddings.Model` is a small provider vtable with stable provider/model names,
+a maximum batch size, an optional dimension ceiling, one batch callback, and an
+optional retry classifier. Provider callbacks return an arena-owned
+`BatchResult`. They must return one vector per input in source order.
+
+`embeddings.Embedder` validates all inputs before the first callback. `Limits`
+bounds input count, bytes per input, total bytes, dimensions, and batch count.
+`Options.max_batch_size` can only tighten the model batch size.
+`Options.dimensions` must fit both model and embedder ceilings. Empty inputs,
+non-finite values, count drift, and inconsistent dimensions fail explicitly.
+
+Use `embedQuery` for one search query and `embedDocuments` for indexable text.
+`embed` accepts an explicit `InputType`. All forms preserve source order and
+return one arena-owned `Result` containing copied inputs and vectors, one exact
+dimension, model identity, and aggregate `RunUsage`. `vectorFor` performs an
+exact first-input lookup. Call `deinit` when the result is no longer needed.
+
+Each batch shares one `RunControl`, so retries and later batches consume the
+same absolute deadline. Provider callbacks receive the remaining timeout and
+tree cancellation token. Retry classification defaults to connection, rate
+limit, server, and request-timeout failures. `RetryPolicy` bounds attempts and
+cumulative delay, applies full jitter, and exposes a fallible pre-retry hook.
+A positive retry delay requires `Options.io`. Losing controlled callbacks
+allocate in a disposable attempt arena and are drained before it is released.
 
 ### Graph snapshots
 

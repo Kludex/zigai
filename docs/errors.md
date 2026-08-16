@@ -361,6 +361,26 @@ Target agent failures keep their original error. The session emits a borrowed
 therefore remain `Cancelled`, `RunTimedOut`, or `RunControlRequiresIo` rather
 than becoming a multi-agent wrapper error.
 
+## Embedding errors
+
+| Error | Meaning |
+| --- | --- |
+| `EmptyInputs` / `EmptyInput` | The operation or one text input is empty. |
+| `TooManyInputs` | Input count exceeds the configured ceiling. |
+| `InputTooLarge` / `TotalInputTooLarge` | One input or their aggregate bytes exceed a limit. |
+| `InvalidBatchSize` / `TooManyBatches` | Batch configuration is zero or creates excessive work. |
+| `InvalidDimensions` | Requested or returned dimensions exceed a trusted ceiling. |
+| `ResponseCountMismatch` | A provider did not return exactly one vector per input. |
+| `ResponseDimensionsMismatch` | Provider vectors or requested dimensions do not agree. |
+| `InvalidVectorValue` | A provider returned NaN or infinity. |
+| `RetryBackoffRequiresIo` | Positive full-jitter delay has no `std.Io` runtime. |
+| `RetryBudgetExceeded` | Cumulative retry delay exceeds its bound or overflows. |
+| `UsageOverflow` | Aggregate request, token, latency, detail, or cost usage overflows. |
+
+Provider, cancellation, deadline, callback, and allocator failures preserve
+their original error. Validation failures happen before provider I/O. A failed
+later batch releases all vectors copied from earlier batches.
+
 ## MCP errors
 
 | Error | Meaning |

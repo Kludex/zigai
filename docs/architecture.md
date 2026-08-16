@@ -662,6 +662,20 @@ parent, while lifecycle correlation records the session, kind, depth, run
 index, and target. Sessions are single-threaded by contract; concurrent trees
 use independent sessions so budget checks and identities stay deterministic.
 
+Embedding execution has the same split as model generation. The
+`embeddings.Model` vtable owns provider request/response semantics, while
+`Embedder` owns provider-neutral validation, source-order batching, control,
+retries, usage, and result lifetime. Inputs remain borrowed through each model
+call and are copied once into the final result arena. Provider batch arenas are
+short-lived and every vector is copied before that boundary closes.
+
+All input and dimension bounds are checked before provider I/O. One absolute
+run control spans every batch and retry. Each controlled attempt allocates under
+a disposable arena, so a response completed at a cancellation boundary can be
+discarded without leaking. Successful batches are copied into an independently
+owned batch before provider storage is released, then into the complete result.
+This makes partial batches unobservable and preserves source order.
+
 Graph persistence captures only settled boundaries. A snapshot stores the
 typed state and current intermediate value as application-encoded JSON plus a
 frontier containing the next node and completed transition count. Dependencies,

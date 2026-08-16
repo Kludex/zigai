@@ -233,6 +233,12 @@ scope propagates cancellation, one absolute deadline, trace parents, and stable
 run correlation. Depth, run, request, tool, token, and cost limits prevent
 recursive or unexpectedly expensive trees.
 
+`zigai.embeddings.Embedder` accepts query or document text through one
+provider-neutral model vtable. It validates byte and dimension limits before
+I/O, splits source-ordered batches, propagates cancellation and one deadline,
+and applies bounded full-jitter retries. The result owns copied inputs, vectors,
+model identity, and aggregate usage in one arena.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.
