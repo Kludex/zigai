@@ -261,7 +261,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
         keeping process-local lifecycle observers outside durable semantics.
     - [x] Prove direct-run behavior remains unchanged and reject incomplete
       durable handler registration before the first side effect.
-  - [ ] Implement and document one real workflow-engine adapter with explicit
+  - [x] Implement and document one real workflow-engine adapter with explicit
     worker registration, retry policy, payload limits, and deployment rules.
   - [ ] Persist and resume stream/approval state and prove replay safety with
     worker-restart, duplicate-delivery, and schema-migration tests.

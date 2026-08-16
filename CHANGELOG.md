@@ -58,6 +58,9 @@
   while leaving ordinary runs unchanged.
 - Add explicit replay-deduplicated application event delivery while keeping
   lifecycle telemetry and diagnostic hooks as process-local observers.
+- Add a dependency-free Temporal runtime adapter and official-SDK sidecar with
+  explicit operation registrations, stable workflow identities, bounded
+  payloads, configurable activity retries/timeouts, and deployment rules.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model

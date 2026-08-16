@@ -269,6 +269,12 @@ validation never invokes it.
 | `OperationSuspended` | A runtime returned a suspension outside a resume-aware API. |
 | `RuntimeRecordMismatch` | A runtime returned a record for a different invocation. |
 | `UnsupportedRecordVersion` | A durable record uses an unsupported format version. |
+| `durable_adapters.temporal.Error.InvalidConfiguration` | Temporal endpoint, queue, timeout, retry, limit, or registration settings are invalid. |
+| `durable_adapters.temporal.Error.MissingRegistration` | An invocation has no matching Temporal worker registration. |
+| `durable_adapters.temporal.Error.InputTooLarge` | The persisted operation input exceeds the adapter limit. |
+| `durable_adapters.temporal.Error.RequestTooLarge` | The complete sidecar request exceeds the durable payload limit. |
+| `durable_adapters.temporal.Error.ResponseTooLarge` | The sidecar returned a record above the durable record limit. |
+| `durable_adapters.temporal.Error.GatewayRejected` | The sidecar returned a non-success HTTP status. |
 
 ## MCP errors
 

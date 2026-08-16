@@ -212,5 +212,62 @@ evaluation and may observe workflow replay. Applications that require durable
 delivery must call `deliverEvent` rather than putting a business side effect in
 a lifecycle hook.
 
-A concrete workflow-engine adapter, durable stream/approval checkpointing, and
-worker-restart recovery tests remain tracked in `TODO.local.md`.
+## Temporal adapter
+
+`zigai.durable_adapters.temporal` is the first concrete engine adapter. Temporal
+does not publish a Zig SDK, so the adapter calls the included sidecar over HTTP;
+the sidecar uses Temporal's official Python SDK. The Zig package still has no
+runtime dependency on Python or Temporal.
+
+```zig
+const temporal = zigai.durable_adapters.temporal;
+
+var adapter = try temporal.Adapter.init(allocator, http_transport, .{
+    .endpoint = "https://temporal-sidecar.internal",
+    .namespace = "production",
+    .task_queue = "zigai-agents-v1",
+    .registrations = &.{
+        .{ .kind = .model_request, .handler_id = "support-model" },
+        .{ .kind = .model_stream, .handler_id = "support-stream" },
+        .{ .kind = .tool_call, .handler_id = "support-tools" },
+    },
+    .bearer_token = "Bearer worker-secret",
+    .retry = .{
+        .initial_interval_ms = 1_000,
+        .maximum_interval_ms = 30_000,
+        .maximum_attempts = 5,
+    },
+});
+
+const binding = zigai.DurableBinding{
+    .runtime = adapter.runtime(),
+    .run_id = "support-0192",
+    .handlers = .{
+        .model_request = "support-model",
+        .model_stream = "support-stream",
+        .tool_call = "support-tools",
+    },
+};
+```
+
+The adapter preflights its registration table before network I/O. It sends the
+sidecar token as a sensitive HTTP header, never as workflow input. Its versioned
+request includes the stable workflow ID, invocation, task queue, activity
+timeouts, and retry policy. The default persisted input limit is 1 MiB; the
+complete gateway request is capped at 2 MiB and the returned record at 8 MiB.
+
+The sidecar registers `zigai.operation.v1` and `zigai.execute.v1`. Each activity
+dispatches a configured `(kind, handler_id)` command, writes the invocation to
+its standard input, and reads a complete durable record from standard output.
+Duplicate workflow starts attach to the existing workflow and return its stored
+result. ZigAI then verifies that the returned invocation and input digest match,
+so reusing an identity with different input fails closed.
+
+Keep the sidecar on a private network or require
+`ZIGAI_TEMPORAL_SIDECAR_TOKEN`. Deploy it with the command workers, keep an old
+worker build polling until its workflows drain, and use a new handler ID or task
+queue for incompatible behavior. The reference deployment lives in
+[`integrations/temporal`](../integrations/temporal/).
+
+Durable stream/approval checkpointing and worker-restart recovery tests remain
+tracked in `TODO.local.md`.

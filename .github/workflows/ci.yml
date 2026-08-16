@@ -34,6 +34,28 @@ jobs:
           name: coverage-html
           path: coverage/merged/kcov-merged
 
+  temporal-sidecar:
+    runs-on: ubuntu-latest
+    env:
+      TEMPORAL_TEST_SERVER_CACHE: ${{ github.workspace }}/.temporal-test-server
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          cache-dependency-glob: integrations/temporal/uv.lock
+      - uses: actions/cache@v4
+        with:
+          path: .temporal-test-server
+          key: temporal-test-server-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('integrations/temporal/uv.lock') }}
+      - run: uv sync --project integrations/temporal --locked
+      - run: >-
+          uv run --project integrations/temporal python -m unittest discover
+          -s integrations/temporal
+          -p 'test_*.py'
+
   fuzz-smoke:
     runs-on: macos-latest
     steps:

@@ -1,0 +1,20 @@
+listen = "127.0.0.1"
+port = 8078
+task_queue = "zigai-agents"
+max_request_bytes = 2097152
+max_record_bytes = 8388608
+
+[[handlers]]
+kind = "model_request"
+id = "support-model"
+command = ["./zig-out/bin/support-worker"]
+
+[[handlers]]
+kind = "model_stream"
+id = "support-model-stream"
+command = ["./zig-out/bin/support-worker"]
+
+[[handlers]]
+kind = "tool_call"
+id = "support-tools"
+command = ["./zig-out/bin/support-worker"]

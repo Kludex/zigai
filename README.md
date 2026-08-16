@@ -25,6 +25,7 @@ conversation.
 - Eager and on-demand capability bundles with dependencies and scoped composition.
 - MCP toolsets over Streamable HTTP and stdio.
 - Serializable approval and deferred-tool pauses.
+- Durable operation routing with a Temporal sidecar adapter.
 - Static, dynamic, and run-specific instructions.
 - Strict JSON/YAML agent specifications with explicit environment policy.
 - Typed output plus JSON-object and JSON Schema modes.
