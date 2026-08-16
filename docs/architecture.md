@@ -810,6 +810,20 @@ mutation. The in-memory implementation owns one arena per record for honest
 deletions and deterministic tests; durable database/vector implementations fit
 behind the same vtable.
 
+## Planning and dynamic workflows
+
+Plans are immutable value graphs rather than mutable hidden agent state. A
+revision validates all dependency IDs and cycles before it becomes visible.
+Execution checks every approval before any advisor or step callback, then runs
+ready steps in deterministic declaration order. Outputs, advice, and aggregate
+usage share one execution arena.
+
+One `RunControl` spans observers, advisors, and dynamic callbacks. Step contexts
+carry a trace parent and optional multi-agent scope explicitly. The capability
+adapter is an ordinary approval-gated function tool, so dynamic workflow work
+uses existing agent policy, UI approvals, durable tool semantics, and history
+instead of creating another orchestration loophole.
+
 ## Production CLI
 
 The unified CLI is composition rather than a fourth agent runtime. Provider

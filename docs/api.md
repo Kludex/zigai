@@ -139,6 +139,7 @@ Use these namespaces for the rest of the API:
 | `zigai.execution` | Rooted filesystem, shell, remote sandbox, and disposable workspace contracts |
 | `zigai.builtin_capabilities` | Reviewed web, browser, image, skill, and repository bundles |
 | `zigai.memory` | Tenant-isolated conversation and semantic memory stores |
+| `zigai.planning` | Bounded revisions, advisors, approval gates, and dynamic workflows |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
@@ -1287,6 +1288,32 @@ and only then replaces the sources atomically.
 owns each record independently so deletion releases storage. It is deliberately
 single-threaded; production concurrent stores provide their own synchronization
 behind the same `Store` vtable.
+
+## Planning and dynamic workflows
+
+`planning.Plan.init` creates one arena-owned immutable revision with bounded
+step IDs, titles, dependencies, approval markers, and cycle validation.
+`revise` copies a complete replacement and increments the stable revision; the
+previous revision stays readable until its own `deinit`. Observers receive a
+user-visible `plan_revised` event before advisory or execution work.
+
+`planning.run` evaluates approval gates before side effects. Missing decisions
+return an owned `paused` outcome listing every gated step. Explicit denial is
+an error. Advisors run under the shared control and return bounded copied
+advice. Approved steps execute in deterministic dependency order and return one
+arena-owned complete outcome with step outputs and aggregate `RunUsage`.
+
+Every `StepContext` contains the plan/revision, completed outputs, shared
+`RunControl`, optional parent trace, and optional `multi_agent.Scope`. Nested
+agents can therefore share cancellation, deadline, trace, and usage sessions
+without ambient globals. Trace-linked observer events cover revision, advice,
+approval, step start/end, completion, and failure.
+
+`CapabilityAdapter` exposes one plan as `dynamic_workflow` with an
+`execute_dynamic_plan` function tool. Plans with gated steps make that tool
+approval-required. Once the outer agent approval succeeds, the adapter supplies
+all per-step approvals, propagates the active tool deadline/cancellation, and
+returns structured step output and usage.
 
 ## Production CLI
 

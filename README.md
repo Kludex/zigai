@@ -281,6 +281,12 @@ and search returns owned citations. Retention, deletion, deterministic
 compaction, semantic vectors, pluggable persistent stores, and an allocation-
 checked in-memory backend share one bounded contract.
 
+`zigai.planning` provides immutable bounded plan revisions, advisory callbacks,
+per-step approval gates, dependency-ordered dynamic execution, nested
+multi-agent scope propagation, aggregate usage, one deadline, and trace-linked
+lifecycle events. `CapabilityAdapter` exposes an approved plan as an ordinary
+agent capability and function tool.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.

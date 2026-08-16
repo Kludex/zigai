@@ -54,6 +54,10 @@
 - Add tenant-isolated durable memory contracts with canonical conversation
   records, semantic vectors, owned citations, retention/deletion, atomic
   compaction, pluggable stores, and a deterministic in-memory backend.
+- Add immutable bounded plan revisions, advisory callbacks, user-visible
+  revisions, approval gates, dependency-ordered dynamic workflows, nested
+  usage/deadline propagation, trace-linked events, and an agent capability
+  adapter.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

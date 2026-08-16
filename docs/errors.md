@@ -445,6 +445,14 @@ data. `MemoryEntryTooLarge`, `MemoryEntryAlreadyExists`, and `MemoryStoreFull`
 identify bounded storage failures. Compactor, persistent-store, cosine, and
 allocator errors preserve their original categories.
 
+## Planning errors
+
+`InvalidPlan`, `PlanRevisionExhausted`, `TooManyPlanAdvisors`,
+`PlanAdviceTooLarge`, `PlanStepOutputTooLarge`, `PlanApprovalDenied`, and
+`PlanApprovalRequired` identify structural, bounded, and approval failures.
+Advisor, executor, nested-agent, observer, usage, cancellation, deadline, and
+allocator errors retain their original categories.
+
 ## Production CLI errors
 
 `InvalidArguments`, `InvalidCLIConfig`, `InvalidPausedCLIState`, `EmptyPrompt`,
