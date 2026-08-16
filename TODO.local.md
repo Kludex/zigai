@@ -287,7 +287,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   isolated context, usage/deadline propagation, recursion limits, and tracing.
 - [x] Add embeddings with provider-neutral requests, batching, dimensions,
   usage, retries, provider adapters, and a small retrieval example.
-- [ ] Add realtime speech-to-speech sessions for OpenAI, Azure, Google, and xAI
+- [x] Add realtime speech-to-speech sessions for OpenAI, Azure, Google, and xAI
   with WebSocket/WebRTC transport boundaries, audio/transcript events, turns,
   interruptions, tools, handoff/history, reconnect, usage, and telemetry.
 - [ ] Add UI event adapters for AG-UI and Vercel AI protocols with bidirectional

@@ -384,6 +384,12 @@ fn decodeBase64(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
     return decoded;
 }
 
+test "OpenAI constructor selects the standard dialect" {
+    var marker: u8 = 0;
+    const connector = init(.{ .context = &marker, .open_fn = undefined }, "gpt-realtime");
+    try std.testing.expectEqual(Dialect.openai, connector.dialect);
+}
+
 test "OpenAI protocol drives WebRTC audio transcripts tools turns and usage" {
     const State = struct {
         frames: []const wire.Frame,
