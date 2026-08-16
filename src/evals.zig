@@ -4,6 +4,7 @@ const std = @import("std");
 const agent_types = @import("agent.zig");
 const model_types = @import("model.zig");
 const json_limits = @import("json.zig");
+const telemetry_types = @import("telemetry.zig");
 
 /// Evaluation failures defined by ZigAI. Agent, evaluator callback, and
 /// allocation errors are intentionally allowed to propagate alongside these.
@@ -20,6 +21,8 @@ pub const Error = error{
     ConcurrentExecutionUnavailable,
     /// A report evaluator returned a non-finite scalar value.
     InvalidReportAnalysis,
+    /// Span evaluators were configured without agent OpenTelemetry.
+    TraceEvaluationRequiresTelemetry,
 };
 
 pub const Case = struct {
@@ -39,6 +42,7 @@ pub const Context = struct {
     repetitions: usize = 1,
     output: []const u8,
     usage: model_types.RunUsage,
+    spans: []const telemetry_types.Span = &.{},
 };
 
 pub const RunIdentity = struct {
@@ -166,6 +170,25 @@ pub const Evaluator = struct {
     }
 };
 
+pub const TraceContext = struct {
+    run: Context,
+    spans: []const telemetry_types.Span,
+};
+
+pub const TraceEvaluator = struct {
+    name: []const u8,
+    context: *anyopaque,
+    evaluateFn: *const fn (
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        trace: TraceContext,
+    ) anyerror!Evaluation,
+
+    pub fn evaluate(self: TraceEvaluator, allocator: std.mem.Allocator, trace: TraceContext) !Evaluation {
+        return self.evaluateFn(self.context, allocator, trace);
+    }
+};
+
 pub const EvaluationResult = struct {
     evaluator: []const u8,
     passed: bool,
@@ -214,6 +237,7 @@ pub const CaseResult = struct {
     output: []const u8,
     usage: model_types.RunUsage,
     evaluations: []const EvaluationResult,
+    spans: []const telemetry_types.Span = &.{},
 
     pub fn passed(self: CaseResult) bool {
         for (self.evaluations) |evaluation| if (!evaluation.passed) return false;
@@ -358,6 +382,7 @@ pub const Report = struct {
 pub const Dataset = struct {
     cases: []const Case,
     evaluators: []const Evaluator,
+    trace_evaluators: []const TraceEvaluator = &.{},
     report_evaluators: []const ReportEvaluator = &.{},
 
     pub fn run(self: Dataset, allocator: std.mem.Allocator, agent: agent_types.Agent) !Report {
@@ -374,6 +399,10 @@ pub const Dataset = struct {
             options.task_retry.max_attempts == 0 or
             options.evaluator_retry.max_attempts == 0)
             return Error.InvalidExecutionOptions;
+        _ = std.math.add(usize, self.evaluators.len, self.trace_evaluators.len) catch
+            return Error.InvalidExecutionOptions;
+        if (self.trace_evaluators.len != 0 and agent.telemetry == null)
+            return Error.TraceEvaluationRequiresTelemetry;
         const result_count = std.math.mul(usize, self.cases.len, options.repetitions) catch
             return Error.InvalidExecutionOptions;
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -447,9 +476,22 @@ fn runCaseAfterStart(
     identity: RunIdentity,
 ) !CaseResult {
     const case = identity.case;
-    const task = try runTask(agent, task_allocator, case, identity, options);
+    var capture = SpanCapture{ .allocator = result_allocator };
+    var instrumented_agent = agent;
+    if (dataset.trace_evaluators.len != 0) {
+        var telemetry = agent.telemetry.?;
+        capture.downstream = telemetry.exporter;
+        telemetry.exporter = capture.exporter();
+        instrumented_agent.telemetry = telemetry;
+    }
+    const task = try runTask(instrumented_agent, task_allocator, case, identity, options);
     var run_result = task.result;
     defer run_result.deinit();
+    if (capture.failure) |failure| return failure;
+    const spans = if (dataset.trace_evaluators.len == 0)
+        &.{}
+    else
+        try capture.spans.toOwnedSlice(result_allocator);
     try emitLifecycle(options.hooks, .{ .task_end = .{
         .identity = identity,
         .attempts = task.attempts,
@@ -458,8 +500,9 @@ fn runCaseAfterStart(
     } });
     const output = try result_allocator.dupe(u8, run_result.output);
     const usage = try run_result.usage.dupe(result_allocator);
-    const evaluations = try result_allocator.alloc(EvaluationResult, dataset.evaluators.len);
-    for (dataset.evaluators, evaluations) |evaluator, *evaluation_result| {
+    const evaluation_count = dataset.evaluators.len + dataset.trace_evaluators.len;
+    const evaluations = try result_allocator.alloc(EvaluationResult, evaluation_count);
+    for (dataset.evaluators, evaluations[0..dataset.evaluators.len]) |evaluator, *evaluation_result| {
         const evaluated = try runEvaluator(evaluator, result_allocator, .{
             .case = case,
             .case_index = identity.case_index,
@@ -467,6 +510,34 @@ fn runCaseAfterStart(
             .repetitions = identity.repetitions,
             .output = run_result.output,
             .usage = run_result.usage,
+            .spans = spans,
+        }, identity, options);
+        evaluation_result.* = .{
+            .evaluator = try result_allocator.dupe(u8, evaluator.name),
+            .passed = evaluated.evaluation.passed,
+            .score = evaluated.evaluation.score,
+            .reason = if (evaluated.evaluation.reason) |reason| try result_allocator.dupe(u8, reason) else null,
+            .attempts = evaluated.attempts,
+        };
+        try emitLifecycle(options.hooks, .{ .evaluator_end = .{
+            .identity = identity,
+            .evaluator_name = evaluator.name,
+            .attempts = evaluated.attempts,
+            .evaluation = evaluated.evaluation,
+        } });
+    }
+    for (dataset.trace_evaluators, evaluations[dataset.evaluators.len..]) |evaluator, *evaluation_result| {
+        const evaluated = try runTraceEvaluator(evaluator, result_allocator, .{
+            .run = .{
+                .case = case,
+                .case_index = identity.case_index,
+                .repetition = identity.repetition,
+                .repetitions = identity.repetitions,
+                .output = run_result.output,
+                .usage = run_result.usage,
+                .spans = spans,
+            },
+            .spans = spans,
         }, identity, options);
         evaluation_result.* = .{
             .evaluator = try result_allocator.dupe(u8, evaluator.name),
@@ -491,6 +562,7 @@ fn runCaseAfterStart(
         .output = output,
         .usage = usage,
         .evaluations = evaluations,
+        .spans = spans,
     };
     try emitLifecycle(options.hooks, .{ .case_end = .{ .identity = identity, .result = result } });
     return result;
@@ -623,6 +695,55 @@ const LockedAllocator = struct {
     }
 };
 
+const SpanCapture = struct {
+    allocator: std.mem.Allocator,
+    downstream: telemetry_types.Exporter = undefined,
+    spans: std.ArrayList(telemetry_types.Span) = .empty,
+    failure: ?anyerror = null,
+
+    fn exporter(self: *SpanCapture) telemetry_types.Exporter {
+        return .{ .context = self, .spanFn = exportSpan, .metricFn = exportMetric };
+    }
+
+    fn exportSpan(context: *anyopaque, span: telemetry_types.Span) !void {
+        const self: *SpanCapture = @ptrCast(@alignCast(context));
+        if (self.failure) |failure| return failure;
+        const copy = copySpan(self.allocator, span) catch |failure| {
+            self.failure = failure;
+            return failure;
+        };
+        self.spans.append(self.allocator, copy) catch |failure| {
+            self.failure = failure;
+            return failure;
+        };
+        try self.downstream.span(span);
+    }
+
+    fn exportMetric(context: *anyopaque, metric: telemetry_types.Metric) !void {
+        const self: *SpanCapture = @ptrCast(@alignCast(context));
+        try self.downstream.metric(metric);
+    }
+};
+
+fn copySpan(allocator: std.mem.Allocator, span: telemetry_types.Span) !telemetry_types.Span {
+    var copy = span;
+    copy.name = try allocator.dupe(u8, span.name);
+    const attributes = try allocator.alloc(telemetry_types.Attribute, span.attributes.len);
+    for (span.attributes, attributes) |attribute, *target| {
+        target.* = .{
+            .key = try allocator.dupe(u8, attribute.key),
+            .value = switch (attribute.value) {
+                .string => |value| .{ .string = try allocator.dupe(u8, value) },
+                .integer => |value| .{ .integer = value },
+                .float => |value| .{ .float = value },
+                .boolean => |value| .{ .boolean = value },
+            },
+        };
+    }
+    copy.attributes = attributes;
+    return copy;
+}
+
 const TaskRun = struct { result: agent_types.Agent.Result, attempts: usize };
 
 fn runTask(
@@ -674,6 +795,44 @@ fn runEvaluator(
             .attempt = attempt,
         } });
         const evaluation = evaluator.evaluate(allocator, run) catch |failure| {
+            const retry = RetryContext{
+                .identity = identity,
+                .stage = .evaluator,
+                .evaluator_name = evaluator.name,
+                .attempt = attempt,
+                .failure = failure,
+            };
+            const will_retry = options.evaluator_retry.shouldRetry(retry);
+            try emitLifecycle(options.hooks, .{ .evaluator_error = .{
+                .identity = identity,
+                .evaluator_name = evaluator.name,
+                .attempt = attempt,
+                .failure = failure,
+                .will_retry = will_retry,
+            } });
+            if (!will_retry) return failure;
+            try options.evaluator_retry.beforeRetry(retry);
+            continue;
+        };
+        return .{ .evaluation = evaluation, .attempts = attempt };
+    }
+}
+
+fn runTraceEvaluator(
+    evaluator: TraceEvaluator,
+    allocator: std.mem.Allocator,
+    trace: TraceContext,
+    identity: RunIdentity,
+    options: ExecutionOptions,
+) !EvaluatorRun {
+    var attempt: usize = 1;
+    while (true) : (attempt += 1) {
+        try emitLifecycle(options.hooks, .{ .evaluator_start = .{
+            .identity = identity,
+            .evaluator_name = evaluator.name,
+            .attempt = attempt,
+        } });
+        const evaluation = evaluator.evaluate(allocator, trace) catch |failure| {
             const retry = RetryContext{
                 .identity = identity,
                 .stage = .evaluator,
@@ -1071,6 +1230,13 @@ test "dataset execution options reject invalid bounds and expose terminal failur
         .cases = impossible_cases,
         .evaluators = &.{},
     }).runWithOptions(std.testing.allocator, .{ .model = model }, .{ .repetitions = 2 }));
+    const impossible_evaluators = @as([*]const Evaluator, @ptrFromInt(@alignOf(Evaluator)))[0..std.math.maxInt(usize)];
+    const impossible_traces = @as([*]const TraceEvaluator, @ptrFromInt(@alignOf(TraceEvaluator)))[0..1];
+    try std.testing.expectError(Error.InvalidExecutionOptions, (Dataset{
+        .cases = &.{},
+        .evaluators = impossible_evaluators,
+        .trace_evaluators = impossible_traces,
+    }).run(std.testing.allocator, .{ .model = model }));
     try std.testing.expectError(error.PermanentFailure, dataset.runWithOptions(
         std.testing.allocator,
         .{ .model = model },
@@ -1189,6 +1355,117 @@ test "dataset concurrency requires an available runtime and drains failures" {
     );
     defer empty_report.deinit();
     try std.testing.expectEqual(@as(usize, 0), empty_report.cases.len);
+}
+
+test "trace evaluators receive owned forwarded OpenTelemetry spans and retry independently" {
+    const State = struct {
+        exported_spans: usize = 0,
+        exported_metrics: usize = 0,
+        evaluations: usize = 0,
+
+        fn span(context: *anyopaque, _: telemetry_types.Span) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.exported_spans += 1;
+        }
+
+        fn metric(context: *anyopaque, _: telemetry_types.Metric) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.exported_metrics += 1;
+        }
+
+        fn evaluate(context: *anyopaque, _: std.mem.Allocator, trace: TraceContext) !Evaluation {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.evaluations += 1;
+            if (self.evaluations == 1) return error.TraceEvaluatorUnavailable;
+            try std.testing.expectEqualStrings("ok", trace.run.output);
+            try std.testing.expectEqual(trace.spans.ptr, trace.run.spans.ptr);
+            try std.testing.expectEqual(@as(usize, 2), trace.spans.len);
+            try std.testing.expectEqualStrings("gen_ai.chat", trace.spans[0].name);
+            try std.testing.expectEqualStrings("gen_ai.invoke_agent", trace.spans[1].name);
+            try std.testing.expectEqualSlices(u8, &trace.spans[0].trace_id, &trace.spans[1].trace_id);
+            try std.testing.expect(trace.spans[0].parent_span_id != null);
+            return .{ .passed = true, .score = 1, .reason = "trace shape is valid" };
+        }
+    };
+    const Model = struct {
+        fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+            return .{
+                .parts = &.{.{ .text = "ok" }},
+                .usage = .{ .input_tokens = 2, .output_tokens = 1 },
+                .provider_name = "test-provider",
+                .model_name = "test-model",
+            };
+        }
+    };
+    var state: State = .{};
+    var unused: u8 = 0;
+    const trace_evaluators = [_]TraceEvaluator{.{
+        .name = "trace_shape",
+        .context = &state,
+        .evaluateFn = State.evaluate,
+    }};
+    const dataset = Dataset{
+        .cases = &.{.{ .name = "trace", .prompt = "trace" }},
+        .evaluators = &.{},
+        .trace_evaluators = &trace_evaluators,
+    };
+    const model = model_types.Model{
+        .context = &unused,
+        .profile = .{},
+        .provider_name = "test-provider",
+        .model_name = "test-model",
+        .requestFn = Model.request,
+    };
+    const telemetry = telemetry_types.OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = .{ .context = &state, .spanFn = State.span, .metricFn = State.metric },
+    };
+    var report = try dataset.runWithOptions(std.testing.allocator, .{
+        .model = model,
+        .telemetry = telemetry,
+    }, .{ .evaluator_retry = .{ .max_attempts = 2 } });
+    defer report.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), report.cases[0].spans.len);
+    try std.testing.expectEqual(@as(usize, 1), report.cases[0].evaluations.len);
+    try std.testing.expectEqualStrings("trace_shape", report.cases[0].evaluations[0].evaluator);
+    try std.testing.expectEqual(@as(usize, 2), report.cases[0].evaluations[0].attempts);
+    try std.testing.expectEqualStrings("trace shape is valid", report.cases[0].evaluations[0].reason.?);
+    try std.testing.expectEqual(@as(usize, 2), state.exported_spans);
+    try std.testing.expect(state.exported_metrics >= 4);
+    try std.testing.expectEqual(@as(usize, 2), state.evaluations);
+
+    try std.testing.expectError(Error.TraceEvaluationRequiresTelemetry, dataset.run(
+        std.testing.allocator,
+        .{ .model = model },
+    ));
+}
+
+test "span copies own names attributes and every typed value" {
+    const attributes = [_]telemetry_types.Attribute{
+        .{ .key = "string", .value = .{ .string = "value" } },
+        .{ .key = "integer", .value = .{ .integer = 2 } },
+        .{ .key = "float", .value = .{ .float = 0.5 } },
+        .{ .key = "boolean", .value = .{ .boolean = true } },
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const copied = try copySpan(arena.allocator(), .{
+        .name = "span",
+        .trace_id = [_]u8{1} ** 16,
+        .span_id = [_]u8{2} ** 8,
+        .start_time_unix_nano = 1,
+        .end_time_unix_nano = 2,
+        .duration_seconds = 0.1,
+        .status = .ok,
+        .attributes = &attributes,
+    });
+    try std.testing.expectEqualStrings("span", copied.name);
+    try std.testing.expectEqual(@as(usize, 4), copied.attributes.len);
+    try std.testing.expectEqualStrings("value", copied.attributes[0].value.string);
+    try std.testing.expectEqual(@as(i64, 2), copied.attributes[1].value.integer);
+    try std.testing.expectEqual(@as(f64, 0.5), copied.attributes[2].value.float);
+    try std.testing.expect(copied.attributes[3].value.boolean);
 }
 
 test "report evaluators consume completed runs and summaries aggregate repetitions" {
@@ -1334,10 +1611,22 @@ fn checkDatasetAllocationFailure(allocator: std.mem.Allocator) !void {
         fn evaluate(_: *anyopaque, _: std.mem.Allocator, _: ReportView) !Analysis {
             return .{ .passed = true, .value = 1, .unit = "ratio", .reason = "complete" };
         }
+
+        fn trace(_: *anyopaque, _: std.mem.Allocator, context: TraceContext) !Evaluation {
+            return .{ .passed = context.spans.len != 0, .score = 1 };
+        }
+
+        fn span(_: *anyopaque, _: telemetry_types.Span) !void {}
+        fn metric(_: *anyopaque, _: telemetry_types.Metric) !void {}
     };
     const outputs = [_]model_types.Part{.{ .text = "ok" }};
     var scripted = testing.ScriptedModel{ .responses = &.{.{ .parts = &outputs }} };
     const evaluators = [_]Evaluator{validJson()};
+    const trace_evaluators = [_]TraceEvaluator{.{
+        .name = "trace",
+        .context = &builtin_context,
+        .evaluateFn = Aggregate.trace,
+    }};
     const report_evaluators = [_]ReportEvaluator{.{
         .name = "aggregate",
         .context = &builtin_context,
@@ -1346,8 +1635,19 @@ fn checkDatasetAllocationFailure(allocator: std.mem.Allocator) !void {
     var report = try (Dataset{
         .cases = &.{.{ .name = "allocation", .prompt = "prompt" }},
         .evaluators = &evaluators,
+        .trace_evaluators = &trace_evaluators,
         .report_evaluators = &report_evaluators,
-    }).run(allocator, .{ .model = scripted.model() });
+    }).run(allocator, .{
+        .model = scripted.model(),
+        .telemetry = .{
+            .io = std.testing.io,
+            .exporter = .{
+                .context = &builtin_context,
+                .spanFn = Aggregate.span,
+                .metricFn = Aggregate.metric,
+            },
+        },
+    });
     defer report.deinit();
 }
 

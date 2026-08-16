@@ -544,6 +544,14 @@ rate. `caseSummary(case_index)` groups repetitions by their stable source index.
 `scoreStatistics(evaluator_name)` ignores absent and non-finite scores and
 returns count, minimum, maximum, mean, and population standard deviation.
 
+`Dataset.trace_evaluators` are `TraceEvaluator` callbacks over a
+`TraceContext`. They require `Agent.telemetry`; otherwise the run returns
+`TraceEvaluationRequiresTelemetry` before calling the model. The per-case
+`CaseResult.spans` slice owns a deep copy of every span exported during that
+agent run, including typed attributes. The configured exporter still receives
+the original spans and all metrics. Trace results follow ordinary evaluator
+results and use `ExecutionOptions.evaluator_retry`.
+
 ## Ownership
 
 ZigAI follows one rule for high-level operations: a returned type with a

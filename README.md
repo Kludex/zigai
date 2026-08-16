@@ -1183,6 +1183,13 @@ analyses with an optional assertion, unit, and reason. `Report.summary`,
 minimum, maximum, mean, and population standard deviation. A failed aggregate
 assertion makes `Report.passed()` false.
 
+`trace_evaluators` inspect the same `telemetry.Span` values sent to the
+application exporter. Enabling them requires `Agent.telemetry`. ZigAI installs
+a per-case exporter tee, deep-copies span names, attributes, IDs, timing, and
+status into `CaseResult.spans`, and forwards spans and metrics unchanged. Trace
+evaluators use the ordinary evaluator retry policy and add results to the same
+ordered evaluation list after output evaluators.
+
 ## Security
 
 Hosted endpoints use HTTPS-only URL validation by default. Local names,

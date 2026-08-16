@@ -197,7 +197,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add bounded concurrent eval execution with stable result ordering and
   explicit thread-safety and allocator contracts.
 - [x] Add report evaluators and statistical summaries across repeated runs.
-- [ ] Add span/trace evaluators that consume the same telemetry shape used in
+- [x] Add span/trace evaluators that consume the same telemetry shape used in
   production.
 - [ ] Add versioned dataset and report serialization for JSON and readable
   Cassetter-style YAML.

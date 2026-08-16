@@ -594,6 +594,16 @@ compute per-report and per-source-case pass rates, and per-evaluator finite
 score statistics across repetitions. Non-finite case scores are excluded from
 statistics; non-finite report-analysis values are rejected.
 
+Span-based evaluation does not define a second trace model. When a dataset has
+`trace_evaluators`, each case temporarily tees the agent's configured
+OpenTelemetry exporter. The tee deep-copies exported spans and attributes into
+the report arena before forwarding the original borrowed span to the
+application exporter; metrics are forwarded unchanged. Trace evaluators run
+after the agent completes and receive both the ordinary eval context and the
+owned span slice. This makes offline assertions inspect the same telemetry
+shape used in production. Trace evaluation fails before execution when the
+agent has no OpenTelemetry configuration.
+
 `evals.ModelGrader` is optional and is itself built from an `Agent`. It sends a
 JSON-quoted task, output, expected value, and rubric to that agent, requests a
 typed pass/score/reason object, and rejects non-finite or out-of-range scores.

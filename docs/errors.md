@@ -218,6 +218,7 @@ Provider construction and optional operations use these boundary errors:
 | `evals` | `ConcurrentExecutionRequiresIo` | More than one eval run was requested concurrently without a `std.Io` runtime. |
 | `evals` | `ConcurrentExecutionUnavailable` | The supplied runtime could not admit eval work. |
 | `evals` | `InvalidReportAnalysis` | A report evaluator returned a non-finite scalar value. |
+| `evals` | `TraceEvaluationRequiresTelemetry` | Trace evaluators were configured on a dataset whose agent has no OpenTelemetry configuration. |
 
 ### Agent specification errors
 

@@ -83,6 +83,9 @@
 - Add report evaluators with arena-owned aggregate assertions and scalar
   analyses, plus report, source-case, and finite-score statistical summaries
   across repeated runs.
+- Add span-based evaluators over the production OpenTelemetry shape. Per-case
+  exporter tees deep-copy spans into reports, forward application telemetry,
+  share evaluator retries, and fail before model work when telemetry is absent.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and
