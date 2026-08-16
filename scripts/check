@@ -3,10 +3,11 @@ set -eu
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cache_dir="${ZIGAI_GLOBAL_CACHE_DIR:-$project_dir/.zig-global-cache}"
+optimize="${ZIGAI_OPTIMIZE:-Debug}"
 
 cd "$project_dir"
 python3 tools/pricing_snapshot.py --check
 zig fmt --check build.zig build.zig.zon src tests tools examples benchmarks
-ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build check
-ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build test
+ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build check -Doptimize="$optimize"
+ZIG_GLOBAL_CACHE_DIR="$cache_dir" zig build test -Doptimize="$optimize"
 ZIGAI_GLOBAL_CACHE_DIR="$cache_dir" ./scripts/test-consumers

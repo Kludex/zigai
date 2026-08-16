@@ -4,6 +4,7 @@
 //! validated before I/O. Remote backends implement the same owned result API.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const model_types = @import("model.zig");
 
 /// Backend enforcement guarantees.
@@ -428,6 +429,7 @@ fn redactOutput(
 }
 
 test "local execution stays rooted redacts secrets and audits operations" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     const Capture = struct {
         events: usize = 0,
         saw_secret_name: bool = false,
@@ -489,6 +491,7 @@ test "local execution stays rooted redacts secrets and audits operations" {
 }
 
 test "local shell enforces cancellation output environment and network policy" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     var temporary = std.testing.tmpDir(.{});
     defer temporary.cleanup();
     var runtime = std.Io.Threaded.init(std.testing.allocator, .{});
@@ -624,6 +627,7 @@ fn runLocalWithAllocator(gpa: std.mem.Allocator) !void {
 }
 
 fn runCommandWithAllocator(gpa: std.mem.Allocator) !void {
+    if (builtin.os.tag == .windows) return;
     var temporary = std.testing.tmpDir(.{});
     defer temporary.cleanup();
     var workspace = LocalWorkspace.init(std.testing.io, temporary.dir);

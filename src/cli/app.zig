@@ -1,6 +1,7 @@
 //! Unified production CLI configuration, provider selection, persistence, and execution.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const zigai = @import("zigai");
 const common = @import("common.zig");
 
@@ -712,6 +713,7 @@ test "production CLI parses overrides completions and exit codes" {
 }
 
 test "production CLI config history paused state and provider selection are owned" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     var temporary = std.testing.tmpDir(.{});
     defer temporary.cleanup();
     try temporary.dir.writeFile(std.testing.io, .{

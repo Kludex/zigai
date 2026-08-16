@@ -327,7 +327,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Freeze a documented `0.x` compatibility policy, API review checklist,
   deprecation mechanism, history/state migration guarantees, and supported Zig
   version/target matrix before expanding the public surface further.
-- [ ] Add Windows CI and cross-target compile checks; test Debug, ReleaseSafe,
+- [x] Add Windows CI and cross-target compile checks; test Debug, ReleaseSafe,
   minimum Zig, current pinned Zig, downstream consumers, docs, examples, and
   package contents from a clean source archive.
 - [ ] Minimize `build.zig.zon` package paths to runtime sources, build files,

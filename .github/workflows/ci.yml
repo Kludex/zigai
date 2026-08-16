@@ -10,15 +10,68 @@ jobs:
   verify:
     strategy:
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        optimize: [Debug, ReleaseSafe]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - shell: bash
+        env:
+          ZIGAI_OPTIMIZE: ${{ matrix.optimize }}
+        run: ./scripts/check
+      - if: runner.os != 'Windows'
+        run: ./scripts/test-cli
+
+  toolchain:
+    strategy:
+      matrix:
+        include:
+          - label: minimum
+            version: 0.16.0
+          - label: pinned
+            version: 0.16.0
+    name: toolchain (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: ${{ matrix.version }}
       - run: ./scripts/check
-      - run: ./scripts/test-cli
+      - run: zig build docs
+      - run: zig build examples
+
+  cross-target:
+    strategy:
+      matrix:
+        target: [x86_64-windows, aarch64-linux, x86_64-macos]
+    name: cross-target (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig build check -Dtarget=${{ matrix.target }} -Doptimize=ReleaseSafe
+
+  source-archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Test a clean source archive
+        run: |
+          git archive --format=tar HEAD -o /tmp/zigai.tar
+          mkdir /tmp/zigai-source
+          tar -xf /tmp/zigai.tar -C /tmp/zigai-source
+          cd /tmp/zigai-source
+          zig build --fetch=all
+          ./scripts/check
 
   coverage:
     runs-on: ubuntu-latest

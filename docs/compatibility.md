@@ -80,13 +80,16 @@ can be rejected in any release.
 | Zig | `0.16.0` | Minimum and CI-pinned version. |
 | Linux | `x86_64` GNU/Linux | Verified by CI. |
 | macOS | Apple Silicon | Verified by CI. |
-| Debug | Linux and macOS | Verified by checks, fuzz smoke, and stress smoke. |
-| ReleaseSafe | Linux and macOS | Verified by stress smoke. |
-| Windows | Not yet supported | Becomes supported only when the Windows roadmap item is complete. |
+| Windows | `x86_64` MSVC ABI | Verified by CI checks; a small set of process-spawning tests is skipped on Windows runners. |
+| Debug | Linux, macOS, and Windows | Verified by checks; Linux and macOS additionally run fuzz smoke and stress smoke. |
+| ReleaseSafe | Linux, macOS, and Windows | Verified by checks; Linux and macOS additionally run stress smoke. |
+| Cross-compile targets | `x86_64-windows`, `aarch64-linux`, `x86_64-macos` | Compile-checked from Linux CI in ReleaseSafe. |
 | Other cross targets | Best effort | No compatibility claim until added to CI. |
 
 Distributed artifacts must use a baseline CPU model. A target becomes supported
-only after clean archive consumer tests run in CI.
+only after clean archive consumer tests run in CI. Every push also builds and
+tests a clean `git archive` extraction so the package never depends on
+untracked files.
 
 ## Public API review checklist
 

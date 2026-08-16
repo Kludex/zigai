@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const zigai = @import("zigai");
 
 pub const Input = struct {
@@ -219,6 +220,7 @@ test "CLI endpoint policy keeps defaults strict and permits explicit local endpo
 }
 
 test "tool manifests create executable provider-neutral tools" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
     var loaded = try LoadedTools.fromJson(std.testing.allocator, std.testing.io, "[{\"name\":\"echo\",\"description\":\"Echo JSON\",\"parameters\":{\"type\":\"object\"},\"command\":[\"/bin/echo\"]}]");
     defer loaded.deinit();
     try std.testing.expectEqual(@as(usize, 1), loaded.tools.len);

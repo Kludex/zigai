@@ -69,6 +69,10 @@
   machine-readable deprecation schedule, persisted-format migration guarantees,
   and supported Zig/target matrix. Deprecate `zigai.Usage` in favor of
   `zigai.RequestUsage` without removing the alias before 1.0.
+- Add Windows CI verification in Debug and ReleaseSafe, cross-target compile
+  checks for `x86_64-windows`, `aarch64-linux`, and `x86_64-macos`, dedicated
+  minimum/pinned Zig toolchain jobs covering docs and examples, and a clean
+  source-archive job that builds and tests the extracted `git archive`.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

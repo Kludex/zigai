@@ -809,7 +809,7 @@ fn pollStdioChild(child: *std.process.Child, io: std.Io) bool {
         .windows => {
             const windows = std.os.windows;
             const timeout: windows.LARGE_INTEGER = -1;
-            if (windows.ntdll.NtWaitForSingleObject(id, .FALSE, &timeout) != .WAIT_0) return false;
+            if (windows.ntdll.NtWaitForSingleObject(id, .FALSE, &timeout) != windows.NTSTATUS.WAIT_0) return false;
             _ = child.wait(io) catch {
                 child.kill(io);
                 return true;
