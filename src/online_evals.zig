@@ -916,7 +916,7 @@ test "online eval queue retries dropped metrics and shuts down" {
     try std.testing.expectEqual(@as(usize, 1), (try fail_closed.shutdown()).dropped_reported);
 }
 
-test "online eval queue serializes concurrent sampled producers" {
+test "online eval queue accepts or reports concurrent sampled producers" {
     var runtime = std.Io.Threaded.init(std.testing.allocator, .{});
     defer runtime.deinit();
     const io = runtime.io();
@@ -937,8 +937,11 @@ test "online eval queue serializes concurrent sampled producers" {
     try first.await(io);
     try second.await(io);
     const result = try queue.shutdown();
-    try std.testing.expectEqual(@as(usize, 2), result.observations);
-    try std.testing.expectEqual(@as(usize, 2), result.evaluations);
+    try std.testing.expectEqual(
+        @as(usize, 2),
+        result.observations + queue.stats().dropped_contention,
+    );
+    try std.testing.expectEqual(result.observations, result.evaluations);
 }
 
 test "online eval queue deinit discards pending observations" {

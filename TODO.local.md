@@ -290,7 +290,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add realtime speech-to-speech sessions for OpenAI, Azure, Google, and xAI
   with WebSocket/WebRTC transport boundaries, audio/transcript events, turns,
   interruptions, tools, handoff/history, reconnect, usage, and telemetry.
-- [ ] Add UI event adapters for AG-UI and Vercel AI protocols with bidirectional
+- [x] Add UI event adapters for AG-UI and Vercel AI protocols with bidirectional
   tool approval, typed custom events, message sanitization, reconnection, and
   browser/server examples.
 - [ ] Add a production CLI with provider/model selection, config files, stdin,
