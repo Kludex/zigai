@@ -305,7 +305,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add execution-environment contracts for filesystem and shell access plus
   remote sandboxes, with explicit roots, command/network policy, output limits,
   cancellation, audit events, secret handling, and disposable workspaces.
-- [ ] Add a reviewed built-in capability catalog for web search/fetch, browser
+- [x] Add a reviewed built-in capability catalog for web search/fetch, browser
   use, image generation, skills, and repository context, while keeping vendor
   SDKs optional and enforcing the same URL/content/security policies as tools.
 - [ ] Add durable knowledge and memory primitives for conversation search,
