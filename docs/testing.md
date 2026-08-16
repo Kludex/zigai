@@ -287,6 +287,22 @@ every scenario that is not supported yet. The runner fails for a new
 regression, an unlisted failure, or a stale baseline entry that has started to
 pass, so the file doubles as an executable interoperability backlog.
 
+## Benchmarks
+
+Production benchmarks live under `benchmarks/`, separate from runtime source
+and correctness tests. Their checked-in baseline format is strict and
+versioned. Workload names must be unique and sorted, and checksums make a
+semantic workload change fail until the baseline is reviewed deliberately.
+
+Thresholds use integer basis points. A null threshold publishes timing data
+without gating CI; adding a number is the explicit review action that enables
+a regression check. The comparator rejects missing, extra, reordered, or
+checksum-changed workloads and emits stable JSON with `pass` or `fail`.
+
+The benchmark harness itself runs in the ordinary `zig build test` gate. Timed
+workloads and platform baselines are added through the dedicated benchmark
+steps documented below rather than being mixed into line coverage.
+
 ## Fuzzing
 
 ZigAI fuzzes every untrusted parser family: history and deferred state, JSON

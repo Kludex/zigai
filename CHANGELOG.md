@@ -23,6 +23,9 @@
 - Integrate online evaluation into each agent invocation with mandatory trace
   correlation and isolated lifecycle state. Preallocated queue slots and
   try-lock admission drop contended work instead of waiting on the agent path.
+- Add a standalone benchmark comparison harness with strict versioned and
+  sorted baselines, workload checksums, integer reviewed thresholds, structural
+  drift rejection, and stable machine-readable CI reports.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model
