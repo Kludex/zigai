@@ -14,7 +14,7 @@ jobs:
         optimize: [Debug, ReleaseSafe]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
@@ -36,7 +36,7 @@ jobs:
     name: toolchain (${{ matrix.label }})
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: ${{ matrix.version }}
@@ -51,7 +51,7 @@ jobs:
     name: cross-target (${{ matrix.target }})
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
@@ -60,7 +60,7 @@ jobs:
   source-archive:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
@@ -76,7 +76,7 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
@@ -92,7 +92,7 @@ jobs:
     env:
       TEMPORAL_TEST_SERVER_CACHE: ${{ github.workspace }}/.temporal-test-server
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -112,7 +112,7 @@ jobs:
   fuzz-smoke:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
@@ -125,7 +125,7 @@ jobs:
         optimize: [Debug, ReleaseSafe]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
@@ -142,7 +142,7 @@ jobs:
     name: benchmark (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
