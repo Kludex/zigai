@@ -339,7 +339,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add `SECURITY.md`, vulnerability-reporting contacts, supported-version
   policy, threat model, dependency review/update automation, and an advisory
   response checklist.
-- [ ] Add production guides for web services, long-running workers, memory
+- [x] Add production guides for web services, long-running workers, memory
   ownership, thread safety, cancellation, retries, tool security, MCP security,
   telemetry redaction, persistence migrations, testing, and incident debugging.
 - [ ] Publish a stable `1.0.0` only after every P0 and P1 item is complete, the

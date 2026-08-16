@@ -84,6 +84,10 @@
 - Add `SECURITY.md` with private vulnerability reporting, a supported-version
   policy, a summarized threat model, dependency review automation via
   Dependabot, and an advisory response checklist.
+- Add a production guide covering web services, long-running workers, memory
+  ownership, thread safety, cancellation, retries, tool and MCP security,
+  telemetry redaction, persistence migrations, testing, and incident
+  debugging.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.
