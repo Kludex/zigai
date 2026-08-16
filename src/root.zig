@@ -14,6 +14,7 @@ pub const security = @import("security.zig");
 pub const agent = @import("agent.zig");
 pub const agent_spec = @import("agent_spec.zig");
 pub const harness = @import("harness.zig");
+pub const execution = @import("execution.zig");
 pub const testing = @import("testing.zig");
 pub const transport = @import("transport.zig");
 pub const provider = @import("provider.zig");
@@ -301,6 +302,7 @@ test {
     _ = @import("capability.zig");
     _ = @import("agent_spec.zig");
     _ = @import("harness.zig");
+    _ = @import("execution.zig");
     _ = @import("json.zig");
     _ = @import("reflect.zig");
     _ = @import("history.zig");

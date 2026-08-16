@@ -418,6 +418,17 @@ compositions before an agent run. `HarnessOutputTooLarge`,
 observer, cancellation, deadline, and allocator failures keep their original
 errors.
 
+## Execution environment errors
+
+`InvalidExecutionPath`, `InvalidExecutionCommand`, and
+`InvalidExecutionEnvironment` reject malformed requests before I/O.
+`ReadOnlyWorkspace`, `ExecutionFileTooLarge`, `ExecutionCommandDenied`,
+`ExecutionNetworkDenied`, `NetworkIsolationUnavailable`,
+`SensitiveEnvironmentDenied`, and `TooManyExecutionEnvironmentVariables`
+identify policy failures. `WorkspaceNotDisposable` rejects disposal through a
+borrowed environment. Process, cancellation, deadline, output-limit, audit, and
+allocator failures retain their original errors.
+
 ## Production CLI errors
 
 `InvalidArguments`, `InvalidCLIConfig`, `InvalidPausedCLIState`, `EmptyPrompt`,

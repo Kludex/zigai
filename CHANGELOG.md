@@ -45,6 +45,9 @@
   custom presets, typed capability composition, lifecycle hooks, one bounded
   deadline, owned artifacts, allocation safety, and strict agent-spec
   integration.
+- Add execution-environment contracts for rooted local filesystems, bounded
+  shell commands, remote sandboxes, network and secret policy, cancellation,
+  audit events, redacted output, and disposable workspaces.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

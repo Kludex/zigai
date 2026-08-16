@@ -262,6 +262,12 @@ One absolute deadline bounds the agent and artifact producers. Results own both
 the normal agent result and bounded copied artifacts. The same API accepts an
 agent assembled from a strict `agent_spec` resolution.
 
+`zigai.execution.Environment` is the common filesystem/shell boundary for
+local rooted workspaces and remote sandboxes. Local paths reject traversal and
+use rooted, non-following, resolve-beneath opens. Command policy controls
+executables, network requirements, environment secrets, output sizes,
+cancellation, audits, and disposable workspace cleanup.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.

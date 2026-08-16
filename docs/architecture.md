@@ -767,6 +767,21 @@ the model/tool run and every producer. Harness lifecycle observers never own
 artifact or prompt slices. Strict `agent_spec` integration simply borrows the
 resolved agent, preserving the resolver's cleanup and secret boundaries.
 
+## Execution environments
+
+The execution contract separates agent/tool logic from local or remote process
+ownership. A rooted local directory handle is the filesystem authority; paths
+never become ambient process paths. Resolve-beneath and no-follow opens defend
+the root, while remote sandboxes advertise whether they enforce network
+isolation and disposal.
+
+Command requests carry policy-visible arguments, cwd, environment sensitivity,
+network requirements, cancellation, and timeout. The local backend refuses a
+denied-network request because it cannot enforce it. Outputs are bounded before
+collection and exact sensitive values are redacted before ownership transfers.
+Audit events deliberately contain secret names but not values. Disposable
+workspaces close their handle before deleting their complete child tree.
+
 ## Production CLI
 
 The unified CLI is composition rather than a fourth agent runtime. Provider

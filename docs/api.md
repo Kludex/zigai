@@ -136,6 +136,7 @@ Use these namespaces for the rest of the API:
 | `zigai.realtime` | Persistent speech, transcript, turn, tool, and reconnect sessions |
 | `zigai.ui` | AG-UI and Vercel AI SDK browser event adapters |
 | `zigai.harness` | Reusable bounded coder, researcher, and custom compositions |
+| `zigai.execution` | Rooted filesystem, shell, remote sandbox, and disposable workspace contracts |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
@@ -1209,6 +1210,33 @@ Fallible start, artifact, end, and failure observations are synchronous.
 `agent_spec.Resolved`. The resolution must outlive the harness and every run.
 Provider clients, secrets, and capability implementation lifetimes remain
 owned by the existing spec resolver rather than the harness.
+
+## Execution environments
+
+`execution.Environment` is a small vtable for bounded read, write, remove,
+command, and dispose operations. Its `Profile` declares filesystem, shell,
+network-isolation, and disposable guarantees. `RemoteSandbox` pairs any
+application implementation with a stable sandbox ID; the remote backend must
+enforce the same request policy before returning owned results.
+
+`LocalWorkspace` borrows an explicit `std.Io.Dir` root. It rejects absolute,
+empty, NUL, empty-component, and parent-traversal paths. Reads disable symlink
+following and request resolve-beneath behavior. Writes request resolve-beneath
+creation. A disposable local workspace creates a child directory, owns its
+handle, and removes the tree when `dispose` runs.
+
+`FilesystemPolicy` controls mutability and file bytes. `CommandPolicy`
+allowlists executables, fixes required network access, limits arguments,
+environment count, and stdout/stderr, and controls sensitive environment use.
+Local execution refuses `network = denied` because the standard process API
+cannot prove network isolation; use a remote sandbox whose profile guarantees
+it. This fails closed instead of claiming an unenforced sandbox.
+
+Command cancellation and timeout use `RunControl`; a losing process is killed
+and drained before return. `CommandResult` owns stdout/stderr in one arena.
+Sensitive environment values are replaced with `[REDACTED]` in both streams by
+default. Audit events contain paths, executables, statuses, error names, and
+sensitive variable names only - never secret values.
 
 ## Production CLI
 
