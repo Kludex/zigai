@@ -73,15 +73,10 @@ jobs:
           version: 0.16.0
       - name: Measure and compare
         shell: bash
-        run: |
-          baseline="benchmarks/baselines/${{ matrix.target }}.json"
-          if [[ -f "$baseline" ]]; then
-            zig build benchmark -Doptimize=ReleaseSafe -- \
-              check "$baseline" benchmark-report.json
-          else
-            zig build benchmark -Doptimize=ReleaseSafe -- measure \
-              > benchmark-report.json
-          fi
+        run: >-
+          zig build benchmark -Doptimize=ReleaseSafe --
+          check benchmarks/baselines/${{ matrix.target }}.json
+          benchmark-report.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:

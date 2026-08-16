@@ -200,6 +200,9 @@ pub const Comparison = struct {
 
 pub const Report = struct {
     allocator: std.mem.Allocator,
+    zig_version: []const u8,
+    optimize: []const u8,
+    target: []const u8,
     entries: []Comparison,
 
     pub fn deinit(self: *Report) void {
@@ -269,7 +272,13 @@ pub fn compare(
             .status = status,
         };
     }
-    return .{ .allocator = allocator, .entries = entries };
+    return .{
+        .allocator = allocator,
+        .zig_version = baseline.zig_version,
+        .optimize = baseline.optimize,
+        .target = baseline.target,
+        .entries = entries,
+    };
 }
 
 pub fn stringifyReportJson(allocator: std.mem.Allocator, report: Report) ![]u8 {
@@ -279,6 +288,12 @@ pub fn stringifyReportJson(allocator: std.mem.Allocator, report: Report) ![]u8 {
     try json.beginObject();
     try json.objectField("version");
     try json.write(schema_version);
+    try json.objectField("zig_version");
+    try json.write(report.zig_version);
+    try json.objectField("optimize");
+    try json.write(report.optimize);
+    try json.objectField("target");
+    try json.write(report.target);
     try json.objectField("conclusion");
     try json.write(if (report.passed()) "pass" else "fail");
     try json.objectField("regressions");

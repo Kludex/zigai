@@ -326,6 +326,19 @@ The harness and a two-run determinism smoke test for every workload run in the
 ordinary `zig build test` gate. Timed measurements remain in the dedicated
 benchmark step and are not mixed into line coverage.
 
+Checked-in baselines live in `benchmarks/baselines/` for Linux x86_64 and
+macOS ARM64. Compare locally on a matching platform and write a report with:
+
+```console
+zig build benchmark -Doptimize=ReleaseSafe -- \
+  check benchmarks/baselines/macos-aarch64.json benchmark-report.json
+```
+
+The isolated CI matrix publishes `benchmark-report.json` for both platforms.
+It always rejects Zig-version, optimization-mode, target, workload-set, and
+checksum drift. Timing entries remain `unreviewed` and cannot fail CI until a
+maintainer adds `max_regression_basis_points` to that platform's baseline.
+
 ## Fuzzing
 
 ZigAI fuzzes every untrusted parser family: history and deferred state, JSON

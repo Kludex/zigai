@@ -219,14 +219,14 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
     behavior, isolated processing, and reasoned dropped-work metrics.
   - [x] Integrate one isolated online-eval lifecycle adapter per agent run and
     document the complete production workflow.
-- [ ] Add deterministic benchmarks for request encoding/decoding, streaming,
+- [x] Add deterministic benchmarks for request encoding/decoding, streaming,
   history processing, schema reflection/validation, MCP, and parallel tools;
   publish baselines and fail CI only on reviewed regression thresholds.
   - [x] Define strict versioned baselines, exact workload/checksum drift
     detection, integer reviewed thresholds, and stable CI comparison output.
   - [x] Add deterministic timed workloads for every required subsystem with
     warmup, repeated samples, median aggregation, and anti-optimization checks.
-  - [ ] Publish platform baselines and add an isolated CI benchmark job that
+  - [x] Publish platform baselines and add an isolated CI benchmark job that
     gates only entries with explicitly reviewed thresholds.
 - [x] Add structured diagnostic logging with levels and a secret-redaction
   contract, while keeping the core independent of a concrete logging backend.

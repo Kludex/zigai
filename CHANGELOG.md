@@ -30,6 +30,9 @@
   decoding, provider streaming, history, schema reflection and validation, MCP
   dispatch, and parallel agent tools, with warmup, median sampling, and
   anti-optimization checksum verification.
+- Publish environment-bound Linux x86_64 and macOS ARM64 benchmark baselines
+  and isolated CI reports. Structural and semantic drift always fails, while
+  timing gates remain opt-in through explicitly reviewed basis-point limits.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model
