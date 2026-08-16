@@ -1,0 +1,123 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://bedrock-mantle.example-region.api.aws/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "openai.gpt-oss-20b"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "req_6hfgp7b3yun2ekvwnsfcxuoo2734d4svpbythrcjy3ghol3sx43q"
+    body:
+      type: json
+      content:
+        choices:
+          - finish_reason: "tool_calls"
+            index: 0
+            logprobs: null
+            message:
+              content: null
+              reasoning: "We must call the weather tool \"exactly once\". Then reply with one short sentence. The system instruction: \"Always use the weather tool before answering.\" That means we must use the tool before producing the answer. We can only call weather once. After we gather the data, we respond with one short sentence. No additional commentary. Let's do that."
+              refusal: null
+              role: "assistant"
+              tool_calls:
+                - function:
+                    arguments: "{\"city\":\"Madrid\"}"
+                    name: "weather"
+                  id: "chatcmpl-tool-a90839d9ea966c68"
+                  type: "function"
+        created: 1786844733
+        id: "chatcmpl-fc48fb72-11f7-440d-90c0-42de2107dd7e"
+        model: "openai.gpt-oss-20b"
+        object: "chat.completion"
+        service_tier: "default"
+        usage:
+          completion_tokens: 94
+          prompt_tokens: 149
+          total_tokens: 243
+- request:
+    method: POST
+    uri: "https://bedrock-mantle.example-region.api.aws/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "openai.gpt-oss-20b"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "assistant"
+            content: null
+            tool_calls:
+              - id: "chatcmpl-tool-a90839d9ea966c68"
+                type: "function"
+                function:
+                  name: "weather"
+                  arguments: "{\"city\":\"Madrid\"}"
+          - role: "tool"
+            tool_call_id: "chatcmpl-tool-a90839d9ea966c68"
+            content: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "req_orqpqkbfp6nqe3jelemzfjcdtbzflkmyzrxhodtrh6rw7otm4scq"
+    body:
+      type: json
+      content:
+        choices:
+          - finish_reason: "stop"
+            index: 0
+            logprobs: null
+            message:
+              content: "Madrid is sunny at 31 °C."
+              reasoning: "We have a tool response: temperature 31°C, sunny. The instruction: \"Always use the weather tool before answering.\" So tool must be used. Then respond with one short sentence. The sentence should incorporate the info. Probably: \"The weather in Madrid is sunny and 31°C.\" But that's more than one sentence? It's one sentence. Yes, a short sentence: e.g., \"Madrid is sunny at 31°C.\" That is short. Provide that."
+              refusal: null
+              role: "assistant"
+        created: 1786844734
+        id: "chatcmpl-ef5ba0a4-0335-409d-8c53-ac0a2bdf5f61"
+        model: "openai.gpt-oss-20b"
+        object: "chat.completion"
+        service_tier: "default"
+        usage:
+          completion_tokens: 114
+          prompt_tokens: 188
+          total_tokens: 302

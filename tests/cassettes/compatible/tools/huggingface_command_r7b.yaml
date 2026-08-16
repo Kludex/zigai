@@ -1,0 +1,133 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://router.huggingface.co/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "CohereLabs/c4ai-command-r7b-12-2024"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "Root=1-6a811644-146c91246c5db8297a762f92"
+    body:
+      type: json
+      content:
+        id: "1823afd1-f038-4010-a221-42a37da81685"
+        choices:
+          - index: 0
+            finish_reason: "tool_calls"
+            message:
+              role: "assistant"
+              content: null
+              tool_calls:
+                - id: "weather_ag9eyh19jn1m"
+                  type: "function"
+                  function:
+                    name: "weather"
+                    arguments: "{\"city\":\"Madrid\"}"
+            logprobs: null
+        created: 1786844740
+        model: "command-r7b-12-2024"
+        object: "chat.completion"
+        usage:
+          prompt_tokens: 57
+          completion_tokens: 19
+          total_tokens: 76
+          prompt_tokens_details:
+            cached_tokens: 0
+            audio_tokens: 0
+          completion_tokens_details:
+            reasoning_tokens: 0
+            audio_tokens: 0
+            accepted_prediction_tokens: 0
+            rejected_prediction_tokens: 0
+- request:
+    method: POST
+    uri: "https://router.huggingface.co/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "CohereLabs/c4ai-command-r7b-12-2024"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "assistant"
+            content: null
+            tool_calls:
+              - id: "weather_ag9eyh19jn1m"
+                type: "function"
+                function:
+                  name: "weather"
+                  arguments: "{\"city\":\"Madrid\"}"
+          - role: "tool"
+            tool_call_id: "weather_ag9eyh19jn1m"
+            content: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "Root=1-6a811645-0122eb5b13911b45456c3ad2"
+    body:
+      type: json
+      content:
+        id: "c65b73d8-b1ec-4236-9020-2b4b31383c56"
+        choices:
+          - index: 0
+            finish_reason: "stop"
+            message:
+              role: "assistant"
+              content: "It's sunny and 31 degrees Celsius in Madrid."
+            logprobs: null
+        created: 1786844741
+        model: "command-r7b-12-2024"
+        object: "chat.completion"
+        usage:
+          prompt_tokens: 68
+          completion_tokens: 12
+          total_tokens: 80
+          prompt_tokens_details:
+            cached_tokens: 0
+            audio_tokens: 0
+          completion_tokens_details:
+            reasoning_tokens: 0
+            audio_tokens: 0
+            accepted_prediction_tokens: 0
+            rejected_prediction_tokens: 0

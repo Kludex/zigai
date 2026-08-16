@@ -1,0 +1,32 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://openrouter.ai/api/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "openai/gpt-4o-mini"
+        messages:
+          - role: "user"
+            content: "Reply with exactly: pong"
+        max_tokens: 256
+        stream: true
+        stream_options:
+          include_usage: true
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: text
+      content: |+
+        : OPENROUTER PROCESSING
+
+        data: {"id":"gen-1786844728-ugrDEvliQntxjCcSrSkG","object":"chat.completion.chunk","created":1786844728,"model":"openai/gpt-4o-mini","provider":"OpenAI","system_fingerprint":"fp_98f538dc1a","choices":[{"index":0,"delta":{"content":"pong","role":"assistant"},"finish_reason":null,"native_finish_reason":null}]}
+
+        data: {"id":"gen-1786844728-ugrDEvliQntxjCcSrSkG","object":"chat.completion.chunk","created":1786844728,"model":"openai/gpt-4o-mini","provider":"OpenAI","system_fingerprint":"fp_98f538dc1a","choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"stop"}]}
+
+        data: {"id":"gen-1786844728-ugrDEvliQntxjCcSrSkG","object":"chat.completion.chunk","created":1786844728,"model":"openai/gpt-4o-mini","provider":"OpenAI","system_fingerprint":"fp_98f538dc1a","service_tier":null,"choices":[{"index":0,"delta":{"content":"","role":"assistant"},"finish_reason":"stop","native_finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":1,"total_tokens":13,"cost":0.0000024,"is_byok":false,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":0,"audio_tokens":0,"video_tokens":0},"cost_details":{"upstream_inference_cost":0.0000024,"upstream_inference_prompt_cost":0.0000018,"upstream_inference_completions_cost":6e-7},"completion_tokens_details":{"reasoning_tokens":0,"image_tokens":0,"audio_tokens":0}}}
+
+        data: [DONE]

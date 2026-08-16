@@ -279,8 +279,8 @@ test "Google error cassette covers retries exhaustion malformed success and boun
     try error_scenarios.replay(client.model(), &cassette, "gcp.gen_ai");
 }
 
-test "real OpenAI-compatible provider cassettes replay text responses" {
-    inline for (cassette_manifest.compatible) |entry| {
+test "real OpenAI-compatible provider cassettes replay success scenarios" {
+    inline for (cassette_manifest.compatible_success) |entry| {
         if (comptime std.mem.eql(u8, entry.provider, "azure-openai"))
             try replayCompatibleProvider(zigai.providers.azure_openai.Provider, zigai.providers.azure_openai.Client, entry)
         else if (comptime std.mem.eql(u8, entry.provider, "bedrock"))
@@ -397,15 +397,12 @@ fn replayCompatibleProvider(
         .model_name = entry.model,
         .provider = provider_state.provider(),
     };
-    var result = try (zigai.Agent{
-        .model = client.model(),
-        .model_settings = .{ .max_tokens = 256 },
-        .limits = .{ .max_model_requests = 1 },
-    }).run(std.testing.allocator, "Reply with exactly: pong");
-    defer result.deinit();
-    try std.testing.expect(result.output.len > 0);
-    try std.testing.expect(result.usage.totalTokens() > 0);
-    try std.testing.expectEqual(@as(usize, 0), cassette.remaining());
+    switch (entry.scenario) {
+        .buffered => try replayBufferedScenario(client.model(), &cassette),
+        .streamed_text => try replayStreamTextScenario(client.model(), &cassette),
+        .function_tool => try replayMatrixScenario(client.model(), &cassette),
+        else => unreachable,
+    }
 }
 
 fn replayBufferedScenario(model: zigai.Model, cassette: *cassettes.ReplayTransport) !void {

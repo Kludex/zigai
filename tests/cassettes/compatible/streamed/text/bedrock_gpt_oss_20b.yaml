@@ -1,0 +1,50 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://bedrock-mantle.example-region.api.aws/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "openai.gpt-oss-20b"
+        messages:
+          - role: "user"
+            content: "Reply with exactly: pong"
+        max_tokens: 256
+        stream: true
+        stream_options:
+          include_usage: true
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "req_kk6rl2p5grf2nggk2m6hpggytzwfe3mxx5f3vbz5gm3iqlcxpsyq"
+    body:
+      type: text
+      content: |+
+        data: {"choices":[{"delta":{"content":"","role":"assistant"},"finish_reason":null,"index":0,"obfuscation":"2Kwwxn1jWUFCppmoyhJMBcc8uLFuEthDeinkD1kdnTnJxywRVfr4vpl826Lkf3SDgowajECiWXV1vpO4iRsWOh1H856wyi7NIgcmgHiVwUqVnHNWNF"}],"created":1786844723,"id":"chatcmpl-96ab7294-12c4-47dc-92d8-9e8a2c772339","model":"openai.gpt-oss-20b","object":"chat.completion.chunk","service_tier":"default"}
+
+        data: {"choices":[{"delta":{},"finish_reason":null,"index":0,"obfuscation":"bbO1F7dkffcs32F6jLL7ku3WF1xa9nmE0rQj0phkkaH78nBhzrFEzBqv3LCqdVvZizuJoDhoVrvSd2uV"}],"created":1786844723,"id":"chatcmpl-96ab7294-12c4-47dc-92d8-9e8a2c772339","model":"openai.gpt-oss-20b","object":"chat.completion.chunk","service_tier":"default"}
+
+        data: {"choices":[{"delta":{},"finish_reason":null,"index":0,"obfuscation":"jRW7FldhGa1RgHJTQQARXYl703u5l34QgFhjFqgW9X9VgZAvek6QAQ9OG0ts2jPPe25ilrdbwCXZwmvCilKkW2Lw18GHtIrWtMptVKidDBZ1uyg0QdW"}],"created":1786844723,"id":"chatcmpl-96ab7294-12c4-47dc-92d8-9e8a2c772339","model":"openai.gpt-oss-20b","object":"chat.completion.chunk","service_tier":"default"}
+
+        data: {"choices":[{"delta":{},"finish_reason":null,"index":0,"obfuscation":"mfqOCjTTjnC1xvpTMtd8Ihszxu24OqpFTzwr5CuuppXj6dmBO4uhqzbl9rL"}],"created":1786844723,"id":"chatcmpl-96ab7294-12c4-47dc-92d8-9e8a2c772339","model":"openai.gpt-oss-20b","object":"chat.completion.chunk","service_tier":"default"}
+
+        data: {"choices":[{"delta":{"reasoning":"The user says: \"Reply with exactly: pong\". So just output \"pong\". The content must be exactly that, no extra spaces, line breaks? Exactly. Probably just pong. But ensure no extra spaces. Just pong."},"finish_reason":null,"index":0,"obfuscation":"mbDhqQU8kmMcvxhSLR3jFqvJg2wpivvFaVzacLQajCCfN4fINm1MPz29kSonoJb72Ng4Slg6xuQQUmZBkCPU9O2YoP5ux0K2KymGZ3YBj5bB5Bazz4RSQG3XG"}],"created":1786844723,"id":"chatcmpl-96ab7294-12c4-47dc-92d8-9e8a2c772339","model":"openai.gpt-oss-20b","object":"chat.completion.chunk","service_tier":"default"}
+
+        data: {"choices":[{"delta":{},"finish_reason":null,"index":0,"obfuscation":"x46SmEsGdmQogWeScs2irg1PEagNEUJzJgkopNWt0eB8tgZX7xauXFCqV"}],"created":1786844723,"id":"chatcmpl-96ab7294-12c4-47dc-92d8-9e8a2c772339","model":"openai.gpt-oss-20b","object":"chat.completion.chunk","service_tier":"default"}
+
+        data: {"choices":[{"delta":{},"finish_reason":null,"index":0,"obfuscation":"fkQMBFsWzqLicfTnmv8MdlgvTEDYxLiNwyiIPOQfu0"}],"created":1786844723,"id":"chatcmpl-96ab7294-12c4-47dc-92d8-9e8a2c772339","model":"openai.gpt-oss-20b","object":"chat.completion.chunk","service_tier":"default"}
+
+        data: {"choices":[{"delta":{},"finish_reason":null,"index":0,"obfuscation":"8CAleSwBuY53k7jm13y5U9xEFdApqshszcOMHw9AArfXcvHReKwKanzgb"}],"created":1786844723,"id":"chatcmpl-96ab7294-12c4-47dc-92d8-9e8a2c772339","model":"openai.gpt-oss-20b","object":"chat.completion.chunk","service_tier":"default"}
+
+        data: {"choices":[{"delta":{},"finish_reason":null,"index":0,"obfuscation":"Z9o4ztXtE1kHtjKjV4t5GtUvtuv3BMV5lOxoZ1ZFShge99pWWBMOhkqXYHMm2WpXLhyyAbuU2vghloUbwqYRUIQIrDdQeTJCc"}],"created":1786844723,"id":"chatcmpl-96ab7294-12c4-47dc-92d8-9e8a2c772339","model":"openai.gpt-oss-20b","object":"chat.completion.chunk","service_tier":"default"}
+
+        data: {"choices":[{"delta":{},"finish_reason":null,"index":0,"obfuscation":"CNLkuseUKizTdDYLK6Gp91TU297mODleVAUaaHMfdPEOQfhlzGun2m8LOY9BGQJyIZdGUBYuLfSymLPN"}],"created":1786844723,"id":"chatcmpl-96ab7294-12c4-47dc-92d8-9e8a2c772339","model":"openai.gpt-oss-20b","object":"chat.completion.chunk","service_tier":"default"}
+
+        data: {"choices":[{"delta":{"content":"pong"},"finish_reason":null,"index":0,"obfuscation":"f3aZ8gORvNjqMwjCHqriQ3wQ6DwaOMPMoapmIE8H5uF0ENralNiA698MrN3m81cK4B94HM6Cs1YjtfziTtNlp6xG9bQdEND3k4MMUf1Ug3quUgIYSeVxJj"}],"created":1786844723,"id":"chatcmpl-96ab7294-12c4-47dc-92d8-9e8a2c772339","model":"openai.gpt-oss-20b","object":"chat.completion.chunk","service_tier":"default"}
+
+        data: {"choices":[{"delta":{},"finish_reason":"stop","index":0,"obfuscation":"iaNvDbuEKg7pyFcedrXmR9PCybryfMVf2DgYQ46hJaV7anPasLFzyZjQnOi7D"}],"created":1786844723,"id":"chatcmpl-96ab7294-12c4-47dc-92d8-9e8a2c772339","model":"openai.gpt-oss-20b","object":"chat.completion.chunk","service_tier":"default"}
+
+        data: {"choices":[],"created":1786844723,"id":"chatcmpl-96ab7294-12c4-47dc-92d8-9e8a2c772339","model":"openai.gpt-oss-20b","object":"chat.completion.chunk","service_tier":"default","usage":{"completion_tokens":57,"prompt_tokens":72,"total_tokens":129}}

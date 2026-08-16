@@ -1,0 +1,141 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.cerebras.ai/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-oss-120b"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "a2bcc2aa3948c8f9-CMH"
+    body:
+      type: json
+      content:
+        id: "chatcmpl-043ee3ca-17b9-4660-8253-b6167b217e47"
+        choices:
+          - finish_reason: "tool_calls"
+            index: 0
+            message:
+              reasoning: "User wants me to call weather tool exactly once with city Madrid, then reply with one short sentence. Need to call tool."
+              tool_calls:
+                - function:
+                    name: "weather"
+                    arguments: "{\"city\":\"Madrid\"}"
+                  type: "function"
+                  id: "68caa2697"
+              role: "assistant"
+        created: 1786844735
+        model: "gpt-oss-120b"
+        system_fingerprint: "fp_e2cabf4999eb0aead3d1"
+        object: "chat.completion"
+        usage:
+          total_tokens: 196
+          completion_tokens: 48
+          completion_tokens_details:
+            accepted_prediction_tokens: 0
+            rejected_prediction_tokens: 0
+            reasoning_tokens: 25
+          prompt_tokens: 148
+          prompt_tokens_details:
+            cached_tokens: 0
+        time_info:
+          created: 1786844735.1673832
+          queue_time: 0.003691227
+          prompt_time: 0.002426477
+          completion_time: 0.02410722
+          total_time: 0.031790971755981445
+- request:
+    method: POST
+    uri: "https://api.cerebras.ai/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-oss-120b"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "assistant"
+            content: null
+            tool_calls:
+              - id: "68caa2697"
+                type: "function"
+                function:
+                  name: "weather"
+                  arguments: "{\"city\":\"Madrid\"}"
+          - role: "tool"
+            tool_call_id: "68caa2697"
+            content: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "a2bcc2ac5b2fcdf3-CMH"
+    body:
+      type: json
+      content:
+        id: "chatcmpl-665c7702-f555-4129-9611-7c9ee302766d"
+        choices:
+          - finish_reason: "stop"
+            index: 0
+            message:
+              content: "Madrid is sunny with a temperature of 31 °C."
+              role: "assistant"
+        created: 1786844735
+        model: "gpt-oss-120b"
+        system_fingerprint: "fp_e2cabf4999eb0aead3d1"
+        object: "chat.completion"
+        usage:
+          total_tokens: 205
+          completion_tokens: 16
+          completion_tokens_details:
+            accepted_prediction_tokens: 0
+            rejected_prediction_tokens: 0
+            reasoning_tokens: 0
+          prompt_tokens: 189
+          prompt_tokens_details:
+            cached_tokens: 0
+        time_info:
+          created: 1786844735.6491342
+          queue_time: 0.003519539
+          prompt_time: 0.003675648
+          completion_time: 0.007182014
+          total_time: 0.016028165817260742

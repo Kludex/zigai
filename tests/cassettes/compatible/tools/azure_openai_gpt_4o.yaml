@@ -1,0 +1,228 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://example.openai.azure.com/openai/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-4o"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "5"
+      x-ratelimit-remaining-tokens:
+      - "931"
+      x-request-id:
+      - "098171b8-2479-4323-8726-5cb4c5f96425"
+    body:
+      type: json
+      content:
+        choices:
+          - content_filter_results:
+              hate:
+                filtered: false
+                severity: "safe"
+              protected_material_code:
+                detected: false
+                filtered: false
+              protected_material_text:
+                detected: false
+                filtered: false
+              self_harm:
+                filtered: false
+                severity: "safe"
+              sexual:
+                filtered: false
+                severity: "safe"
+              violence:
+                filtered: false
+                severity: "safe"
+            finish_reason: "tool_calls"
+            index: 0
+            logprobs: null
+            message:
+              annotations: []
+              content: null
+              refusal: null
+              role: "assistant"
+              tool_calls:
+                - function:
+                    arguments: "{\"city\":\"Madrid\"}"
+                    name: "weather"
+                  id: "call_21GDmrscZmCqVRxvhFahNxTy"
+                  type: "function"
+        created: 1786844731
+        id: "chatcmpl-EDKEFY85hWgCLp9XiGk558QWbUknC"
+        model: "gpt-4o-2024-11-20"
+        object: "chat.completion"
+        prompt_filter_results:
+          - prompt_index: 0
+            content_filter_results:
+              hate:
+                filtered: false
+                severity: "safe"
+              jailbreak:
+                detected: false
+                filtered: false
+              self_harm:
+                filtered: false
+                severity: "safe"
+              sexual:
+                filtered: false
+                severity: "safe"
+              violence:
+                filtered: false
+                severity: "safe"
+        service_tier: "default"
+        system_fingerprint: "fp_85fa909971"
+        usage:
+          completion_tokens: 14
+          completion_tokens_details:
+            accepted_prediction_tokens: 0
+            audio_tokens: 0
+            reasoning_tokens: 0
+            rejected_prediction_tokens: 0
+          latency_checkpoint:
+            engine_tbt_ms: 8
+            engine_ttft_ms: 46
+            engine_ttlt_ms: 152
+            pre_inference_ms: 48
+            service_tbt_ms: 8
+            service_ttft_ms: 252
+            service_ttlt_ms: 353
+            total_duration_ms: 311
+            user_visible_ttft_ms: 203
+          prompt_tokens: 69
+          prompt_tokens_details:
+            audio_tokens: 0
+            cached_tokens: 0
+          total_tokens: 83
+- request:
+    method: POST
+    uri: "https://example.openai.azure.com/openai/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-4o"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "assistant"
+            content: null
+            tool_calls:
+              - id: "call_21GDmrscZmCqVRxvhFahNxTy"
+                type: "function"
+                function:
+                  name: "weather"
+                  arguments: "{\"city\":\"Madrid\"}"
+          - role: "tool"
+            tool_call_id: "call_21GDmrscZmCqVRxvhFahNxTy"
+            content: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "4"
+      x-ratelimit-remaining-tokens:
+      - "846"
+      x-request-id:
+      - "53587fc4-8d0c-467f-bbc8-45719e2656d8"
+    body:
+      type: json
+      content:
+        choices:
+          - content_filter_results:
+              hate:
+                filtered: false
+                severity: "safe"
+              protected_material_code:
+                detected: false
+                filtered: false
+              protected_material_text:
+                detected: false
+                filtered: false
+              self_harm:
+                filtered: false
+                severity: "safe"
+              sexual:
+                filtered: false
+                severity: "safe"
+              violence:
+                filtered: false
+                severity: "safe"
+            finish_reason: "stop"
+            index: 0
+            logprobs: null
+            message:
+              annotations: []
+              content: "It is currently 31°C and sunny in Madrid."
+              refusal: null
+              role: "assistant"
+        created: 1786844732
+        id: "chatcmpl-EDKEGLyL5Yu9NH6at5WX6FFn1R6Xb"
+        model: "gpt-4o-2024-11-20"
+        object: "chat.completion"
+        prompt_filter_results:
+          - prompt_index: 0
+            content_filter_results: {}
+        service_tier: "default"
+        system_fingerprint: "fp_91d870f097"
+        usage:
+          completion_tokens: 13
+          completion_tokens_details:
+            accepted_prediction_tokens: 0
+            audio_tokens: 0
+            reasoning_tokens: 0
+            rejected_prediction_tokens: 0
+          latency_checkpoint:
+            engine_tbt_ms: 9
+            engine_ttft_ms: 55
+            engine_ttlt_ms: 168
+            pre_inference_ms: 62
+            service_tbt_ms: 9
+            service_ttft_ms: 741
+            service_ttlt_ms: 843
+            total_duration_ms: 790
+            user_visible_ttft_ms: 679
+          prompt_tokens: 100
+          prompt_tokens_details:
+            audio_tokens: 0
+            cached_tokens: 0
+          total_tokens: 113

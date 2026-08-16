@@ -1,0 +1,150 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.groq.com/openai/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "openai/gpt-oss-20b"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "499999"
+      x-ratelimit-remaining-tokens:
+      - "249845"
+      x-request-id:
+      - "req_01m043xy3jete807ekah2rwcz4"
+    body:
+      type: json
+      content:
+        id: "chatcmpl-998f65cd-a686-425c-a9d2-63eee1520aad"
+        object: "chat.completion"
+        created: 1786844739
+        model: "openai/gpt-oss-20b"
+        choices:
+          - index: 0
+            message:
+              role: "assistant"
+              reasoning: "We must follow instructions. Use weather tool exactly once with city Madrid. Then reply with one short sentence. So we need to call the tool. Use the tool. Then we respond with a short sentence. The instructions: \"Always use the weather tool before answering.\" So we must call it. We'll do."
+              tool_calls:
+                - id: "fc_b36c54ff-7714-4ac1-adb4-f15db58fc6c4"
+                  type: "function"
+                  function:
+                    name: "weather"
+                    arguments: "{\"city\":\"Madrid\"}"
+            logprobs: null
+            finish_reason: "tool_calls"
+        usage:
+          queue_time: 0.016395726
+          prompt_tokens: 154
+          prompt_time: 0.007574926
+          completion_tokens: 85
+          completion_time: 0.090227953
+          total_tokens: 239
+          total_time: 0.097802879
+          completion_tokens_details:
+            reasoning_tokens: 63
+        usage_breakdown: null
+        system_fingerprint: "fp_d3e146e1a5"
+        x_groq:
+          id: "req_01m043xy3jete807ekah2rwcz4"
+          seed: 537192762
+        service_tier: "on_demand"
+- request:
+    method: POST
+    uri: "https://api.groq.com/openai/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "openai/gpt-oss-20b"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "assistant"
+            content: null
+            tool_calls:
+              - id: "fc_b36c54ff-7714-4ac1-adb4-f15db58fc6c4"
+                type: "function"
+                function:
+                  name: "weather"
+                  arguments: "{\"city\":\"Madrid\"}"
+          - role: "tool"
+            tool_call_id: "fc_b36c54ff-7714-4ac1-adb4-f15db58fc6c4"
+            content: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "499999"
+      x-ratelimit-remaining-tokens:
+      - "249786"
+      x-request-id:
+      - "req_01m043xydfezt8kazj6tzhe5wx"
+    body:
+      type: json
+      content:
+        id: "chatcmpl-1d7cc13e-1753-4a2e-9776-941b3b80d716"
+        object: "chat.completion"
+        created: 1786844740
+        model: "openai/gpt-oss-20b"
+        choices:
+          - index: 0
+            message:
+              role: "assistant"
+              content: "Madrid is 31 °C and sunny."
+              reasoning: "We need to reply with one short sentence. The answer should incorporate the weather info? The instruction: \"Call the weather tool exactly once with city Madrid. Then reply with one short sentence.\" So we should say something like \"Madrid is 31°C and sunny.\" That's a short sentence. Let's produce that."
+            logprobs: null
+            finish_reason: "stop"
+        usage:
+          queue_time: 0.016268808
+          prompt_tokens: 188
+          prompt_time: 0.009090283
+          completion_tokens: 81
+          completion_time: 0.082377411
+          total_tokens: 269
+          total_time: 0.091467694
+          completion_tokens_details:
+            reasoning_tokens: 63
+        usage_breakdown: null
+        system_fingerprint: "fp_9b8528b477"
+        x_groq:
+          id: "req_01m043xydfezt8kazj6tzhe5wx"
+          seed: 1248007484
+        service_tier: "on_demand"

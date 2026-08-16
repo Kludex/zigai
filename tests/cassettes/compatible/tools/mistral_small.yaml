@@ -1,0 +1,119 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.mistral.ai/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "mistral-small-latest"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "c99c7b6722864c9abf97fce09169a6a0"
+        created: 1786844741
+        model: "mistral-small-latest"
+        usage:
+          prompt_tokens: 107
+          total_tokens: 117
+          completion_tokens: 10
+          prompt_tokens_details:
+            cached_tokens: 0
+          service_tier: "standard"
+        object: "chat.completion"
+        choices:
+          - index: 0
+            finish_reason: "tool_calls"
+            message:
+              role: "assistant"
+              tool_calls:
+                - id: "nEMiD5ZwV"
+                  type: "function"
+                  function:
+                    name: "weather"
+                    arguments: "{\"city\": \"Madrid\"}"
+                  index: 0
+              content: ""
+- request:
+    method: POST
+    uri: "https://api.mistral.ai/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "mistral-small-latest"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "assistant"
+            content: null
+            tool_calls:
+              - id: "nEMiD5ZwV"
+                type: "function"
+                function:
+                  name: "weather"
+                  arguments: "{\"city\": \"Madrid\"}"
+          - role: "tool"
+            tool_call_id: "nEMiD5ZwV"
+            content: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "f57dc41481f04439bcc5f49d6346f779"
+        created: 1786844742
+        model: "mistral-small-latest"
+        usage:
+          prompt_tokens: 131
+          total_tokens: 147
+          completion_tokens: 16
+          prompt_tokens_details:
+            cached_tokens: 0
+          service_tier: "standard"
+        object: "chat.completion"
+        choices:
+          - index: 0
+            finish_reason: "stop"
+            message:
+              role: "assistant"
+              tool_calls: null
+              content: "The weather in Madrid is sunny with a temperature of 31°C."

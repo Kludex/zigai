@@ -1,0 +1,34 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://router.huggingface.co/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "CohereLabs/c4ai-command-r7b-12-2024"
+        messages:
+          - role: "user"
+            content: "Reply with exactly: pong"
+        max_tokens: 256
+        stream: true
+        stream_options:
+          include_usage: true
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "Root=1-6a811637-2e755d9802d0420a1bf77222"
+    body:
+      type: text
+      content: |+
+        data: {"id":"4119f615-e389-449c-8ccf-7b7cfea72e82","choices":[{"index":0,"finish_reason":null,"delta":{"content":"","role":"assistant"},"logprobs":null}],"created":1786844727,"model":"command-r7b-12-2024","object":"chat.completion.chunk","usage":null}
+
+        data: {"id":"4119f615-e389-449c-8ccf-7b7cfea72e82","choices":[{"index":0,"finish_reason":null,"delta":{"content":"pong"},"logprobs":null}],"created":1786844727,"model":"command-r7b-12-2024","object":"chat.completion.chunk","usage":null}
+
+        data: {"id":"4119f615-e389-449c-8ccf-7b7cfea72e82","choices":[{"index":0,"finish_reason":"stop","delta":{},"logprobs":null}],"created":1786844727,"model":"command-r7b-12-2024","object":"chat.completion.chunk","usage":null}
+
+        data: {"id":"4119f615-e389-449c-8ccf-7b7cfea72e82","choices":[],"created":1786844727,"model":"command-r7b-12-2024","object":"chat.completion.chunk","usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6,"prompt_tokens_details":{"cached_tokens":0,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}}
+
+        data: [DONE]

@@ -1,0 +1,131 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.cohere.ai/compatibility/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "command-a-plus-05-2026"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "1f892c5d-fb6b-4153-8d1a-01df1bf2cde2"
+        choices:
+          - index: 0
+            finish_reason: "tool_calls"
+            message:
+              role: "assistant"
+              content: null
+              reasoning_content: "The user wants me to:\n1. Call the weather tool exactly once with city \"Madrid\"\n2. Then reply with one short sentence\n\nI need to use the weather function with the parameter city=\"Madrid\". The instructions say to always use the weather tool before answering, so I should call it first, then provide a short sentence based on the result.\n\nLet me call the weather tool first."
+              tool_calls:
+                - id: "weather_1vrcjhz375c6"
+                  type: "function"
+                  function:
+                    name: "weather"
+                    arguments: "{\"city\":\"Madrid\"}"
+            logprobs: null
+        created: 1786844736
+        model: "command-a-plus-05-2026"
+        object: "chat.completion"
+        usage:
+          prompt_tokens: 57
+          completion_tokens: 85
+          total_tokens: 142
+          prompt_tokens_details:
+            cached_tokens: 0
+            audio_tokens: 0
+          completion_tokens_details:
+            reasoning_tokens: 79
+            audio_tokens: 0
+            accepted_prediction_tokens: 0
+            rejected_prediction_tokens: 0
+- request:
+    method: POST
+    uri: "https://api.cohere.ai/compatibility/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "command-a-plus-05-2026"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "assistant"
+            content: null
+            tool_calls:
+              - id: "weather_1vrcjhz375c6"
+                type: "function"
+                function:
+                  name: "weather"
+                  arguments: "{\"city\":\"Madrid\"}"
+          - role: "tool"
+            tool_call_id: "weather_1vrcjhz375c6"
+            content: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "c656ed95-7453-46cb-b9c3-4b32803a83f4"
+        choices:
+          - index: 0
+            finish_reason: "stop"
+            message:
+              role: "assistant"
+              content: "Madrid is currently 31°C and sunny."
+              reasoning_content: "The weather tool returned information for Madrid showing it's 31°C and sunny. Now I need to reply with one short sentence as requested."
+            logprobs: null
+        created: 1786844736
+        model: "command-a-plus-05-2026"
+        object: "chat.completion"
+        usage:
+          prompt_tokens: 66
+          completion_tokens: 36
+          total_tokens: 102
+          prompt_tokens_details:
+            cached_tokens: 0
+            audio_tokens: 0
+          completion_tokens_details:
+            reasoning_tokens: 27
+            audio_tokens: 0
+            accepted_prediction_tokens: 0
+            rejected_prediction_tokens: 0

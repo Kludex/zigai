@@ -51,6 +51,10 @@
   native matrix asserts provider details, references, and normalized usage.
   First-party image replay now requires the expected color instead of merely
   accepting non-empty output.
+- Add real streamed-text and complete function-tool cassettes for all eleven
+  configured OpenAI-compatible providers. Recording and replay use the shared
+  typed scenario manifest while retaining provider-specific models, endpoints,
+  authentication, and response extensions.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

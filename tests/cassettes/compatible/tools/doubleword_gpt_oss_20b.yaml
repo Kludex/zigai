@@ -1,0 +1,142 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.doubleword.ai/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "openai/gpt-oss-20b"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "e795dc145f3762ce4b6a8a08668a06b9"
+    body:
+      type: json
+      content:
+        choices:
+          - finish_reason: "tool_calls"
+            index: 0
+            message:
+              reasoning_content: "We must use weather tool exactly once with city Madrid. Then reply with one short sentence. So we must call the function."
+              role: "assistant"
+              tool_calls:
+                - function:
+                    arguments: "{\"city\": \"Madrid\"}"
+                    name: "weather"
+                  id: "call_ba712531dc2d464d98f857ca"
+                  type: "function"
+        created: 1786844739
+        id: "resp_250c572b-9afb-4c7c-8f4a-28a19bf17198"
+        model: "openai/gpt-oss-20b"
+        object: "chat.completion"
+        usage:
+          cache_creation:
+            ephemeral_1h_input_tokens: 0
+            ephemeral_24h_input_tokens: 0
+            ephemeral_5m_input_tokens: 0
+          cache_creation_input_tokens: 0
+          cache_read_input_tokens: 0
+          completion_tokens: 48
+          completion_tokens_details:
+            accepted_prediction_tokens: null
+            audio_tokens: null
+            reasoning_tokens: 29
+            rejected_prediction_tokens: null
+          prompt_tokens: 148
+          prompt_tokens_details:
+            cached_tokens: 0
+          total_tokens: 196
+- request:
+    method: POST
+    uri: "https://api.doubleword.ai/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "openai/gpt-oss-20b"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "assistant"
+            content: null
+            tool_calls:
+              - id: "call_ba712531dc2d464d98f857ca"
+                type: "function"
+                function:
+                  name: "weather"
+                  arguments: "{\"city\": \"Madrid\"}"
+          - role: "tool"
+            tool_call_id: "call_ba712531dc2d464d98f857ca"
+            content: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "662ebac27e018561851e64569302aa38"
+    body:
+      type: json
+      content:
+        choices:
+          - finish_reason: "stop"
+            index: 0
+            message:
+              content: "It’s 31 °C and sunny in Madrid."
+              reasoning_content: "We are done."
+              role: "assistant"
+        created: 1786844739
+        id: "resp_520ae73c-8339-4acf-9e6f-1ed25a9feb0c"
+        model: "openai/gpt-oss-20b"
+        object: "chat.completion"
+        usage:
+          cache_creation:
+            ephemeral_1h_input_tokens: 0
+            ephemeral_24h_input_tokens: 0
+            ephemeral_5m_input_tokens: 0
+          cache_creation_input_tokens: 0
+          cache_read_input_tokens: 0
+          completion_tokens: 25
+          completion_tokens_details:
+            accepted_prediction_tokens: null
+            audio_tokens: null
+            reasoning_tokens: 8
+            rejected_prediction_tokens: null
+          prompt_tokens: 190
+          prompt_tokens_details:
+            cached_tokens: 0
+          total_tokens: 215

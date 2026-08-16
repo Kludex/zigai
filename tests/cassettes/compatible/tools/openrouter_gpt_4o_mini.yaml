@@ -1,0 +1,156 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://openrouter.ai/api/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "openai/gpt-4o-mini"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "gen-1786844742-G6hdV1nbu7HMF6qtwLNZ"
+        object: "chat.completion"
+        created: 1786844742
+        model: "openai/gpt-4o-mini"
+        provider: "OpenAI"
+        system_fingerprint: "fp_ab0a2ab924"
+        service_tier: null
+        choices:
+          - index: 0
+            logprobs: null
+            finish_reason: "tool_calls"
+            native_finish_reason: "tool_calls"
+            message:
+              role: "assistant"
+              content: null
+              refusal: null
+              reasoning: null
+              tool_calls:
+                - type: "function"
+                  index: 0
+                  id: "call_juuDd6XrKjqpMKgAGhmRmKci"
+                  function:
+                    name: "weather"
+                    arguments: "{\"city\":\"Madrid\"}"
+        usage:
+          prompt_tokens: 69
+          completion_tokens: 13
+          total_tokens: 82
+          cost: 0.00001815
+          is_byok: false
+          prompt_tokens_details:
+            cached_tokens: 0
+            cache_write_tokens: 0
+            audio_tokens: 0
+            video_tokens: 0
+          cost_details:
+            upstream_inference_cost: 0.00001815
+            upstream_inference_prompt_cost: 0.00001035
+            upstream_inference_completions_cost: 0.0000078
+          completion_tokens_details:
+            reasoning_tokens: 0
+            image_tokens: 0
+            audio_tokens: 0
+- request:
+    method: POST
+    uri: "https://openrouter.ai/api/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "openai/gpt-4o-mini"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "assistant"
+            content: null
+            tool_calls:
+              - id: "call_juuDd6XrKjqpMKgAGhmRmKci"
+                type: "function"
+                function:
+                  name: "weather"
+                  arguments: "{\"city\":\"Madrid\"}"
+          - role: "tool"
+            tool_call_id: "call_juuDd6XrKjqpMKgAGhmRmKci"
+            content: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "gen-1786844743-edifSjx1eMb4JLjIzAYe"
+        object: "chat.completion"
+        created: 1786844743
+        model: "openai/gpt-4o-mini"
+        provider: "OpenAI"
+        system_fingerprint: "fp_ab0a2ab924"
+        service_tier: null
+        choices:
+          - index: 0
+            logprobs: null
+            finish_reason: "stop"
+            native_finish_reason: "stop"
+            message:
+              role: "assistant"
+              content: "The weather in Madrid is sunny with a temperature of 31°C."
+              refusal: null
+              reasoning: null
+        usage:
+          prompt_tokens: 100
+          completion_tokens: 15
+          total_tokens: 115
+          cost: 0.000024
+          is_byok: false
+          prompt_tokens_details:
+            cached_tokens: 0
+            cache_write_tokens: 0
+            audio_tokens: 0
+            video_tokens: 0
+          cost_details:
+            upstream_inference_cost: 0.000024
+            upstream_inference_prompt_cost: 0.000015
+            upstream_inference_completions_cost: 0.000009
+          completion_tokens_details:
+            reasoning_tokens: 0
+            image_tokens: 0
+            audio_tokens: 0

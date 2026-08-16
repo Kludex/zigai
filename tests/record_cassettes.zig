@@ -116,7 +116,12 @@ fn recordCompatible(
         .model_name = entry.model,
         .provider = provider.provider(),
     };
-    try runTextScenario(init, client.model());
+    switch (entry.scenario) {
+        .buffered => try runTextScenario(init, client.model()),
+        .streamed_text => try runStreamTextScenario(init, client.model()),
+        .function_tool => try runScenario(init, client.model()),
+        else => unreachable,
+    }
     if (entry.endpoint != .fixed) try normalizeCompatibleUrl(init.gpa, &recording, entry);
     try writeCompatible(init, recording, entry);
 }

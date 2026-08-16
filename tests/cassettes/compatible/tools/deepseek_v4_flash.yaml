@@ -1,0 +1,130 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.deepseek.com/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "deepseek-v4-flash"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "44ab42af-2ecd-4207-a3ac-e1391da16ce3"
+        object: "chat.completion"
+        created: 1786844737
+        model: "deepseek-v4-flash"
+        choices:
+          - index: 0
+            message:
+              role: "assistant"
+              content: ""
+              reasoning_content: "The user wants me to call the weather tool exactly once with city Madrid, then reply with one short sentence."
+              tool_calls:
+                - index: 0
+                  id: "call_00_mUfFxqLrsy4nZ2LESC6P9996"
+                  type: "function"
+                  function:
+                    name: "weather"
+                    arguments: "{\"city\": \"Madrid\"}"
+            logprobs: null
+            finish_reason: "tool_calls"
+        usage:
+          prompt_tokens: 381
+          completion_tokens: 66
+          total_tokens: 447
+          prompt_tokens_details:
+            cached_tokens: 0
+          completion_tokens_details:
+            reasoning_tokens: 22
+          prompt_cache_hit_tokens: 0
+          prompt_cache_miss_tokens: 381
+        system_fingerprint: "a26a7955944dc5c60445bff77fac9c8e"
+- request:
+    method: POST
+    uri: "https://api.deepseek.com/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "deepseek-v4-flash"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "assistant"
+            content: null
+            tool_calls:
+              - id: "call_00_mUfFxqLrsy4nZ2LESC6P9996"
+                type: "function"
+                function:
+                  name: "weather"
+                  arguments: "{\"city\": \"Madrid\"}"
+          - role: "tool"
+            tool_call_id: "call_00_mUfFxqLrsy4nZ2LESC6P9996"
+            content: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        id: "26cbb20d-3e8c-4943-8e6b-f7f5b496e73f"
+        object: "chat.completion"
+        created: 1786844738
+        model: "deepseek-v4-flash"
+        choices:
+          - index: 0
+            message:
+              role: "assistant"
+              content: "It's sunny and 31°C in Madrid."
+              reasoning_content: ""
+            logprobs: null
+            finish_reason: "stop"
+        usage:
+          prompt_tokens: 470
+          completion_tokens: 12
+          total_tokens: 482
+          prompt_tokens_details:
+            cached_tokens: 384
+          completion_tokens_details:
+            reasoning_tokens: 0
+          prompt_cache_hit_tokens: 384
+          prompt_cache_miss_tokens: 86
+        system_fingerprint: "a26a7955944dc5c60445bff77fac9c8e"

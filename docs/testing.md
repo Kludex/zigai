@@ -65,6 +65,13 @@ one final result, and exact `pong` output. Tool fixtures additionally require
 one completed function call, one local result, final text containing the
 returned temperature, and complete two-request replay.
 
+`tests/cassettes/providers/` and `tests/cassettes/compatible/` cover the eleven
+configured Chat Completions providers. Every provider has a real buffered and
+streamed-text response plus a complete function-tool loop. Scenario models may
+differ when a provider's text model does not expose tools; for example,
+Together text uses GPT-OSS while its tool row uses the serverless Qwen model
+from Together's function-calling example.
+
 `tests/cassettes/structured/` and `tests/cassettes/thinking/` contain one real
 recording per first-party capability profile. Structured fixtures validate the
 native OpenAI `text.format`, Anthropic `output_config.format`, and Google

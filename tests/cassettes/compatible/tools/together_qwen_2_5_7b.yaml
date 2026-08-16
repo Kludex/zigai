@@ -1,0 +1,125 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.together.xyz/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "Qwen/Qwen2.5-7B-Instruct-Turbo"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "owNNA83-fdNmn-a2bcc69d8c70756e"
+    body:
+      type: json
+      content:
+        id: "owNNA83-fdNmn-a2bcc69d8c70756e"
+        object: "chat.completion"
+        created: 1786844896
+        model: "Qwen/Qwen2.5-7B-Instruct-Turbo"
+        prompt: []
+        choices:
+          - finish_reason: "tool_calls"
+            seed: 13077474201250976000
+            index: 0
+            logprobs: null
+            message:
+              role: "assistant"
+              content: null
+              tool_calls:
+                - index: 0
+                  id: "call_n8hw4ktzaruqjpuw61etsj14"
+                  type: "function"
+                  function:
+                    arguments: "{\"city\":\"Madrid\"}"
+                    name: "weather"
+        usage:
+          prompt_tokens: 204
+          completion_tokens: 20
+          total_tokens: 224
+          cached_tokens: 0
+- request:
+    method: POST
+    uri: "https://api.together.xyz/v1/chat/completions"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "Qwen/Qwen2.5-7B-Instruct-Turbo"
+        messages:
+          - role: "system"
+            content: "Always use the weather tool before answering."
+          - role: "user"
+            content: "Call the weather tool exactly once with city Madrid. Then reply with one short sentence."
+          - role: "assistant"
+            content: null
+            tool_calls:
+              - id: "call_n8hw4ktzaruqjpuw61etsj14"
+                type: "function"
+                function:
+                  name: "weather"
+                  arguments: "{\"city\":\"Madrid\"}"
+          - role: "tool"
+            tool_call_id: "call_n8hw4ktzaruqjpuw61etsj14"
+            content: "{\"temperature_c\":31,\"condition\":\"sunny\"}"
+        tools:
+          - type: "function"
+            function:
+              name: "weather"
+              description: "Get the current weather for a city."
+              parameters:
+                type: "object"
+                properties:
+                  city:
+                    type: "string"
+                required:
+                  - "city"
+                additionalProperties: false
+  response:
+    status: 200
+    headers:
+      x-request-id:
+      - "owNNAR5-4YNCb4-a2bcc6a26882705e"
+    body:
+      type: json
+      content:
+        id: "owNNAR5-4YNCb4-a2bcc6a26882705e"
+        object: "chat.completion"
+        created: 1786844897
+        model: "Qwen/Qwen2.5-7B-Instruct-Turbo"
+        prompt: []
+        choices:
+          - finish_reason: "stop"
+            seed: 5169723088476133000
+            index: 0
+            logprobs: null
+            message:
+              role: "assistant"
+              content: "The temperature in Madrid is 31°C and the condition is sunny."
+              tool_calls: []
+        usage:
+          prompt_tokens: 88
+          completion_tokens: 16
+          total_tokens: 104
+          cached_tokens: 0

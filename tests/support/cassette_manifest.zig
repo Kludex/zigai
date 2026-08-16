@@ -306,6 +306,50 @@ pub const compatible = [_]Entry{
     compatibleEntry("together/openai-gpt-oss-20b/buffered", "together", "openai/gpt-oss-20b", "cassettes/providers/together_gpt_oss_20b.yaml", .together, "https://api.together.xyz/v1", .fixed, false),
 };
 
+pub const compatible_streamed_text = [_]Entry{
+    compatibleScenarioEntry(compatible[0], .streamed_text, "cassettes/compatible/streamed/text/azure_openai_gpt_4o.yaml"),
+    compatibleScenarioEntry(compatible[1], .streamed_text, "cassettes/compatible/streamed/text/bedrock_gpt_oss_20b.yaml"),
+    compatibleScenarioEntry(compatible[2], .streamed_text, "cassettes/compatible/streamed/text/cerebras_gpt_oss_120b.yaml"),
+    compatibleScenarioEntry(compatible[3], .streamed_text, "cassettes/compatible/streamed/text/cohere_command_a_plus.yaml"),
+    compatibleScenarioEntry(compatible[4], .streamed_text, "cassettes/compatible/streamed/text/deepseek_v4_flash.yaml"),
+    compatibleScenarioEntry(compatible[5], .streamed_text, "cassettes/compatible/streamed/text/doubleword_gpt_oss_20b.yaml"),
+    compatibleScenarioEntry(compatible[6], .streamed_text, "cassettes/compatible/streamed/text/groq_gpt_oss_20b.yaml"),
+    compatibleScenarioEntry(compatible[7], .streamed_text, "cassettes/compatible/streamed/text/huggingface_command_r7b.yaml"),
+    compatibleScenarioEntry(compatible[8], .streamed_text, "cassettes/compatible/streamed/text/mistral_small.yaml"),
+    compatibleScenarioEntry(compatible[9], .streamed_text, "cassettes/compatible/streamed/text/openrouter_gpt_4o_mini.yaml"),
+    compatibleScenarioEntry(compatible[10], .streamed_text, "cassettes/compatible/streamed/text/together_gpt_oss_20b.yaml"),
+};
+
+pub const compatible_tools = [_]Entry{
+    entryWithId(
+        compatibleScenarioEntry(compatible[0], .function_tool, "cassettes/compatible/tools/azure_openai_gpt_4o.yaml"),
+        "azure-openai/gpt-4o/chat-function-tool",
+    ),
+    compatibleScenarioEntry(compatible[1], .function_tool, "cassettes/compatible/tools/bedrock_gpt_oss_20b.yaml"),
+    compatibleScenarioEntry(compatible[2], .function_tool, "cassettes/compatible/tools/cerebras_gpt_oss_120b.yaml"),
+    compatibleScenarioEntry(compatible[3], .function_tool, "cassettes/compatible/tools/cohere_command_a_plus.yaml"),
+    compatibleScenarioEntry(compatible[4], .function_tool, "cassettes/compatible/tools/deepseek_v4_flash.yaml"),
+    compatibleScenarioEntry(compatible[5], .function_tool, "cassettes/compatible/tools/doubleword_gpt_oss_20b.yaml"),
+    compatibleScenarioEntry(compatible[6], .function_tool, "cassettes/compatible/tools/groq_gpt_oss_20b.yaml"),
+    compatibleScenarioEntry(compatible[7], .function_tool, "cassettes/compatible/tools/huggingface_command_r7b.yaml"),
+    compatibleScenarioEntry(compatible[8], .function_tool, "cassettes/compatible/tools/mistral_small.yaml"),
+    compatibleScenarioEntry(compatible[9], .function_tool, "cassettes/compatible/tools/openrouter_gpt_4o_mini.yaml"),
+    compatibleScenarioEntry(together_tool_model, .function_tool, "cassettes/compatible/tools/together_qwen_2_5_7b.yaml"),
+};
+
+pub const compatible_success = compatible ++ compatible_streamed_text ++ compatible_tools;
+
+const together_tool_model = compatibleEntry(
+    "together/qwen-2.5-7b-instruct-turbo/buffered",
+    "together",
+    "Qwen/Qwen2.5-7B-Instruct-Turbo",
+    "",
+    .together,
+    "https://api.together.xyz/v1",
+    .fixed,
+    false,
+);
+
 pub const native = [_]Entry{
     scenarioEntry("openai/gpt-5-nano/native-tool", "openai", "gpt-5-nano", .native_tool, "cassettes/native/openai_web_search.yaml", .openai, .openai),
     scenarioEntry("anthropic/claude-sonnet-4-6/native-tool", "anthropic", "claude-sonnet-4-6", .native_tool, "cassettes/native/anthropic_web_search_fetch.yaml", .anthropic, .anthropic),
@@ -328,7 +372,7 @@ pub const files = [_]Entry{
     scenarioEntry("google/files/file-lifecycle", "google", "", .file_lifecycle, "cassettes/files/google.yaml", .google_files, .google),
 };
 
-pub const all = openai ++ anthropic ++ google ++ first_party_buffered ++ first_party_streaming ++ first_party_capabilities ++ first_party_errors ++ compatible ++ native ++ rich ++ files;
+pub const all = openai ++ anthropic ++ google ++ first_party_buffered ++ first_party_streaming ++ first_party_capabilities ++ first_party_errors ++ compatible_success ++ native ++ rich ++ files;
 
 fn modelEntry(
     id: []const u8,
@@ -389,6 +433,27 @@ fn compatibleEntry(
     };
 }
 
+fn compatibleScenarioEntry(comptime entry: Entry, scenario: Scenario, cassette: []const u8) Entry {
+    return .{
+        .id = std.fmt.comptimePrint("{s}/{s}", .{ entry.id[0 .. entry.id.len - "/buffered".len], scenario.name() }),
+        .provider = entry.provider,
+        .model = entry.model,
+        .scenario = scenario,
+        .cassette = cassette,
+        .route = entry.route,
+        .credentials = entry.credentials,
+        .base_url = entry.base_url,
+        .endpoint = entry.endpoint,
+        .api_key_header = entry.api_key_header,
+    };
+}
+
+fn entryWithId(comptime entry: Entry, id: []const u8) Entry {
+    var renamed = entry;
+    renamed.id = id;
+    return renamed;
+}
+
 fn scenarioEntry(
     id: []const u8,
     provider: []const u8,
@@ -440,6 +505,11 @@ pub fn matches(entry: Entry, filter: []const u8) bool {
     if (std.mem.eql(u8, filter, "first-party-buffered") and isFirstPartyBuffered(entry)) return true;
     if (std.mem.eql(u8, filter, "first-party-streaming") and isFirstPartyStreaming(entry)) return true;
     if (std.mem.eql(u8, filter, "first-party-capabilities") and isFirstPartyCapability(entry)) return true;
+    if (std.mem.eql(u8, filter, "compatible-success") and entry.route == .compatible) return true;
+    if (std.mem.eql(u8, filter, "compatible-streaming") and
+        entry.route == .compatible and entry.scenario == .streamed_text) return true;
+    if (std.mem.eql(u8, filter, "compatible-tools") and
+        entry.route == .compatible and entry.scenario == .function_tool) return true;
     if (isNativeRecording(entry) and
         (std.mem.eql(u8, filter, "native-tools") or matchesNativeProvider(entry, filter)))
     {

@@ -171,6 +171,12 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [ ] Record and replay buffered, streaming, function-tool, retry, and
   provider-error scenarios for every applicable compatible or specialized
   provider with an available key.
+  - [x] Cover buffered, streamed-text, and function-tool success paths for all
+    eleven configured OpenAI-compatible providers with live recordings.
+  - [ ] Cover retry and provider-error behavior through reusable deterministic
+    fixtures for each compatible wire contract.
+  - [ ] Cover the applicable success and failure matrix for native Bedrock
+    Converse, Azure Responses, Mistral Conversations, and Cohere v2 Chat.
 - [ ] Add a cassette audit gate that proves fixture completeness against the
   manifest, rejects credential-shaped values and unsafe headers, validates
   deterministic normalization, and documents intentional capability-based
