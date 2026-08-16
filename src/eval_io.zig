@@ -627,7 +627,12 @@ fn jsonToYaml(allocator: std.mem.Allocator, source: []const u8) ![]u8 {
     return output.toOwnedSlice();
 }
 
-fn writeYamlValue(writer: *std.Io.Writer, value: std.json.Value, indent: usize, inline_value: bool) !void {
+fn writeYamlValue(
+    writer: *std.Io.Writer,
+    value: std.json.Value,
+    indent: usize,
+    inline_value: bool,
+) std.Io.Writer.Error!void {
     switch (value) {
         .object => |object| try writeYamlObject(writer, object, indent),
         .array => |array| try writeYamlArray(writer, array.items, indent),
@@ -639,7 +644,7 @@ fn writeYamlValue(writer: *std.Io.Writer, value: std.json.Value, indent: usize, 
     }
 }
 
-fn writeYamlObject(writer: *std.Io.Writer, object: std.json.ObjectMap, indent: usize) !void {
+fn writeYamlObject(writer: *std.Io.Writer, object: std.json.ObjectMap, indent: usize) std.Io.Writer.Error!void {
     if (object.count() == 0) {
         try writeIndent(writer, indent);
         return writer.writeAll("{}\n");
@@ -667,7 +672,7 @@ fn writeYamlObject(writer: *std.Io.Writer, object: std.json.ObjectMap, indent: u
     }
 }
 
-fn writeYamlArray(writer: *std.Io.Writer, values: []const std.json.Value, indent: usize) !void {
+fn writeYamlArray(writer: *std.Io.Writer, values: []const std.json.Value, indent: usize) std.Io.Writer.Error!void {
     if (values.len == 0) {
         try writeIndent(writer, indent);
         return writer.writeAll("[]\n");

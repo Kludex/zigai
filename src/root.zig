@@ -261,6 +261,7 @@ test {
     _ = @import("history.zig");
     _ = @import("context_budget.zig");
     _ = @import("evals.zig");
+    _ = @import("eval_io.zig");
     _ = @import("providers.zig");
     _ = @import("models.zig");
     _ = @import("telemetry.zig");
