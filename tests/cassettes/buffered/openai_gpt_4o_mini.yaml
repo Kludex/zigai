@@ -1,0 +1,99 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.openai.com/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-4o-mini"
+        input:
+          - type: "message"
+            role: "user"
+            content: "Reply with exactly: pong"
+        max_output_tokens: 256
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "29999"
+      x-ratelimit-remaining-tokens:
+      - "149999970"
+      x-request-id:
+      - "req_ddaf7709e7644ba091321b1b012796e8"
+    body:
+      type: json
+      content:
+        id: "resp_00e1f82c9660441f006a8106b0bbb087d1b60c270037f42b9c"
+        object: "response"
+        created_at: 1786840752
+        status: "completed"
+        background: false
+        billing:
+          payer: "developer"
+        completed_at: 1786840756
+        error: null
+        frequency_penalty: 0
+        incomplete_details: null
+        instructions: null
+        max_output_tokens: 256
+        max_tool_calls: null
+        model: "gpt-4o-mini-2024-07-18"
+        moderation: null
+        output:
+          - id: "msg_00e1f82c9660441f006a8106b4d96887d1a6754789cdcf3b1f"
+            type: "message"
+            status: "completed"
+            content:
+              - type: "output_text"
+                annotations: []
+                logprobs: []
+                text: "pong"
+            role: "assistant"
+        parallel_tool_calls: true
+        presence_penalty: 0
+        previous_response_id: null
+        prompt_cache_key: null
+        prompt_cache_retention: "in_memory"
+        reasoning:
+          context: null
+          effort: null
+          summary: null
+        safety_identifier: null
+        service_tier: "default"
+        store: true
+        temperature: 1
+        text:
+          format:
+            type: "text"
+          verbosity: "medium"
+        tool_choice: "auto"
+        tool_usage:
+          image_gen:
+            input_tokens: 0
+            input_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            output_tokens: 0
+            output_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            total_tokens: 0
+          web_search:
+            num_requests: 0
+        tools: []
+        top_logprobs: 0
+        top_p: 1
+        truncation: "disabled"
+        usage:
+          input_tokens: 12
+          input_tokens_details:
+            cache_write_tokens: 0
+            cached_tokens: 0
+          output_tokens: 2
+          output_tokens_details:
+            reasoning_tokens: 0
+          total_tokens: 14
+        user: null
+        metadata: {}

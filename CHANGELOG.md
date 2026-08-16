@@ -30,6 +30,8 @@
 - Replace cassette-recorder filter tables with one typed recording manifest
   shared by replay, add stable recording IDs and scenario filters, resolve only
   selected credentials, and list credential readiness without exposing values.
+- Add real buffered text-response cassettes and replay coverage for the full
+  24-model OpenAI, Anthropic, and Google first-party matrix.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

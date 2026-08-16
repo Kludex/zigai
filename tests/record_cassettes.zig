@@ -33,17 +33,17 @@ pub fn main(init: std.process.Init) !void {
         const key = requiredCredential(init, entry, 0);
         switch (entry.route) {
             .openai => switch (entry.scenario) {
-                .function_tool => try recordOpenAI(init, http.transport(), key, entry),
+                .buffered, .function_tool => try recordOpenAI(init, http.transport(), key, entry),
                 .native_tool => try recordNativeOpenAI(init, http.transport(), key, entry),
                 else => unreachable,
             },
             .anthropic => switch (entry.scenario) {
-                .function_tool => try recordAnthropic(init, http.transport(), key, entry),
+                .buffered, .function_tool => try recordAnthropic(init, http.transport(), key, entry),
                 .native_tool => try recordNativeAnthropic(init, http.transport(), key, entry),
                 else => unreachable,
             },
             .google => switch (entry.scenario) {
-                .function_tool => try recordGoogle(init, http.transport(), key, entry),
+                .buffered, .function_tool => try recordGoogle(init, http.transport(), key, entry),
                 .native_tool => try recordNativeGoogle(init, http.transport(), key, entry),
                 else => unreachable,
             },
@@ -134,11 +134,12 @@ fn runTextScenario(init: std.process.Init, model: zigai.Model) !void {
         .model = model,
         .io = init.io,
         .model_settings = .{ .max_tokens = 256 },
-        .limits = .{ .max_model_requests = 1 },
+        .limits = .{ .max_model_requests = 2 },
         .provider_error_observer = .{ .context = &observer_context, .observeFn = logProviderError },
     }).run(init.gpa, "Reply with exactly: pong");
     defer result.deinit();
-    if (result.output.len == 0 or result.usage.totalTokens() == 0) return error.UnexpectedModelBehavior;
+    if (!std.mem.eql(u8, result.output, "pong") or result.usage.totalTokens() == 0)
+        return error.UnexpectedModelBehavior;
 }
 
 fn writeCompatible(
@@ -205,6 +206,18 @@ fn listRecordings(
     try output.interface.flush();
 }
 
+fn runFirstPartyScenario(
+    init: std.process.Init,
+    model: zigai.Model,
+    scenario: manifest.Scenario,
+) !void {
+    switch (scenario) {
+        .buffered => try runTextScenario(init, model),
+        .function_tool => try runScenario(init, model),
+        else => unreachable,
+    }
+}
+
 fn recordOpenAI(
     init: std.process.Init,
     transport: zigai.transport.Transport,
@@ -218,7 +231,7 @@ fn recordOpenAI(
         .model_name = entry.model,
         .provider = provider.provider(),
     };
-    try runScenario(init, client.model());
+    try runFirstPartyScenario(init, client.model(), entry.scenario);
     try write(init, recording, entry, "openai");
 }
 
@@ -236,7 +249,7 @@ fn recordAnthropic(
         .provider = provider.provider(),
         .max_tokens = 128,
     };
-    try runScenario(init, client.model());
+    try runFirstPartyScenario(init, client.model(), entry.scenario);
     try write(init, recording, entry, "anthropic");
 }
 
@@ -253,7 +266,7 @@ fn recordGoogle(
         .model_name = entry.model,
         .provider = provider.provider(),
     };
-    try runScenario(init, client.model());
+    try runFirstPartyScenario(init, client.model(), entry.scenario);
     try write(init, recording, entry, "google");
 }
 

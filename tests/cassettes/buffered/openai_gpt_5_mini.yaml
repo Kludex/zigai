@@ -1,0 +1,106 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.openai.com/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-5-mini"
+        input:
+          - type: "message"
+            role: "user"
+            content: "Reply with exactly: pong"
+        max_output_tokens: 256
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "29999"
+      x-ratelimit-remaining-tokens:
+      - "180000000"
+      x-request-id:
+      - "req_e383971cc1cd4c8498a1067b88054340"
+    body:
+      type: json
+      content:
+        id: "resp_052112251bbd23fa006a8106b96e348196a140a5f36bf6a2bd"
+        object: "response"
+        created_at: 1786840761
+        status: "completed"
+        background: false
+        billing:
+          payer: "developer"
+        completed_at: 1786840762
+        error: null
+        frequency_penalty: 0
+        incomplete_details: null
+        instructions: null
+        max_output_tokens: 256
+        max_tool_calls: null
+        model: "gpt-5-mini-2025-08-07"
+        moderation: null
+        output:
+          - id: "rs_052112251bbd23fa006a8106b9f91481968d68ed675ebe0e67"
+            type: "reasoning"
+            content: []
+            encrypted_content: |-
+              gAAAAABqgQa7lnHFLL4i0K0H2yTHhoGl3KsOdMBPhLH5her_06x9I6jW1S2wHerxuH4G1v9Vp26ewvePRUdxd6M95U7tGxOJHjS7086uao-bD6eapg-qJNGZspKbmO4rMojFWeNFyXCmmwsR336lPAXkPMTQSroqvXMkv5FdLmX6nVZkX2pNkXNiDMgSF3jNQYGK9NPWO6fx6xZyMzaWS2Wy9LxFVygIROC0UUlWe5wmZ3B2B3D2T8ZjC9sxE-NtOu9NJ-jAxlamQDbkIfhUURn-rM2qcwekVpzjsBj4tbfDBMiwjEJJIzv4oO77vzVw5c83zTT7fNZFGydC0QnmvovmRD-43KjTWVh9xE0ZWFxyreAiZKSX_U4pGdZ6bqhYUeN0v7o1qy9rOX_Vr9SRULLnaRzGkMijptn9uqYm25ll1ctexQROGeHkZFgQJ4wEJ6jP_zBSAJ_jgeNIBNruGqU-92gblTXqXXglC2EAM28LtKZJCh_XYRar4_qI12C5nNmDr7KBWxHn6Y92mayb69jpsJXj8N5uPdtObnQepBBI6-jQF5nGewPiA5weBgTF_-iwEJo6S2MLkYjrBgXVkdtpHtQEFsHIFozT227QnZoTbIZ3UGyEBwsnMDbUa5bpS1ASX5pIuzR123mX9X5CGQsaXxJGqLgUr5tvxgvjsftT6SNzh2z5ccYvh3R7OlOMU351oGqsTCvOTNDIv0msoAUv39wejCVWYeMm-RovM_cGXgV5JXlM36A_9LDPFSepj5KQ7haCcen0wYwKshx0yhz0ur_SJBI8ea3b1zmVp4vi9n0XN1_lhB0nrW9F__H315Cq6QsHvBvuTCBKCqRrovTLvsSJ0ecdW-NQjyHd-QZ7IottgbXspGcA5Sc-EYQkz9irg7XQ2AAi1Zc35B4WadQj-vK3ZZ6LCatL-_9ZrdQFokcpQFLfp0ZhgJU38tCNN8T34y0d3nnRoPqbSzPlOXSz9vg037Z-5vSmuRfbadffLUdfBK8LAbWa3L1XkHQb9BGrzeWuG9SOQlE0Quhhq6N21Vkbn5_SwXog0rVOLDihb2mlfS_Iy8__LURLHoboxrLUR7anbOW6Ct5dfZ9SGJRrBhMgi2qZTqVJp5DqIVpCBnZNZBsbVJmnpsx1Caq9mRTsQZvgJuyfF7zowLbq0xyS8snmKxDLEGABLlKvipSxyoNRqm2DE-HLSpLqPKQNSfmGupaMclJqyGq42xPHmNGMwJeO46IcSEoy9oHIcyyW_JJBFOseoZlxdA2ss_fpQnAnc-BpG_7HVZwsgNBpY-EAUJxJupbvDx4cLs5VQCiSvFqaDjss_sltsIX61S5Rjre5KrLFXC3xcIsELjzFeRWf2tI7lWqDcuMEWPcxC4U30oJApD6a6p-1x-SOBZzCW8OXAL2gms4YrbI8Oq3P8mmLzDmwc8TtLf0mAAtHX_zXipAn_WGsqVVsPxmH7qeyTsmU-BivxG_NtqzedS50AG-cUSL58WZLF4QC7Gs09y7M2E77AHQgAXyCjApHcfIYsYDk7NnbAxuyGOEDU4OeR5D9GhFG2D9vGGtiEve2IAT1o9JWJ7_ZlCeCyzD58ORhsuCCwHwY21sHypKK2QJxWl0xxZ75f2dhm79tvrKotvPgp8NrUiKhApC7BFuD7Rsp8_OqlP53pdaLbxTwnTbyz8KZz8wJTTIZvwUimWlSsaEUVlXMcg5dLpykQEWYPgK5uXevCgqq-HCK1rGfcvcqmaeaAjaLFSRDtg==
+            summary: []
+          - id: "msg_052112251bbd23fa006a8106bad3688196a6da47a324269aef"
+            type: "message"
+            status: "completed"
+            content:
+              - type: "output_text"
+                annotations: []
+                logprobs: []
+                text: "pong"
+            role: "assistant"
+        parallel_tool_calls: true
+        presence_penalty: 0
+        previous_response_id: null
+        prompt_cache_key: null
+        prompt_cache_retention: "in_memory"
+        reasoning:
+          context: "current_turn"
+          effort: "medium"
+          mode: "standard"
+          summary: null
+        safety_identifier: null
+        service_tier: "default"
+        store: true
+        temperature: 1
+        text:
+          format:
+            type: "text"
+          verbosity: "medium"
+        tool_choice: "auto"
+        tool_usage:
+          image_gen:
+            input_tokens: 0
+            input_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            output_tokens: 0
+            output_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            total_tokens: 0
+          web_search:
+            num_requests: 0
+        tools: []
+        top_logprobs: 0
+        top_p: 1
+        truncation: "disabled"
+        usage:
+          input_tokens: 11
+          input_tokens_details:
+            cache_write_tokens: 0
+            cached_tokens: 0
+          output_tokens: 98
+          output_tokens_details:
+            reasoning_tokens: 64
+          total_tokens: 109
+        user: null
+        metadata: {}

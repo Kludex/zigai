@@ -1,0 +1,107 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.openai.com/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-5.5"
+        input:
+          - type: "message"
+            role: "user"
+            content: "Reply with exactly: pong"
+        max_output_tokens: 256
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "14999"
+      x-ratelimit-remaining-tokens:
+      - "40000000"
+      x-request-id:
+      - "req_0a23c926cf4f4fe9ae6e5c698de729f1"
+    body:
+      type: json
+      content:
+        id: "resp_0c5f66f8656fc574006a8106bc7d8481908dc22c21dbfbb714"
+        object: "response"
+        created_at: 1786840764
+        status: "completed"
+        background: false
+        billing:
+          payer: "developer"
+        completed_at: 1786840765
+        error: null
+        frequency_penalty: 0
+        incomplete_details: null
+        instructions: null
+        max_output_tokens: 256
+        max_tool_calls: null
+        model: "gpt-5.5-2026-04-23"
+        moderation: null
+        output:
+          - id: "rs_0c5f66f8656fc574006a8106bcfca881909450057ac2d03a82"
+            type: "reasoning"
+            content: []
+            encrypted_content: |-
+              gAAAAABqgQa96QuQSii8hLciNwkTWoac_n7kARbs7s6qjmTmv_Sm6nRRRGMdY6yFPcezvhNTWA2caez4g3td_hktDL6e4l4w2fnNuQhRhpsF5mVR_G2U-2itpT8StNJKxmoYTlUt445YTWGC0BqNLi5ZOsc2SAHpz2IQtQBY3mL17EGq0JAvcnh9HHRZCGfL7-_iZhOj6i0tmls_CYwgBHKsnC_MBxCgfAMjkG_DgZcIGdkVSL_cFlXOD1Rqwmp_8k3WDQZ_SZEUcpJf2GLkLCA-I_QTqX4Bt-qpmbMVMt2oGnxSiz47-IdVxfwJ85Tij86pXqBbYAub_Yk_ByGeiCR61ICU-seknQvgLG-sBHU0TThFVKbXghfzeMfrlAJWFShvgm77IzWVk8Z_i7CC0fiLhPai30y7Hrt0dXyU31wQZLB3izIqVmjgX_OEGYQpZ-KKh_SDHHY3ll-OhcjNOvWmmFWqb-YASpwvTQg4gbzlMgHcQwWCRzqb87aBLlHWa3v-3YgyyFTApTJwK7QP_MZz8oE7PHEcoLmleP73qxMDPw5JDZIZFut-d4rDDYQhAFx0OKOBCdaBKRCtrasMXLEUakcaY7hNNOXd2-tj_UQqEcLFL08wlg9GVNLPN0IU9j1xRaA6Wv-GXAone1CdQQHoBzx60EBSYAtxG_xlkWSmPr6XHu4VhKtfW-8WguToHL8RuSoFc9zDcZXhmT0szrXZzeanpmBH4pdUgJXCjj_MOf3nkIzcKmnlJJ1xFbu39sNvEO2hwmPvBWlrv-DXT7fcjHLmQ8t3wnsjcqFDAf-k9NZlzjZRAUXicWKLMsWfzfWZUajmcuRe9KszNMYS9dxa0Avok6oPkuravUi9go-HoHRb8U-XDVghy-NtWVSmL4EpwjysaFEaFIsZ-85765jHD9Z1iHKKYgvmMosCzkOv1lFCZqj32LgltgeMzYEUNbqVrxVZFfEmJ3Xd3VkNedo58l-QGFzRf_SMMvxYSrq7HHBrj3f2vCzfweqQLkDwDVpI9vWB330lQ6hHf3dfxOv-mbEaTsQhooo4dEalONXSrwaslm1Vjg-hPiY4rKMxUOcAzoP8OYOnx5J73AcEVJrPeMD_aS5AOqRC-3LKUY0pT12Y3zweIErhbxQ7DIszYn9dLUR-FJe_cKVvuqE5LTtCvp8FUKgvUdRe7TEr1BSKf5Sbp1GlvQVjChMYBnM4N8nSWuOIqhfT_E84gpc7eBd-4Fh8BiMiUA==
+            summary: []
+          - id: "msg_0c5f66f8656fc574006a8106bd296881908cdcf108a224224c"
+            type: "message"
+            status: "completed"
+            content:
+              - type: "output_text"
+                annotations: []
+                logprobs: []
+                text: "pong"
+            phase: "final_answer"
+            role: "assistant"
+        parallel_tool_calls: true
+        presence_penalty: 0
+        previous_response_id: null
+        prompt_cache_key: null
+        prompt_cache_retention: "24h"
+        reasoning:
+          context: "current_turn"
+          effort: "medium"
+          mode: "standard"
+          summary: null
+        safety_identifier: null
+        service_tier: "default"
+        store: true
+        temperature: 1
+        text:
+          format:
+            type: "text"
+          verbosity: "medium"
+        tool_choice: "auto"
+        tool_usage:
+          image_gen:
+            input_tokens: 0
+            input_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            output_tokens: 0
+            output_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            total_tokens: 0
+          web_search:
+            num_requests: 0
+        tools: []
+        top_logprobs: 0
+        top_p: 0.98
+        truncation: "disabled"
+        usage:
+          input_tokens: 11
+          input_tokens_details:
+            cache_write_tokens: 0
+            cached_tokens: 0
+          output_tokens: 17
+          output_tokens_details:
+            reasoning_tokens: 10
+          total_tokens: 28
+        user: null
+        metadata: {}

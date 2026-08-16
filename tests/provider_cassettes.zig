@@ -97,6 +97,46 @@ test "real Google model cassettes replay complete tool loops" {
     }
 }
 
+test "real OpenAI model cassettes replay buffered text" {
+    inline for (cassette_manifest.openai_buffered) |entry| {
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+        defer cassette.deinit();
+        var provider_state = zigai.openai.Provider.init("not-recorded", cassette.transport());
+        var client = zigai.openai.Client{
+            .model_name = entry.model,
+            .provider = provider_state.provider(),
+        };
+        try replayBufferedScenario(client.model(), &cassette);
+    }
+}
+
+test "real Anthropic model cassettes replay buffered text" {
+    inline for (cassette_manifest.anthropic_buffered) |entry| {
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+        defer cassette.deinit();
+        var provider_state = zigai.anthropic.Provider.init("not-recorded", cassette.transport());
+        var client = zigai.anthropic.Client{
+            .model_name = entry.model,
+            .provider = provider_state.provider(),
+            .max_tokens = 128,
+        };
+        try replayBufferedScenario(client.model(), &cassette);
+    }
+}
+
+test "real Google model cassettes replay buffered text" {
+    inline for (cassette_manifest.google_buffered) |entry| {
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, @embedFile(entry.cassette));
+        defer cassette.deinit();
+        var provider_state = zigai.google.Provider.init("not-recorded", cassette.transport());
+        var client = zigai.google.Client{
+            .model_name = entry.model,
+            .provider = provider_state.provider(),
+        };
+        try replayBufferedScenario(client.model(), &cassette);
+    }
+}
+
 test "real OpenAI-compatible provider cassettes replay text responses" {
     inline for (cassette_manifest.compatible) |entry| {
         if (comptime std.mem.eql(u8, entry.provider, "azure-openai"))
@@ -221,6 +261,18 @@ fn replayCompatibleProvider(
     }).run(std.testing.allocator, "Reply with exactly: pong");
     defer result.deinit();
     try std.testing.expect(result.output.len > 0);
+    try std.testing.expect(result.usage.totalTokens() > 0);
+    try std.testing.expectEqual(@as(usize, 0), cassette.remaining());
+}
+
+fn replayBufferedScenario(model: zigai.Model, cassette: *cassettes.ReplayTransport) !void {
+    var result = try (zigai.Agent{
+        .model = model,
+        .model_settings = .{ .max_tokens = 256 },
+        .limits = .{ .max_model_requests = 2 },
+    }).run(std.testing.allocator, "Reply with exactly: pong");
+    defer result.deinit();
+    try std.testing.expectEqualStrings("pong", result.output);
     try std.testing.expect(result.usage.totalTokens() > 0);
     try std.testing.expectEqual(@as(usize, 0), cassette.remaining());
 }

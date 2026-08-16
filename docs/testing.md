@@ -54,6 +54,10 @@ size tiers. Every recording is defined once in the typed
 stable ID, provider, model, scenario, fixture path, execution route, and
 credential requirements.
 
+`tests/cassettes/buffered/` contains a separate minimal text response for the
+same 24-model first-party matrix. These fixtures isolate ordinary request
+encoding, response decoding, usage, and terminal-state handling from tools.
+
 `tests/cassettes/native/` contains real provider-native recordings: OpenAI web
 search, Anthropic web search plus fetch, Google Search plus URL Context, a
 complete Amazon Bedrock Converse function-tool loop, and an Azure OpenAI v1
@@ -93,6 +97,7 @@ zig build record-cassettes -- anthropic
 zig build record-cassettes -- gemini-3.5-flash
 zig build record-cassettes -- openai/gpt-5-nano/native-tool
 zig build record-cassettes -- function-tool
+zig build record-cassettes -- first-party-buffered
 zig build record-cassettes -- native-tools
 zig build record-cassettes -- native-google
 zig build record-cassettes -- native-bedrock

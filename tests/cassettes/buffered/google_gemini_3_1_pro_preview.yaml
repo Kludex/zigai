@@ -1,0 +1,41 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent"
+    headers: {}
+    body:
+      type: json
+      content:
+        contents:
+          - role: "user"
+            parts:
+              - text: "Reply with exactly: pong"
+        generationConfig:
+          maxOutputTokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        candidates:
+          - content:
+              parts:
+                - text: "pong"
+                  thoughtSignature: |-
+                    EvUDCvIDARFNMg8jspRpo2I2hrgpytK+XIe2kPltOnJhqWg2M+BZMDFSNwZZnqN52sIhlCZRXtuZ7JwJf91SGY7Pz49+6j+UyjbZiKgWto62+5LYjB4c5ORNn5pkmWJap56jV2/+XBOCJCLEnpWOM49p9NZh8JlJn6R0Vb5plG7RKhH5Xzg3HTMqMIEambf9ytmclHm1fc1OsDt4gLbVkd1tdb2UxbDdj1Q+7mFuceGT9x3t498JSFr8STRl22AyoCeftDviILh1syetZJFaO0Kc4RA6yktbjOgSJEqPvZGO1hWK8Oy5SneB+iXAKNWMqI4SoMExzY9G1NDxMtdqKpk6vwYFHbfUxCFdnF/c7rgMkPBBHAdGfmzvcfhpS6WNVVZZTWM/Y6X3OybPtJ+ax6V/p44hlPQETCCpemWiSL+uXzxL2SRRSgcSMwNtFnOntvy8ZkWnmothxkJAq1+HtKB4szGOjEa/LMX/T81L4NiJdINjoojiXsFiSplylLgtvIciWYu85SYk74OuDD5jWjWljlJUJTFmYUXlNqfD1qZ4hP7+6IDFCwdiDngh0YpOW9hr1Jnm7IOAH32h3/oMUhTj3xaprhGchwdowE/1GO1Yq0H5EbfOrWMYx2RnvrQj3vXDfEWPMr7mQENtJgzPchJt9wjxZAUI
+              role: "model"
+            finishReason: "STOP"
+            index: 0
+        usageMetadata:
+          promptTokenCount: 6
+          candidatesTokenCount: 1
+          totalTokenCount: 118
+          promptTokensDetails:
+            - modality: "TEXT"
+              tokenCount: 6
+          thoughtsTokenCount: 111
+          serviceTier: "standard"
+        modelVersion: "gemini-3.1-pro-preview"
+        responseId: "8gaBaufRB5_5xN8Pupf-2AQ"

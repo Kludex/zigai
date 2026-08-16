@@ -1,0 +1,40 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent"
+    headers: {}
+    body:
+      type: json
+      content:
+        contents:
+          - role: "user"
+            parts:
+              - text: "Reply with exactly: pong"
+        generationConfig:
+          maxOutputTokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        candidates:
+          - content:
+              parts:
+                - text: "pong"
+                  thoughtSignature: "EtYCCtMCARFNMg/jnQutUTTZPFFf8gG1xh4v7I0qNc4yK/FZc/nmuV3EGaTjtaJVfweLRTP1VYhGmVDkTXlquIbwuERkZDrRk64fifafEDfJ9nUVED9BayM+7cGV9lhdtQRWETqvlvwc2yfV0s8WbA1EJr2yFdxjf6vERlmUJ+7PcjlNmIQmVYWcsuOBNmK6WjKzyznlZaSMZt85Qej5vrO+ATQzJUF4q1HDzv/FW3ZyHzkuoC2cENYtGS9hRFwvonEPBlztFTEdiCjjIcZY/N3zpEztPrLWDBluRUxqp01qRkD1leI+HhsqmDcQgC07+KU95HUiLiZZb0ePs8EjhjLabha0rNKAuvs14KeA8NMmyJQb3GFaTzyLWm7nsx7hD9XK35RiFxBOx5M++vKC+RC7RLCbn38wjzOuJGm2XpWzf+EF5ek21Wt5k74mbve/+zS3UC59GMuL"
+              role: "model"
+            finishReason: "STOP"
+            index: 0
+        usageMetadata:
+          promptTokenCount: 6
+          candidatesTokenCount: 1
+          totalTokenCount: 75
+          promptTokensDetails:
+            - modality: "TEXT"
+              tokenCount: 6
+          thoughtsTokenCount: 68
+          serviceTier: "standard"
+        modelVersion: "gemini-3-flash-preview"
+        responseId: "0QaBaqHeA-KJvdIPi6u4kAQ"

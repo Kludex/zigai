@@ -1,0 +1,106 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.openai.com/v1/responses"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "gpt-5-nano"
+        input:
+          - type: "message"
+            role: "user"
+            content: "Reply with exactly: pong"
+        max_output_tokens: 256
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "29999"
+      x-ratelimit-remaining-tokens:
+      - "180000000"
+      x-request-id:
+      - "req_64b05866051341e88e91433ae3fc1c29"
+    body:
+      type: json
+      content:
+        id: "resp_0b443da740c62213006a8106b7341087d1bde49ebbc32c0b82"
+        object: "response"
+        created_at: 1786840759
+        status: "completed"
+        background: false
+        billing:
+          payer: "developer"
+        completed_at: 1786840760
+        error: null
+        frequency_penalty: 0
+        incomplete_details: null
+        instructions: null
+        max_output_tokens: 256
+        max_tool_calls: null
+        model: "gpt-5-nano-2025-08-07"
+        moderation: null
+        output:
+          - id: "rs_0b443da740c62213006a8106b7b19487d1913380177bc78197"
+            type: "reasoning"
+            content: []
+            encrypted_content: |-
+              gAAAAABqgQa53Od4KS_SpBfDGQokLG4-ZHckpW7PaofylvRWWM4O-bnVC9eXG4HJC5_SOSLGo8nTwJ7tipm19BhyZ9JNMZwBdimI7aGIBafevgY7VGg8Ela_-hqaFYukNxSVqVCtEUV6BrX3yNPAGS_bpojesfWAnNFZ0jyxhPXa0iGMdY9qgraml5EdIFWG3iU55snhmj5ze2-BePewWavtVSTxVmmHE3UMZp5JAt-p6PgbshgYkScftxPFAAIdH9SIu8UtRzufo0xa-QE74mnma4M3qVTz09eOtuUFWI09q6VqhFhiKM5iCF5eOXBEoGk_VLPoeztgMlWIQXTBGrJNZEOrdIBw9AOn_DEEvp49heIWWnB5Vx5F1YPYIsuot1Ympww-WVeNO5r-Pu8kFjf2QIhL2eU9jbUZtClj5IAwyA6Z-GxUztgucBTZiDUmS4uD16IRIw0nr5mwKKPlf9o-UhzfFIk1XgMHdElmvlisRIhn4FxcZZKvw5KykdbEpHoVXAApvBjqCrp6Un5BzpY4OnDP9M-XN2eE154P9bPnuo7C4kUx8K6BRG7AHtrzfAcWWlKOhphP5NmCrxCHiVB0KqvGVrWULS1ssxRHK11MxlwkNUQYGW2yiaRaYps_tSIyt__B3L5BD4fu8yUbd6cTxETbbRk7cGAqqIZ26i-a3_GsgsL12N8HEkn5Lbry4RFkJdGaoskhyKW7mdK0fTdKKVw8GECkkMkT3cCUusAKTtvt44Fy2QRXkRrgU-WXGR2I528WmIMLEbsFNWQzi570LvASahGscpEyewKOPh26tosWhRXdVGbep65EYQENBqS7k39vNlHjZ_Wj0Y9eSZOwaW9VJNQU1yiTmnAjdRMfjVHugs9D6iLfj5BO45PgKkDIKMS1OgOzA3UCH4VOHhzZh7AsCPOmBoKRZmEhK_cPLq0Z4qo3bwkqW2AYtEQa-2aiIT9IvYCN8ttwmVPd1u6KEVqGO5JQVtYZXWzV5eoJMLPdQ4yG5n89GVeU4JusRPcSiFL6bo-agr_oqlFnAWuvmVgoJBt5k5TrLme5YP73OC2awGhEqlvaT-KYGwc5rlOVZJJeclWIFNP2HtUdEp6ab9AoNz5Q7Pg8GHtAMQF24i0VSAwZT7jLXzQI5MLJjYOZR2E3Z6yvjQJG3rx8Zyc9ujiZ0gpsEgewc8dHIN-99xvfzEgHWdfyCIJKsUjk5aUiKCDl_gjfu8dIybRcQHA1chDvG9nhM2ipW2t73ygQ0Vc6LG8dEuVxkBmZfILfHmqMUWFqwggZQFGY547T059RfA0HzmUNwL_fXq9SYakHws0N_qMd0RjBJrcCPkcmz5gMLOXdxnOJ75OyB5AraeR4sYs4DP6glSfOZsHrCafffHzuqodOWdEnea78m3dir94cb5P5FEXBbC9ck8W5lm7CgAiQeCGKBTh3fui2-pr7QIQUdwkgJDIZofmEkgqzNKotBYUvcn7OCGZzlcS5W0IPJrOLPhtDa8wJM_vhLPPJ_H4S8CTdQG6ydIPryk1MmW-PtZgIAMbE2uBa2bGr1NKiAerh0LoLTgk3q05zyk9cExOYWdCuLieR29K6-VEkBiAnkWcKXZRT3V49SffNh-vnUSpgNo9Ht7RHSlNrwPfwi7Z4WnJP1ncKWjGELvh2ghIdv7TvmSzYKsLezyN8x8m7IHqmqk9-xLTszsuwbLYkDKWtIu9jlYSfB8lWiVQcEBZZ9Buy9WkSfpfMyoUUPRtBHtAp2LV3LpP8SMoiwQ7Qh5D_aESF0Vn5WrQbST5k2tyUExrfXG4YljiTydZBt-RjwfFhUrHq8v0cBod6JnSxuCtUO0pGjVww_wSWBms9WBl-bs8jAxJtxedYp2HulQiZiJz2fGbbF3LmksWFNsQaCsgCzLQ_ASOzvy9DSC1yj_tVGK_kUdkl6_j1eG4YzwgumPj5alCiVKzKEzWa8uhI8UqiDX0H1JokVr-YQi09wnjwTk7PLk7g76flZ3jWb5a6Km3PSv0P4kRHn14dHtbB9W4tQh0yAlcHAAf5uhWb4gG6gfOKSMC6iWc2tSwtnChR5DOaOyAtcPG2HLSRNudww1p6qvQk8BDsSa-nDkdXh8mtxWu7_knL
+            summary: []
+          - id: "msg_0b443da740c62213006a8106b8d4b487d1844def0bad5b55f3"
+            type: "message"
+            status: "completed"
+            content:
+              - type: "output_text"
+                annotations: []
+                logprobs: []
+                text: "pong"
+            role: "assistant"
+        parallel_tool_calls: true
+        presence_penalty: 0
+        previous_response_id: null
+        prompt_cache_key: null
+        prompt_cache_retention: "in_memory"
+        reasoning:
+          context: "current_turn"
+          effort: "medium"
+          mode: "standard"
+          summary: null
+        safety_identifier: null
+        service_tier: "default"
+        store: true
+        temperature: 1
+        text:
+          format:
+            type: "text"
+          verbosity: "medium"
+        tool_choice: "auto"
+        tool_usage:
+          image_gen:
+            input_tokens: 0
+            input_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            output_tokens: 0
+            output_tokens_details:
+              image_tokens: 0
+              text_tokens: 0
+            total_tokens: 0
+          web_search:
+            num_requests: 0
+        tools: []
+        top_logprobs: 0
+        top_p: 1
+        truncation: "disabled"
+        usage:
+          input_tokens: 11
+          input_tokens_details:
+            cache_write_tokens: 0
+            cached_tokens: 0
+          output_tokens: 161
+          output_tokens_details:
+            reasoning_tokens: 128
+          total_tokens: 172
+        user: null
+        metadata: {}

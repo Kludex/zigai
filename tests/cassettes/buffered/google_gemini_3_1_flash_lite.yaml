@@ -1,0 +1,39 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
+    headers: {}
+    body:
+      type: json
+      content:
+        contents:
+          - role: "user"
+            parts:
+              - text: "Reply with exactly: pong"
+        generationConfig:
+          maxOutputTokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        candidates:
+          - content:
+              parts:
+                - text: "pong"
+                  thoughtSignature: "EnEKbwERTTIPU6IW19JpoTPe6GvzT0nlLIlpPdNmo1UWfu1G6mLczlEP7obY+c1qupxi8tbX+JixrhvN3fH8bBuYJqAjZJOaDhAPuWhXDcFYjN+Y1Xo5ndRVQGTl0xkjuvyh8iDpTXPX1JXoXZ65IVBJDg=="
+              role: "model"
+            finishReason: "STOP"
+            index: 0
+        usageMetadata:
+          promptTokenCount: 6
+          candidatesTokenCount: 1
+          totalTokenCount: 7
+          promptTokensDetails:
+            - modality: "TEXT"
+              tokenCount: 6
+          serviceTier: "standard"
+        modelVersion: "gemini-3.1-flash-lite"
+        responseId: "0gaBaoLTD4njnsEP68C2uQU"

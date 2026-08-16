@@ -155,7 +155,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   Give every recording a stable provider, model, scenario, fixture path, and
   credential set; select credentials lazily; reject unknown or empty filters;
   and provide a secret-free command that lists runnable recordings.
-- [ ] Record and replay one minimal buffered text response for every first-party
+- [x] Record and replay one minimal buffered text response for every first-party
   OpenAI, Anthropic, and Google model in the manifest with an available key.
 - [ ] Record and replay streamed text plus a streamed function-tool loop for
   every applicable first-party model in the manifest with an available key.
