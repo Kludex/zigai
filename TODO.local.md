@@ -159,7 +159,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   OpenAI, Anthropic, and Google model in the manifest with an available key.
 - [x] Record and replay streamed text plus a streamed function-tool loop for
   every applicable first-party model in the manifest with an available key.
-- [ ] Record and replay structured-output and thinking scenarios for every
+- [x] Record and replay structured-output and thinking scenarios for every
   applicable first-party capability profile, asserting provider-specific wire
   fields and the provider-neutral message/event representation.
 - [ ] Record and replay retry and provider-error scenarios for OpenAI,

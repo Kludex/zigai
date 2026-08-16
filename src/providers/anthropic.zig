@@ -572,6 +572,7 @@ const StreamState = struct {
             }
             const usage = try common.requiredObject(root, "usage");
             self.usage.output_tokens = try common.objectInteger(usage, "output_tokens");
+            self.usage.reasoning_tokens = try decodeReasoningTokens(usage);
             try self.sink.emit(.{ .usage = self.usage });
         }
     }
@@ -1104,6 +1105,7 @@ fn decodeUsageObject(allocator: std.mem.Allocator, object: std.json.ObjectMap) !
     const cache_read = try common.optionalObjectInteger(object, "cache_read_input_tokens") orelse 0;
     const cached_input = std.math.add(u64, cache_write, cache_read) catch return error.InvalidProviderResponse;
     const input = std.math.add(u64, uncached, cached_input) catch return error.InvalidProviderResponse;
+    const reasoning_tokens = try decodeReasoningTokens(object);
     var details: std.ArrayList(model_types.UsageDetail) = .empty;
     if (object.get("cache_creation")) |value| {
         const cache = switch (value) {
@@ -1125,8 +1127,21 @@ fn decodeUsageObject(allocator: std.mem.Allocator, object: std.json.ObjectMap) !
         .cache_write_tokens = cache_write,
         .cache_read_tokens = cache_read,
         .output_tokens = try common.optionalObjectInteger(object, "output_tokens") orelse 0,
+        .reasoning_tokens = reasoning_tokens,
         .details = try details.toOwnedSlice(allocator),
     };
+}
+
+fn decodeReasoningTokens(object: std.json.ObjectMap) !u64 {
+    const output_details = if (object.get("output_tokens_details")) |value| switch (value) {
+        .object => |details| details,
+        .null => null,
+        else => return error.InvalidProviderResponse,
+    } else null;
+    return if (output_details) |details|
+        try common.optionalObjectInteger(details, "thinking_tokens") orelse 0
+    else
+        0;
 }
 
 fn anthropicFinishReason(raw: []const u8) model_types.FinishReason {
@@ -1147,7 +1162,7 @@ fn anthropicFinishReason(raw: []const u8) model_types.FinishReason {
 
 test "decodes Anthropic tool use" {
     const body =
-        \\{"content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{"city":"Madrid"}}],"stop_reason":"tool_use","usage":{"input_tokens":8,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"cache_creation":{"ephemeral_5m_input_tokens":1,"ephemeral_1h_input_tokens":1},"output_tokens":3}}
+        \\{"content":[{"type":"tool_use","id":"toolu_1","name":"weather","input":{"city":"Madrid"}}],"stop_reason":"tool_use","usage":{"input_tokens":8,"cache_creation_input_tokens":2,"cache_read_input_tokens":3,"cache_creation":{"ephemeral_5m_input_tokens":1,"ephemeral_1h_input_tokens":1},"output_tokens":3,"output_tokens_details":{"thinking_tokens":2}}}
     ;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -1155,11 +1170,18 @@ test "decodes Anthropic tool use" {
     try std.testing.expectEqualStrings("toolu_1", response.parts[0].tool_call.id);
     try std.testing.expectEqualStrings("{\"city\":\"Madrid\"}", response.parts[0].tool_call.arguments_json);
     try std.testing.expectEqual(@as(u64, 3), response.usage.output_tokens);
+    try std.testing.expectEqual(@as(u64, 2), response.usage.reasoning_tokens);
     try std.testing.expectEqual(@as(u64, 13), response.usage.input_tokens);
     try std.testing.expectEqual(@as(u64, 2), response.usage.cache_write_tokens);
     try std.testing.expectEqual(@as(u64, 3), response.usage.cache_read_tokens);
     try std.testing.expectEqual(@as(u64, 1), response.usage.detail("cache_write_5m_tokens").?);
     try std.testing.expectEqual(model_types.FinishReason.Kind.tool_calls, response.finish_reason.?.kind);
+
+    const no_details = try decodeResponse(
+        arena.allocator(),
+        "{\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"output_tokens_details\":null}}",
+    );
+    try std.testing.expectEqual(@as(u64, 0), no_details.usage.reasoning_tokens);
 }
 
 test "maps Anthropic length and refusal reasons" {
@@ -1327,6 +1349,10 @@ test "rejects malformed usage" {
         arena.allocator(),
         "{\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_creation\":false}}",
     ));
+    try std.testing.expectError(error.InvalidProviderResponse, decodeResponse(
+        arena.allocator(),
+        "{\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"output_tokens_details\":false}}",
+    ));
 }
 
 test "encodes Anthropic structured output and rejects JSON-object mode" {
@@ -1425,6 +1451,7 @@ test "Anthropic streaming preserves thinking deltas and signatures" {
     try StreamState.line(&state, "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"signed\"}}");
     try StreamState.line(&state, "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"redacted\"}}");
     try StreamState.line(&state, "data: {\"type\":\"content_block_stop\",\"index\":0}");
+    try StreamState.line(&state, "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":9,\"output_tokens_details\":{\"thinking_tokens\":7}}}");
     try state.sink.emit(.{ .part_delta = .{
         .index = 0,
         .delta = .{ .text = .{ .content_delta = "covered" } },
@@ -1433,6 +1460,7 @@ test "Anthropic streaming preserves thinking deltas and signatures" {
     try std.testing.expectEqualStrings("redacted", state.parts.items[0].thinking.signature.?);
     try std.testing.expectEqualStrings("private", state.parts.items[1].thinking.content);
     try std.testing.expectEqualStrings("signed", state.parts.items[1].thinking.signature.?);
+    try std.testing.expectEqual(@as(u64, 7), state.usage.reasoning_tokens);
     try std.testing.expectEqual(@as(usize, 2), leadingThinkingCount(state.parts.items));
     try std.testing.expect(state.findPending(99) == null);
 }

@@ -1,0 +1,63 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://api.anthropic.com/v1/messages"
+    headers: {}
+    body:
+      type: json
+      content:
+        model: "claude-sonnet-5"
+        max_tokens: 2048
+        messages:
+          - role: "user"
+            content:
+              - type: "text"
+                text: "Calculate 982451653 multiplied by 57885161 privately. After calculating, reply with exactly: done"
+        output_config:
+          effort: "high"
+        stream: true
+  response:
+    status: 200
+    headers:
+      x-ratelimit-remaining-requests:
+      - "19999"
+      x-ratelimit-remaining-tokens:
+      - "12000000"
+      x-request-id:
+      - "req_011Ce5YGzJoQEMxpBDb7TwRv"
+    body:
+      type: text
+      content: |+
+        event: message_start
+        data: {"type":"message_start","message":{"model":"claude-sonnet-5","id":"msg_011Ce5YGzsnNhsFeDTr9FsvM","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":41,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":2,"service_tier":"standard","inference_geo":"global"}}           }
+
+        event: content_block_start
+        data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}  }
+
+        event: ping
+        data: {"type": "ping"}
+
+        event: content_block_delta
+        data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":""}               }
+
+        event: content_block_delta
+        data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EpwECokBCBAYAipAR0Kk5ceQMes+OvrwAP+EmB//N+NbVKTun85jJJcWjBN5HdMTJCEYYkS/UuOspgY502MjeEs3m0qidgADoX5CojIPY2xhdWRlLXNvbm5ldC01OABCCHRoaW5raW5nWiQ0NGFlNjc2Yy05NThmLTRkNjgtOTEwOC1lYWU5ZGU3YjM2NmISDGrvFX0XE3DtUK58choMOtBIWEAcZ2QEVtEqIjCCUNO/cTiAk4N1suh3D6aKg7QctXwMaqD18/CZddj2Lxt6ACyg5YxnEui7SQXDcAAqvwIMIvHzHU4trumP4GQ7WQuGti1IzIlCg4IlD67pt0JOcTUZy+92dkEkfB2pkwM/1kHYdv93Mjn2x4V/VH7solvNE+sObaQCDQXI+qXIlxqYI9F18ExWyNJ7hI4HU98ATEwfyKsR4LJ47xNPxNW7jgcol9jmJrC5P8dkguAjgrTV4jZbO876TFmSdeWPNzFKkID2Ecm3KSnyV75F1+oSBDNR8of5DXl2pWTyIxT9BEdkdhWzfrVxy8EjTcwsfqzDDAxQFaMjSXKgIbp7W+5recd9fX986vHmwFCx5Ip+BS0oRGNHTIeMj9AWpjmCLXJHh6/C/p+JcPUkO7/dvRoBvlBewhtk5/Ht8c8BA14sigqf+cF64KVdSVTvoNNz6i/de1045BdX2cx3f+xm6QfRUEkK47n3J/rQ6faIyACd1LYUGAE="}   }
+
+        event: content_block_stop
+        data: {"type":"content_block_stop","index":0            }
+
+        event: content_block_start
+        data: {"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}          }
+
+        event: content_block_delta
+        data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"done"} }
+
+        event: content_block_stop
+        data: {"type":"content_block_stop","index":1            }
+
+        event: message_delta
+        data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":41,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":103,"output_tokens_details":{"thinking_tokens":100}}  }
+
+        event: message_stop
+        data: {"type":"message_stop"       }

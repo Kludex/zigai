@@ -529,7 +529,9 @@ ZigAI follows one rule for high-level operations: a returned type with a
 `TypedResult`, and `evals.Report` expose `RunUsage`. Cached and modality fields
 are inclusive subsets of the input/output totals, so `totalTokens()` is always
 `input_tokens + output_tokens`. Result arenas own usage detail names and price
-table version strings.
+table version strings. `reasoning_tokens` normalizes OpenAI reasoning tokens,
+Anthropic thinking tokens, and Google thought tokens for both buffered and
+streamed responses.
 
 `UsageCost` stores nano-USD exactly. `PriceTable.estimate` returns null for an
 unknown model or any non-empty bucket without a rate. `pricing.builtin` is an

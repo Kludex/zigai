@@ -64,6 +64,15 @@ one final result, and exact `pong` output. Tool fixtures additionally require
 one completed function call, one local result, final text containing the
 returned temperature, and complete two-request replay.
 
+`tests/cassettes/structured/` and `tests/cassettes/thinking/` contain one real
+recording per first-party capability profile. Structured fixtures validate the
+native OpenAI `text.format`, Anthropic `output_config.format`, and Google
+`responseJsonSchema` request shapes through a provider-neutral typed result.
+Thinking fixtures validate each provider's high-effort wire control and
+normalized reasoning usage. Anthropic additionally proves streamed thinking
+parts, deltas, opaque signatures, and durable message history; OpenAI and
+Google keep provider-hidden reasoning out of neutral content parts.
+
 `tests/cassettes/native/` contains real provider-native recordings: OpenAI web
 search, Anthropic web search plus fetch, Google Search plus URL Context, a
 complete Amazon Bedrock Converse function-tool loop, and an Azure OpenAI v1
@@ -105,8 +114,11 @@ zig build record-cassettes -- openai/gpt-5-nano/native-tool
 zig build record-cassettes -- function-tool
 zig build record-cassettes -- first-party-buffered
 zig build record-cassettes -- first-party-streaming
+zig build record-cassettes -- first-party-capabilities
 zig build record-cassettes -- streamed-text
 zig build record-cassettes -- streamed-function-tool
+zig build record-cassettes -- structured-output
+zig build record-cassettes -- thinking
 zig build record-cassettes -- native-tools
 zig build record-cassettes -- native-google
 zig build record-cassettes -- native-bedrock

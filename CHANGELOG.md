@@ -36,6 +36,11 @@
   first-party matrix, backed by shared provider-neutral event invariants and
   JSON-semantic request replay. Preserve OpenAI function identity when argument
   completion omits the name, and accept Gemini role-only terminal chunks.
+- Add real native structured-output and high-effort thinking cassettes for one
+  representative OpenAI, Anthropic, and Google capability profile. Assert each
+  provider's wire controls, typed output, neutral reasoning usage, and
+  Anthropic thinking events, signatures, and history. Preserve Anthropic
+  `thinking_tokens` in buffered and streamed usage.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

@@ -5,6 +5,8 @@ pub const Scenario = enum {
     function_tool,
     streamed_text,
     streamed_function_tool,
+    structured_output,
+    thinking,
     native_tool,
     rich_media,
     file_lifecycle,
@@ -15,6 +17,8 @@ pub const Scenario = enum {
             .function_tool => "function-tool",
             .streamed_text => "streamed-text",
             .streamed_function_tool => "streamed-function-tool",
+            .structured_output => "structured-output",
+            .thinking => "thinking",
             .native_tool => "native-tool",
             .rich_media => "rich-media",
             .file_lifecycle => "file-lifecycle",
@@ -257,6 +261,23 @@ pub const first_party_streaming =
     openai_streamed_text ++ anthropic_streamed_text ++ google_streamed_text ++
     openai_streamed_tools ++ anthropic_streamed_tools ++ google_streamed_tools;
 
+pub const openai_capabilities = [_]Entry{
+    scenarioEntry("openai/gpt-5.6-sol/structured-output", "openai", "gpt-5.6-sol", .structured_output, "cassettes/structured/openai_gpt_5_6_sol.yaml", .openai, .openai),
+    scenarioEntry("openai/gpt-5.6-sol/thinking", "openai", "gpt-5.6-sol", .thinking, "cassettes/thinking/openai_gpt_5_6_sol.yaml", .openai, .openai),
+};
+
+pub const anthropic_capabilities = [_]Entry{
+    scenarioEntry("anthropic/claude-sonnet-5/structured-output", "anthropic", "claude-sonnet-5", .structured_output, "cassettes/structured/anthropic_claude_sonnet_5.yaml", .anthropic, .anthropic),
+    scenarioEntry("anthropic/claude-sonnet-5/thinking", "anthropic", "claude-sonnet-5", .thinking, "cassettes/thinking/anthropic_claude_sonnet_5.yaml", .anthropic, .anthropic),
+};
+
+pub const google_capabilities = [_]Entry{
+    scenarioEntry("google/gemini-3.7-flash/structured-output", "google", "gemini-3.7-flash", .structured_output, "cassettes/structured/google_gemini_3_7_flash.yaml", .google, .google),
+    scenarioEntry("google/gemini-3.7-flash/thinking", "google", "gemini-3.7-flash", .thinking, "cassettes/thinking/google_gemini_3_7_flash.yaml", .google, .google),
+};
+
+pub const first_party_capabilities = openai_capabilities ++ anthropic_capabilities ++ google_capabilities;
+
 pub const compatible = [_]Entry{
     compatibleEntry("azure-openai/gpt-4o/buffered", "azure-openai", "gpt-4o", "cassettes/providers/azure_openai_gpt_4o.yaml", .azure_openai, "", .azure_openai, true),
     compatibleEntry("bedrock/openai.gpt-oss-20b/buffered", "bedrock", "openai.gpt-oss-20b", "cassettes/providers/bedrock_gpt_oss_20b.yaml", .bedrock, "", .bedrock, false),
@@ -293,7 +314,7 @@ pub const files = [_]Entry{
     scenarioEntry("google/files/file-lifecycle", "google", "", .file_lifecycle, "cassettes/files/google.yaml", .google_files, .google),
 };
 
-pub const all = openai ++ anthropic ++ google ++ first_party_buffered ++ first_party_streaming ++ compatible ++ native ++ rich ++ files;
+pub const all = openai ++ anthropic ++ google ++ first_party_buffered ++ first_party_streaming ++ first_party_capabilities ++ compatible ++ native ++ rich ++ files;
 
 fn modelEntry(
     id: []const u8,
@@ -384,6 +405,7 @@ pub fn matches(entry: Entry, filter: []const u8) bool {
     }
     if (std.mem.eql(u8, filter, "first-party-buffered") and isFirstPartyBuffered(entry)) return true;
     if (std.mem.eql(u8, filter, "first-party-streaming") and isFirstPartyStreaming(entry)) return true;
+    if (std.mem.eql(u8, filter, "first-party-capabilities") and isFirstPartyCapability(entry)) return true;
     if (isNativeRecording(entry) and
         (std.mem.eql(u8, filter, "native-tools") or matchesNativeProvider(entry, filter)))
     {
@@ -407,6 +429,14 @@ fn isFirstPartyStreaming(entry: Entry) bool {
 
 fn isFirstPartyBuffered(entry: Entry) bool {
     if (entry.scenario != .buffered) return false;
+    return switch (entry.route) {
+        .openai, .anthropic, .google => true,
+        else => false,
+    };
+}
+
+fn isFirstPartyCapability(entry: Entry) bool {
+    if (entry.scenario != .structured_output and entry.scenario != .thinking) return false;
     return switch (entry.route) {
         .openai, .anthropic, .google => true,
         else => false,

@@ -4,6 +4,7 @@ const std = @import("std");
 const zigai = @import("zigai");
 const cassettes = @import("support/cassettes.zig");
 const manifest = @import("support/cassette_manifest.zig");
+const output_scenarios = @import("support/output_scenarios.zig");
 const stream_scenarios = @import("support/stream_scenarios.zig");
 
 const prompt = "Call the weather tool exactly once with city Madrid. Then reply with one short sentence.";
@@ -34,17 +35,17 @@ pub fn main(init: std.process.Init) !void {
         const key = requiredCredential(init, entry, 0);
         switch (entry.route) {
             .openai => switch (entry.scenario) {
-                .buffered, .function_tool, .streamed_text, .streamed_function_tool => try recordOpenAI(init, http.transport(), key, entry),
+                .buffered, .function_tool, .streamed_text, .streamed_function_tool, .structured_output, .thinking => try recordOpenAI(init, http.transport(), key, entry),
                 .native_tool => try recordNativeOpenAI(init, http.transport(), key, entry),
                 else => unreachable,
             },
             .anthropic => switch (entry.scenario) {
-                .buffered, .function_tool, .streamed_text, .streamed_function_tool => try recordAnthropic(init, http.transport(), key, entry),
+                .buffered, .function_tool, .streamed_text, .streamed_function_tool, .structured_output, .thinking => try recordAnthropic(init, http.transport(), key, entry),
                 .native_tool => try recordNativeAnthropic(init, http.transport(), key, entry),
                 else => unreachable,
             },
             .google => switch (entry.scenario) {
-                .buffered, .function_tool, .streamed_text, .streamed_function_tool => try recordGoogle(init, http.transport(), key, entry),
+                .buffered, .function_tool, .streamed_text, .streamed_function_tool, .structured_output, .thinking => try recordGoogle(init, http.transport(), key, entry),
                 .native_tool => try recordNativeGoogle(init, http.transport(), key, entry),
                 else => unreachable,
             },
@@ -211,12 +212,15 @@ fn runFirstPartyScenario(
     init: std.process.Init,
     model: zigai.Model,
     scenario: manifest.Scenario,
+    require_thinking_parts: bool,
 ) !void {
     switch (scenario) {
         .buffered => try runTextScenario(init, model),
         .function_tool => try runScenario(init, model),
         .streamed_text => try runStreamTextScenario(init, model),
         .streamed_function_tool => try runStreamToolScenario(init, model),
+        .structured_output => try output_scenarios.runStructured(init.gpa, init.io, model),
+        .thinking => try output_scenarios.runThinking(init.gpa, init.io, model, require_thinking_parts),
         else => unreachable,
     }
 }
@@ -262,7 +266,7 @@ fn recordOpenAI(
         .model_name = entry.model,
         .provider = provider.provider(),
     };
-    try runFirstPartyScenario(init, client.model(), entry.scenario);
+    try runFirstPartyScenario(init, client.model(), entry.scenario, false);
     try write(init, recording, entry, "openai");
 }
 
@@ -280,7 +284,7 @@ fn recordAnthropic(
         .provider = provider.provider(),
         .max_tokens = 128,
     };
-    try runFirstPartyScenario(init, client.model(), entry.scenario);
+    try runFirstPartyScenario(init, client.model(), entry.scenario, true);
     try write(init, recording, entry, "anthropic");
 }
 
@@ -297,7 +301,7 @@ fn recordGoogle(
         .model_name = entry.model,
         .provider = provider.provider(),
     };
-    try runFirstPartyScenario(init, client.model(), entry.scenario);
+    try runFirstPartyScenario(init, client.model(), entry.scenario, false);
     try write(init, recording, entry, "google");
 }
 

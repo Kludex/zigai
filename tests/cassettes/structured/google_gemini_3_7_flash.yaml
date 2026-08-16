@@ -1,0 +1,50 @@
+version: 1
+interactions:
+- request:
+    method: POST
+    uri: "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.7-flash:generateContent"
+    headers: {}
+    body:
+      type: json
+      content:
+        contents:
+          - role: "user"
+            parts:
+              - text: "Return a JSON object whose value field is the integer 42."
+        generationConfig:
+          responseMimeType: "application/json"
+          responseJsonSchema:
+            type: "object"
+            properties:
+              value:
+                type: "integer"
+            required:
+              - "value"
+            additionalProperties: false
+          maxOutputTokens: 256
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        candidates:
+          - content:
+              parts:
+                - text: "{\"value\":42}"
+                  thoughtSignature: |-
+                    EvcECvQEARFNMg/krOGiQ4hcgo4H/OYAXOGfPbKJBglqMcf55d7ZpeTBqq4YiNCZsN5Vz1g1QLoHs7Mo2wwvfr5xo9vSEdsH/SFRIVynMtDs9KUmC/eFPiY6Vg0sZ42XmUDfynBjJktCURq1Gsm+kvVup7Y+F4K1FJ5xgE63cpSzQ9JvHqSY5SX8pxJAtlmsn93raL2tTsoEznQZ5iQEQA7vLuaLiJiUFd/E5y8NNp7afOMHjaw/KVEeT+uhjbBrvetE0YrdU2vFY5kuHfqVLxao1F49yXqG4O7COFkmiofjU44fz9CQ3j71FUh5um5UnpAYtxiEAAY25YD3L1DZIFHYeqQkUISlTfRVtux7ptWKRjHSknESTZlD57CJIeLQ7FtGUaQkQTWW2NfeTqi6UdbAP3Y4G5CsXmtLN4BmZB+Eq91+WgXNrV4T7m7P2ysApv2RzOdLlvtLWMWHzqrvQFiZZrXj1tTYuMZC3OsYLRwMICx9VfRm+32gHyK+RYICrJOvGGbQ8AFt3Sk46pIIjxfhS4gRU41NOfi5EZ9kjxpKwXE/FRAA3bgHrlLUbefhR4vl2okZJvDGuKJIDH+r2kKcyOloQbhGM792welprBWH4Sulkq9VVU/SPHr/Ry3TJnpl+EoyaQeqcuqYl73qhlPkv65ZWvRG82hKaNV3fLD2IoRFfYrVaPGts6/rZD0f+kMRQ5qESo1hWqqrKP1mZaRVwLPr5uz5N1tPyxR7Kbmft8Xg2hlC5Fg6veUh65A4aCENsqgPlh3u/tLdvUopER2eEvktfRUt+0deFgqFoDk+1lCgb8OPs0T+xZ1EH3cG4noSzLFvYAXL8A==
+              role: "model"
+            finishReason: "STOP"
+            index: 0
+        usageMetadata:
+          promptTokenCount: 15
+          candidatesTokenCount: 6
+          totalTokenCount: 171
+          promptTokensDetails:
+            - modality: "TEXT"
+              tokenCount: 15
+          thoughtsTokenCount: 150
+          serviceTier: "standard"
+        modelVersion: "gemini-3.7-flash"
+        responseId: "ug6BarTIO8fkxN8PwaLLmAU"

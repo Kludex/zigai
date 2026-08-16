@@ -2,6 +2,7 @@ const std = @import("std");
 const zigai = @import("zigai");
 const cassettes = @import("support/cassettes.zig");
 const cassette_manifest = @import("support/cassette_manifest.zig");
+const output_scenarios = @import("support/output_scenarios.zig");
 const stream_scenarios = @import("support/stream_scenarios.zig");
 
 const matrix_prompt = "Call the weather tool exactly once with city Madrid. Then reply with one short sentence.";
@@ -206,6 +207,45 @@ test "real Google model cassettes replay streamed function tools" {
     }
 }
 
+test "real OpenAI capability cassettes replay structured output and thinking" {
+    inline for (cassette_manifest.openai_capabilities) |entry| {
+        const fixture = @embedFile(entry.cassette);
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, fixture);
+        defer cassette.deinit();
+        var provider_state = zigai.openai.Provider.init("not-recorded", cassette.transport());
+        var client = zigai.openai.Client{ .model_name = entry.model, .provider = provider_state.provider() };
+        try replayCapabilityScenario(client.model(), &cassette, entry.scenario, false);
+        try expectCapabilityWire(.openai, entry.scenario, fixture);
+    }
+}
+
+test "real Anthropic capability cassettes replay structured output and thinking" {
+    inline for (cassette_manifest.anthropic_capabilities) |entry| {
+        const fixture = @embedFile(entry.cassette);
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, fixture);
+        defer cassette.deinit();
+        var provider_state = zigai.anthropic.Provider.init("not-recorded", cassette.transport());
+        var client = zigai.anthropic.Client{
+            .model_name = entry.model,
+            .provider = provider_state.provider(),
+        };
+        try replayCapabilityScenario(client.model(), &cassette, entry.scenario, true);
+        try expectCapabilityWire(.anthropic, entry.scenario, fixture);
+    }
+}
+
+test "real Google capability cassettes replay structured output and thinking" {
+    inline for (cassette_manifest.google_capabilities) |entry| {
+        const fixture = @embedFile(entry.cassette);
+        var cassette = try cassettes.ReplayTransport.init(std.testing.allocator, fixture);
+        defer cassette.deinit();
+        var provider_state = zigai.google.Provider.init("not-recorded", cassette.transport());
+        var client = zigai.google.Client{ .model_name = entry.model, .provider = provider_state.provider() };
+        try replayCapabilityScenario(client.model(), &cassette, entry.scenario, false);
+        try expectCapabilityWire(.google, entry.scenario, fixture);
+    }
+}
+
 test "real OpenAI-compatible provider cassettes replay text responses" {
     inline for (cassette_manifest.compatible) |entry| {
         if (comptime std.mem.eql(u8, entry.provider, "azure-openai"))
@@ -372,6 +412,48 @@ fn replayStreamToolScenario(model: zigai.Model, cassette: *cassettes.ReplayTrans
     defer result.deinit();
     try capture.validateTool(result.output, result.usage, tool_calls);
     try std.testing.expectEqual(@as(usize, 0), cassette.remaining());
+}
+
+fn replayCapabilityScenario(
+    model: zigai.Model,
+    cassette: *cassettes.ReplayTransport,
+    scenario: cassette_manifest.Scenario,
+    require_thinking_parts: bool,
+) !void {
+    switch (scenario) {
+        .structured_output => try output_scenarios.runStructured(std.testing.allocator, null, model),
+        .thinking => try output_scenarios.runThinking(
+            std.testing.allocator,
+            null,
+            model,
+            require_thinking_parts,
+        ),
+        else => return error.UnexpectedCapabilityScenario,
+    }
+    try std.testing.expectEqual(@as(usize, 0), cassette.remaining());
+}
+
+const FirstPartyProvider = enum { openai, anthropic, google };
+
+fn expectCapabilityWire(
+    provider: FirstPartyProvider,
+    scenario: cassette_manifest.Scenario,
+    fixture: []const u8,
+) !void {
+    const needles: []const []const u8 = switch (scenario) {
+        .structured_output => switch (provider) {
+            .openai => &.{ "text:", "format:", "type: \"json_schema\"", "strict: true" },
+            .anthropic => &.{ "output_config:", "format:", "type: \"json_schema\"" },
+            .google => &.{ "generationConfig:", "responseMimeType: \"application/json\"", "responseJsonSchema:" },
+        },
+        .thinking => switch (provider) {
+            .openai => &.{ "reasoning:", "effort: \"high\"", "\"reasoning_tokens\":" },
+            .anthropic => &.{ "output_config:", "effort: \"high\"", "type\":\"thinking\"" },
+            .google => &.{ "thinkingConfig:", "thinkingLevel: \"HIGH\"", "\"thoughtsTokenCount\":" },
+        },
+        else => return error.UnexpectedCapabilityScenario,
+    };
+    for (needles) |needle| try std.testing.expect(std.mem.indexOf(u8, fixture, needle) != null);
 }
 
 test "real OpenAI cassette replays native web search" {
