@@ -373,6 +373,12 @@ and rejects duplicate canonical results. Trusted profile, limit, and
 deprecation accessors read exclusively from the catalog; the provider's raw
 descriptor remains available for inspection but is never promoted.
 
+The built-in catalog is generated from a versioned, sorted JSON source with an
+HTTPS primary-source link on every entry. Runtime code imports static Zig data;
+JSON parsing exists only in the independent update/check executable. The normal
+build check regenerates in memory and compares bytes, making source review and
+generated drift explicit without adding startup work or hidden network access.
+
 Discovered model lists and file records are arena-owned values with explicit
 `deinit`; requests, provider configuration, and the `Provider` itself are
 borrowed. Concrete provider state must outlive every model and in-flight

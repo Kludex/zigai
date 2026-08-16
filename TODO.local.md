@@ -149,7 +149,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   deterministic lookup, and explicit ownership.
 - [x] Merge provider discovery results with catalog metadata without allowing
   provider payloads to widen trusted capability profiles.
-- [ ] Add a versioned generated compatibility snapshot plus an independent,
+- [x] Add a versioned generated compatibility snapshot plus an independent,
   deterministic update/check tool and documented review workflow.
 - [ ] Expand real cassettes to buffered, streaming, tool, structured-output,
   thinking, rich-media, native-tool, retry, and error cases for every provider

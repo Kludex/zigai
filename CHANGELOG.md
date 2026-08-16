@@ -24,6 +24,9 @@
 - Add an owned discovery-merge index that canonicalizes aliases while keeping
   provider metadata separate from trusted catalog profiles, limits, and
   deprecations.
+- Add a versioned built-in model compatibility snapshot with primary-source
+  provenance and an offline deterministic update/check tool enforced by the
+  normal build check.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

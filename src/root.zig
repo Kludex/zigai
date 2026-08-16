@@ -2,6 +2,7 @@
 
 pub const model = @import("model.zig");
 pub const model_catalog = @import("model_catalog.zig");
+pub const model_catalog_snapshot = @import("model_catalog_snapshot.zig");
 pub const settings = @import("settings.zig");
 pub const output = @import("output.zig");
 pub const tool = @import("tool.zig");
@@ -100,6 +101,9 @@ pub const ResolvedModel = model_catalog.ResolvedModel;
 pub const DiscoveredCatalogModel = model_catalog.DiscoveryItem;
 pub const OwnedDiscoveredCatalog = model_catalog.OwnedDiscovery;
 pub const mergeModelDiscovery = model_catalog.mergeDiscovery;
+pub const builtin_model_catalog = model_catalog_snapshot.value;
+pub const builtin_model_catalog_version = model_catalog_snapshot.version;
+pub const builtin_model_catalog_updated_at = model_catalog_snapshot.updated_at;
 pub const Provider = provider.Provider;
 pub const ProviderRequestPolicy = provider.RequestPolicy;
 pub const ProviderModelDescriptor = provider.ModelDescriptor;
@@ -236,6 +240,7 @@ test {
     _ = @import("agent.zig");
     _ = @import("model.zig");
     _ = @import("model_catalog.zig");
+    _ = @import("model_catalog_snapshot.zig");
     _ = @import("testing.zig");
     _ = @import("transport.zig");
     _ = @import("provider.zig");

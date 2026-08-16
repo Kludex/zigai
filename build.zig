@@ -178,6 +178,49 @@ pub fn build(b: *std.Build) void {
     const run_stress_tests = b.addRunArtifact(stress_tests);
     const stress_step = b.step("stress", "Run bounded stress and allocation-failure scenarios");
     stress_step.dependOn(&run_stress_tests.step);
+    const model_catalog_module = b.createModule(.{
+        .root_source_file = b.path("src/model_catalog.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .error_tracing = error_tracing,
+    });
+    const model_catalog_tool_module = b.createModule(.{
+        .root_source_file = b.path("tools/model_catalog.zig"),
+        .target = b.graph.host,
+        .optimize = optimize,
+        .error_tracing = error_tracing,
+        .imports = &.{.{ .name = "catalog", .module = model_catalog_module }},
+    });
+    const model_catalog_tool = b.addExecutable(.{
+        .name = "zigai-model-catalog",
+        .root_module = model_catalog_tool_module,
+    });
+    const model_catalog_tool_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/model_catalog.zig"),
+            .target = b.graph.host,
+            .optimize = optimize,
+            .error_tracing = error_tracing,
+            .imports = &.{.{ .name = "catalog", .module = model_catalog_module }},
+        }),
+    });
+    const run_model_catalog_tool_tests = b.addRunArtifact(model_catalog_tool_tests);
+    const run_model_catalog_check = b.addRunArtifact(model_catalog_tool);
+    run_model_catalog_check.addArgs(&.{
+        "check",
+        "data/model_catalog.json",
+        "src/model_catalog_snapshot.zig",
+    });
+    const model_catalog_check = b.step("check-model-catalog", "Verify the generated model catalog snapshot");
+    model_catalog_check.dependOn(&run_model_catalog_check.step);
+    const run_model_catalog_update = b.addRunArtifact(model_catalog_tool);
+    run_model_catalog_update.addArgs(&.{
+        "update",
+        "data/model_catalog.json",
+        "src/model_catalog_snapshot.zig",
+    });
+    const model_catalog_update = b.step("update-model-catalog", "Regenerate the model catalog snapshot");
+    model_catalog_update.dependOn(&run_model_catalog_update.step);
     const fuzz_step = b.step("fuzz", "Run parser and protocol fuzz targets");
     fuzz_step.dependOn(&run_tests.step);
     fuzz_step.dependOn(&run_cli_common_tests.step);
@@ -193,6 +236,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_spec_cli_tests.step);
     test_step.dependOn(&run_mcp_conformance_tests.step);
     test_step.dependOn(&run_fuzz_tests.step);
+    test_step.dependOn(&run_model_catalog_tool_tests.step);
 
     const check = b.step("check", "Compile all public packages");
     check.dependOn(&tests.step);
@@ -227,6 +271,8 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&http_smoke.step);
     check.dependOn(&http_stress.step);
     check.dependOn(&stress_tests.step);
+    check.dependOn(&model_catalog_tool_tests.step);
+    check.dependOn(&run_model_catalog_check.step);
 
     const examples = b.step("examples", "Compile runnable provider examples");
     inline for (.{ "openai", "anthropic", "google", "ollama", "crusoe", "snowflake", "zai", "custom_provider" }) |provider| {

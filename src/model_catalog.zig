@@ -4,13 +4,15 @@
 //! returned resolutions borrow the caller's storage and must not outlive it.
 
 const std = @import("std");
-const model = @import("model.zig");
+pub const model_types = @import("model.zig");
+const model = model_types;
 const provider = @import("provider.zig");
 
 pub const Error = error{
     InvalidProviderName,
     InvalidModelId,
     InvalidModelAlias,
+    InvalidModelSource,
     InvalidModelLimits,
     DuplicateModelIdentifier,
     InvalidModelDeprecation,
@@ -19,13 +21,13 @@ pub const Error = error{
 };
 
 pub const Limits = struct {
-    context_tokens: ?u64 = null,
+    context_window_tokens: ?u64 = null,
     max_output_tokens: ?u64 = null,
 
     pub fn validate(self: Limits) Error!void {
-        if (self.context_tokens == 0 or self.max_output_tokens == 0)
+        if (self.context_window_tokens == 0 or self.max_output_tokens == 0)
             return error.InvalidModelLimits;
-        if (self.context_tokens) |context| if (self.max_output_tokens) |output| {
+        if (self.context_window_tokens) |context| if (self.max_output_tokens) |output| {
             if (output > context) return error.InvalidModelLimits;
         };
     }
@@ -44,6 +46,8 @@ pub const Entry = struct {
     provider_name: []const u8,
     id: []const u8,
     aliases: []const []const u8 = &.{},
+    /// Optional primary source used to review this metadata.
+    source_url: ?[]const u8 = null,
     deprecation: ?Deprecation = null,
     limits: Limits = .{},
     /// Trusted capabilities. Absence stays unknown rather than widening them.
@@ -211,6 +215,8 @@ pub fn mergeDiscovery(
 fn validateEntry(entry: Entry) Error!void {
     if (!validIdentifier(entry.provider_name)) return error.InvalidProviderName;
     if (!validIdentifier(entry.id)) return error.InvalidModelId;
+    if (entry.source_url) |source_url| if (!validMetadata(source_url))
+        return error.InvalidModelSource;
     try entry.limits.validate();
     for (entry.aliases, 0..) |alias, index| {
         if (!validIdentifier(alias) or std.mem.eql(u8, alias, entry.id))
@@ -255,7 +261,7 @@ test "catalog resolves canonical IDs and aliases within provider namespaces" {
             .provider_name = "openai",
             .id = "gpt-5.1",
             .aliases = &.{ "gpt-5", "best" },
-            .limits = .{ .context_tokens = 400_000, .max_output_tokens = 128_000 },
+            .limits = .{ .context_window_tokens = 400_000, .max_output_tokens = 128_000 },
             .profile = .{ .supports_streaming = true, .supports_json_schema_output = true },
         },
         .{
@@ -275,7 +281,7 @@ test "catalog resolves canonical IDs and aliases within provider namespaces" {
     try std.testing.expectEqualStrings("openai", canonical.providerName());
     try std.testing.expectEqualStrings("gpt-5.1", canonical.canonicalId());
     try std.testing.expect(canonical.entry.profile.?.supports_json_schema_output);
-    try std.testing.expectEqual(@as(?u64, 400_000), canonical.entry.limits.context_tokens);
+    try std.testing.expectEqual(@as(?u64, 400_000), canonical.entry.limits.context_window_tokens);
 
     const alias = catalog.resolve("openai", "best").?;
     try std.testing.expect(alias.wasAlias());
@@ -295,15 +301,20 @@ test "catalog validation rejects invalid identity limits and deprecation metadat
     try std.testing.expectError(error.InvalidProviderName, Catalog.init(&.{.{ .provider_name = "", .id = "model" }}));
     try std.testing.expectError(error.InvalidProviderName, Catalog.init(&.{.{ .provider_name = "bad name", .id = "model" }}));
     try std.testing.expectError(error.InvalidModelId, Catalog.init(&.{.{ .provider_name = "test", .id = "bad\nmodel" }}));
-    try std.testing.expectError(error.InvalidModelLimits, Catalog.init(&.{.{
+    try std.testing.expectError(error.InvalidModelSource, Catalog.init(&.{.{
         .provider_name = "test",
         .id = "model",
-        .limits = .{ .context_tokens = 0 },
+        .source_url = "",
     }}));
     try std.testing.expectError(error.InvalidModelLimits, Catalog.init(&.{.{
         .provider_name = "test",
         .id = "model",
-        .limits = .{ .context_tokens = 10, .max_output_tokens = 11 },
+        .limits = .{ .context_window_tokens = 0 },
+    }}));
+    try std.testing.expectError(error.InvalidModelLimits, Catalog.init(&.{.{
+        .provider_name = "test",
+        .id = "model",
+        .limits = .{ .context_window_tokens = 10, .max_output_tokens = 11 },
     }}));
     try std.testing.expectError(error.InvalidModelAlias, Catalog.init(&.{.{
         .provider_name = "test",
@@ -379,7 +390,7 @@ test "discovery merge keeps provider payloads separate from trusted catalog meta
         .id = "model-v2",
         .aliases = &.{"latest"},
         .deprecation = .{},
-        .limits = .{ .context_tokens = 100, .max_output_tokens = 20 },
+        .limits = .{ .context_window_tokens = 100, .max_output_tokens = 20 },
         .profile = .{ .supports_tools = false, .supports_streaming = true },
     }});
     const discovered = [_]provider.ModelDescriptor{
@@ -397,7 +408,7 @@ test "discovery merge keeps provider payloads separate from trusted catalog meta
     try std.testing.expectEqualStrings("model-v2", merged.items[0].canonical_id);
     try std.testing.expect(!merged.items[0].trustedProfile().?.supports_tools);
     try std.testing.expect(merged.items[0].trustedProfile().?.supports_streaming);
-    try std.testing.expectEqual(@as(?u64, 100), merged.items[0].limits().?.context_tokens);
+    try std.testing.expectEqual(@as(?u64, 100), merged.items[0].limits().?.context_window_tokens);
     try std.testing.expect(merged.items[0].deprecation() != null);
     try std.testing.expectEqualStrings(
         "{\"source\":\"provider\"}",

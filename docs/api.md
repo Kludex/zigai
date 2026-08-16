@@ -454,6 +454,15 @@ collapsed. The owned result stores only the joined index, so call `deinit` and
 keep both the provider discovery arena and catalog entries alive while using
 it.
 
+`builtin_model_catalog` exposes the generated compatibility snapshot alongside
+`builtin_model_catalog_version` and `builtin_model_catalog_updated_at`. The
+runtime module contains static entries and performs no parsing or allocation.
+`data/model_catalog.json` is the reviewable source; `zig build
+update-model-catalog` regenerates the Zig module, and `zig build
+check-model-catalog` compares it byte-for-byte. The source is sorted and
+validated before generation, including aliases, enum sets, HTTPS provenance,
+limits, and the core catalog invariants.
+
 Provider file descriptors always include `provider_name`. Their
 `uploadedFile()` view is the handle accepted by `inspectFile`, `downloadFile`,
 and `deleteFile`, and it can also be passed directly as provider-owned rich

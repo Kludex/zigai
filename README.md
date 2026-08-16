@@ -341,13 +341,13 @@ Use `ModelCatalog` for trusted application metadata and aliases:
 
 ```zig
 const catalog = try zigai.ModelCatalog.init(&.{.{
-    .provider_name = "openai",
-    .id = "gpt-5.1",
+    .provider_name = "custom",
+    .id = "chat-v2",
     .aliases = &.{"default"},
-    .limits = .{ .context_tokens = 400_000, .max_output_tokens = 128_000 },
+    .limits = .{ .context_window_tokens = 32_000, .max_output_tokens = 8_000 },
     .profile = .{ .supports_streaming = true },
 }});
-const selected = catalog.resolve("openai", "default") orelse
+const selected = catalog.resolve("custom", "default") orelse
     return error.UnknownModel;
 ```
 
@@ -357,6 +357,10 @@ rejects ambiguous IDs, invalid limits, and broken replacement links.
 `mergeModelDiscovery` joins a live provider list to that catalog. Its result
 owns only the joined index; keep both inputs alive. Provider metadata remains
 available, but only catalog profiles are exposed as trusted capabilities.
+
+`builtin_model_catalog` is the checked-in compatibility snapshot. Update its
+reviewed JSON source with `zig build update-model-catalog`; CI runs
+`zig build check-model-catalog` to reject generated drift.
 
 Each model exposes a `ModelProfile`. The profile tells the agent which
 capabilities are supported before it sends a paid request.

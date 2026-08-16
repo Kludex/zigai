@@ -1,0 +1,96 @@
+{
+  "version": 1,
+  "updated_at": "2026-08-16",
+  "entries": [
+    {
+      "provider_name": "anthropic",
+      "id": "claude-sonnet-5",
+      "aliases": [],
+      "source_url": "https://platform.claude.com/docs/en/about-claude/models/whats-new-sonnet-5",
+      "limits": {
+        "context_window_tokens": 1000000,
+        "max_output_tokens": 128000
+      },
+      "profile": {
+        "supports_tools": true,
+        "supports_parallel_tool_calls": true,
+        "supports_json_schema_output": true,
+        "supports_system_messages": true,
+        "supports_thinking": true,
+        "supports_streaming": true,
+        "supports_max_tokens": true,
+        "supports_stop_sequences": true,
+        "supports_tool_choice": true,
+        "supports_parallel_tool_call_setting": true,
+        "supports_request_headers": true,
+        "extra_body_kind": "anthropic",
+        "reasoning_efforts": ["low", "medium", "high", "max"],
+        "builtin_tools": ["web_search", "web_fetch"],
+        "content_types": ["image", "document", "thinking"]
+      }
+    },
+    {
+      "provider_name": "gcp.gen_ai",
+      "id": "gemini-3.6-flash",
+      "aliases": [],
+      "source_url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash",
+      "limits": {
+        "context_window_tokens": 1048576,
+        "max_output_tokens": 65536
+      },
+      "profile": {
+        "supports_tools": true,
+        "supports_parallel_tool_calls": true,
+        "supports_json_schema_output": true,
+        "supports_json_object_output": true,
+        "supports_system_messages": true,
+        "supports_thinking": true,
+        "supports_streaming": true,
+        "supports_temperature": true,
+        "supports_max_tokens": true,
+        "supports_stop_sequences": true,
+        "supports_seed": true,
+        "supports_top_p": true,
+        "supports_top_k": true,
+        "supports_presence_penalty": true,
+        "supports_frequency_penalty": true,
+        "supports_logprobs": true,
+        "supports_tool_choice": true,
+        "supports_thinking_budget": true,
+        "supports_request_headers": true,
+        "extra_body_kind": "google",
+        "reasoning_efforts": ["minimal", "low", "medium", "high"],
+        "builtin_tools": ["web_search", "web_fetch"],
+        "content_types": ["image", "audio", "video", "document", "binary", "thinking"]
+      }
+    },
+    {
+      "provider_name": "openai",
+      "id": "gpt-5.6-sol",
+      "aliases": ["gpt-5.6"],
+      "source_url": "https://developers.openai.com/api/docs/models/gpt-5.6-sol",
+      "limits": {
+        "context_window_tokens": 1050000,
+        "max_output_tokens": 128000
+      },
+      "profile": {
+        "supports_tools": true,
+        "supports_parallel_tool_calls": true,
+        "supports_json_schema_output": true,
+        "supports_json_object_output": true,
+        "supports_system_messages": true,
+        "supports_thinking": true,
+        "supports_streaming": true,
+        "supports_max_tokens": true,
+        "supports_tool_choice": true,
+        "supports_parallel_tool_call_setting": true,
+        "supports_truncation": true,
+        "supports_request_headers": true,
+        "extra_body_kind": "openai",
+        "reasoning_efforts": ["none", "low", "medium", "high", "xhigh", "max"],
+        "builtin_tools": ["web_search"],
+        "content_types": ["image", "document", "binary"]
+      }
+    }
+  ]
+}
