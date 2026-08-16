@@ -151,9 +151,23 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   provider payloads to widen trusted capability profiles.
 - [x] Add a versioned generated compatibility snapshot plus an independent,
   deterministic update/check tool and documented review workflow.
-- [ ] Expand real cassettes to buffered, streaming, tool, structured-output,
-  thinking, rich-media, native-tool, retry, and error cases for every provider
-  with an available key; keep secrets filtered and fixtures deterministic.
+- [ ] Replace the recorder's ad-hoc filters with one typed cassette manifest.
+  Give every recording a stable provider, model, scenario, fixture path, and
+  credential set; select credentials lazily; reject unknown or empty filters;
+  and provide a secret-free command that lists runnable recordings.
+- [ ] Record and replay buffered, streaming, function-tool, structured-output,
+  thinking, retry, and provider-error scenarios for every applicable first-party
+  OpenAI, Anthropic, and Google model with an available key.
+- [ ] Record and replay rich-media and provider-managed-tool scenarios for every
+  applicable native provider with an available key, including deterministic
+  assertions for citations, references, usage, and provider extension metadata.
+- [ ] Record and replay buffered, streaming, function-tool, retry, and
+  provider-error scenarios for every applicable compatible or specialized
+  provider with an available key.
+- [ ] Add a cassette audit gate that proves fixture completeness against the
+  manifest, rejects credential-shaped values and unsafe headers, validates
+  deterministic normalization, and documents intentional capability-based
+  scenario exclusions.
 - [ ] Replace the rejected `PYDANTIC_AI_GATEWAY_API_KEY` and `OVHCLOUD_API_KEY`,
   then record and verify their live provider cassettes.
 
