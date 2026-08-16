@@ -2470,15 +2470,6 @@ test "graph snapshots reject drift and enforce every JSON boundary" {
         fn start(_: ?*anyopaque, _: *Workflow.Context, input: u64) CallbackError!u64 {
             return input;
         }
-
-        fn step(_: ?*anyopaque, run: *Workflow.Context, input: u64) CallbackError!u64 {
-            run.state.* += input;
-            return input + 1;
-        }
-
-        fn end(_: ?*anyopaque, _: *Workflow.Context, input: u64) CallbackError!u64 {
-            return input;
-        }
     };
     const Codec = struct {
         fn encode(
@@ -2547,8 +2538,8 @@ test "graph snapshots reject drift and enforce every JSON boundary" {
             };
             defer builder.deinit(gpa);
             try builder.setStart(.{ .run_fn = Callbacks.start });
-            try builder.setEnd(.{ .run_fn = Callbacks.end });
-            const step = try builder.addStep(gpa, .{ .name = "step", .run_fn = Callbacks.step });
+            try builder.setEnd(.{ .run_fn = Callbacks.start });
+            const step = try builder.addStep(gpa, .{ .name = "step", .run_fn = Callbacks.start });
             try builder.setEntry(step);
             try builder.finish(gpa, step);
             return builder.build(gpa);
@@ -2578,6 +2569,31 @@ test "graph snapshots reject drift and enforce every JSON boundary" {
 
     var graph = try Support.build(std.testing.allocator, "strict/v1", .{});
     defer graph.deinit(std.testing.allocator);
+
+    var validation_allocator = std.testing.FailingAllocator.init(
+        std.testing.allocator,
+        .{ .fail_index = 0 },
+    );
+    try std.testing.expectError(error.OutOfMemory, graph.validateEncodedPayload(
+        validation_allocator.allocator(),
+        "[]",
+    ));
+    validation_allocator = std.testing.FailingAllocator.init(
+        std.testing.allocator,
+        .{ .fail_index = 0 },
+    );
+    try std.testing.expectError(error.OutOfMemory, graph.validateStoredPayload(
+        validation_allocator.allocator(),
+        "[]",
+    ));
+    validation_allocator = std.testing.FailingAllocator.init(
+        std.testing.allocator,
+        .{ .fail_index = 0 },
+    );
+    try std.testing.expectError(error.OutOfMemory, graph.validateMigrationSource(
+        validation_allocator.allocator(),
+        "[]",
+    ));
     var same_graph = try Support.build(std.testing.allocator, "strict/v1", .{});
     defer same_graph.deinit(std.testing.allocator);
     try std.testing.expectEqualSlices(
@@ -2925,14 +2941,6 @@ test "graph snapshot codecs migrate payloads and clean partial restores" {
             };
         }
 
-        fn encodeWrapped(
-            _: ?*anyopaque,
-            gpa: std.mem.Allocator,
-            value: *const u64,
-        ) SnapshotCallbackError![]u8 {
-            return std.json.Stringify.valueAlloc(gpa, Wrapped{ .value = value.* }, .{});
-        }
-
         fn decodeWrapped(
             _: ?*anyopaque,
             gpa: std.mem.Allocator,
@@ -3047,9 +3055,9 @@ test "graph snapshot codecs migrate payloads and clean partial restores" {
         fn v2(migration: ?Workflow.SnapshotMigration) Workflow.SnapshotCodec {
             return .{
                 .version = 2,
-                .encode_state_fn = encodeWrapped,
+                .encode_state_fn = encodeNumber,
                 .decode_state_fn = decodeWrapped,
-                .encode_value_fn = encodeWrapped,
+                .encode_value_fn = encodeNumber,
                 .decode_value_fn = decodeWrapped,
                 .migration = migration,
             };
@@ -3065,6 +3073,15 @@ test "graph snapshot codecs migrate payloads and clean partial restores" {
     try builder.finish(std.testing.allocator, step);
     var graph = try builder.build(std.testing.allocator);
     defer graph.deinit(std.testing.allocator);
+    var decode_allocator = std.testing.FailingAllocator.init(
+        std.testing.allocator,
+        .{ .fail_index = 0 },
+    );
+    try std.testing.expectError(error.OutOfMemory, Codec.decodeWrapped(
+        null,
+        decode_allocator.allocator(),
+        "{\"value\":1}",
+    ));
     var state: u64 = 3;
     var deps: u8 = 0;
     var run = try graph.iter(std.testing.allocator, &state, &deps, 5, .{});
