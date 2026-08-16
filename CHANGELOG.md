@@ -61,6 +61,9 @@
 - Add a dependency-free Temporal runtime adapter and official-SDK sidecar with
   explicit operation registrations, stable workflow identities, bounded
   payloads, configurable activity retries/timeouts, and deployment rules.
+- Keep deterministic workflow-origin tools inline during durable replay, so
+  capability loading can update the next step before newly active side-effect
+  handlers are preflighted.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model

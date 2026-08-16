@@ -717,9 +717,12 @@ vocabulary returns `UnsupportedJsonSchema`; a valid output that misses an
 assertion returns `OutputSchemaValidationFailed`.
 
 `Tool.origin` is `ToolOrigin.application` by default. Tools prepared by an MCP
-client use `ToolOrigin.mcp`; providers still see both as ordinary function
-tools. Durable agents use the origin only to select `tool_call` or
-`mcp_request` routing.
+client use `ToolOrigin.mcp`; deterministic orchestration tools may explicitly
+use `ToolOrigin.workflow`. Providers see all three as ordinary function tools.
+Durable agents route application and MCP tools through `tool_call` and
+`mcp_request` workers, while workflow tools execute inline during replay and
+must not perform external side effects. ZigAI's internal `load_capability` tool
+uses the workflow origin.
 
 ## Streaming events
 

@@ -37,7 +37,7 @@ test {
 /// Latest stable MCP protocol revision supported by ZigAI.
 pub const protocol_version = "2026-07-28";
 
-pub const ClientCapabilities = primitives.ClientCapabilities;
+pub const ClientCapabilities = primitives.ClientCapabilities; // kcov-ignore: public alias
 pub const CompletionReference = primitives.CompletionReference;
 pub const CompletionRequest = primitives.CompletionRequest;
 pub const InputKind = primitives.InputKind;

@@ -393,6 +393,8 @@ pub const ToolOrigin = enum {
     application,
     /// Tool callback backed by a Model Context Protocol client.
     mcp,
+    /// Deterministic orchestration that must execute in workflow code.
+    workflow,
 };
 
 fn validateToolArgumentsJson(allocator: std.mem.Allocator, arguments_json: []const u8) !void {

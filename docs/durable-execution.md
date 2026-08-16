@@ -128,6 +128,13 @@ Tool argument, call, and return policies still execute in the agent process and
 must be deterministic. The durable runtime owns the actual application or MCP
 tool side effect; a configured route never invokes the local tool callback.
 
+`ToolOrigin.workflow` is reserved for deterministic orchestration that must run
+inside workflow code. It bypasses durable tool workers and may be replayed, so
+it must not perform network, filesystem, clock, random, or other external side
+effects. ZigAI marks its internal `load_capability` tool with this origin; once
+a capability loads, its application and MCP tools are preflighted before the
+next model request.
+
 ## Standalone MCP requests
 
 `mcp.RequestOptions.durable` accepts an explicit `mcp.DurableRequest` identity.
@@ -189,7 +196,7 @@ associated model or resumed-tool side effects.
 
 Durable agent runs validate the buffered or streaming model handler, retry
 timer, and every application/MCP tool family before emitting `run_start` or
-calling a provider. Dynamic `Toolset` values declare their possible families in
+calling a provider. Dynamic `Toolset` values declare their possible origins in
 `durable_origins`; MCP toolsets declare `.mcp` automatically. Prepared tools are
 checked again before each model request, including after capability changes.
 Missing registrations fail as `Agent.Error.MissingDurableHandler`, while a

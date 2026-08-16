@@ -728,8 +728,8 @@ pub const Toolset = struct {
     tools: []const model_types.Tool = &.{},
     namespace: ?[]const u8 = null,
     metadata: []const model_types.ToolMetadata = &.{},
-    /// Tool families a dynamic preparation callback may return. Durable runs
-    /// preflight these handlers before invoking the callback.
+    /// Execution origins a dynamic preparation callback may return. Durable
+    /// runs preflight side-effect handlers before invoking the callback.
     durable_origins: ?[]const model_types.ToolOrigin = null,
     context: ?*anyopaque = null,
     prepareFn: ?*const fn (
@@ -1224,6 +1224,7 @@ const CapabilityRuntime = struct {
                 .parameters_json_schema = load_capability_schema,
             },
             .sequential = true,
+            .origin = .workflow,
             .context = self,
             .validateFn = validateCapabilityLoad,
             .executeWithContextFn = executeCapabilityLoad,
@@ -3871,8 +3872,9 @@ fn executeToolWork(
     };
     tool_policy.applyAll(policies, allocator, .{ .call = &call }) catch |failure|
         return .{ .failure = failure };
-    const output = call.output orelse if (durable) |binding| executeToolDurable(
-        binding,
+    const use_durable = durable != null and tool.origin != .workflow;
+    const output = call.output orelse if (use_durable) executeToolDurable(
+        durable.?,
         allocator,
         tool,
         run_context,
@@ -3917,6 +3919,7 @@ fn executeToolDurable(
     const kind: durable_types.OperationKind = switch (tool.origin) {
         .application => .tool_call,
         .mcp => .mcp_request,
+        .workflow => unreachable,
     };
     var record = try binding.execute(
         allocator,
@@ -5226,6 +5229,7 @@ fn requireDurableToolHandler(
     const handler = switch (origin) {
         .application => binding.handlers.tool_call,
         .mcp => binding.handlers.mcp_request,
+        .workflow => return,
     };
     if (handler == null) return Agent.Error.MissingDurableHandler;
 }
@@ -7083,6 +7087,8 @@ test "durable handler preflight covers models retries tools and toolsets" {
     };
     var mcp_tool = app_tool;
     mcp_tool.origin = .mcp;
+    var workflow_tool = app_tool;
+    workflow_tool.origin = .workflow;
     const model_only = durable_types.Binding{
         .runtime = undefined,
         .run_id = "preflight",
@@ -7125,4 +7131,90 @@ test "durable handler preflight covers models retries tools and toolsets" {
         .prepareFn = Unused.prepare,
         .durable_origins = &.{ .application, .mcp },
     }}, true);
+    try preflightDurableHandlers(model_only, false, &.{workflow_tool}, &.{.{
+        .prepareFn = Unused.prepare,
+        .durable_origins = &.{.workflow},
+    }}, false);
+
+    try std.testing.expectError(
+        error.ModelMustNotRun,
+        Unused.model(&model_calls, std.testing.allocator, .{ .messages = &.{} }),
+    );
+    const unused_output = try Unused.tool(&model_calls, std.testing.allocator, "{}");
+    defer std.testing.allocator.free(unused_output);
+    const unused_entries = try Unused.prepare(null, std.testing.allocator, .{
+        .messages = &.{},
+        .usage = .{},
+        .model_requests = 0,
+        .dependencies = null,
+    }, &.{});
+    defer std.testing.allocator.free(unused_entries);
+    try Unused.hook(&hook_calls, .{ .run_error = .{ .failure = error.ModelMustNotRun } });
+    try std.testing.expectEqual(@as(usize, 1), model_calls);
+    try std.testing.expectEqual(@as(usize, 1), hook_calls);
+}
+
+test "durable capability loading stays in workflow code and preflights loaded tools" {
+    const RuntimeState = struct {
+        model_calls: usize = 0,
+
+        fn execute(
+            context: *anyopaque,
+            allocator: std.mem.Allocator,
+            invocation: durable_types.Invocation,
+        ) !durable_types.OwnedRecord {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expectEqual(durable_types.OperationKind.model_request, invocation.kind);
+            self.model_calls += 1;
+            const output_json = try durable_types.payloads.model.stringifyResponse(allocator, .{
+                .parts = &.{.{ .tool_call = .{
+                    .id = "load-research",
+                    .name = load_capability_tool_name,
+                    .arguments_json = "{\"id\":\"research\"}",
+                } }},
+                .provider_name = "durable",
+                .model_name = "worker",
+            });
+            defer allocator.free(output_json);
+            return durable_types.OwnedRecord.copy(
+                allocator,
+                durable_types.Record.init(invocation, .{ .success = output_json }),
+            );
+        }
+    };
+    const Local = struct {
+        fn model(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse { // kcov-ignore: durable routing guard
+            return error.ModelMustNotRun; // kcov-ignore: durable routing guard
+        }
+
+        fn tool(_: *anyopaque, _: std.mem.Allocator, _: []const u8) ![]const u8 { // kcov-ignore: loaded preflight guard
+            return error.ToolMustNotRun; // kcov-ignore: loaded preflight guard
+        }
+    };
+    var runtime_state: RuntimeState = .{};
+    var unused: u8 = 0;
+    const loaded_tool = model_types.Tool{
+        .definition = .{ .name = "search", .description = "", .parameters_json_schema = "{}" },
+        .context = &unused,
+        .executeFn = Local.tool,
+    };
+    const binding = durable_types.Binding{
+        .runtime = .{ .context = &runtime_state, .executeFn = RuntimeState.execute },
+        .run_id = "capability-preflight",
+        .handlers = .{ .model_request = "model" },
+    };
+    try std.testing.expectError(Agent.Error.MissingDurableHandler, (Agent{
+        .model = .{
+            .context = &unused,
+            .profile = .{ .supports_tools = true },
+            .requestFn = Local.model,
+        },
+        .capabilities = &.{.{
+            .id = "research",
+            .description = "Research tools.",
+            .loading = .on_demand,
+            .tools = &.{loaded_tool},
+        }},
+    }).runWithOptions(std.testing.allocator, "load research", .{ .durable = binding }));
+    try std.testing.expectEqual(@as(usize, 1), runtime_state.model_calls);
 }
