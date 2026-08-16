@@ -11,6 +11,8 @@
 - Add strict versioned graph state/frontier snapshots with stable definition
   fingerprints, bounded JSON codecs, resumable iteration, payload migrations,
   atomic state restoration, and resume lifecycle events.
+- Add bounded borrowed graph labels, descriptions, groups, and source locations
+  with a versioned deterministic machine-readable node/edge view.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

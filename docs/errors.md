@@ -293,6 +293,11 @@ validation never invokes it.
 | `DuplicateBranchName` | A decision or fan-out registers the same branch name twice. |
 | `MissingParallelBranch` | A fan-out node has no branch callbacks. |
 | `EmptyDefinitionId` / `DefinitionIdTooLong` | An enabled graph persistence identity is empty or exceeds its bound. |
+| `EmptyLabel` / `LabelTooLong` | Optional node or edge label metadata is empty or exceeds its bound. |
+| `EmptyDescription` / `DescriptionTooLong` | Optional node or edge description metadata is empty or exceeds its bound. |
+| `EmptyGroup` / `GroupTooLong` | Optional node group metadata is empty or exceeds its bound. |
+| `EmptySourcePath` / `SourcePathTooLong` | A metadata source path is empty or exceeds its bound. |
+| `InvalidSourceLocation` | A source column was provided without a one-based source line. |
 | `DuplicateStart` / `DuplicateEnd` | A boundary callback was registered twice. |
 | `MissingStart` / `MissingEnd` / `MissingEntry` | A required graph boundary is absent. |
 | `MissingOutgoingEdge` | A node has no following node or terminal route. |

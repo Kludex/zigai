@@ -624,6 +624,15 @@ collection sizes are preflighted independently. Payload schema versions can
 advance through one explicit application migration hook; envelope versions and
 newer payloads fail closed.
 
+Graph documentation metadata is deliberately outside that execution digest:
+changing a label, description, group, or source location does not invalidate a
+compatible settled snapshot. The builder bounds and validates borrowed
+metadata, then preserves it beside nodes and routes. A versioned visualization
+view allocates only stable node and edge arrays, includes synthetic start/end
+boundaries and the definition digest, and keeps route identity distinct from
+presentation labels. This provides a deterministic tooling boundary without
+copying documentation strings or coupling execution to a renderer.
+
 ## Evaluations
 
 `evals.Dataset` runs ordinary `Agent` instances over named cases and produces

@@ -549,8 +549,8 @@ source index so reducer order is deterministic. `max_fan_out_items`,
 work is admitted.
 
 The built graph owns only its node and routing arrays and releases them with
-`deinit(gpa)`. Node names, registered branch names, and callback contexts are
-borrowed for the graph's lifetime. A branch name returned by a decision is
+`deinit(gpa)`. Node names, registered branch names, callback contexts, and
+definition metadata are borrowed for the graph's lifetime. A branch name returned by a decision is
 borrowed only for that synchronous callback, route lookup, and event delivery.
 State and dependencies are borrowed for the run's lifetime.
 Intermediate and output ownership follows the application-defined `Value` and
@@ -569,8 +569,8 @@ a later step or end callback consumes it.
 Event sinks are synchronous and infallible. They receive borrowed run/step
 start, end, and failure records in execution order. They must copy a node name
 or branch name before retaining it. The core supports linear, cyclic, named
-conditional, and bounded parallel routing. Snapshots, visualization, and
-agent-node adapters remain explicit roadmap steps rather than hidden behavior.
+conditional, and bounded parallel routing. Agent-node adapters remain an
+explicit roadmap step rather than hidden behavior.
 
 Concurrent fan-out callbacks share `State`, `Deps`, branch contexts, and input
 values. The scheduler makes only `Context.gpa` safe for concurrent use.
@@ -618,6 +618,23 @@ Each codec has a nonzero payload version. To restore an older payload, provide
 for the codec's current version. The graph validates the migrated documents
 before decoding them. If decoded state can own resources, set
 `deinit_state_fn` so a later value-decoding failure can release it.
+
+### Graph visualization metadata
+
+`NodeMetadata` attaches optional borrowed `label`, `description`, `group`, and
+`SourceLocation` values to start, step, decision, fan-out, and end definitions.
+`EdgeMetadata` carries a label, description, and source location. Existing
+`connect`, `finish`, `branch`, and `branchFinish` calls keep empty metadata;
+their `*WithMetadata` counterparts register it explicitly. Empty or oversized
+values fail during definition assembly according to the graph `Limits`.
+
+`Graph.visualization(gpa)` returns an owned `Visualization` with schema
+`visualization_format_version`, the definition fingerprint, synthetic start
+and end nodes, registered nodes in source order, and deterministic edges. Node
+IDs use the tagged `VisualizationNodeId`; decision `branch` identities remain
+separate from presentation labels. Only the node and edge arrays are owned by
+the result. Every string is borrowed from the graph and the view must be
+deinitialized before the graph or its metadata storage is released.
 
 ## Evaluations
 

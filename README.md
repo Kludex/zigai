@@ -205,6 +205,10 @@ typed state and frontier values with a `SnapshotCodec`, then call
 Snapshots are bounded and fingerprinted; they never serialize dependencies,
 callbacks, or in-flight parallel work.
 
+Nodes and edges accept optional borrowed labels, descriptions, groups, and
+source locations. `graph.visualization(allocator)` returns a versioned,
+deterministic node/edge view for documentation and tooling.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.

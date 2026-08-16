@@ -12,6 +12,9 @@ const json_limits = @import("json.zig");
 /// Current graph snapshot envelope version.
 pub const snapshot_format_version: u8 = 1;
 
+/// Current machine-readable graph visualization schema version.
+pub const visualization_format_version: u8 = 1;
+
 /// Failures returned deliberately by application snapshot codecs or migrations.
 pub const SnapshotCallbackError = error{
     OutOfMemory,
@@ -79,6 +82,15 @@ pub const BuildError = std.mem.Allocator.Error || error{
     DefinitionIdTooLong,
     /// A fan-out was registered without a branch callback.
     MissingParallelBranch,
+    EmptyLabel,
+    LabelTooLong,
+    EmptyDescription,
+    DescriptionTooLong,
+    EmptyGroup,
+    GroupTooLong,
+    EmptySourcePath,
+    SourcePathTooLong,
+    InvalidSourceLocation,
 };
 
 /// Errors returned while advancing or completing a graph run.
@@ -99,12 +111,87 @@ pub const NodeId = struct {
     index: usize,
 };
 
+/// Borrowed source location attached to graph definition metadata. Line and
+/// column are one-based when present; zero means unknown.
+pub const SourceLocation = struct {
+    file: []const u8,
+    line: u32 = 0,
+    column: u32 = 0,
+};
+
+/// Borrowed documentation metadata for one graph node.
+pub const NodeMetadata = struct {
+    label: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    group: ?[]const u8 = null,
+    source: ?SourceLocation = null,
+};
+
+/// Borrowed documentation metadata for one graph edge.
+pub const EdgeMetadata = struct {
+    label: ?[]const u8 = null,
+    description: ?[]const u8 = null,
+    source: ?SourceLocation = null,
+};
+
+/// Stable node vocabulary in a machine-readable visualization.
+pub const VisualizationNodeKind = enum {
+    start,
+    step,
+    decision,
+    fan_out,
+    end,
+};
+
+/// Stable identity for real nodes and the synthetic graph boundaries.
+pub const VisualizationNodeId = union(enum) {
+    start,
+    node: NodeId,
+    end,
+};
+
+/// One borrowed node in an allocated visualization view.
+pub const VisualizationNode = struct {
+    id: VisualizationNodeId,
+    kind: VisualizationNodeKind,
+    name: []const u8,
+    metadata: NodeMetadata,
+};
+
+/// One borrowed edge in an allocated visualization view.
+pub const VisualizationEdge = struct {
+    from: VisualizationNodeId,
+    to: VisualizationNodeId,
+    /// Decision route identity, independent of its presentation label.
+    branch: ?[]const u8 = null,
+    metadata: EdgeMetadata = .{},
+};
+
+/// Versioned, deterministic graph metadata. The arrays are owned; all strings
+/// remain borrowed from the graph definition and must not outlive it.
+pub const Visualization = struct {
+    version: u8 = visualization_format_version,
+    definition_sha256: [32]u8,
+    nodes: []VisualizationNode,
+    edges: []VisualizationEdge,
+
+    pub fn deinit(self: *Visualization, gpa: std.mem.Allocator) void {
+        gpa.free(self.nodes);
+        gpa.free(self.edges);
+        self.* = undefined;
+    }
+};
+
 /// Safety ceilings for graph definitions and executions.
 pub const Limits = struct {
     max_nodes: usize = 1_024,
     max_edges: usize = 1_024,
     max_steps: usize = 10_000,
     max_name_bytes: usize = 128,
+    max_label_bytes: usize = 256,
+    max_description_bytes: usize = 4 * 1024,
+    max_group_bytes: usize = 128,
+    max_source_path_bytes: usize = 1024,
     /// Maximum values one map callback may emit.
     max_fan_out_items: usize = 1_024,
     /// Maximum branch callbacks created by one fan-out execution.
@@ -241,6 +328,7 @@ pub fn Graph(
 
         /// Converts the graph input into its first intermediate value.
         pub const Start = struct {
+            metadata: NodeMetadata = .{},
             context: ?*anyopaque = null,
             run_fn: *const fn (
                 context: ?*anyopaque,
@@ -252,6 +340,7 @@ pub fn Graph(
         /// Executes one typed workflow step.
         pub const Step = struct {
             name: []const u8,
+            metadata: NodeMetadata = .{},
             context: ?*anyopaque = null,
             run_fn: *const fn (
                 context: ?*anyopaque,
@@ -272,6 +361,7 @@ pub fn Graph(
         /// Selects a named outgoing branch from the current typed value.
         pub const Decision = struct {
             name: []const u8,
+            metadata: NodeMetadata = .{},
             context: ?*anyopaque = null,
             run_fn: *const fn (
                 context: ?*anyopaque,
@@ -351,6 +441,7 @@ pub fn Graph(
         /// contexts are borrowed for the built graph's lifetime.
         pub const FanOut = struct {
             name: []const u8,
+            metadata: NodeMetadata = .{},
             mode: FanOutMode,
             branches: []const ParallelBranch,
             join: Join,
@@ -366,6 +457,7 @@ pub fn Graph(
 
         /// Converts the terminal intermediate value to the graph output.
         pub const End = struct {
+            metadata: NodeMetadata = .{},
             context: ?*anyopaque = null,
             run_fn: *const fn (
                 context: ?*anyopaque,
@@ -389,17 +481,33 @@ pub fn Graph(
                     inline else => |node| node.name,
                 };
             }
+
+            fn metadata(self: Node) NodeMetadata {
+                return switch (self) {
+                    inline else => |node| node.metadata,
+                };
+            }
+
+            fn visualizationKind(self: Node) VisualizationNodeKind {
+                return switch (self) {
+                    .step => .step,
+                    .decision => .decision,
+                    .fan_out => .fan_out,
+                };
+            }
         };
 
         const Edge = struct {
             from: NodeId,
             branch: ?[]const u8 = null,
             destination: Destination,
+            metadata: EdgeMetadata = .{},
         };
 
         const Route = struct {
             branch: ?[]const u8,
             destination: Destination,
+            metadata: EdgeMetadata,
         };
 
         const RouteSpan = struct {
@@ -450,11 +558,13 @@ pub fn Graph(
 
             pub fn setStart(self: *Builder, start: Start) BuildError!void {
                 if (self.start != null) return error.DuplicateStart;
+                try self.validateNodeMetadata(start.metadata);
                 self.start = start;
             }
 
             pub fn setEnd(self: *Builder, end: End) BuildError!void {
                 if (self.end != null) return error.DuplicateEnd;
+                try self.validateNodeMetadata(end.metadata);
                 self.end = end;
             }
 
@@ -467,6 +577,7 @@ pub fn Graph(
             ) BuildError!NodeId {
                 if (step.name.len == 0) return error.EmptyNodeName;
                 if (step.name.len > self.limits.max_name_bytes) return error.NodeNameTooLong;
+                try self.validateNodeMetadata(step.metadata);
                 for (self.nodes.items) |existing| {
                     if (std.mem.eql(u8, existing.name(), step.name)) return error.DuplicateNodeName;
                 }
@@ -484,6 +595,7 @@ pub fn Graph(
             ) BuildError!NodeId {
                 if (decision.name.len == 0) return error.EmptyNodeName;
                 if (decision.name.len > self.limits.max_name_bytes) return error.NodeNameTooLong;
+                try self.validateNodeMetadata(decision.metadata);
                 for (self.nodes.items) |existing| {
                     if (std.mem.eql(u8, existing.name(), decision.name)) return error.DuplicateNodeName;
                 }
@@ -501,6 +613,7 @@ pub fn Graph(
             ) BuildError!NodeId {
                 if (fan_out.name.len == 0) return error.EmptyNodeName;
                 if (fan_out.name.len > self.limits.max_name_bytes) return error.NodeNameTooLong;
+                try self.validateNodeMetadata(fan_out.metadata);
                 for (self.nodes.items) |existing| {
                     if (std.mem.eql(u8, existing.name(), fan_out.name)) return error.DuplicateNodeName;
                 }
@@ -531,23 +644,54 @@ pub fn Graph(
                 from: NodeId,
                 to: NodeId,
             ) BuildError!void {
+                return self.connectWithMetadata(gpa, from, to, .{});
+            }
+
+            /// Connects a step or fan-out and attaches borrowed edge metadata.
+            pub fn connectWithMetadata(
+                self: *Builder,
+                gpa: std.mem.Allocator,
+                from: NodeId,
+                to: NodeId,
+                metadata: EdgeMetadata,
+            ) BuildError!void {
                 try self.validateNode(from);
                 try self.validateNode(to);
+                try self.validateEdgeMetadata(metadata);
                 switch (self.nodes.items[from.index]) {
                     .step, .fan_out => {},
                     .decision => return error.InvalidEdgeKind,
                 }
-                try self.addEdge(gpa, .{ .from = from, .destination = .{ .node = to } });
+                try self.addEdge(gpa, .{
+                    .from = from,
+                    .destination = .{ .node = to },
+                    .metadata = metadata,
+                });
             }
 
             /// Marks a step or fan-out as the terminal producer consumed by `End`.
             pub fn finish(self: *Builder, gpa: std.mem.Allocator, from: NodeId) BuildError!void {
+                return self.finishWithMetadata(gpa, from, .{});
+            }
+
+            /// Marks a terminal producer and attaches borrowed edge metadata.
+            pub fn finishWithMetadata(
+                self: *Builder,
+                gpa: std.mem.Allocator,
+                from: NodeId,
+                metadata: EdgeMetadata,
+            ) BuildError!void {
                 try self.validateNode(from);
+                try self.validateEdgeMetadata(metadata);
                 switch (self.nodes.items[from.index]) {
                     .step, .fan_out => {},
                     .decision => return error.InvalidEdgeKind,
                 }
-                try self.addEdge(gpa, .{ .from = from, .destination = .finish });
+                try self.addEdge(gpa, .{
+                    .from = from,
+                    .destination = .finish,
+                    .metadata = metadata,
+                });
             }
 
             /// Connects one named decision branch to another node.
@@ -558,9 +702,22 @@ pub fn Graph(
                 name: []const u8,
                 to: NodeId,
             ) BuildError!void {
+                return self.branchWithMetadata(gpa, from, name, to, .{});
+            }
+
+            /// Connects one named decision branch with borrowed edge metadata.
+            pub fn branchWithMetadata(
+                self: *Builder,
+                gpa: std.mem.Allocator,
+                from: NodeId,
+                name: []const u8,
+                to: NodeId,
+                metadata: EdgeMetadata,
+            ) BuildError!void {
                 try self.validateNode(from);
                 try self.validateNode(to);
-                try self.addBranch(gpa, from, name, .{ .node = to });
+                try self.validateEdgeMetadata(metadata);
+                try self.addBranch(gpa, from, name, .{ .node = to }, metadata);
             }
 
             /// Connects one named decision branch to the graph's end callback.
@@ -570,8 +727,20 @@ pub fn Graph(
                 from: NodeId,
                 name: []const u8,
             ) BuildError!void {
+                return self.branchFinishWithMetadata(gpa, from, name, .{});
+            }
+
+            /// Connects a terminal decision branch with borrowed edge metadata.
+            pub fn branchFinishWithMetadata(
+                self: *Builder,
+                gpa: std.mem.Allocator,
+                from: NodeId,
+                name: []const u8,
+                metadata: EdgeMetadata,
+            ) BuildError!void {
                 try self.validateNode(from);
-                try self.addBranch(gpa, from, name, .finish);
+                try self.validateEdgeMetadata(metadata);
+                try self.addBranch(gpa, from, name, .finish, metadata);
             }
 
             /// Validates and consumes the registered node and edge arrays.
@@ -599,6 +768,7 @@ pub fn Graph(
                         routes[route_index] = .{
                             .branch = edge.branch,
                             .destination = edge.destination,
+                            .metadata = edge.metadata,
                         };
                         route_index += 1;
                         span.len += 1;
@@ -633,6 +803,44 @@ pub fn Graph(
                 if (node.index >= self.nodes.items.len) return error.InvalidNode;
             }
 
+            fn validateNodeMetadata(self: Builder, metadata: NodeMetadata) BuildError!void {
+                try self.validateLabel(metadata.label);
+                try self.validateDescription(metadata.description);
+                if (metadata.group) |group| {
+                    if (group.len == 0) return error.EmptyGroup;
+                    if (group.len > self.limits.max_group_bytes) return error.GroupTooLong;
+                }
+                try self.validateSource(metadata.source);
+            }
+
+            fn validateEdgeMetadata(self: Builder, metadata: EdgeMetadata) BuildError!void {
+                try self.validateLabel(metadata.label);
+                try self.validateDescription(metadata.description);
+                try self.validateSource(metadata.source);
+            }
+
+            fn validateLabel(self: Builder, label: ?[]const u8) BuildError!void {
+                if (label) |value| {
+                    if (value.len == 0) return error.EmptyLabel;
+                    if (value.len > self.limits.max_label_bytes) return error.LabelTooLong;
+                }
+            }
+
+            fn validateDescription(self: Builder, description: ?[]const u8) BuildError!void {
+                if (description) |value| {
+                    if (value.len == 0) return error.EmptyDescription;
+                    if (value.len > self.limits.max_description_bytes) return error.DescriptionTooLong;
+                }
+            }
+
+            fn validateSource(self: Builder, source: ?SourceLocation) BuildError!void {
+                if (source) |location| {
+                    if (location.file.len == 0) return error.EmptySourcePath;
+                    if (location.file.len > self.limits.max_source_path_bytes) return error.SourcePathTooLong;
+                    if (location.line == 0 and location.column != 0) return error.InvalidSourceLocation;
+                }
+            }
+
             fn addEdge(self: *Builder, gpa: std.mem.Allocator, edge: Edge) BuildError!void {
                 if (self.edges.items.len >= self.limits.max_edges) return error.LimitExceeded;
                 if (self.edgeCount(edge.from) != 0) return error.DuplicateOutgoingEdge;
@@ -645,6 +853,7 @@ pub fn Graph(
                 from: NodeId,
                 name: []const u8,
                 destination: Destination,
+                metadata: EdgeMetadata,
             ) BuildError!void {
                 if (self.nodes.items[from.index] != .decision) return error.InvalidEdgeKind;
                 if (name.len == 0) return error.EmptyBranchName;
@@ -658,6 +867,7 @@ pub fn Graph(
                     .from = from,
                     .branch = name,
                     .destination = destination,
+                    .metadata = metadata,
                 });
             }
 
@@ -1187,6 +1397,66 @@ pub fn Graph(
         /// embedded in every snapshot produced by this definition.
         pub fn definitionFingerprint(self: *const Self) [32]u8 {
             return self.definition_sha256;
+        }
+
+        /// Allocates a deterministic machine-readable view. The returned
+        /// arrays are owned by `gpa`; every string remains borrowed from this
+        /// graph and therefore cannot outlive it.
+        pub fn visualization(
+            self: *const Self,
+            gpa: std.mem.Allocator,
+        ) std.mem.Allocator.Error!Visualization {
+            const nodes = try gpa.alloc(VisualizationNode, self.nodes.len + 2);
+            errdefer gpa.free(nodes);
+            const edges = try gpa.alloc(VisualizationEdge, self.routes.len + 1);
+            errdefer gpa.free(edges);
+
+            nodes[0] = .{
+                .id = .start,
+                .kind = .start,
+                .name = "__start__",
+                .metadata = self.start.metadata,
+            };
+            for (self.nodes, 0..) |node, index| {
+                nodes[index + 1] = .{
+                    .id = .{ .node = .{ .index = index } },
+                    .kind = node.visualizationKind(),
+                    .name = node.name(),
+                    .metadata = node.metadata(),
+                };
+            }
+            nodes[nodes.len - 1] = .{
+                .id = .end,
+                .kind = .end,
+                .name = "__end__",
+                .metadata = self.end.metadata,
+            };
+
+            edges[0] = .{
+                .from = .start,
+                .to = .{ .node = self.entry },
+            };
+            var edge_index: usize = 1;
+            for (self.route_spans, 0..) |span, node_index| {
+                for (self.routes[span.start..][0..span.len]) |route| {
+                    edges[edge_index] = .{
+                        .from = .{ .node = .{ .index = node_index } },
+                        .to = switch (route.destination) {
+                            .node => |destination| .{ .node = destination },
+                            .finish => .end,
+                        },
+                        .branch = route.branch,
+                        .metadata = route.metadata,
+                    };
+                    edge_index += 1;
+                }
+            }
+            std.debug.assert(edge_index == edges.len);
+            return .{
+                .definition_sha256 = self.definition_sha256,
+                .nodes = nodes,
+                .edges = edges,
+            };
         }
 
         pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {
@@ -3171,6 +3441,105 @@ test "graph snapshot codecs migrate payloads and clean partial restores" {
     try std.testing.expectEqual(@as(u64, 777), restored_state);
 }
 
+test "graph visualization exposes stable borrowed metadata" {
+    const Workflow = Graph(u8, u8, u8, u8, u8);
+    const Callbacks = struct {
+        fn value(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+        fn decide(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!Workflow.DecisionResult {
+            return .{ .branch = "parallel", .value = input };
+        }
+        fn initial(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+        fn reduce(_: ?*anyopaque, _: *Workflow.Context, _: *u8, _: u8, _: usize) CallbackError!void {}
+    };
+
+    var builder: Workflow.Builder = .{ .definition_id = "visualization/v1" };
+    defer builder.deinit(std.testing.allocator);
+    try builder.setStart(.{
+        .metadata = .{ .label = "Input", .description = "Typed input boundary" },
+        .run_fn = Callbacks.value,
+    });
+    try builder.setEnd(.{
+        .metadata = .{ .label = "Output", .description = "Typed output boundary" },
+        .run_fn = Callbacks.value,
+    });
+    const step = try builder.addStep(std.testing.allocator, .{
+        .name = "prepare",
+        .metadata = .{
+            .label = "Prepare",
+            .description = "Normalize input",
+            .group = "Pipeline",
+            .source = .{ .file = "src/workflow.zig", .line = 12, .column = 5 },
+        },
+        .run_fn = Callbacks.value,
+    });
+    const decision = try builder.addDecision(std.testing.allocator, .{
+        .name = "route",
+        .metadata = .{ .label = "Route", .group = "Pipeline" },
+        .run_fn = Callbacks.decide,
+    });
+    const fan_out = try builder.addFanOut(std.testing.allocator, .{
+        .name = "parallel",
+        .metadata = .{ .label = "Parallel work", .description = "Bounded broadcast" },
+        .mode = .broadcast,
+        .branches = &.{.{ .name = "worker", .run_fn = Callbacks.value }},
+        .join = .{ .initial_fn = Callbacks.initial, .reduce_fn = Callbacks.reduce },
+    });
+    try builder.setEntry(step);
+    try builder.connectWithMetadata(std.testing.allocator, step, decision, .{
+        .label = "prepared",
+        .description = "Pass normalized value",
+        .source = .{ .file = "src/workflow.zig", .line = 20 },
+    });
+    try builder.branchWithMetadata(std.testing.allocator, decision, "parallel", fan_out, .{
+        .label = "fan out",
+    });
+    try builder.branchFinishWithMetadata(std.testing.allocator, decision, "done", .{
+        .description = "Short circuit",
+    });
+    try builder.finishWithMetadata(std.testing.allocator, fan_out, .{ .label = "joined" });
+    var graph = try builder.build(std.testing.allocator);
+    defer graph.deinit(std.testing.allocator);
+
+    var view = try graph.visualization(std.testing.allocator);
+    defer view.deinit(std.testing.allocator);
+    try std.testing.expectEqual(visualization_format_version, view.version);
+    try std.testing.expectEqualSlices(u8, &graph.definitionFingerprint(), &view.definition_sha256);
+    try std.testing.expectEqual(@as(usize, 5), view.nodes.len);
+    try std.testing.expectEqual(@as(usize, 5), view.edges.len);
+    try std.testing.expectEqual(@as(std.meta.Tag(VisualizationNodeId), .start), std.meta.activeTag(view.nodes[0].id));
+    try std.testing.expectEqual(VisualizationNodeKind.start, view.nodes[0].kind);
+    try std.testing.expectEqualStrings("Input", view.nodes[0].metadata.label.?);
+    try std.testing.expectEqual(VisualizationNodeKind.step, view.nodes[1].kind);
+    try std.testing.expectEqualStrings("prepare", view.nodes[1].name);
+    try std.testing.expectEqualStrings("Pipeline", view.nodes[1].metadata.group.?);
+    try std.testing.expectEqual(@as(u32, 12), view.nodes[1].metadata.source.?.line);
+    try std.testing.expectEqual(VisualizationNodeKind.decision, view.nodes[2].kind);
+    try std.testing.expectEqual(VisualizationNodeKind.fan_out, view.nodes[3].kind);
+    try std.testing.expectEqual(@as(std.meta.Tag(VisualizationNodeId), .end), std.meta.activeTag(view.nodes[4].id));
+    try std.testing.expectEqualStrings("Output", view.nodes[4].metadata.label.?);
+
+    try std.testing.expectEqual(@as(std.meta.Tag(VisualizationNodeId), .start), std.meta.activeTag(view.edges[0].from));
+    try std.testing.expectEqual(@as(usize, 0), view.edges[0].to.node.index);
+    try std.testing.expectEqual(@as(usize, 1), view.edges[1].to.node.index);
+    try std.testing.expectEqualStrings("prepared", view.edges[1].metadata.label.?);
+    try std.testing.expectEqual(@as(u32, 20), view.edges[1].metadata.source.?.line);
+    try std.testing.expectEqualStrings("parallel", view.edges[2].branch.?);
+    try std.testing.expectEqualStrings("fan out", view.edges[2].metadata.label.?);
+    try std.testing.expectEqualStrings("done", view.edges[3].branch.?);
+    try std.testing.expectEqualStrings("Short circuit", view.edges[3].metadata.description.?);
+    try std.testing.expectEqual(@as(std.meta.Tag(VisualizationNodeId), .end), std.meta.activeTag(view.edges[4].to));
+    try std.testing.expectEqualStrings("joined", view.edges[4].metadata.label.?);
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    try std.testing.expectError(error.OutOfMemory, graph.visualization(failing.allocator()));
+    failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 1 });
+    try std.testing.expectError(error.OutOfMemory, graph.visualization(failing.allocator()));
+}
+
 test "graph builder validates decision branches and reachability" {
     const Workflow = Graph(u8, u8, u8, u8, u8);
     const Callbacks = struct {
@@ -3320,6 +3689,66 @@ test "graph builder rejects invalid bounded definitions" {
     const step = Workflow.Step{ .name = "step", .run_fn = Callbacks.step };
     const parallel_branch = Workflow.ParallelBranch{ .name = "work", .run_fn = Callbacks.step };
     const join = Workflow.Join{ .initial_fn = Callbacks.initial, .reduce_fn = Callbacks.reduce };
+
+    var metadata_builder: Workflow.Builder = .{ .limits = .{
+        .max_label_bytes = 1,
+        .max_description_bytes = 1,
+        .max_group_bytes = 1,
+        .max_source_path_bytes = 1,
+    } };
+    defer metadata_builder.deinit(std.testing.allocator);
+    try std.testing.expectError(error.EmptyLabel, metadata_builder.setStart(.{
+        .metadata = .{ .label = "" },
+        .run_fn = Callbacks.start,
+    }));
+    try std.testing.expectError(error.LabelTooLong, metadata_builder.setStart(.{
+        .metadata = .{ .label = "xx" },
+        .run_fn = Callbacks.start,
+    }));
+    try std.testing.expectError(error.EmptyDescription, metadata_builder.addStep(std.testing.allocator, .{
+        .name = "n",
+        .metadata = .{ .description = "" },
+        .run_fn = Callbacks.step,
+    }));
+    try std.testing.expectError(error.DescriptionTooLong, metadata_builder.addStep(std.testing.allocator, .{
+        .name = "n",
+        .metadata = .{ .description = "xx" },
+        .run_fn = Callbacks.step,
+    }));
+    try std.testing.expectError(error.EmptyGroup, metadata_builder.addStep(std.testing.allocator, .{
+        .name = "n",
+        .metadata = .{ .group = "" },
+        .run_fn = Callbacks.step,
+    }));
+    try std.testing.expectError(error.GroupTooLong, metadata_builder.addStep(std.testing.allocator, .{
+        .name = "n",
+        .metadata = .{ .group = "xx" },
+        .run_fn = Callbacks.step,
+    }));
+    try std.testing.expectError(error.EmptySourcePath, metadata_builder.addStep(std.testing.allocator, .{
+        .name = "n",
+        .metadata = .{ .source = .{ .file = "" } },
+        .run_fn = Callbacks.step,
+    }));
+    try std.testing.expectError(error.SourcePathTooLong, metadata_builder.addStep(std.testing.allocator, .{
+        .name = "n",
+        .metadata = .{ .source = .{ .file = "xx" } },
+        .run_fn = Callbacks.step,
+    }));
+    try std.testing.expectError(error.InvalidSourceLocation, metadata_builder.addStep(std.testing.allocator, .{
+        .name = "n",
+        .metadata = .{ .source = .{ .file = "x", .column = 1 } },
+        .run_fn = Callbacks.step,
+    }));
+    const metadata_node = try metadata_builder.addStep(std.testing.allocator, .{
+        .name = "n",
+        .run_fn = Callbacks.step,
+    });
+    try std.testing.expectError(error.EmptyLabel, metadata_builder.finishWithMetadata(
+        std.testing.allocator,
+        metadata_node,
+        .{ .label = "" },
+    ));
 
     var empty: Workflow.Builder = .{};
     defer empty.deinit(std.testing.allocator);
