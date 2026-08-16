@@ -37,6 +37,10 @@
   translation, interrupt/tool approval round trips, typed custom events,
   browser-message sanitization, bounded reconnect replay, and browser/server
   examples.
+- Add a unified production CLI with provider/model selection, bounded JSON
+  configuration, stdin, atomic conversation history, MCP stdio servers,
+  persisted tool approvals, text/JSON/AG-UI output, stable exit codes, and shell
+  completion.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

@@ -1184,6 +1184,31 @@ contain one complete JSON document within the tool-payload profile. Invalid or
 oversized arguments return `error.InvalidToolArguments` before the callback is
 invoked.
 
+## Production CLI
+
+`zig-out/bin/zigai` selects OpenAI, Anthropic, or Google with `--provider` and
+`--model`. A strict bounded JSON config can set provider defaults, the API-key
+environment-variable name, base URL, system prompt, history/paused paths,
+output mode, approval policy, and multiple MCP stdio commands. CLI flags have
+higher precedence. Credentials remain environment-owned and are never accepted
+in config files.
+
+A positional `-` reads a bounded prompt from stdin. `--output text`, `--json`,
+and `--events` select plain final output, one structured result, or newline
+AG-UI lifecycle/agent events. `--history` atomically loads and saves canonical
+ZigAI history. Configured MCP servers become dynamic agent toolsets and are
+shut down with the CLI.
+
+Approval mode `deferred` persists a versioned paused envelope and exits with
+status `10`. A later `--resume --approval approve|deny` validates the envelope,
+constructs decisions for every call, and continues without replaying the model
+request. External calls are denied unless an explicit external result is
+available; approval cannot accidentally execute them.
+
+`zigai completion bash|zsh|fish` prints shell completion. Exit codes are stable:
+`0` success, `1` other runtime failure, `2` usage, `3` config/file, `4` missing
+credential, `5` provider failure, and `10` approval required.
+
 ## Run deadlines and cancellation
 
 `Agent.run_timeout_ms` creates one absolute monotonic deadline for an

@@ -45,15 +45,18 @@ compile_test coverage/bin/agent-tests --dep zigai -Mroot=tests/agent_loop.zig --
 compile_test coverage/bin/pydantic-ai-codec-tests --dep zigai -Mroot=tests/pydantic_ai_codec.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 compile_test coverage/bin/provider-tests --dep zigai --dep yaml -Mroot=tests/provider_cassettes.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 compile_test coverage/bin/cli-common-tests --dep zigai -Mroot=src/cli/common.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
+compile_test coverage/bin/cli-app-tests --dep zigai -Mroot=src/cli/app.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 compile_test coverage/bin/spec-cli-tests --dep zigai -Mroot=src/cli/spec_common.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 compile_test coverage/bin/mcp-conformance-tests --dep zigai --dep yaml -Mroot=tests/mcp_conformance.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 if [ -n "$coverage_target" ]; then
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/production-cli --dep zigai -Mroot=src/cli/main.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/openai-cli --dep zigai -Mroot=src/cli/openai.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/anthropic-cli --dep zigai -Mroot=src/cli/anthropic.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/google-cli --dep zigai -Mroot=src/cli/google.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/spec-cli --dep zigai -Mroot=src/cli/spec.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -target "$coverage_target" -fllvm -femit-bin=coverage/bin/http-smoke --dep zigai -Mroot=tests/http_transport_smoke.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
 else
+    ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/production-cli --dep zigai -Mroot=src/cli/main.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/openai-cli --dep zigai -Mroot=src/cli/openai.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/anthropic-cli --dep zigai -Mroot=src/cli/anthropic.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
     ZIG_GLOBAL_CACHE_DIR="$coverage_global_cache" zig build-exe --cache-dir "$coverage_cache" -fllvm -femit-bin=coverage/bin/google-cli --dep zigai -Mroot=src/cli/google.zig --dep yaml -Mzigai=src/root.zig -Myaml="$yaml_root"
@@ -89,6 +92,7 @@ run_kcov --clean "$include_path" coverage/agent coverage/bin/agent-tests
 run_kcov --clean "$include_path" coverage/pydantic-ai-codec coverage/bin/pydantic-ai-codec-tests
 run_kcov --clean "$include_path" coverage/providers coverage/bin/provider-tests
 run_kcov --clean "$include_path" coverage/cli-common coverage/bin/cli-common-tests
+run_kcov --clean "$include_path" coverage/cli-app coverage/bin/cli-app-tests
 run_kcov --clean "$include_path" coverage/spec-cli-tests coverage/bin/spec-cli-tests
 run_kcov --clean "$include_path" coverage/mcp-conformance coverage/bin/mcp-conformance-tests
 
@@ -102,6 +106,13 @@ ZIGAI_FIXTURE_HOST="$fixture_bind" python3 tests/fake_provider_server.py &
 server_pid=$!
 trap 'kill "$server_pid" 2>/dev/null || true' EXIT INT TERM
 sleep 1
+
+cat >coverage/production-config.json <<EOF
+{"provider":"openai","model":"gpt-5-mini","base_url":"http://$fixture_host:18765/openai","output":"json"}
+EOF
+OPENAI_API_KEY=test run_kcov --clean "$include_path" coverage/production-cli \
+    coverage/bin/production-cli --config coverage/production-config.json test
+run_kcov "$include_path" coverage/production-cli coverage/bin/production-cli completion bash
 
 OPENAI_API_KEY=test OPENAI_BASE_URL="http://$fixture_host:18765/openai" \
     run_kcov --clean "$include_path" coverage/openai-cli coverage/bin/openai-cli test
@@ -155,8 +166,8 @@ if coverage/bin/spec-cli validate README.md >/dev/null 2>&1; then
 fi
 
 run_kcov --merge coverage/merged \
-    coverage/unit coverage/agent coverage/pydantic-ai-codec coverage/providers coverage/cli-common coverage/spec-cli-tests coverage/mcp-conformance \
-    coverage/openai-cli coverage/anthropic-cli coverage/google-cli coverage/spec-cli coverage/http-smoke
+    coverage/unit coverage/agent coverage/pydantic-ai-codec coverage/providers coverage/cli-common coverage/cli-app coverage/spec-cli-tests coverage/mcp-conformance \
+    coverage/production-cli coverage/openai-cli coverage/anthropic-cli coverage/google-cli coverage/spec-cli coverage/http-smoke
 
 report="$coverage_dir/merged/kcov-merged/coverage.json"
 for source in "$project_dir"/src/*.zig "$project_dir"/src/cli/*.zig "$project_dir"/src/codecs/pydantic_ai.zig "$project_dir"/src/models/*.zig "$project_dir"/src/providers/*.zig; do

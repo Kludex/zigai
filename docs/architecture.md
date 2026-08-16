@@ -753,6 +753,21 @@ nodes are emitted once at their first group occurrence, route order stays
 deterministic, and every append checks the definition's visualization-byte
 ceiling before growing the owned output.
 
+## Production CLI
+
+The unified CLI is composition rather than a fourth agent runtime. Provider
+selection builds one existing provider/client pair at a stable address. MCP
+stdio processes become ordinary dynamic toolsets. Streaming, pauses, resumes,
+usage, and canonical messages continue through the same public `Agent` API.
+
+Configuration is bounded JSON and contains only an environment-variable name
+for credentials. Canonical history and paused approvals use separate versioned
+formats and atomic file replacement. A persisted pause includes the opaque
+agent state plus only the call identity/execution data needed to construct an
+explicit resume decision. Structured event output reuses the AG-UI adapter.
+Stable exit codes separate operator input, credentials, provider failures, and
+approval handoff from generic runtime faults.
+
 ## Evaluations
 
 `evals.Dataset` runs ordinary `Agent` instances over named cases and produces

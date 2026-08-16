@@ -116,6 +116,16 @@ pub fn build(b: *std.Build) void {
         }),
     });
     const run_cli_common_tests = b.addRunArtifact(cli_common_tests);
+    const cli_app_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/cli/app.zig"),
+            .target = target,
+            .optimize = optimize,
+            .error_tracing = error_tracing,
+            .imports = &.{.{ .name = "zigai", .module = zigai }},
+        }),
+    });
+    const run_cli_app_tests = b.addRunArtifact(cli_app_tests);
     const spec_cli_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/cli/spec_common.zig"),
@@ -295,6 +305,7 @@ pub fn build(b: *std.Build) void {
     const fuzz_step = b.step("fuzz", "Run parser and protocol fuzz targets");
     fuzz_step.dependOn(&run_tests.step);
     fuzz_step.dependOn(&run_cli_common_tests.step);
+    fuzz_step.dependOn(&run_cli_app_tests.step);
     fuzz_step.dependOn(&run_spec_cli_tests.step);
     fuzz_step.dependOn(&run_mcp_conformance_tests.step);
     fuzz_step.dependOn(&run_fuzz_tests.step);
@@ -306,6 +317,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_cassette_audit.step);
     test_step.dependOn(&run_cassette_audit_tests.step);
     test_step.dependOn(&run_cli_common_tests.step);
+    test_step.dependOn(&run_cli_app_tests.step);
     test_step.dependOn(&run_spec_cli_tests.step);
     test_step.dependOn(&run_mcp_conformance_tests.step);
     test_step.dependOn(&run_fuzz_tests.step);
@@ -328,6 +340,7 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&mcp_conformance_client.step);
     check.dependOn(&fuzz_tests.step);
 
+    const production_cli = addCli(b, target, optimize, zigai, "zigai", "src/cli/main.zig");
     const openai_cli = addCli(b, target, optimize, zigai, "zigai-openai", "src/cli/openai.zig");
     const anthropic_cli = addCli(b, target, optimize, zigai, "zigai-anthropic", "src/cli/anthropic.zig");
     const google_cli = addCli(b, target, optimize, zigai, "zigai-google", "src/cli/google.zig");
@@ -337,10 +350,12 @@ pub fn build(b: *std.Build) void {
     const install_http_stress = b.addInstallArtifact(http_stress, .{});
     const stress_http_step = b.step("stress-http", "Build the real-socket reconnect stress executable");
     stress_http_step.dependOn(&install_http_stress.step);
+    b.installArtifact(production_cli);
     b.installArtifact(openai_cli);
     b.installArtifact(anthropic_cli);
     b.installArtifact(google_cli);
     b.installArtifact(spec_cli);
+    check.dependOn(&production_cli.step);
     check.dependOn(&openai_cli.step);
     check.dependOn(&anthropic_cli.step);
     check.dependOn(&google_cli.step);

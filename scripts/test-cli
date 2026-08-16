@@ -24,6 +24,23 @@ openai_stream_tool_output=$(OPENAI_API_KEY=test OPENAI_BASE_URL=http://127.0.0.1
 anthropic_stream_tool_output=$(ANTHROPIC_API_KEY=test ANTHROPIC_BASE_URL=http://127.0.0.1:18765/anthropic ./zig-out/bin/zigai-anthropic --stream --tools tests/cli_tools.json test)
 google_stream_tool_output=$(GEMINI_API_KEY=test GEMINI_BASE_URL=http://127.0.0.1:18765/google ./zig-out/bin/zigai-google --stream --tools tests/cli_tools.json test)
 
+production_dir=$(mktemp -d)
+trap 'kill "$server_pid" 2>/dev/null || true; rm -rf "$production_dir"' EXIT INT TERM
+cat >"$production_dir/config.json" <<EOF
+{"provider":"openai","model":"gpt-5-mini","base_url":"http://127.0.0.1:18765/openai","history_path":"$production_dir/history.json"}
+EOF
+production_output=$(OPENAI_API_KEY=test ./zig-out/bin/zigai --config "$production_dir/config.json" test)
+production_stdin_output=$(printf 'test\n' | OPENAI_API_KEY=test ./zig-out/bin/zigai --config "$production_dir/config.json" -)
+production_json_output=$(OPENAI_API_KEY=test ./zig-out/bin/zigai --config "$production_dir/config.json" --json test)
+production_events_output=$(OPENAI_API_KEY=test ./zig-out/bin/zigai --config "$production_dir/config.json" --events test)
+production_completion=$(./zig-out/bin/zigai completion bash)
+if OPENAI_API_KEY= ./zig-out/bin/zigai --config "$production_dir/config.json" test >/dev/null 2>&1; then
+    echo "production CLI unexpectedly accepted an empty credential" >&2
+    exit 1
+else
+    test "$?" -eq 4
+fi
+
 test "$openai_output" = pong
 test "$anthropic_output" = pong
 test "$google_output" = pong
@@ -36,4 +53,11 @@ test "$google_tool_output" = pong
 test "$openai_stream_tool_output" = pong
 test "$anthropic_stream_tool_output" = pong
 test "$google_stream_tool_output" = pong
+test "$production_output" = pong
+test "$production_stdin_output" = pong
+printf '%s' "$production_json_output" | python3 -c 'import json,sys; assert json.load(sys.stdin)["output"] == "pong"'
+printf '%s\n' "$production_events_output" | grep -q '"type":"RUN_STARTED"'
+printf '%s\n' "$production_events_output" | grep -q '"type":"RUN_FINISHED"'
+printf '%s\n' "$production_completion" | grep -q '^complete '
+test -s "$production_dir/history.json"
 echo "All provider CLIs passed against the local fixture."

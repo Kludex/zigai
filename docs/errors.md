@@ -409,6 +409,15 @@ activity, or reasoning messages from entering canonical agent history.
 `UISequenceExhausted` prevents replay cursor wraparound. Encoder, sink, replay,
 and allocator failures retain their original error.
 
+## Production CLI errors
+
+`InvalidArguments`, `InvalidCLIConfig`, `InvalidPausedCLIState`, `EmptyPrompt`,
+`MissingApiKey`, and `ApprovalDecisionRequired` identify operator-correctable
+failures without exposing credential values. Provider errors retain their
+stable categories. The process maps them to the documented `0`, `1`, `2`, `3`,
+`4`, `5`, and `10` exit statuses instead of relying on platform-specific panic
+or error-return behavior.
+
 ## MCP errors
 
 | Error | Meaning |
