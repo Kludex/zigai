@@ -336,8 +336,11 @@ encoded document exceeds the configured visualization bound, and preserves
 Graph agent nodes preserve `OutOfMemory` and `Cancelled`. Every other agent
 failure maps to `StepFailed` at the graph boundary. A configured
 `graph_agent.Observer` receives the original error name and the `prepare`,
-`agent`, or `apply` failure phase synchronously before the graph latches that
-error.
+`agent`, `stream`, or `apply` failure phase synchronously before the graph
+latches that error. A correlation/durable run-ID mismatch and deadline without
+an available `std.Io` runtime map to `StepFailed` before provider work. A
+stream sink may return only the graph callback errors; its failure prevents
+result adaptation and transition commit.
 
 ## MCP errors
 

@@ -216,8 +216,15 @@ Agent work remains an explicit adapter rather than a special graph mode.
 options, then adapts the owned `Agent.Result` back into the graph's `Value`.
 `TypedNode(Workflow, Output)` does the same with `Agent.runTypedWithOptions`.
 Both inject the graph dependencies when the prepared options do not override
-them. `graph_agent.Conversation` deep-copies canonical messages and cumulative
-usage for state that must survive the agent result's `deinit` boundary.
+them. Set `stream_sink` to receive borrowed agent events before the graph
+transition commits. `Control` propagates a node cancellation token and a
+run-wide deadline through model, tool, and callback work.
+
+`Correlation` adds the graph run ID, node ID, and node name to agent hooks and
+OpenTelemetry. Durable bindings receive a deterministic node namespace, so two
+agent nodes cannot reuse one operation identity during replay.
+`graph_agent.Conversation` deep-copies canonical messages and cumulative usage
+for state that must survive the agent result's `deinit` boundary.
 
 ## Providers
 

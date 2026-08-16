@@ -7,9 +7,11 @@
 
 const std = @import("std");
 const agent_types = @import("agent.zig");
+const durable_types = @import("durable.zig");
 const graph_types = @import("graph.zig");
 const message_types = @import("messages.zig");
 const model_types = @import("model.zig");
+const telemetry_types = @import("telemetry.zig");
 const testing_types = @import("testing.zig");
 const usage_types = @import("usage.zig");
 
@@ -27,12 +29,30 @@ pub const Prepared = struct {
     options: agent_types.RunOptions = .{},
 };
 
+/// Node-local controls layered over the borrowed agent configuration.
+pub const Control = struct {
+    /// Cooperative token used for this node invocation when non-null.
+    cancellation: ?*const model_types.CancellationToken = null,
+    /// Deadline that can only tighten agent and prepared run timeouts.
+    timeout_ms: ?u64 = null,
+};
+
+/// Stable orchestration and trace identity injected into an agent run.
+pub const Correlation = struct {
+    /// Stable graph-run identity used by hooks, telemetry, and durable routing.
+    run_id: []const u8,
+    /// Parent trace inherited by this agent node when the prepared options omit one.
+    telemetry_parent: ?telemetry_types.SpanContext = null,
+};
+
 /// Stage at which an agent-node invocation failed.
 pub const FailurePhase = enum {
     /// Prompt or run-option preparation failed before the agent started.
     prepare,
     /// The agent run failed before producing an accepted result.
     agent,
+    /// A streamed event callback failed before the graph transition committed.
+    stream,
     /// The application result adapter rejected the completed agent result.
     apply,
 };
@@ -41,15 +61,23 @@ pub const FailurePhase = enum {
 pub const Event = union(enum) {
     /// A prompt was prepared and the agent invocation is about to start.
     start: Start,
+    /// One agent event was delivered successfully in provider order.
+    stream: Stream,
     /// A completed agent result was successfully adapted into the graph value.
     end: End,
-    /// A preparation, agent, or result-adaptation phase failed.
+    /// A preparation, stream, agent, or result-adaptation phase failed.
     failure: Failure,
 
     pub const Start = struct {
         node_id: graph_types.NodeId,
         step_number: usize,
         prompt: []const u8,
+    };
+
+    pub const Stream = struct {
+        node_id: graph_types.NodeId,
+        step_number: usize,
+        event: agent_types.AgentStreamEvent,
     };
 
     pub const End = struct {
@@ -78,6 +106,47 @@ pub const Observer = struct {
 
     pub fn emit(self: Observer, event: Event) void {
         self.event_fn(self.context, event);
+    }
+};
+
+/// Fallible synchronous stream delivery. Event storage is borrowed for the
+/// callback only. A failure aborts the node before result adaptation.
+pub const StreamSink = struct {
+    /// Borrowed stream consumer state.
+    context: ?*anyopaque = null,
+    /// Receives agent events in provider and tool-loop order.
+    event_fn: *const fn (
+        context: ?*anyopaque,
+        event: agent_types.AgentStreamEvent,
+    ) CallbackError!void,
+
+    pub fn emit(self: StreamSink, event: agent_types.AgentStreamEvent) CallbackError!void {
+        return self.event_fn(self.context, event);
+    }
+};
+
+const StreamRelay = struct {
+    node_id: graph_types.NodeId,
+    step_number: usize,
+    sink: StreamSink,
+    observer: ?Observer,
+    failure: ?CallbackError = null,
+
+    fn agentSink(self: *StreamRelay) agent_types.AgentStreamSink {
+        return .{ .context = self, .eventFn = emit };
+    }
+
+    fn emit(context: *anyopaque, event: agent_types.AgentStreamEvent) !void {
+        const self: *StreamRelay = @ptrCast(@alignCast(context));
+        self.sink.emit(event) catch |failure| {
+            self.failure = failure;
+            return failure;
+        };
+        if (self.observer) |observer| observer.emit(.{ .stream = .{
+            .node_id = self.node_id,
+            .step_number = self.step_number,
+            .event = event,
+        } });
     }
 };
 
@@ -139,6 +208,61 @@ pub const Conversation = struct {
     }
 };
 
+fn configureAgent(agent: *const Agent, control: Control, graph_io: ?std.Io) Agent {
+    var configured = agent.*;
+    if (configured.io == null) configured.io = graph_io;
+    if (control.cancellation) |cancellation| configured.cancellation = cancellation;
+    return configured;
+}
+
+fn configureOptions(
+    arena: std.mem.Allocator,
+    options: *agent_types.RunOptions,
+    control: Control,
+    correlation: ?Correlation,
+    node_id: graph_types.NodeId,
+    node_name: []const u8,
+    step_number: usize,
+) CallbackError!void {
+    if (control.timeout_ms) |timeout| {
+        options.timeout_ms = if (options.timeout_ms) |prepared| @min(prepared, timeout) else timeout;
+    }
+
+    const durable_run_id = if (options.durable) |binding| binding.run_id else null;
+    if (correlation) |configured| {
+        if (durable_run_id) |run_id| {
+            if (!std.mem.eql(u8, configured.run_id, run_id)) return error.StepFailed;
+        }
+        if (options.telemetry_parent == null) options.telemetry_parent = configured.telemetry_parent;
+    }
+    const run_id = if (correlation) |configured| configured.run_id else durable_run_id;
+    if (run_id) |id| {
+        const node_id_text = std.fmt.allocPrint(arena, "{d}", .{node_id.index}) catch return error.OutOfMemory;
+        options.correlation = .{
+            .run_id = id,
+            .node_id = node_id_text,
+            .node_name = node_name,
+        };
+        if (options.request_id == null) {
+            options.request_id = std.fmt.allocPrint(arena, "{s}.{s}.{d}", .{
+                id,
+                node_id_text,
+                step_number,
+            }) catch return error.OutOfMemory;
+        }
+    }
+    if (options.durable) |*binding| {
+        const local_namespace = std.fmt.allocPrint(arena, "graph.{d}.step.{d}", .{
+            node_id.index,
+            step_number,
+        }) catch return error.OutOfMemory;
+        binding.step_namespace = if (binding.step_namespace) |parent|
+            std.fmt.allocPrint(arena, "{s}.{s}", .{ parent, local_namespace }) catch return error.OutOfMemory
+        else
+            local_namespace;
+    }
+}
+
 /// Returns a buffered agent step whose application value remains fully typed.
 /// `Workflow` must be a type produced by `graph.Graph`.
 pub fn BufferedNode(comptime Workflow: type) type {
@@ -148,6 +272,9 @@ pub fn BufferedNode(comptime Workflow: type) type {
 
         agent: *const Agent,
         context: ?*anyopaque = null,
+        control: Control = .{},
+        correlation: ?Correlation = null,
+        stream_sink: ?StreamSink = null,
         prepare_fn: *const fn (
             context: ?*anyopaque,
             arena: std.mem.Allocator,
@@ -198,16 +325,48 @@ pub fn BufferedNode(comptime Workflow: type) type {
             };
             if (prepared.options.dependencies == null)
                 prepared.options.dependencies = graph_run.deps;
+            configureOptions(
+                scratch.allocator(),
+                &prepared.options,
+                self.control,
+                self.correlation,
+                node_id,
+                graph_run.node_name.?,
+                graph_run.step_number,
+            ) catch |failure| {
+                self.emitFailure(node_id, graph_run.step_number, .prepare, failure);
+                return failure;
+            };
             self.emit(.{ .start = .{
                 .node_id = node_id,
                 .step_number = graph_run.step_number,
                 .prompt = prepared.prompt,
             } });
-            var result = self.agent.runWithOptions(
-                graph_run.gpa,
-                prepared.prompt,
-                prepared.options,
-            ) catch |failure| {
+            const configured_agent = configureAgent(self.agent, self.control, graph_run.io);
+            var relay: StreamRelay = undefined;
+            if (self.stream_sink) |stream_sink| relay = .{
+                .node_id = node_id,
+                .step_number = graph_run.step_number,
+                .sink = stream_sink,
+                .observer = self.observer,
+            };
+            var result = (if (self.stream_sink != null)
+                configured_agent.runStreamWithOptions(
+                    graph_run.gpa,
+                    prepared.prompt,
+                    prepared.options,
+                    relay.agentSink(),
+                )
+            else
+                configured_agent.runWithOptions(
+                    graph_run.gpa,
+                    prepared.prompt,
+                    prepared.options,
+                )) catch |failure| {
+                if (self.stream_sink != null and relay.failure != null) {
+                    self.emitFailure(node_id, graph_run.step_number, .stream, relay.failure.?);
+                    return relay.failure.?;
+                }
                 self.emitFailure(node_id, graph_run.step_number, .agent, failure);
                 return normalizeAgentFailure(failure);
             };
@@ -264,6 +423,9 @@ pub fn TypedNode(comptime Workflow: type, comptime AgentOutput: type) type {
 
         agent: *const Agent,
         context: ?*anyopaque = null,
+        control: Control = .{},
+        correlation: ?Correlation = null,
+        stream_sink: ?StreamSink = null,
         prepare_fn: *const fn (
             context: ?*anyopaque,
             arena: std.mem.Allocator,
@@ -312,17 +474,50 @@ pub fn TypedNode(comptime Workflow: type, comptime AgentOutput: type) type {
             };
             if (prepared.options.dependencies == null)
                 prepared.options.dependencies = graph_run.deps;
+            configureOptions(
+                scratch.allocator(),
+                &prepared.options,
+                self.control,
+                self.correlation,
+                node_id,
+                graph_run.node_name.?,
+                graph_run.step_number,
+            ) catch |failure| {
+                self.emitFailure(node_id, graph_run.step_number, .prepare, failure);
+                return failure;
+            };
             self.emit(.{ .start = .{
                 .node_id = node_id,
                 .step_number = graph_run.step_number,
                 .prompt = prepared.prompt,
             } });
-            var result = self.agent.runTypedWithOptions(
-                AgentOutput,
-                graph_run.gpa,
-                prepared.prompt,
-                prepared.options,
-            ) catch |failure| {
+            const configured_agent = configureAgent(self.agent, self.control, graph_run.io);
+            var relay: StreamRelay = undefined;
+            if (self.stream_sink) |stream_sink| relay = .{
+                .node_id = node_id,
+                .step_number = graph_run.step_number,
+                .sink = stream_sink,
+                .observer = self.observer,
+            };
+            var result = (if (self.stream_sink != null)
+                configured_agent.runTypedStreamWithOptions(
+                    AgentOutput,
+                    graph_run.gpa,
+                    prepared.prompt,
+                    prepared.options,
+                    relay.agentSink(),
+                )
+            else
+                configured_agent.runTypedWithOptions(
+                    AgentOutput,
+                    graph_run.gpa,
+                    prepared.prompt,
+                    prepared.options,
+                )) catch |failure| {
+                if (self.stream_sink != null and relay.failure != null) {
+                    self.emitFailure(node_id, graph_run.step_number, .stream, relay.failure.?);
+                    return relay.failure.?;
+                }
                 self.emitFailure(node_id, graph_run.step_number, .agent, failure);
                 return normalizeAgentFailure(failure);
             };
@@ -599,6 +794,12 @@ test "typed agent nodes report prepare agent and apply failures" {
             const self: *@This() = @ptrCast(@alignCast(context.?));
             self.phase = event.failure.phase;
         }
+
+        fn rejectStream(_: ?*anyopaque, _: agent_types.AgentStreamEvent) CallbackError!void {
+            return error.StepFailed;
+        }
+
+        fn acceptStream(_: ?*anyopaque, _: agent_types.AgentStreamEvent) CallbackError!void {}
     };
     const Callbacks = struct {
         fn boundary(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
@@ -680,14 +881,375 @@ test "typed agent nodes report prepare agent and apply failures" {
     try std.testing.expectError(error.StepFailed, Support.runNode(&node, &capture));
     try std.testing.expectEqual(FailurePhase.apply, capture.phase.?);
 
+    var stream_script = testing_types.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .profile = .{ .supports_json_schema_output = true, .supports_streaming = true },
+    };
+    const stream_agent = Agent{ .model = stream_script.model() };
+    capture = .{};
+    node.agent = &stream_agent;
+    node.context = null;
+    node.stream_sink = .{ .event_fn = Capture.rejectStream };
+    try std.testing.expectError(error.StepFailed, Support.runNode(&node, &capture));
+    try std.testing.expectEqual(FailurePhase.stream, capture.phase.?);
+
     var final_script = testing_types.ScriptedModel{
         .responses = &.{.{ .parts = &parts }},
-        .profile = .{ .supports_json_schema_output = true },
+        .profile = .{ .supports_json_schema_output = true, .supports_streaming = true },
     };
     const final_agent = Agent{ .model = final_script.model() };
     node.agent = &final_agent;
     node.context = null;
+    node.stream_sink = .{ .event_fn = Capture.acceptStream };
     try std.testing.expectEqual(@as(u8, 0), try Support.runNode(&node, &capture));
+}
+
+test "streaming agent nodes deliver ordered events and abort before transition on sink failure" {
+    const State = struct { applied: usize = 0 };
+    const Workflow = graph_types.Graph(State, u8, u8, u8, u8);
+    const Capture = struct {
+        stream_count: usize = 0,
+        observed_count: usize = 0,
+        final_seen: bool = false,
+        fail_stream: bool = false,
+        failure_phase: ?FailurePhase = null,
+
+        fn stream(context: ?*anyopaque, event: agent_types.AgentStreamEvent) CallbackError!void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            if (self.fail_stream) return error.StepFailed;
+            self.stream_count += 1;
+            if (event == .final_result) self.final_seen = true;
+        }
+
+        fn observe(context: ?*anyopaque, event: Event) void {
+            const self: *@This() = @ptrCast(@alignCast(context.?));
+            switch (event) {
+                .stream => self.observed_count += 1,
+                .failure => |failure| self.failure_phase = failure.phase,
+                else => {},
+            }
+        }
+    };
+    const Callbacks = struct {
+        fn boundary(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+        fn prepare(
+            _: ?*anyopaque,
+            _: std.mem.Allocator,
+            _: *Workflow.Context,
+            _: *const u8,
+        ) CallbackError!Prepared {
+            return .{ .prompt = "prompt" };
+        }
+        fn apply(
+            _: ?*anyopaque,
+            _: std.mem.Allocator,
+            run: *Workflow.Context,
+            input: u8,
+            _: *const Agent.Result,
+        ) CallbackError!u8 {
+            run.state.applied += 1;
+            return input + 1;
+        }
+    };
+    const Support = struct {
+        fn runNode(node: *BufferedNode(Workflow), state: *State) !u8 {
+            var builder: Workflow.Builder = .{};
+            defer builder.deinit(std.testing.allocator);
+            try builder.setStart(.{ .run_fn = Callbacks.boundary });
+            try builder.setEnd(.{ .run_fn = Callbacks.boundary });
+            const id = try builder.addStep(std.testing.allocator, node.step("stream-agent", .{}));
+            try builder.setEntry(id);
+            try builder.finish(std.testing.allocator, id);
+            var graph = try builder.build(std.testing.allocator);
+            defer graph.deinit(std.testing.allocator);
+            var deps: u8 = 0;
+            return graph.run(std.testing.allocator, state, &deps, 0, .{});
+        }
+    };
+
+    const parts = [_]model_types.Part{.{ .text = "streamed" }};
+    var success_script = testing_types.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .profile = .{ .supports_streaming = true },
+    };
+    const success_agent = Agent{ .model = success_script.model() };
+    var capture: Capture = .{};
+    var node = BufferedNode(Workflow){
+        .agent = &success_agent,
+        .stream_sink = .{ .context = &capture, .event_fn = Capture.stream },
+        .observer = .{ .context = &capture, .event_fn = Capture.observe },
+        .prepare_fn = Callbacks.prepare,
+        .apply_fn = Callbacks.apply,
+    };
+    var state: State = .{};
+    try std.testing.expectEqual(@as(u8, 1), try Support.runNode(&node, &state));
+    try std.testing.expect(capture.final_seen);
+    try std.testing.expectEqual(capture.stream_count, capture.observed_count);
+    try std.testing.expectEqual(@as(usize, 1), state.applied);
+
+    var failure_script = testing_types.ScriptedModel{
+        .responses = &.{.{ .parts = &parts }},
+        .profile = .{ .supports_streaming = true },
+    };
+    const failure_agent = Agent{ .model = failure_script.model() };
+    capture = .{ .fail_stream = true };
+    node.agent = &failure_agent;
+    node.stream_sink = .{ .context = &capture, .event_fn = Capture.stream };
+    node.observer = .{ .context = &capture, .event_fn = Capture.observe };
+    try std.testing.expectError(error.StepFailed, Support.runNode(&node, &state));
+    try std.testing.expectEqual(FailurePhase.stream, capture.failure_phase.?);
+    try std.testing.expectEqual(@as(usize, 1), state.applied);
+}
+
+test "agent nodes namespace durable operations and expose stable graph correlation" {
+    const Workflow = graph_types.Graph(u8, u8, u8, u8, u8);
+    const Capture = struct {
+        operation_count: usize = 0,
+        hook_count: usize = 0,
+
+        fn execute(
+            context: *anyopaque,
+            gpa: std.mem.Allocator,
+            invocation: durable_types.Invocation,
+        ) !durable_types.OwnedRecord {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            try std.testing.expectEqualStrings("workflow-run", invocation.run_id);
+            const expected_node = self.operation_count % 2;
+            const expected_step = if (expected_node == 0)
+                "workflow.graph.0.step.1.model.request"
+            else
+                "workflow.graph.1.step.2.model.request";
+            try std.testing.expectEqualStrings(expected_step, invocation.step_id);
+            try std.testing.expectEqual(@as(u64, 1), invocation.sequence);
+            self.operation_count += 1;
+            const output_json = try durable_types.payloads.model.stringifyResponse(gpa, .{
+                .parts = &.{.{ .text = "durable" }},
+                .usage = .{},
+                .provider_name = "durable",
+            });
+            defer gpa.free(output_json);
+            return durable_types.OwnedRecord.copy(
+                gpa,
+                durable_types.Record.init(invocation, .{ .success = output_json }),
+            );
+        }
+
+        fn localModel(
+            _: *anyopaque,
+            _: std.mem.Allocator,
+            _: model_types.ModelRequest,
+        ) !model_types.ModelResponse {
+            return error.LocalModelMustNotRun;
+        }
+
+        fn hook(context: *anyopaque, event: agent_types.LifecycleEvent) !void {
+            if (event != .run_start) return;
+            const self: *@This() = @ptrCast(@alignCast(context));
+            const correlation = event.run_start.correlation.?;
+            const expected_node = self.hook_count % 2;
+            try std.testing.expectEqualStrings("workflow-run", correlation.run_id);
+            try std.testing.expectEqualStrings(if (expected_node == 0) "0" else "1", correlation.node_id);
+            try std.testing.expectEqualStrings(
+                if (expected_node == 0) "first-agent" else "second-agent",
+                correlation.node_name,
+            );
+            self.hook_count += 1;
+        }
+    };
+    const Callbacks = struct {
+        fn boundary(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+        fn prepare(
+            context: ?*anyopaque,
+            _: std.mem.Allocator,
+            _: *Workflow.Context,
+            _: *const u8,
+        ) CallbackError!Prepared {
+            const binding: *const durable_types.Binding = @ptrCast(@alignCast(context.?));
+            return .{ .prompt = "prompt", .options = .{ .durable = binding.* } };
+        }
+        fn apply(
+            _: ?*anyopaque,
+            _: std.mem.Allocator,
+            _: *Workflow.Context,
+            input: u8,
+            result: *const Agent.Result,
+        ) CallbackError!u8 {
+            if (!std.mem.eql(u8, result.output, "durable")) return error.StepFailed;
+            return input + 1;
+        }
+    };
+
+    var capture: Capture = .{};
+    const binding = durable_types.Binding{
+        .runtime = .{ .context = &capture, .executeFn = Capture.execute },
+        .run_id = "workflow-run",
+        .handlers = .{ .model_request = "model-worker" },
+        .step_namespace = "workflow",
+    };
+    const hooks = [_]agent_types.LifecycleHook{.{ .context = &capture, .eventFn = Capture.hook }};
+    const agent = Agent{
+        .model = .{ .context = &capture, .profile = .{}, .requestFn = Capture.localModel },
+        .hooks = &hooks,
+    };
+    var first_node = BufferedNode(Workflow){
+        .agent = &agent,
+        .context = @constCast(&binding),
+        .prepare_fn = Callbacks.prepare,
+        .apply_fn = Callbacks.apply,
+    };
+    var second_node = first_node;
+    var builder: Workflow.Builder = .{};
+    defer builder.deinit(std.testing.allocator);
+    try builder.setStart(.{ .run_fn = Callbacks.boundary });
+    try builder.setEnd(.{ .run_fn = Callbacks.boundary });
+    const first = try builder.addStep(std.testing.allocator, first_node.step("first-agent", .{}));
+    const second = try builder.addStep(std.testing.allocator, second_node.step("second-agent", .{}));
+    try builder.setEntry(first);
+    try builder.connect(std.testing.allocator, first, second);
+    try builder.finish(std.testing.allocator, second);
+    var graph = try builder.build(std.testing.allocator);
+    defer graph.deinit(std.testing.allocator);
+    var state: u8 = 0;
+    var deps: u8 = 0;
+    try std.testing.expectEqual(@as(u8, 2), try graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        0,
+        .{},
+    ));
+    try std.testing.expectEqual(@as(u8, 2), try graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        0,
+        .{},
+    ));
+    try std.testing.expectEqual(@as(usize, 4), capture.operation_count);
+    try std.testing.expectEqual(@as(usize, 4), capture.hook_count);
+
+    first_node.correlation = .{ .run_id = "different-run" };
+    var mismatch_builder: Workflow.Builder = .{};
+    defer mismatch_builder.deinit(std.testing.allocator);
+    try mismatch_builder.setStart(.{ .run_fn = Callbacks.boundary });
+    try mismatch_builder.setEnd(.{ .run_fn = Callbacks.boundary });
+    const mismatch = try mismatch_builder.addStep(
+        std.testing.allocator,
+        first_node.step("mismatch", .{}),
+    );
+    try mismatch_builder.setEntry(mismatch);
+    try mismatch_builder.finish(std.testing.allocator, mismatch);
+    var mismatch_graph = try mismatch_builder.build(std.testing.allocator);
+    defer mismatch_graph.deinit(std.testing.allocator);
+    try std.testing.expectError(error.StepFailed, mismatch_graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        0,
+        .{},
+    ));
+    try std.testing.expectEqual(@as(usize, 4), capture.operation_count);
+}
+
+test "agent node controls cancel before side effects and require IO for deadlines" {
+    const Workflow = graph_types.Graph(u8, u8, u8, u8, u8);
+    const Callbacks = struct {
+        fn boundary(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+        fn prepare(
+            _: ?*anyopaque,
+            _: std.mem.Allocator,
+            _: *Workflow.Context,
+            _: *const u8,
+        ) CallbackError!Prepared {
+            return .{ .prompt = "prompt", .options = .{ .timeout_ms = 5 } };
+        }
+        fn apply(
+            _: ?*anyopaque,
+            _: std.mem.Allocator,
+            _: *Workflow.Context,
+            input: u8,
+            _: *const Agent.Result,
+        ) CallbackError!u8 {
+            return input;
+        }
+    };
+    const Support = struct {
+        fn runNode(node: *BufferedNode(Workflow), io: ?std.Io) !u8 {
+            var builder: Workflow.Builder = .{};
+            defer builder.deinit(std.testing.allocator);
+            try builder.setStart(.{ .run_fn = Callbacks.boundary });
+            try builder.setEnd(.{ .run_fn = Callbacks.boundary });
+            const id = try builder.addStep(std.testing.allocator, node.step("controlled-agent", .{}));
+            try builder.setEntry(id);
+            try builder.finish(std.testing.allocator, id);
+            var graph = try builder.build(std.testing.allocator);
+            defer graph.deinit(std.testing.allocator);
+            var state: u8 = 0;
+            var deps: u8 = 0;
+            return graph.run(std.testing.allocator, &state, &deps, 0, .{ .io = io });
+        }
+    };
+
+    const parts = [_]model_types.Part{.{ .text = "unused" }};
+    var scripted = testing_types.ScriptedModel{ .responses = &.{.{ .parts = &parts }} };
+    const agent = Agent{ .model = scripted.model() };
+    var cancellation: model_types.CancellationToken = .{};
+    cancellation.cancel();
+    var node = BufferedNode(Workflow){
+        .agent = &agent,
+        .control = .{ .cancellation = &cancellation },
+        .correlation = .{
+            .run_id = "controlled-run",
+            .telemetry_parent = .{
+                .trace_id = [_]u8{1} ** 16,
+                .span_id = [_]u8{2} ** 8,
+            },
+        },
+        .prepare_fn = Callbacks.prepare,
+        .apply_fn = Callbacks.apply,
+    };
+    try std.testing.expectError(error.Cancelled, Support.runNode(&node, std.testing.io));
+    try std.testing.expectEqual(@as(usize, 0), scripted.request_count);
+
+    node.control = .{ .timeout_ms = 1 };
+    try std.testing.expectError(error.StepFailed, Support.runNode(&node, null));
+    try std.testing.expectEqual(@as(usize, 0), scripted.request_count);
+
+    const SlowModel = struct {
+        io: std.Io,
+        active: std.atomic.Value(bool) = .init(false),
+
+        fn request(
+            context: *anyopaque,
+            _: std.mem.Allocator,
+            _: model_types.ModelRequest,
+        ) !model_types.ModelResponse {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.active.store(true, .seq_cst);
+            defer self.active.store(false, .seq_cst);
+            while (true) try (std.Io.Timeout{ .duration = .{
+                .raw = .fromSeconds(10),
+                .clock = .awake,
+            } }).sleep(self.io);
+        }
+    };
+    var runtime = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+    var slow = SlowModel{ .io = runtime.io() };
+    const slow_agent = Agent{ .model = .{
+        .context = &slow,
+        .profile = .{},
+        .requestFn = SlowModel.request,
+    } };
+    node.agent = &slow_agent;
+    try std.testing.expectError(error.StepFailed, Support.runNode(&node, runtime.io()));
+    try std.testing.expect(!slow.active.load(.seq_cst));
 }
 
 test "agent node failures retain their phase and stable graph error" {
@@ -913,6 +1475,7 @@ fn runBufferedNodeWithAllocator(gpa: std.mem.Allocator) !void {
     const agent = Agent{ .model = scripted.model() };
     var node = BufferedNode(Workflow){
         .agent = &agent,
+        .correlation = .{ .run_id = "allocation-run" },
         .prepare_fn = Callbacks.prepare,
         .apply_fn = Callbacks.apply,
     };

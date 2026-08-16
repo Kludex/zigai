@@ -205,6 +205,8 @@ pub const Binding = struct {
     runtime: Runtime,
     run_id: []const u8,
     handlers: HandlerIds,
+    /// Prefix added to every operation step ID for nested workflow isolation.
+    step_namespace: ?[]const u8 = null,
 
     pub fn execute(
         self: Binding,
@@ -215,9 +217,14 @@ pub const Binding = struct {
         input_json: []const u8,
     ) !OwnedRecord {
         const handler_id = self.handlers.get(kind) orelse return Error.MissingHandler;
+        const namespaced_step = if (self.step_namespace) |namespace|
+            try std.fmt.allocPrint(allocator, "{s}.{s}", .{ namespace, step_id })
+        else
+            null;
+        defer if (namespaced_step) |owned| allocator.free(owned);
         return self.runtime.execute(allocator, .{
             .run_id = self.run_id,
-            .step_id = step_id,
+            .step_id = namespaced_step orelse step_id,
             .sequence = sequence,
             .kind = kind,
             .handler_id = handler_id,
@@ -598,6 +605,7 @@ test "durable binding selects explicit handlers and exposes success only" {
             .model_request = "registered-model",
             .event_delivery = "registered-event",
         },
+        .step_namespace = "graph.2",
     };
     const all_handlers = HandlerIds{
         .model_request = "model",
@@ -621,6 +629,7 @@ test "durable binding selects explicit handlers and exposes success only" {
     );
     defer record.deinit();
     try std.testing.expectEqualStrings("registered-model", record.value.invocation.handler_id);
+    try std.testing.expectEqualStrings("graph.2.model.request", record.value.invocation.step_id);
     try std.testing.expectEqualStrings("{\"ok\":true}", try successPayload(&record));
     try std.testing.expectError(
         Error.MissingHandler,

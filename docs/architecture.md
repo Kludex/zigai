@@ -614,6 +614,25 @@ or structured agent result back into the graph's intermediate type. The core
 graph never imports the agent loop. Graph dependencies become agent
 dependencies only when application preparation did not supply an override.
 
+A configured stream sink selects the agent streaming path. Every borrowed event
+is delivered in agent order before the infallible node observer sees it. A sink
+failure aborts result adaptation. The graph transition commits only after the
+complete run, successful result adaptation, and end observation, so snapshots
+never represent half-delivered agent work.
+
+Node controls tighten agent deadlines and cancellation while borrowing the
+graph run's `std.Io` when needed. Agent control drains losing model, tool, and
+callback work before the step fails. Agent nodes are graph steps rather than
+fan-out branch callbacks. Separate concurrent graph runs may still share them
+only when the agent and every application callback are thread-safe.
+
+A correlation bridge carries the application run ID, graph node index and name,
+and optional trace parent into agent lifecycle hooks and OpenTelemetry. Durable
+bindings add the stable node index and completed-step ordinal to every operation
+step ID. Existing binding namespaces remain outer prefixes, and a correlation
+run ID must match the durable run ID. Replay therefore uses the same identities
+without allowing separate nodes or repeated cyclic visits to collide.
+
 An agent result remains alive through result adaptation and event delivery,
 then is released before the graph transition commits. Long-lived graph state
 therefore uses `graph_agent.Conversation`, which deep-copies the canonical

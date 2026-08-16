@@ -372,7 +372,11 @@ pub fn Graph(
             state: *State,
             deps: *Deps,
             node_id: ?NodeId,
+            /// Borrowed registered node name, or null in the start callback.
+            node_name: ?[]const u8 = null,
             step_number: usize,
+            /// Runtime supplied to the graph run for concurrent or controlled work.
+            io: ?std.Io = null,
             /// Zero-based source-order index inside a fan-out callback.
             task_index: ?usize = null,
             /// Borrowed branch name inside a fan-out callback.
@@ -1039,7 +1043,9 @@ pub fn Graph(
             state: *State,
             deps: *Deps,
             node_id: NodeId,
+            node_name: []const u8,
             step_number: usize,
+            io: ?std.Io,
             task_index: usize,
             branch: ParallelBranch,
             input: Value,
@@ -1058,7 +1064,9 @@ pub fn Graph(
                 .state = task.state,
                 .deps = task.deps,
                 .node_id = task.node_id,
+                .node_name = task.node_name,
                 .step_number = task.step_number,
+                .io = task.io,
                 .task_index = task.task_index,
                 .branch_name = task.branch.name,
             };
@@ -1431,7 +1439,9 @@ pub fn Graph(
                     .state = self.state,
                     .deps = self.deps,
                     .node_id = self.current,
+                    .node_name = self.graph.nodes[self.current.index].name(),
                     .step_number = self.step_count,
+                    .io = self.io,
                     .task_index = index,
                     .branch = fan_out.branches[branch_index],
                     .input = if (fan_out.mode == .map) items[item_index] else self.value,
@@ -1454,7 +1464,9 @@ pub fn Graph(
                     .state = self.state,
                     .deps = self.deps,
                     .node_id = node_id,
+                    .node_name = self.graph.nodes[node_id.index].name(),
                     .step_number = self.step_count,
+                    .io = self.io,
                 };
             }
 
@@ -2062,6 +2074,7 @@ pub fn Graph(
                 .deps = deps,
                 .node_id = null,
                 .step_number = 0,
+                .io = options.io,
             };
             const value = self.start.run_fn(self.start.context, &context, input) catch |failure| {
                 if (options.events) |sink| sink.emit(.{

@@ -93,7 +93,14 @@ defer result.deinit();
 ```
 
 Buffered calls use the `model.request` step ID and streaming calls use
-`model.stream`; the model-request number is their sequence. The worker receives
+`model.stream`; the model-request number is their sequence. Set
+`Binding.step_namespace` when nested workflows share one durable run. The
+binding prepends it to every operation step ID without changing handler IDs or
+sequence numbers. Graph agent adapters add
+`graph.<node-id>.step.<step-number>` beneath an existing namespace
+automatically.
+
+The worker receives
 a versioned neutral JSON request from `zigai.durable.payloads.model`. It returns
 a successful model response encoded with `stringifyResponse`. Replayed streams emit normalized
 complete-part start/delta/end events followed by usage. Provider chunk

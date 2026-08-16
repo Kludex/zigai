@@ -320,6 +320,9 @@ pub const Run = struct {
     request_provider_name: ?[]const u8 = null,
     request_model_name: ?[]const u8 = null,
     input_messages: ?[]u8 = null,
+    correlation_run_id: ?[]const u8 = null,
+    correlation_node_id: ?[]const u8 = null,
+    correlation_node_name: ?[]const u8 = null,
     run_start: ?Start = null,
     request_start: ?Start = null,
     request_span_id: ?[8]u8 = null,
@@ -373,7 +376,7 @@ pub const Run = struct {
             if (!self.config.fail_open) return failure;
         };
         switch (event) {
-            .run_start => |value| try self.onRunStart(value.prompt, value.model),
+            .run_start => |value| try self.onRunStart(value.prompt, value.model, value.correlation),
             .run_end => try self.onRunEnd(.ok, null),
             .run_error => |value| try self.onRunEnd(.error_status, value.failure),
             .model_request_start => |value| try self.onRequestStart(value.number),
@@ -405,8 +408,13 @@ pub const Run = struct {
         }
     }
 
-    fn onRunStart(self: *Run, prompt: []const u8, model: model_types.Model) !void {
+    fn onRunStart(self: *Run, prompt: []const u8, model: model_types.Model, correlation: anytype) !void {
         self.model = model;
+        if (correlation) |value| {
+            self.correlation_run_id = value.run_id;
+            self.correlation_node_id = value.node_id;
+            self.correlation_node_name = value.node_name;
+        }
         self.input_messages = self.capturePrompt(prompt) catch |failure| capture: {
             if (!self.config.fail_open) return failure;
             break :capture null;
@@ -431,6 +439,7 @@ pub const Run = struct {
         var attributes: [20]Attribute = undefined;
         var count: usize = 0;
         modelAttributes(self, &attributes, &count);
+        self.addCorrelationAttributes(&attributes, &count);
         attributes[count] = .{ .key = "gen_ai.operation.name", .value = .{ .string = "invoke_agent" } };
         count += 1;
         if (self.input_messages) |messages| {
@@ -541,7 +550,17 @@ pub const Run = struct {
         var attributes: [8]Attribute = undefined;
         var count: usize = 0;
         const name: []const u8 = switch (event) {
-            .run_start => "zigai.run.start",
+            .run_start => |value| event_name: {
+                if (value.correlation) |correlation| {
+                    attributes[count] = .{ .key = "zigai.run.id", .value = .{ .string = correlation.run_id } };
+                    count += 1;
+                    attributes[count] = .{ .key = "zigai.graph.node.id", .value = .{ .string = correlation.node_id } };
+                    count += 1;
+                    attributes[count] = .{ .key = "zigai.graph.node.name", .value = .{ .string = correlation.node_name } };
+                    count += 1;
+                }
+                break :event_name "zigai.run.start";
+            },
             .run_end => |value| event_name: {
                 attributes[count] = .{ .key = "zigai.model.request.count", .value = .{ .integer = @intCast(value.model_requests) } };
                 count += 1;
@@ -832,6 +851,21 @@ pub const Run = struct {
         }
         if (self.request_model_name) |name| {
             attributes[count.*] = .{ .key = "gen_ai.request.model", .value = .{ .string = name } };
+            count.* += 1;
+        }
+    }
+
+    fn addCorrelationAttributes(self: Run, attributes: []Attribute, count: *usize) void {
+        if (self.correlation_run_id) |run_id| {
+            attributes[count.*] = .{ .key = "zigai.run.id", .value = .{ .string = run_id } };
+            count.* += 1;
+        }
+        if (self.correlation_node_id) |node_id| {
+            attributes[count.*] = .{ .key = "zigai.graph.node.id", .value = .{ .string = node_id } };
+            count.* += 1;
+        }
+        if (self.correlation_node_name) |node_name| {
+            attributes[count.*] = .{ .key = "zigai.graph.node.name", .value = .{ .string = node_name } };
             count.* += 1;
         }
     }
@@ -1183,6 +1217,85 @@ test "telemetry propagates valid parents and bounds exporter attributes" {
     }).startWithParent(std.testing.allocator, zero);
     defer independent.deinit();
     try std.testing.expect(!std.mem.eql(u8, &independent.trace_id, &parent.trace_id));
+}
+
+test "telemetry exports graph correlation on lifecycle events and run spans" {
+    const Capture = struct {
+        correlated_signals: usize = 0,
+
+        fn inspect(self: *@This(), attributes: []const Attribute) !void {
+            var run_id = false;
+            var node_id = false;
+            var node_name = false;
+            for (attributes) |attribute| {
+                if (std.mem.eql(u8, attribute.key, "zigai.run.id")) {
+                    try std.testing.expectEqualStrings("run-7", attribute.value.string);
+                    run_id = true;
+                } else if (std.mem.eql(u8, attribute.key, "zigai.graph.node.id")) {
+                    try std.testing.expectEqualStrings("3", attribute.value.string);
+                    node_id = true;
+                } else if (std.mem.eql(u8, attribute.key, "zigai.graph.node.name")) {
+                    try std.testing.expectEqualStrings("research", attribute.value.string);
+                    node_name = true;
+                }
+            }
+            if (run_id and node_id and node_name) self.correlated_signals += 1;
+        }
+
+        fn span(context: *anyopaque, value: Span) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (std.mem.eql(u8, value.name, "invoke_agent")) try self.inspect(value.attributes);
+        }
+
+        fn metric(_: *anyopaque, _: Metric) !void {}
+
+        fn event(context: *anyopaque, value: Event) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (std.mem.eql(u8, value.name, "zigai.run.start")) try self.inspect(value.attributes);
+        }
+    };
+    const agent_types = @import("agent.zig");
+    var capture: Capture = .{};
+    var unused: u8 = 0;
+    var run = (OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = .{
+            .context = &capture,
+            .spanFn = Capture.span,
+            .metricFn = Capture.metric,
+            .eventFn = Capture.event,
+        },
+    }).start(std.testing.allocator);
+    defer run.deinit();
+    try run.observe(agent_types.LifecycleEvent{
+        .run_start = .{
+            .prompt = "prompt",
+            .model = .{
+                .context = &unused,
+                .profile = .{},
+                .requestFn = struct {
+                    fn request(
+                        _: *anyopaque,
+                        _: std.mem.Allocator,
+                        _: model_types.ModelRequest,
+                    ) !model_types.ModelResponse { // kcov-ignore
+                        return .{ .parts = &.{} }; // kcov-ignore
+                    }
+                }.request,
+            },
+            .correlation = .{
+                .run_id = "run-7",
+                .node_id = "3",
+                .node_name = "research",
+            },
+        },
+    });
+    try run.observe(agent_types.LifecycleEvent{ .run_end = .{
+        .output = "ok",
+        .usage = .{},
+        .model_requests = 0,
+    } });
+    try std.testing.expectEqual(@as(usize, 2), capture.correlated_signals);
 }
 
 test "telemetry redacts captured prompts and isolates capture failures" {

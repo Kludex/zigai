@@ -493,6 +493,16 @@ pub const Instruction = union(enum) {
     };
 };
 
+/// Stable orchestration identity attached to agent hooks and telemetry.
+pub const RunCorrelation = struct {
+    /// Application or workflow run identity.
+    run_id: []const u8,
+    /// Orchestrator-specific node identity.
+    node_id: []const u8,
+    /// Human-readable orchestrator node name.
+    node_name: []const u8,
+};
+
 /// Values that apply only to one buffered or streaming run.
 pub const RunOptions = struct {
     /// Earlier conversation messages. They are copied into the result arena.
@@ -518,6 +528,8 @@ pub const RunOptions = struct {
     request_id: ?[]const u8 = null,
     /// Upstream trace context used as the parent of this agent invocation.
     telemetry_parent: ?telemetry_types.SpanContext = null,
+    /// Stable graph, workflow, or nested-agent identity exposed to hooks and telemetry.
+    correlation: ?RunCorrelation = null,
     /// Tightens `Agent.run_timeout_ms` for this invocation.
     timeout_ms: ?u64 = null,
     /// A one-run, thread-safe queue for request messages submitted while the
@@ -863,6 +875,7 @@ pub const LifecycleEvent = union(enum) {
     pub const RunStart = struct {
         prompt: []const u8,
         model: model_types.Model,
+        correlation: ?RunCorrelation = null,
     };
 
     pub const RunEnd = struct {
@@ -2058,7 +2071,11 @@ pub const Agent = struct {
             try ensureContentSupported(active.model, self.url_policy, options.message_history);
         try ensurePromptPartsSupported(active.model, self.url_policy, options.prompt_parts);
         const invocation_started = monotonicNow(self.io);
-        try emitLifecycle(hooks, .{ .run_start = .{ .prompt = prompt, .model = active.model } });
+        try emitLifecycle(hooks, .{ .run_start = .{
+            .prompt = prompt,
+            .model = active.model,
+            .correlation = options.correlation,
+        } });
 
         var prepared_output = try prepareAgentOutput(memory, self.output, active.model.profile);
 

@@ -16,8 +16,9 @@
   grouped Mermaid state-diagram rendering.
 - Add explicit buffered and JSON-Schema-typed graph agent nodes with typed
   prompt/result adapters, graph dependency injection, canonical deep-copied
-  history, cumulative usage, lifecycle observation, and allocation-safe
-  ownership.
+  history, cumulative usage, ordered streaming, deadline and cancellation
+  propagation, node-namespaced durable replay, graph/agent trace correlation,
+  lifecycle observation, and allocation-safe ownership.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

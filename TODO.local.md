@@ -266,7 +266,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
     worker registration, retry policy, payload limits, and deployment rules.
   - [x] Persist and resume stream/approval state and prove replay safety with
     worker-restart, duplicate-delivery, and schema-migration tests.
-- [ ] Add a typed graph/workflow module with steps, decisions, joins/reducers,
+- [x] Add a typed graph/workflow module with steps, decisions, joins/reducers,
   parallel branches, state snapshots, visualization metadata, and agent nodes.
   - [x] Define a generic graph builder, typed state/dependency/input/output
     contexts, validated step registration and edges, bounded execution, stable
@@ -280,7 +280,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
     graph-definition fingerprints, resumable iteration, and migration hooks.
   - [x] Add node/edge labels, descriptions, groups, source locations, Mermaid
     rendering, and stable machine-readable visualization metadata.
-  - [ ] Add agent nodes with typed prompt/result adapters, history and usage
+  - [x] Add agent nodes with typed prompt/result adapters, history and usage
     propagation, run deadlines/cancellation, streaming events, durable bindings,
     and graph/agent trace correlation.
 - [ ] Add multi-agent primitives for delegation, handoff, subagents, shared and

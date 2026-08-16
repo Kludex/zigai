@@ -584,21 +584,45 @@ null, the adapter injects the graph's typed dependency pointer. `apply_fn`
 receives the completed agent result and must copy anything retained in the
 returned `Value` before the callback returns.
 
-The adapter's synchronous observer receives borrowed `start`, `end`, and
-`failure` events. Failure events preserve the original error name and identify
-whether preparation, agent execution, or application failed. The graph-facing
-error remains deliberately narrow: allocator failures stay `OutOfMemory`,
-agent cancellation stays `Cancelled`, and other agent failures become
-`StepFailed`.
+Set `stream_sink` to select the streaming agent API. It receives each borrowed
+`AgentStreamEvent` synchronously in provider and tool-loop order. After a
+successful callback, the node observer receives the matching borrowed `stream`
+event. A callback failure emits the `stream` failure phase and aborts before
+`apply_fn`, so the graph never commits a transition for a partially delivered
+run.
+
+`Control.cancellation` overrides the borrowed agent token for one node.
+`Control.timeout_ms` can only tighten the agent and prepared run timeout. A
+borrowed graph `RunOptions.io` becomes the agent runtime when `Agent.io` is
+null. Cancellation and deadline work is drained by the agent before the node
+returns.
+
+`Correlation` supplies a stable graph run ID and optional trace parent. The
+adapter derives the node ID, node name, provider request ID, and
+`Agent.RunCorrelation`. Hooks and OpenTelemetry therefore share the graph
+identity. A durable binding is namespaced with
+`graph.<node-id>.step.<step-number>` beneath any existing
+`Binding.step_namespace`; replay keeps the same identity, while two
+agent nodes cannot collide. A configured correlation run ID must equal the
+durable binding run ID.
+
+The adapter's synchronous observer receives borrowed `start`, `stream`, `end`,
+and `failure` events. Failure events preserve the original error name and
+identify preparation, agent execution, stream delivery, or application. The
+graph-facing error remains deliberately narrow: allocator failures stay
+`OutOfMemory`, agent cancellation stays `Cancelled`, and other agent failures
+become `StepFailed`.
 
 `graph_agent.Conversation` is the reusable state helper for sequential agent
 nodes. `init` and `replace` deep-copy the complete canonical message vocabulary
 and usage detail names into one arena. `appendRun` replaces history while
 adding request, tool, token, latency, detail, and cost counters to cumulative
 usage. Its storage must be deinitialized by the application state owner.
-Parallel fan-out does not serialize access to an agent, conversation, or
-dependencies; applications must use independent instances or synchronize all
-shared mutation.
+Agent adapters produce ordinary graph steps, not fan-out branch callbacks.
+They therefore do not execute concurrently unless separate graph runs invoke
+them concurrently. In that case, the agent, callbacks, dependencies, stream
+sink, and telemetry exporter must be immutable or thread-safe. A shared
+`Conversation` still requires application synchronization.
 
 Concurrent fan-out callbacks share `State`, `Deps`, branch contexts, and input
 values. The scheduler makes only `Context.gpa` safe for concurrent use.
@@ -1054,6 +1078,11 @@ opt in, and choose `max_body_bytes`; exact-limit bodies are complete and larger
 bodies set `body_truncated`. Provider messages and codes have independent caps.
 The observer is synchronous and infallible, so none of its borrowed fields may
 be retained without copying.
+
+`RunOptions.correlation` supplies a stable orchestration run ID, node ID, and
+node name. Lifecycle hooks receive it on `run_start`. OpenTelemetry exports it
+as `zigai.run.id`, `zigai.graph.node.id`, and `zigai.graph.node.name` on the run
+span and start event. `RunOptions.telemetry_parent` remains the trace parent.
 
 `RunOptions.request_id` supplies provider-facing correlation. OpenAI and
 OpenAI-compatible adapters send it as `x-client-request-id`. Generation APIs
