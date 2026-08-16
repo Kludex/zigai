@@ -288,16 +288,21 @@ validation never invokes it.
 | `EmptyNodeName` / `NodeNameTooLong` | A step or decision name is empty or exceeds the definition limit. |
 | `DuplicateNodeName` | Two nodes use the same graph-local name. |
 | `InvalidNode` | An entry or edge references an ID outside its definition. |
-| `InvalidEdgeKind` | A step received a named route, or a decision received an unconditional route. |
-| `EmptyBranchName` / `BranchNameTooLong` | A decision branch name is empty or exceeds the definition limit. |
-| `DuplicateBranchName` | A decision registers the same branch name twice. |
+| `InvalidEdgeKind` | A non-decision received a named route, or a decision received an unconditional route. |
+| `EmptyBranchName` / `BranchNameTooLong` | A decision or fan-out branch name is empty or exceeds the definition limit. |
+| `DuplicateBranchName` | A decision or fan-out registers the same branch name twice. |
+| `MissingParallelBranch` | A fan-out node has no branch callbacks. |
 | `DuplicateStart` / `DuplicateEnd` | A boundary callback was registered twice. |
 | `MissingStart` / `MissingEnd` / `MissingEntry` | A required graph boundary is absent. |
 | `MissingOutgoingEdge` | A node has no following node or terminal route. |
 | `DuplicateOutgoingEdge` | A core step has more than one route. |
 | `UnreachableNode` | A registered node cannot be reached from the entry. |
-| `LimitExceeded` | A node or edge registration exceeds the graph ceiling. |
+| `LimitExceeded` | A node, edge, or parallel-branch registration exceeds the graph ceiling. |
 | `StepLimitExceeded` | A run reached its bounded transition count. |
+| `FanOutLimitExceeded` | A map emitted too many values or would create too many branch tasks. |
+| `InvalidRunOptions` | The requested graph concurrency is zero or the definition disables execution. |
+| `ParallelExecutionRequiresIo` | A concurrent fan-out has no `std.Io` runtime. |
+| `ParallelExecutionUnavailable` | The runtime could not admit a fan-out callback. |
 | `UnmatchedRoute` | A decision returned a branch name that it did not register. |
 | `RunFinished` | A caller advanced a run after it returned its output. |
 | `StepFailed` / `Cancelled` | An application node failed or cooperatively cancelled. |

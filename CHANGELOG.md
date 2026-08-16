@@ -5,6 +5,9 @@
 - Add a generic typed graph builder with validated linear, cyclic, and named
   decision routing, reachability checks, bounded execution, latched failures,
   stable lifecycle events, and manual step-by-step runs.
+- Add bounded map and broadcast fan-out nodes with typed joins, completion-order
+  fail-fast cancellation, deterministic source-order reduction, empty-map
+  finalization, thread-safe callback allocation, and explicit value cleanup.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

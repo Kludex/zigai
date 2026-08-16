@@ -533,6 +533,21 @@ return the same failure instead of continuing a desynchronized workflow.
 `RunOptions.max_steps` may tighten, but never widen, the definition ceiling.
 Returning a branch name that was not registered latches `UnmatchedRoute`.
 
+`Builder.addFanOut` registers an explicit parallel node. `FanOutMode.broadcast`
+sends the current `Value` to every borrowed `ParallelBranch`.
+`FanOutMode.map` invokes a `Map` callback with a bounded `Emitter`, then sends
+each emitted value to every branch in item-major, branch-major source order.
+The embedded typed `Join` initializes one accumulator even for an empty map and
+borrows every successful branch result through `reduce_fn`.
+
+`RunOptions.max_concurrency` defaults to one and is capped by
+`Limits.max_concurrency`. A value above one requires `RunOptions.io` only when a
+fan-out contains multiple tasks. The scheduler observes completions as they
+arrive, cancels sibling tasks on the first failure, and retains results by
+source index so reducer order is deterministic. `max_fan_out_items`,
+`max_fan_out_tasks`, and `max_parallel_branches` bound every fork before more
+work is admitted.
+
 The built graph owns only its node and routing arrays and releases them with
 `deinit(gpa)`. Node names, registered branch names, and callback contexts are
 borrowed for the graph's lifetime. A branch name returned by a decision is
@@ -542,11 +557,25 @@ Intermediate and output ownership follows the application-defined `Value` and
 `Output` types; callbacks receive the run allocator explicitly and must define
 their own cleanup contract for allocations they return.
 
+A fan-out borrows its input, owns values emitted by a map and values returned
+by branches, and transfers the final accumulator back to the graph. When
+`FanOut.deinit_value_fn` is set, the scheduler calls it for emitted values and
+branch outputs after reduction, and for an accumulator abandoned by failure.
+When this hook is used, branch outputs must own independent resources: they
+must not alias the fan-out input, emitted values, or one another. The
+application remains responsible for cleaning the successful accumulator after
+a later step or end callback consumes it.
+
 Event sinks are synchronous and infallible. They receive borrowed run/step
 start, end, and failure records in execution order. They must copy a node name
-or branch name before retaining it. The core supports linear, cyclic, and named
-conditional routing. Parallel fan-out, reducers, snapshots, visualization, and
+or branch name before retaining it. The core supports linear, cyclic, named
+conditional, and bounded parallel routing. Snapshots, visualization, and
 agent-node adapters remain explicit roadmap steps rather than hidden behavior.
+
+Concurrent fan-out callbacks share `State`, `Deps`, branch contexts, and input
+values. The scheduler makes only `Context.gpa` safe for concurrent use.
+Applications must synchronize all other shared mutation, use immutable data,
+or keep `max_concurrency = 1`.
 
 ## Evaluations
 

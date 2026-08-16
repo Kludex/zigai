@@ -193,6 +193,12 @@ or `builder.branchFinish(...)`; an unknown name fails with `UnmatchedRoute`.
 Callback contexts, node and branch names, state, and dependencies are borrowed;
 the built workflow owns only its node and routing arrays.
 
+`addFanOut(...)` adds a bounded map or broadcast fork with named branch
+callbacks and a typed join. Set `RunOptions.max_concurrency` above one and pass
+`std.Io` to execute branches concurrently; reduction always follows source
+order. Shared state, dependencies, branch contexts, and returned values must be
+safe for that concurrency level.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.

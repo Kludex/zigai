@@ -12,6 +12,8 @@ pub const CallbackError = error{
     OutOfMemory,
     Cancelled,
     StepFailed,
+    /// A map emitted too many values or its fork would create too many tasks.
+    FanOutLimitExceeded,
 };
 
 /// Errors returned while assembling a graph definition.
@@ -33,12 +35,20 @@ pub const BuildError = std.mem.Allocator.Error || error{
     DuplicateBranchName,
     InvalidEdgeKind,
     UnreachableNode,
+    /// A fan-out was registered without a branch callback.
+    MissingParallelBranch,
 };
 
 /// Errors returned while advancing or completing a graph run.
 pub const RunError = CallbackError || error{
     StepLimitExceeded,
     UnmatchedRoute,
+    /// A run or graph definition configured zero available concurrency.
+    InvalidRunOptions,
+    /// A parallel fork was requested without an I/O runtime.
+    ParallelExecutionRequiresIo,
+    /// The I/O runtime could not admit a parallel branch callback.
+    ParallelExecutionUnavailable,
     RunFinished,
 };
 
@@ -53,6 +63,14 @@ pub const Limits = struct {
     max_edges: usize = 1_024,
     max_steps: usize = 10_000,
     max_name_bytes: usize = 128,
+    /// Maximum values one map callback may emit.
+    max_fan_out_items: usize = 1_024,
+    /// Maximum branch callbacks created by one fan-out execution.
+    max_fan_out_tasks: usize = 4_096,
+    /// Maximum branch callbacks registered on one fan-out node.
+    max_parallel_branches: usize = 64,
+    /// Definition ceiling for callbacks concurrently in flight.
+    max_concurrency: usize = 64,
 };
 
 /// Observable graph lifecycle phase.
@@ -87,6 +105,10 @@ pub const EventSink = struct {
 /// Per-run controls. A requested step limit can only narrow the graph limit.
 pub const RunOptions = struct {
     max_steps: ?usize = null,
+    /// Maximum fan-out callbacks in flight. Values above one require `io`.
+    max_concurrency: usize = 1,
+    /// Runtime used only when a fan-out executes more than one callback at once.
+    io: ?std.Io = null,
     events: ?EventSink = null,
 };
 
@@ -110,6 +132,10 @@ pub fn Graph(
             deps: *Deps,
             node_id: ?NodeId,
             step_number: usize,
+            /// Zero-based source-order index inside a fan-out callback.
+            task_index: ?usize = null,
+            /// Borrowed branch name inside a fan-out callback.
+            branch_name: ?[]const u8 = null,
         };
 
         /// Converts the graph input into its first intermediate value.
@@ -153,6 +179,90 @@ pub fn Graph(
             ) CallbackError!DecisionResult,
         };
 
+        /// Bounded collector passed to a mapping callback. Emitted values are
+        /// owned by the fan-out node until all branch callbacks finish.
+        pub const Emitter = struct {
+            gpa: std.mem.Allocator,
+            max_items: usize,
+            items: std.ArrayList(Value) = .empty,
+
+            /// Appends one source item or returns `FanOutLimitExceeded` before
+            /// allocating beyond the graph definition's item ceiling.
+            pub fn emit(self: *Emitter, value: Value) CallbackError!void {
+                if (self.items.items.len >= self.max_items) return error.FanOutLimitExceeded;
+                try self.items.append(self.gpa, value);
+            }
+
+            /// Returns the number of values emitted so far.
+            pub fn count(self: Emitter) usize {
+                return self.items.items.len;
+            }
+        };
+
+        /// Produces source items for a map fan-out. The input is borrowed.
+        pub const Map = struct {
+            context: ?*anyopaque = null,
+            run_fn: *const fn (
+                context: ?*anyopaque,
+                run: *Context,
+                input: Value,
+                output: *Emitter,
+            ) CallbackError!void,
+        };
+
+        /// Selects whether a fan-out duplicates one input or maps emitted items.
+        pub const FanOutMode = union(enum) {
+            broadcast,
+            map: Map,
+        };
+
+        /// One borrowed parallel callback. Inputs are borrowed for the call;
+        /// outputs are owned by the fan-out until the join has observed them.
+        pub const ParallelBranch = struct {
+            name: []const u8,
+            context: ?*anyopaque = null,
+            run_fn: *const fn (
+                context: ?*anyopaque,
+                run: *Context,
+                input: Value,
+            ) CallbackError!Value,
+        };
+
+        /// Typed join initialized once per fork and reduced in source order.
+        /// `reduce_fn` mutates the owned accumulator while borrowing each input.
+        pub const Join = struct {
+            context: ?*anyopaque = null,
+            initial_fn: *const fn (
+                context: ?*anyopaque,
+                run: *Context,
+                input: Value,
+            ) CallbackError!Value,
+            reduce_fn: *const fn (
+                context: ?*anyopaque,
+                run: *Context,
+                accumulator: *Value,
+                input: Value,
+                source_index: usize,
+            ) CallbackError!void,
+        };
+
+        /// Explicit map/broadcast fork with a typed join. Branches and callback
+        /// contexts are borrowed for the built graph's lifetime.
+        pub const FanOut = struct {
+            name: []const u8,
+            mode: FanOutMode,
+            branches: []const ParallelBranch,
+            join: Join,
+            cleanup_context: ?*anyopaque = null,
+            /// Optional cleanup for owned map items, branch outputs, and an
+            /// accumulator abandoned by a reducer failure.
+            deinit_value_fn: ?*const fn (
+                context: ?*anyopaque,
+                gpa: std.mem.Allocator,
+                value: *Value,
+            ) void = null,
+        };
+
         /// Converts the terminal intermediate value to the graph output.
         pub const End = struct {
             context: ?*anyopaque = null,
@@ -171,6 +281,7 @@ pub fn Graph(
         const Node = union(enum) {
             step: Step,
             decision: Decision,
+            fan_out: FanOut,
 
             fn name(self: Node) []const u8 {
                 return switch (self) {
@@ -256,12 +367,38 @@ pub fn Graph(
                 return id;
             }
 
+            /// Registers one explicit map/broadcast fork and typed join.
+            pub fn addFanOut(
+                self: *Builder,
+                gpa: std.mem.Allocator,
+                fan_out: FanOut,
+            ) BuildError!NodeId {
+                if (fan_out.name.len == 0) return error.EmptyNodeName;
+                if (fan_out.name.len > self.limits.max_name_bytes) return error.NodeNameTooLong;
+                for (self.nodes.items) |existing| {
+                    if (std.mem.eql(u8, existing.name(), fan_out.name)) return error.DuplicateNodeName;
+                }
+                if (fan_out.branches.len == 0) return error.MissingParallelBranch;
+                if (fan_out.branches.len > self.limits.max_parallel_branches) return error.LimitExceeded;
+                for (fan_out.branches, 0..) |branch_value, index| {
+                    if (branch_value.name.len == 0) return error.EmptyBranchName;
+                    if (branch_value.name.len > self.limits.max_name_bytes) return error.BranchNameTooLong;
+                    for (fan_out.branches[0..index]) |previous| {
+                        if (std.mem.eql(u8, previous.name, branch_value.name)) return error.DuplicateBranchName;
+                    }
+                }
+                if (self.nodes.items.len >= self.limits.max_nodes) return error.LimitExceeded;
+                const id = NodeId{ .index = self.nodes.items.len };
+                try self.nodes.append(gpa, .{ .fan_out = fan_out });
+                return id;
+            }
+
             pub fn setEntry(self: *Builder, node: NodeId) BuildError!void {
                 try self.validateNode(node);
                 self.entry = node;
             }
 
-            /// Connects a step to exactly one following step.
+            /// Connects a step or fan-out to exactly one following node.
             pub fn connect(
                 self: *Builder,
                 gpa: std.mem.Allocator,
@@ -270,14 +407,20 @@ pub fn Graph(
             ) BuildError!void {
                 try self.validateNode(from);
                 try self.validateNode(to);
-                if (self.nodes.items[from.index] != .step) return error.InvalidEdgeKind;
+                switch (self.nodes.items[from.index]) {
+                    .step, .fan_out => {},
+                    .decision => return error.InvalidEdgeKind,
+                }
                 try self.addEdge(gpa, .{ .from = from, .destination = .{ .node = to } });
             }
 
-            /// Marks a step as the terminal producer consumed by `End`.
+            /// Marks a step or fan-out as the terminal producer consumed by `End`.
             pub fn finish(self: *Builder, gpa: std.mem.Allocator, from: NodeId) BuildError!void {
                 try self.validateNode(from);
-                if (self.nodes.items[from.index] != .step) return error.InvalidEdgeKind;
+                switch (self.nodes.items[from.index]) {
+                    .step, .fan_out => {},
+                    .decision => return error.InvalidEdgeKind,
+                }
                 try self.addEdge(gpa, .{ .from = from, .destination = .finish });
             }
 
@@ -442,6 +585,96 @@ pub fn Graph(
             failed: RunError,
         };
 
+        const ParallelTask = struct {
+            gpa: std.mem.Allocator,
+            state: *State,
+            deps: *Deps,
+            node_id: NodeId,
+            step_number: usize,
+            task_index: usize,
+            branch: ParallelBranch,
+            input: Value,
+        };
+
+        const TaskOutcome = union(enum) {
+            success: struct { index: usize, value: Value },
+            failure: struct { index: usize, failure: CallbackError },
+        };
+
+        const TaskSelection = union(enum) { task: TaskOutcome };
+
+        fn runParallelTask(task: ParallelTask) TaskOutcome {
+            var context = Context{
+                .gpa = task.gpa,
+                .state = task.state,
+                .deps = task.deps,
+                .node_id = task.node_id,
+                .step_number = task.step_number,
+                .task_index = task.task_index,
+                .branch_name = task.branch.name,
+            };
+            const value = task.branch.run_fn(task.branch.context, &context, task.input) catch |failure|
+                return .{ .failure = .{ .index = task.task_index, .failure = failure } };
+            return .{ .success = .{ .index = task.task_index, .value = value } };
+        }
+
+        const LockedAllocator = struct {
+            child: std.mem.Allocator,
+            io: std.Io,
+            mutex: std.Io.Mutex = .init,
+
+            fn allocator(self: *LockedAllocator) std.mem.Allocator {
+                return .{ .ptr = self, .vtable = &vtable };
+            }
+
+            const vtable: std.mem.Allocator.VTable = .{
+                .alloc = alloc,
+                .resize = resize,
+                .remap = remap,
+                .free = free,
+            };
+
+            fn alloc(context: *anyopaque, len: usize, alignment: std.mem.Alignment, return_address: usize) ?[*]u8 {
+                const self: *LockedAllocator = @ptrCast(@alignCast(context));
+                self.mutex.lockUncancelable(self.io);
+                defer self.mutex.unlock(self.io);
+                return self.child.rawAlloc(len, alignment, return_address);
+            }
+
+            fn resize(
+                context: *anyopaque,
+                memory: []u8,
+                alignment: std.mem.Alignment,
+                new_len: usize,
+                return_address: usize,
+            ) bool {
+                const self: *LockedAllocator = @ptrCast(@alignCast(context));
+                self.mutex.lockUncancelable(self.io);
+                defer self.mutex.unlock(self.io);
+                return self.child.rawResize(memory, alignment, new_len, return_address);
+            }
+
+            fn remap(
+                context: *anyopaque,
+                memory: []u8,
+                alignment: std.mem.Alignment,
+                new_len: usize,
+                return_address: usize,
+            ) ?[*]u8 {
+                const self: *LockedAllocator = @ptrCast(@alignCast(context));
+                self.mutex.lockUncancelable(self.io);
+                defer self.mutex.unlock(self.io);
+                return self.child.rawRemap(memory, alignment, new_len, return_address);
+            }
+
+            fn free(context: *anyopaque, memory: []u8, alignment: std.mem.Alignment, return_address: usize) void {
+                const self: *LockedAllocator = @ptrCast(@alignCast(context));
+                self.mutex.lockUncancelable(self.io);
+                defer self.mutex.unlock(self.io);
+                self.child.rawFree(memory, alignment, return_address);
+            }
+        };
+
         /// Manually advanced graph run. The graph, state, dependencies, and any
         /// memory referenced by `Value` must outlive this value.
         pub const Run = struct {
@@ -453,6 +686,8 @@ pub fn Graph(
             current: NodeId,
             step_count: usize = 0,
             max_steps: usize,
+            max_concurrency: usize,
+            io: ?std.Io,
             events: ?EventSink,
             status: Status = .running,
 
@@ -488,6 +723,11 @@ pub fn Graph(
                         ) catch |failure| return self.fail(self.current, failure);
                         self.value = result.value;
                         break :branch result.branch;
+                    },
+                    .fan_out => |fan_out| branch: {
+                        self.value = self.executeFanOut(fan_out) catch |failure|
+                            return self.fail(self.current, failure);
+                        break :branch null;
                     },
                 };
                 self.emit(.{
@@ -544,6 +784,175 @@ pub fn Graph(
 
             pub fn stepsCompleted(self: Run) usize {
                 return self.step_count;
+            }
+
+            fn executeFanOut(self: *Run, fan_out: FanOut) RunError!Value {
+                var emitter = Emitter{
+                    .gpa = self.gpa,
+                    .max_items = self.graph.limits.max_fan_out_items,
+                };
+                defer emitter.items.deinit(self.gpa);
+                const mapped = fan_out.mode == .map;
+                if (fan_out.mode == .map) {
+                    var map_context = self.context(self.current);
+                    fan_out.mode.map.run_fn(
+                        fan_out.mode.map.context,
+                        &map_context,
+                        self.value,
+                        &emitter,
+                    ) catch |failure| {
+                        self.cleanupValues(fan_out, emitter.items.items);
+                        return failure;
+                    };
+                }
+                defer if (mapped) self.cleanupValues(fan_out, emitter.items.items);
+
+                const item_count: usize = if (mapped) emitter.items.items.len else 1;
+                if (item_count != 0 and
+                    fan_out.branches.len > self.graph.limits.max_fan_out_tasks / item_count)
+                    return error.FanOutLimitExceeded;
+                const task_count = item_count * fan_out.branches.len;
+
+                const results = try self.gpa.alloc(Value, task_count);
+                defer self.gpa.free(results);
+                const ready = try self.gpa.alloc(bool, task_count);
+                defer self.gpa.free(ready);
+                @memset(ready, false);
+                defer for (results, ready) |*result, is_ready| {
+                    if (is_ready) self.cleanupValue(fan_out, result);
+                };
+
+                if (task_count > 1 and self.max_concurrency > 1) {
+                    const io = self.io orelse return error.ParallelExecutionRequiresIo;
+                    try self.executeConcurrent(fan_out, emitter.items.items, results, ready, io);
+                } else {
+                    for (results, 0..) |*result, index| {
+                        switch (runParallelTask(self.parallelTask(fan_out, emitter.items.items, self.gpa, index))) {
+                            .success => |outcome| {
+                                result.* = outcome.value;
+                                ready[index] = true;
+                            },
+                            .failure => |outcome| return outcome.failure,
+                        }
+                    }
+                }
+
+                var join_context = self.context(self.current);
+                var accumulator = try fan_out.join.initial_fn(
+                    fan_out.join.context,
+                    &join_context,
+                    self.value,
+                );
+                var keep_accumulator = false;
+                defer if (!keep_accumulator) self.cleanupValue(fan_out, &accumulator);
+                for (results, 0..) |result, index| {
+                    try fan_out.join.reduce_fn(
+                        fan_out.join.context,
+                        &join_context,
+                        &accumulator,
+                        result,
+                        index,
+                    );
+                }
+                keep_accumulator = true;
+                return accumulator;
+            }
+
+            fn executeConcurrent(
+                self: *Run,
+                fan_out: FanOut,
+                items: []const Value,
+                results: []Value,
+                ready: []bool,
+                io: std.Io,
+            ) RunError!void {
+                var locked_allocator = LockedAllocator{ .child = self.gpa, .io = io };
+                const task_gpa = locked_allocator.allocator();
+                const concurrency = @min(self.max_concurrency, results.len);
+                const selection_buffer = try self.gpa.alloc(TaskSelection, concurrency);
+                defer self.gpa.free(selection_buffer);
+                var select: std.Io.Select(TaskSelection) = .init(io, selection_buffer);
+                defer select.cancelDiscard();
+                var launched: usize = 0;
+                var running: usize = 0;
+                var completed: usize = 0;
+                while (completed < results.len) {
+                    while (launched < results.len and running < concurrency) : (launched += 1) {
+                        select.concurrent(.task, runParallelTask, .{
+                            self.parallelTask(fan_out, items, task_gpa, launched),
+                        }) catch {
+                            cancelTasks(&select, results, ready);
+                            return error.ParallelExecutionUnavailable;
+                        };
+                        running += 1;
+                    }
+                    const selection = select.await() catch {
+                        cancelTasks(&select, results, ready);
+                        return error.Cancelled;
+                    };
+                    const outcome = switch (selection) {
+                        .task => |task| task,
+                    };
+                    running -= 1;
+                    completed += 1;
+                    switch (outcome) {
+                        .success => |success| {
+                            results[success.index] = success.value;
+                            ready[success.index] = true;
+                        },
+                        .failure => |failure| {
+                            cancelTasks(&select, results, ready);
+                            return failure.failure;
+                        },
+                    }
+                }
+            }
+
+            fn cancelTasks(
+                select: *std.Io.Select(TaskSelection),
+                results: []Value,
+                ready: []bool,
+            ) void {
+                while (select.cancel()) |selection| switch (selection) {
+                    .task => |task| switch (task) {
+                        .success => |success| {
+                            results[success.index] = success.value;
+                            ready[success.index] = true;
+                        },
+                        .failure => {},
+                    },
+                };
+            }
+
+            fn parallelTask(
+                self: Run,
+                fan_out: FanOut,
+                items: []const Value,
+                task_gpa: std.mem.Allocator,
+                index: usize,
+            ) ParallelTask {
+                const branch_index = index % fan_out.branches.len;
+                const item_index = index / fan_out.branches.len;
+                return .{
+                    .gpa = task_gpa,
+                    .state = self.state,
+                    .deps = self.deps,
+                    .node_id = self.current,
+                    .step_number = self.step_count,
+                    .task_index = index,
+                    .branch = fan_out.branches[branch_index],
+                    .input = if (fan_out.mode == .map) items[item_index] else self.value,
+                };
+            }
+
+            fn cleanupValues(self: Run, fan_out: FanOut, values: []Value) void {
+                for (values) |*value| self.cleanupValue(fan_out, value);
+            }
+
+            fn cleanupValue(self: Run, fan_out: FanOut, value: *Value) void {
+                if (fan_out.deinit_value_fn) |deinit_value| {
+                    deinit_value(fan_out.cleanup_context, self.gpa, value);
+                }
             }
 
             fn context(self: Run, node_id: NodeId) Context {
@@ -623,10 +1032,13 @@ pub fn Graph(
             input: Input,
             options: RunOptions,
         ) RunError!Run {
+            if (options.max_concurrency == 0 or self.limits.max_concurrency == 0)
+                return error.InvalidRunOptions;
             const max_steps = if (options.max_steps) |requested|
                 @min(requested, self.limits.max_steps)
             else
                 self.limits.max_steps;
+            const max_concurrency = @min(options.max_concurrency, self.limits.max_concurrency);
             var context = Context{
                 .gpa = gpa,
                 .state = state,
@@ -654,6 +1066,8 @@ pub fn Graph(
                 .value = value,
                 .current = self.entry,
                 .max_steps = max_steps,
+                .max_concurrency = max_concurrency,
+                .io = options.io,
                 .events = options.events,
             };
         }
@@ -957,6 +1371,427 @@ test "graph decisions select named branches and latch unmatched routes" {
     ));
 }
 
+test "graph broadcast bounds concurrency and reduces in source order" {
+    const Value = struct {
+        scalar: u64 = 0,
+        ordered: [3]u64 = .{ 0, 0, 0 },
+        count: usize = 0,
+    };
+    const State = struct {
+        active: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+        maximum: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+        require_overlap: std.atomic.Value(bool) = std.atomic.Value(bool).init(true),
+        invalid_context: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        hold: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+        release: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    };
+    const Workflow = Graph(State, u8, u64, Value, Value);
+    const Callbacks = struct {
+        fn start(_: ?*anyopaque, _: *Workflow.Context, input: u64) CallbackError!Value {
+            return .{ .scalar = input };
+        }
+
+        fn branch(context: ?*anyopaque, run: *Workflow.Context, input: Value) CallbackError!Value {
+            const delta: *const u64 = @ptrCast(@alignCast(context.?));
+            if (run.task_index == null or run.branch_name == null) {
+                run.state.invalid_context.store(true, .seq_cst);
+            }
+            var memory = try run.gpa.alloc(u8, 8);
+            if (!run.gpa.resize(memory, memory.len)) return error.StepFailed;
+            memory = run.gpa.remap(memory, memory.len).?;
+            run.gpa.free(memory);
+            const active = run.state.active.fetchAdd(1, .seq_cst) + 1;
+            _ = run.state.maximum.fetchMax(active, .seq_cst);
+            defer _ = run.state.active.fetchSub(1, .seq_cst);
+            if (run.state.require_overlap.load(.seq_cst)) {
+                while (run.state.maximum.load(.seq_cst) < 2) std.Thread.yield() catch {};
+            }
+            if (run.state.hold.load(.seq_cst)) {
+                while (!run.state.release.load(.seq_cst)) std.Thread.yield() catch {};
+            }
+            return .{ .scalar = input.scalar + delta.* };
+        }
+
+        fn initial(_: ?*anyopaque, _: *Workflow.Context, _: Value) CallbackError!Value {
+            return .{};
+        }
+
+        fn reduce(
+            _: ?*anyopaque,
+            _: *Workflow.Context,
+            accumulator: *Value,
+            input: Value,
+            source_index: usize,
+        ) CallbackError!void {
+            accumulator.ordered[source_index] = input.scalar;
+            accumulator.count += 1;
+        }
+
+        fn end(_: ?*anyopaque, _: *Workflow.Context, input: Value) CallbackError!Value {
+            return input;
+        }
+
+        fn runGraph(
+            graph: *const Workflow,
+            state: *State,
+            deps: *u8,
+            io: std.Io,
+        ) RunError!Value {
+            return graph.run(std.testing.allocator, state, deps, 30, .{
+                .max_concurrency = 2,
+                .io = io,
+            });
+        }
+    };
+
+    var one: u64 = 1;
+    var two: u64 = 2;
+    var three: u64 = 3;
+    const branches = [_]Workflow.ParallelBranch{
+        .{ .name = "one", .context = &one, .run_fn = Callbacks.branch },
+        .{ .name = "two", .context = &two, .run_fn = Callbacks.branch },
+        .{ .name = "three", .context = &three, .run_fn = Callbacks.branch },
+    };
+    var builder: Workflow.Builder = .{};
+    defer builder.deinit(std.testing.allocator);
+    builder.limits.max_concurrency = 2;
+    try builder.setStart(.{ .run_fn = Callbacks.start });
+    try builder.setEnd(.{ .run_fn = Callbacks.end });
+    const fan_out = try builder.addFanOut(std.testing.allocator, .{
+        .name = "broadcast",
+        .mode = .broadcast,
+        .branches = &branches,
+        .join = .{ .initial_fn = Callbacks.initial, .reduce_fn = Callbacks.reduce },
+    });
+    try builder.setEntry(fan_out);
+    try builder.finish(std.testing.allocator, fan_out);
+    var graph = try builder.build(std.testing.allocator);
+    defer graph.deinit(std.testing.allocator);
+
+    var runtime = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+    var state: State = .{};
+    var deps: u8 = 0;
+    const output = try graph.run(std.testing.allocator, &state, &deps, 10, .{
+        .max_concurrency = 8,
+        .io = runtime.io(),
+    });
+    try std.testing.expectEqual(@as(usize, 2), state.maximum.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 0), state.active.load(.seq_cst));
+    try std.testing.expect(!state.invalid_context.load(.seq_cst));
+    try std.testing.expectEqual(@as(usize, 3), output.count);
+    try std.testing.expectEqualSlices(u64, &.{ 11, 12, 13 }, &output.ordered);
+
+    try std.testing.expectError(error.ParallelExecutionRequiresIo, graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        10,
+        .{ .max_concurrency = 2 },
+    ));
+    try std.testing.expectError(error.InvalidRunOptions, graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        10,
+        .{ .max_concurrency = 0 },
+    ));
+    var invalid_definition = graph;
+    invalid_definition.limits.max_concurrency = 0;
+    try std.testing.expectError(error.InvalidRunOptions, invalid_definition.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        10,
+        .{},
+    ));
+
+    var unavailable = std.Io.Threaded.init(std.testing.allocator, .{ .concurrent_limit = .nothing });
+    defer unavailable.deinit();
+    try std.testing.expectError(error.ParallelExecutionUnavailable, graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        10,
+        .{ .max_concurrency = 2, .io = unavailable.io() },
+    ));
+
+    state.require_overlap.store(false, .seq_cst);
+    state.maximum.store(0, .seq_cst);
+    const serial = try graph.run(std.testing.allocator, &state, &deps, 20, .{});
+    try std.testing.expectEqualSlices(u64, &.{ 21, 22, 23 }, &serial.ordered);
+
+    const CancelResult = union(enum) {
+        pending,
+        success: Value,
+        failure: RunError,
+    };
+    const Cancel = struct {
+        fn run(
+            future: *std.Io.Future(RunError!Value),
+            io: std.Io,
+            requested: *std.atomic.Value(bool),
+            result: *CancelResult,
+        ) void {
+            requested.store(true, .seq_cst);
+            const value = future.cancel(io) catch |failure| {
+                result.* = .{ .failure = failure };
+                return;
+            };
+            result.* = .{ .success = value };
+        }
+    };
+    state.hold.store(true, .seq_cst);
+    state.release.store(false, .seq_cst);
+    state.active.store(0, .seq_cst);
+    var future = try runtime.io().concurrent(Callbacks.runGraph, .{ &graph, &state, &deps, runtime.io() });
+    while (state.active.load(.seq_cst) < 2) std.Thread.yield() catch {};
+    var requested = std.atomic.Value(bool).init(false);
+    var cancel_result: CancelResult = .pending;
+    const cancel_thread = try std.Thread.spawn(.{}, Cancel.run, .{
+        &future,
+        runtime.io(),
+        &requested,
+        &cancel_result,
+    });
+    while (!requested.load(.seq_cst)) std.Thread.yield() catch {};
+    var spins: usize = 0;
+    while (spins < 100) : (spins += 1) std.Thread.yield() catch {};
+    state.release.store(true, .seq_cst);
+    cancel_thread.join();
+    switch (cancel_result) {
+        .failure => |failure| try std.testing.expectEqual(error.Cancelled, failure),
+        .pending, .success => return error.ExpectedCancellation,
+    }
+}
+
+test "graph map finalizes empty forks and cleans every failure path" {
+    const OwnedValue = struct {
+        number: u64 = 0,
+        bytes: ?[]u8 = null,
+    };
+    const Mode = enum {
+        success,
+        expand_failure,
+        branch_failure,
+        many_branch_failures,
+        initial_failure,
+        reduce_failure,
+    };
+    const State = struct {
+        mode: Mode = .success,
+        cleaned: usize = 0,
+        emitted: usize = 0,
+        branch_calls: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    };
+    const Workflow = Graph(State, u8, u64, OwnedValue, u64);
+    const Callbacks = struct {
+        fn make(gpa: std.mem.Allocator, number: u64) CallbackError!OwnedValue {
+            const bytes = try gpa.alloc(u8, 1);
+            bytes[0] = @intCast(number);
+            return .{ .number = number, .bytes = bytes };
+        }
+
+        fn cleanup(context: ?*anyopaque, gpa: std.mem.Allocator, value: *OwnedValue) void {
+            const state: *State = @ptrCast(@alignCast(context.?));
+            if (value.bytes) |bytes| {
+                gpa.free(bytes);
+                value.bytes = null;
+                state.cleaned += 1;
+            }
+        }
+
+        fn start(_: ?*anyopaque, _: *Workflow.Context, input: u64) CallbackError!OwnedValue {
+            return .{ .number = input };
+        }
+
+        fn expand(
+            _: ?*anyopaque,
+            run: *Workflow.Context,
+            input: OwnedValue,
+            output: *Workflow.Emitter,
+        ) CallbackError!void {
+            var index: u64 = 0;
+            while (index < input.number) : (index += 1) {
+                var value = try make(run.gpa, index + 1);
+                output.emit(value) catch |failure| {
+                    cleanup(run.state, run.gpa, &value);
+                    return failure;
+                };
+                run.state.emitted = output.count();
+                if (run.state.mode == .expand_failure) return error.StepFailed;
+            }
+        }
+
+        fn branch(_: ?*anyopaque, run: *Workflow.Context, input: OwnedValue) CallbackError!OwnedValue {
+            _ = run.state.branch_calls.fetchAdd(1, .seq_cst);
+            if (run.state.mode == .branch_failure and input.number == 2) return error.Cancelled;
+            if (run.state.mode == .many_branch_failures and input.number >= 2) return error.Cancelled;
+            return make(run.gpa, input.number * 2);
+        }
+
+        fn initial(_: ?*anyopaque, run: *Workflow.Context, _: OwnedValue) CallbackError!OwnedValue {
+            if (run.state.mode == .initial_failure) return error.StepFailed;
+            return make(run.gpa, 0);
+        }
+
+        fn reduce(
+            _: ?*anyopaque,
+            run: *Workflow.Context,
+            accumulator: *OwnedValue,
+            input: OwnedValue,
+            source_index: usize,
+        ) CallbackError!void {
+            if (run.state.mode == .reduce_failure and source_index == 1) return error.StepFailed;
+            accumulator.number += input.number;
+        }
+
+        fn end(_: ?*anyopaque, run: *Workflow.Context, input: OwnedValue) CallbackError!u64 {
+            var owned = input;
+            const result = owned.number;
+            cleanup(run.state, run.gpa, &owned);
+            return result;
+        }
+    };
+
+    const branches = [_]Workflow.ParallelBranch{
+        .{ .name = "double", .run_fn = Callbacks.branch },
+    };
+    var state: State = .{};
+    var builder: Workflow.Builder = .{};
+    defer builder.deinit(std.testing.allocator);
+    try builder.setStart(.{ .run_fn = Callbacks.start });
+    try builder.setEnd(.{ .run_fn = Callbacks.end });
+    const fan_out = try builder.addFanOut(std.testing.allocator, .{
+        .name = "map",
+        .mode = .{ .map = .{ .run_fn = Callbacks.expand } },
+        .branches = &branches,
+        .join = .{ .initial_fn = Callbacks.initial, .reduce_fn = Callbacks.reduce },
+        .cleanup_context = &state,
+        .deinit_value_fn = Callbacks.cleanup,
+    });
+    try builder.setEntry(fan_out);
+    try builder.finish(std.testing.allocator, fan_out);
+    var graph = try builder.build(std.testing.allocator);
+    defer graph.deinit(std.testing.allocator);
+    var deps: u8 = 0;
+
+    try std.testing.expectEqual(@as(u64, 12), try graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        3,
+        .{},
+    ));
+    try std.testing.expectEqual(@as(usize, 7), state.cleaned);
+    try std.testing.expectEqual(@as(usize, 3), state.emitted);
+
+    state.cleaned = 0;
+    state.emitted = 99;
+    state.branch_calls.store(0, .seq_cst);
+    try std.testing.expectEqual(@as(u64, 0), try graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        0,
+        .{ .max_concurrency = 2 },
+    ));
+    try std.testing.expectEqual(@as(usize, 1), state.cleaned);
+    try std.testing.expectEqual(@as(usize, 0), state.branch_calls.load(.seq_cst));
+
+    state = .{ .mode = .expand_failure };
+    try std.testing.expectError(error.StepFailed, graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        3,
+        .{},
+    ));
+    try std.testing.expectEqual(@as(usize, 1), state.cleaned);
+
+    state = .{ .mode = .success };
+    var item_limited = graph;
+    item_limited.limits.max_fan_out_items = 2;
+    try std.testing.expectError(error.FanOutLimitExceeded, item_limited.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        3,
+        .{},
+    ));
+    try std.testing.expectEqual(@as(usize, 3), state.cleaned);
+
+    state = .{ .mode = .success };
+    var task_limited = graph;
+    task_limited.limits.max_fan_out_tasks = 2;
+    try std.testing.expectError(error.FanOutLimitExceeded, task_limited.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        3,
+        .{},
+    ));
+    try std.testing.expectEqual(@as(usize, 3), state.cleaned);
+
+    state = .{ .mode = .branch_failure };
+    try std.testing.expectError(error.Cancelled, graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        3,
+        .{},
+    ));
+    try std.testing.expectEqual(@as(usize, 4), state.cleaned);
+    try std.testing.expectEqual(@as(usize, 2), state.branch_calls.load(.seq_cst));
+
+    state = .{ .mode = .initial_failure };
+    try std.testing.expectError(error.StepFailed, graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        3,
+        .{},
+    ));
+    try std.testing.expectEqual(@as(usize, 6), state.cleaned);
+
+    state = .{ .mode = .reduce_failure };
+    try std.testing.expectError(error.StepFailed, graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        3,
+        .{},
+    ));
+    try std.testing.expectEqual(@as(usize, 7), state.cleaned);
+
+    var runtime = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer runtime.deinit();
+    state = .{ .mode = .branch_failure };
+    try std.testing.expectError(error.Cancelled, graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        3,
+        .{ .max_concurrency = 2, .io = runtime.io() },
+    ));
+    const branch_calls = state.branch_calls.load(.seq_cst);
+    // The scheduler may observe the first success before the concurrent
+    // failure and admit one replacement, but it admits no work after failure.
+    try std.testing.expect(branch_calls == 2 or branch_calls == 3);
+    try std.testing.expectEqual(3 + branch_calls - 1, state.cleaned);
+
+    state = .{ .mode = .many_branch_failures };
+    try std.testing.expectError(error.Cancelled, graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        3,
+        .{ .max_concurrency = 3, .io = runtime.io() },
+    ));
+    try std.testing.expectEqual(@as(usize, 4), state.cleaned);
+    try std.testing.expectEqual(@as(usize, 3), state.branch_calls.load(.seq_cst));
+}
+
 test "graph builder validates decision branches and reachability" {
     const Workflow = Graph(u8, u8, u8, u8, u8);
     const Callbacks = struct {
@@ -1088,6 +1923,15 @@ test "graph builder rejects invalid bounded definitions" {
         fn step(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
             return input;
         }
+        fn map(_: ?*anyopaque, _: *Workflow.Context, input: u8, output: *Workflow.Emitter) CallbackError!void {
+            try output.emit(input);
+        }
+        fn initial(_: ?*anyopaque, _: *Workflow.Context, _: u8) CallbackError!u8 {
+            return 0;
+        }
+        fn reduce(_: ?*anyopaque, _: *Workflow.Context, accumulator: *u8, input: u8, _: usize) CallbackError!void {
+            accumulator.* += input;
+        }
         fn end(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
             return input;
         }
@@ -1095,6 +1939,8 @@ test "graph builder rejects invalid bounded definitions" {
     const start = Workflow.Start{ .run_fn = Callbacks.start };
     const end = Workflow.End{ .run_fn = Callbacks.end };
     const step = Workflow.Step{ .name = "step", .run_fn = Callbacks.step };
+    const parallel_branch = Workflow.ParallelBranch{ .name = "work", .run_fn = Callbacks.step };
+    const join = Workflow.Join{ .initial_fn = Callbacks.initial, .reduce_fn = Callbacks.reduce };
 
     var empty: Workflow.Builder = .{};
     defer empty.deinit(std.testing.allocator);
@@ -1123,6 +1969,12 @@ test "graph builder rejects invalid bounded definitions" {
         .name = "next",
         .run_fn = Callbacks.step,
     }));
+    try std.testing.expectError(error.LimitExceeded, bounded.addFanOut(std.testing.allocator, .{
+        .name = "fan",
+        .mode = .broadcast,
+        .branches = &.{parallel_branch},
+        .join = join,
+    }));
     try std.testing.expectError(error.InvalidNode, bounded.connect(
         std.testing.allocator,
         .{ .index = 2 },
@@ -1146,6 +1998,64 @@ test "graph builder rejects invalid bounded definitions" {
         duplicate_edge.finish(std.testing.allocator, duplicate),
     );
 
+    var fan_out_errors: Workflow.Builder = .{ .limits = .{
+        .max_name_bytes = 4,
+        .max_parallel_branches = 1,
+    } };
+    defer fan_out_errors.deinit(std.testing.allocator);
+    try std.testing.expectError(error.EmptyNodeName, fan_out_errors.addFanOut(std.testing.allocator, .{
+        .name = "",
+        .mode = .broadcast,
+        .branches = &.{parallel_branch},
+        .join = join,
+    }));
+    try std.testing.expectError(error.NodeNameTooLong, fan_out_errors.addFanOut(std.testing.allocator, .{
+        .name = "large",
+        .mode = .broadcast,
+        .branches = &.{parallel_branch},
+        .join = join,
+    }));
+    try std.testing.expectError(error.MissingParallelBranch, fan_out_errors.addFanOut(std.testing.allocator, .{
+        .name = "fan",
+        .mode = .broadcast,
+        .branches = &.{},
+        .join = join,
+    }));
+    try std.testing.expectError(error.LimitExceeded, fan_out_errors.addFanOut(std.testing.allocator, .{
+        .name = "fan",
+        .mode = .broadcast,
+        .branches = &.{ parallel_branch, parallel_branch },
+        .join = join,
+    }));
+    try std.testing.expectError(error.EmptyBranchName, fan_out_errors.addFanOut(std.testing.allocator, .{
+        .name = "fan",
+        .mode = .broadcast,
+        .branches = &.{.{ .name = "", .run_fn = Callbacks.step }},
+        .join = join,
+    }));
+    try std.testing.expectError(error.BranchNameTooLong, fan_out_errors.addFanOut(std.testing.allocator, .{
+        .name = "fan",
+        .mode = .broadcast,
+        .branches = &.{.{ .name = "large", .run_fn = Callbacks.step }},
+        .join = join,
+    }));
+
+    var duplicate_branches: Workflow.Builder = .{};
+    defer duplicate_branches.deinit(std.testing.allocator);
+    try std.testing.expectError(error.DuplicateBranchName, duplicate_branches.addFanOut(std.testing.allocator, .{
+        .name = "fan",
+        .mode = .broadcast,
+        .branches = &.{ parallel_branch, parallel_branch },
+        .join = join,
+    }));
+    _ = try duplicate_branches.addStep(std.testing.allocator, step);
+    try std.testing.expectError(error.DuplicateNodeName, duplicate_branches.addFanOut(std.testing.allocator, .{
+        .name = "step",
+        .mode = .broadcast,
+        .branches = &.{parallel_branch},
+        .join = join,
+    }));
+
     var incomplete: Workflow.Builder = .{};
     defer incomplete.deinit(std.testing.allocator);
     try incomplete.setStart(start);
@@ -1163,6 +2073,28 @@ test "graph builder rejects invalid bounded definitions" {
         &state,
         &deps,
         4,
+        .{},
+    ));
+
+    var map_builder: Workflow.Builder = .{};
+    defer map_builder.deinit(std.testing.allocator);
+    try map_builder.setStart(start);
+    try map_builder.setEnd(end);
+    const map = try map_builder.addFanOut(std.testing.allocator, .{
+        .name = "map",
+        .mode = .{ .map = .{ .run_fn = Callbacks.map } },
+        .branches = &.{parallel_branch},
+        .join = join,
+    });
+    try map_builder.setEntry(map);
+    try map_builder.finish(std.testing.allocator, map);
+    var map_graph = try map_builder.build(std.testing.allocator);
+    defer map_graph.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u8, 5), try map_graph.run(
+        std.testing.allocator,
+        &state,
+        &deps,
+        5,
         .{},
     ));
 }
@@ -1196,10 +2128,58 @@ fn buildGraphWithAllocator(gpa: std.mem.Allocator) !void {
     _ = try graph.run(gpa, &state, &deps, 0, .{});
 }
 
+fn runFanOutWithAllocator(gpa: std.mem.Allocator) !void {
+    const Workflow = Graph(u8, u8, u8, u8, u8);
+    const Callbacks = struct {
+        fn start(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+        fn expand(_: ?*anyopaque, _: *Workflow.Context, input: u8, output: *Workflow.Emitter) CallbackError!void {
+            try output.emit(input);
+            try output.emit(input + 1);
+        }
+        fn branch(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+        fn initial(_: ?*anyopaque, _: *Workflow.Context, _: u8) CallbackError!u8 {
+            return 0;
+        }
+        fn reduce(_: ?*anyopaque, _: *Workflow.Context, accumulator: *u8, input: u8, _: usize) CallbackError!void {
+            accumulator.* += input;
+        }
+        fn end(_: ?*anyopaque, _: *Workflow.Context, input: u8) CallbackError!u8 {
+            return input;
+        }
+    };
+    var builder: Workflow.Builder = .{};
+    defer builder.deinit(gpa);
+    try builder.setStart(.{ .run_fn = Callbacks.start });
+    try builder.setEnd(.{ .run_fn = Callbacks.end });
+    const fan_out = try builder.addFanOut(gpa, .{
+        .name = "fan-out",
+        .mode = .{ .map = .{ .run_fn = Callbacks.expand } },
+        .branches = &.{.{ .name = "identity", .run_fn = Callbacks.branch }},
+        .join = .{ .initial_fn = Callbacks.initial, .reduce_fn = Callbacks.reduce },
+    });
+    try builder.setEntry(fan_out);
+    try builder.finish(gpa, fan_out);
+    var graph = try builder.build(gpa);
+    defer graph.deinit(gpa);
+    var state: u8 = 0;
+    var deps: u8 = 0;
+    const output = try graph.run(gpa, &state, &deps, 1, .{});
+    if (output != 3) return error.UnexpectedOutput;
+}
+
 test "graph builder cleans up every allocation failure" {
     try std.testing.checkAllAllocationFailures(
         std.testing.allocator,
         buildGraphWithAllocator,
+        .{},
+    );
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        runFanOutWithAllocator,
         .{},
     );
 }

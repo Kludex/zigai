@@ -588,6 +588,21 @@ reports the attempted name to the borrowed event sink. The built graph owns its
 node, route-span, and route arrays, while node names, registered branch names,
 and callback contexts remain application-owned.
 
+Fan-out nodes are explicit fork/join boundaries within the homogeneous
+intermediate `Value` type. Broadcast forks borrow one value for each branch;
+map forks collect values through a bounded emitter. The scheduler admits at
+most the configured number of callbacks, observes failures in completion order,
+cancels siblings immediately, and stores successes by source index. The typed
+join then reduces in item-major, branch-major order, independent of scheduling.
+An empty map still initializes and returns its join accumulator.
+
+Only the allocator passed to concurrent branch contexts is locked. State,
+dependencies, callback contexts, and values remain shared application data and
+must be immutable or synchronized. Temporary item/result/select arrays are
+run-owned and always released. An optional value cleanup callback closes
+application-owned map items, branch outputs, and abandoned accumulators during
+both success and fail-fast cleanup.
+
 Graph lifecycle events are synchronous borrowed observations. They do not
 reuse agent hooks or telemetry types: future agent nodes can bridge the two
 without making ordinary application steps depend on model execution.
