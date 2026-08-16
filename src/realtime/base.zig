@@ -1104,6 +1104,40 @@ test "realtime sessions reject unsupported operations and every configured limit
     try std.testing.expectError(error.RealtimeUsageLimitExceeded, session.next(std.testing.allocator));
 }
 
+test "realtime observer failures release ordinary and reconnect events" {
+    const State = struct {
+        fn connect(context: *anyopaque, _: std.mem.Allocator) !Connection {
+            return .{
+                .context = context,
+                .transport_kind = .websocket,
+                .profile = .{},
+                .provider_name = "test",
+                .model_name = "voice",
+                .send_fn = send,
+                .receive_fn = receive,
+                .close_fn = close,
+            };
+        }
+        fn send(_: *anyopaque, _: Input) !void {}
+        fn receive(_: *anyopaque, gpa: std.mem.Allocator) !OwnedCodecEvent {
+            return OwnedCodecEvent.copy(gpa, .input_speech_start);
+        }
+        fn close(_: *anyopaque) void {}
+        fn observe(_: ?*anyopaque, observation: Observation) !void {
+            if (observation == .event) return error.ObserverFailed;
+        }
+    };
+    var marker: u8 = 0;
+    var session = try Session.init(std.testing.allocator, .{
+        .context = &marker,
+        .connect_fn = State.connect,
+    }, .{ .observer = .{ .event_fn = State.observe } });
+    defer session.deinit();
+    try std.testing.expectError(error.ObserverFailed, session.next(std.testing.allocator));
+    session.pending_reconnect = .{ .attempt = 1, .total = 1, .state_restored = false };
+    try std.testing.expectError(error.ObserverFailed, session.next(std.testing.allocator));
+}
+
 fn copyRealtimeEventWithAllocator(gpa: std.mem.Allocator) !void {
     var event = try OwnedCodecEvent.copy(gpa, .{ .session_error = .{
         .code = "code",

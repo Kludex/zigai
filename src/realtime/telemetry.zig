@@ -220,7 +220,7 @@ test "realtime telemetry correlates events usage and the session span" {
     try observer.emit(.{ .input = .audio });
     try observer.emit(.{ .event = .{ .turn_complete = .{ .interrupted = false, .response_id = "r1" } } });
     try observer.emit(.{ .usage = .{ .input_tokens = 2, .output_tokens = 3 } });
-    try run.finish(null);
+    try run.finish("RealtimeFailed");
     try run.finish(null);
     try std.testing.expect(run.spanContext().isValid());
     try std.testing.expectEqual(@as(usize, 1), capture.spans);
