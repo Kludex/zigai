@@ -80,26 +80,28 @@ pub const Catalog = struct {
     url_policy: security.UrlPolicy = .{},
     limits: Limits = .{},
     web_search: model_types.BuiltinTool.WebSearch = .{},
+    web_search_tools: [1]model_types.BuiltinTool = undefined,
+    web_fetch_tools: [1]model_types.BuiltinTool = undefined,
     browser_tools: [1]model_types.Tool = undefined,
     image_tools: [1]model_types.Tool = undefined,
     skill_tools: [1]model_types.Tool = undefined,
     repository_tools: [2]model_types.Tool = undefined,
 
     pub fn resolver(self: *Catalog) agent_spec.CapabilityResolver {
-        self.bindTools();
         return .{ .context = self, .getFn = get };
     }
 
     pub fn capability(self: *Catalog, id: []const u8) ?agent_types.Capability {
+        self.bindTools();
         if (std.mem.eql(u8, id, "web_search")) return .{
             .id = "web_search",
             .description = "Search the public web with the model provider.",
-            .builtin_tools = &.{.{ .web_search = self.web_search }},
+            .builtin_tools = &self.web_search_tools,
         };
         if (std.mem.eql(u8, id, "web_fetch")) return .{
             .id = "web_fetch",
             .description = "Fetch a public web page with the model provider.",
-            .builtin_tools = &.{.{ .web_fetch = .{} }},
+            .builtin_tools = &self.web_fetch_tools,
         };
         if (std.mem.eql(u8, id, "browser") and self.browser != null) return .{
             .id = "browser",
@@ -130,6 +132,8 @@ pub const Catalog = struct {
     }
 
     fn bindTools(self: *Catalog) void {
+        self.web_search_tools[0] = .{ .web_search = self.web_search };
+        self.web_fetch_tools[0] = .{ .web_fetch = .{} };
         self.browser_tools[0] = .{ .definition = .{
             .name = "browser_open",
             .description = "Open one public URL and return bounded page text.",
