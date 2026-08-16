@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Align agent, model-request, and tool span names with the OpenTelemetry GenAI
+  conventions; add explicit parent trace contexts, opt-in raw or callback-
+  redacted prompt capture, UTF-8-safe content bounds, exporter attribute
+  limits, and fail-open isolation for all telemetry processing failures.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model

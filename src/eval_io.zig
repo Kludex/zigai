@@ -449,6 +449,7 @@ fn portableOptions(options: @import("agent.zig").RunOptions) bool {
         options.history_processors.len == 0 and
         options.context_budget == null and
         options.request_id == null and
+        options.telemetry_parent == null and
         options.timeout_ms == null and
         options.pending_messages == null;
 }

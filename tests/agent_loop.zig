@@ -4663,9 +4663,9 @@ test "OpenTelemetry records runs requests tools retries tokens cost and latency"
 
         fn span(context: *anyopaque, value: zigai.TelemetrySpan) !void {
             const self: *@This() = @ptrCast(@alignCast(context));
-            if (std.mem.eql(u8, value.name, "gen_ai.invoke_agent")) self.run_spans += 1;
-            if (std.mem.eql(u8, value.name, "gen_ai.chat")) self.request_spans += 1;
-            if (std.mem.eql(u8, value.name, "gen_ai.execute_tool")) self.tool_spans += 1;
+            if (std.mem.eql(u8, value.name, "invoke_agent")) self.run_spans += 1;
+            if (std.mem.startsWith(u8, value.name, "chat ")) self.request_spans += 1;
+            if (std.mem.startsWith(u8, value.name, "execute_tool ")) self.tool_spans += 1;
             try std.testing.expect(value.duration_seconds >= 0);
             for (value.attributes) |attribute| {
                 if (std.mem.eql(u8, attribute.key, "gen_ai.input.messages")) self.saw_prompt = true;

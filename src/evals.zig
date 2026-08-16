@@ -1380,8 +1380,8 @@ test "trace evaluators receive owned forwarded OpenTelemetry spans and retry ind
             try std.testing.expectEqualStrings("ok", trace.run.output);
             try std.testing.expectEqual(trace.spans.ptr, trace.run.spans.ptr);
             try std.testing.expectEqual(@as(usize, 2), trace.spans.len);
-            try std.testing.expectEqualStrings("gen_ai.chat", trace.spans[0].name);
-            try std.testing.expectEqualStrings("gen_ai.invoke_agent", trace.spans[1].name);
+            try std.testing.expectEqualStrings("chat test-model", trace.spans[0].name);
+            try std.testing.expectEqualStrings("invoke_agent", trace.spans[1].name);
             try std.testing.expectEqualSlices(u8, &trace.spans[0].trace_id, &trace.spans[1].trace_id);
             try std.testing.expect(trace.spans[0].parent_span_id != null);
             return .{ .passed = true, .score = 1, .reason = "trace shape is valid" };

@@ -3,6 +3,62 @@
 const std = @import("std");
 const model_types = @import("model.zig");
 
+/// OpenTelemetry GenAI semantic conventions implemented by this module.
+///
+/// GenAI conventions currently evolve in their dedicated upstream repository,
+/// independently from the stable core semantic-conventions release.
+pub const semantic_conventions = "opentelemetry-semantic-conventions-genai";
+
+/// Trace identity inherited from an upstream operation or passed to a child.
+pub const SpanContext = struct {
+    trace_id: [16]u8,
+    span_id: [8]u8,
+
+    pub fn isValid(self: SpanContext) bool {
+        return !allZero(&self.trace_id) and !allZero(&self.span_id);
+    }
+};
+
+/// Sensitive content categories presented to an application redactor.
+pub const ContentKind = enum { prompt };
+
+/// Redacts one captured value. The returned slice must be allocated with the
+/// supplied allocator and becomes owned by ZigAI.
+pub const Redactor = struct {
+    context: *anyopaque,
+    redactFn: *const fn (
+        context: *anyopaque,
+        allocator: std.mem.Allocator,
+        kind: ContentKind,
+        value: []const u8,
+    ) anyerror![]u8,
+
+    pub fn redact(
+        self: Redactor,
+        allocator: std.mem.Allocator,
+        kind: ContentKind,
+        value: []const u8,
+    ) ![]u8 {
+        return self.redactFn(self.context, allocator, kind, value);
+    }
+};
+
+/// Opt-in content capture. `redacted` requires a redactor; otherwise content
+/// is omitted. Both raw and redacted values are bounded before export.
+pub const ContentPolicy = struct {
+    prompts: Mode = .omit,
+    max_bytes: usize = 1_024,
+    redactor: ?Redactor = null,
+
+    pub const Mode = enum { omit, raw, redacted };
+};
+
+/// Hard per-record limits applied before application exporter callbacks run.
+pub const Limits = struct {
+    max_attributes: usize = 32,
+    max_attribute_value_bytes: usize = 8 * 1_024,
+};
+
 pub const Attribute = struct {
     key: []const u8,
     value: Value,
@@ -80,17 +136,31 @@ pub const OpenTelemetry = struct {
     io: std.Io,
     exporter: Exporter,
     cost_estimator: ?CostEstimator = null,
-    /// Prompt content is sensitive and is never captured unless explicitly enabled.
-    capture_prompts: bool = false,
+    /// Prompt content is sensitive and omitted unless explicitly configured.
+    content: ContentPolicy = .{},
+    /// Attribute cardinality and value-size limits enforced before export.
+    limits: Limits = .{},
     /// Observability failures do not fail agent runs unless this is disabled.
     fail_open: bool = true,
 
     pub fn start(self: OpenTelemetry, allocator: std.mem.Allocator) Run {
+        return self.startWithParent(allocator, null);
+    }
+
+    /// Starts a run beneath a valid upstream span. Invalid all-zero contexts
+    /// are treated as absent instead of creating malformed traces.
+    pub fn startWithParent(
+        self: OpenTelemetry,
+        allocator: std.mem.Allocator,
+        parent: ?SpanContext,
+    ) Run {
+        const inherited = if (parent) |value| if (value.isValid()) value else null else null;
         return .{
             .allocator = allocator,
             .config = self,
-            .trace_id = randomId(16, self.io),
+            .trace_id = if (inherited) |value| value.trace_id else randomId(16, self.io),
             .run_span_id = randomId(8, self.io),
+            .run_parent_span_id = if (inherited) |value| value.span_id else null,
         };
     }
 };
@@ -101,6 +171,7 @@ pub const Run = struct {
     config: OpenTelemetry,
     trace_id: [16]u8,
     run_span_id: [8]u8,
+    run_parent_span_id: ?[8]u8 = null,
     model: ?model_types.Model = null,
     request_provider_name: ?[]const u8 = null,
     request_model_name: ?[]const u8 = null,
@@ -131,8 +202,19 @@ pub const Run = struct {
         self.* = undefined;
     }
 
+    /// Context to propagate to work performed as a child of this agent run.
+    pub fn spanContext(self: Run) SpanContext {
+        return .{ .trace_id = self.trace_id, .span_id = self.run_span_id };
+    }
+
     /// Consumes an agent lifecycle event. Values are borrowed for this call only.
     pub fn observe(self: *Run, event: anytype) !void {
+        self.observeFallible(event) catch |failure| {
+            if (!self.config.fail_open) return failure;
+        };
+    }
+
+    fn observeFallible(self: *Run, event: anytype) !void {
         switch (event) {
             .run_start => |value| try self.onRunStart(value.prompt, value.model),
             .run_end => try self.onRunEnd(.ok, null),
@@ -162,10 +244,10 @@ pub const Run = struct {
 
     fn onRunStart(self: *Run, prompt: []const u8, model: model_types.Model) !void {
         self.model = model;
-        self.input_messages = if (self.config.capture_prompts)
-            try encodePrompt(self.allocator, prompt)
-        else
-            null;
+        self.input_messages = self.capturePrompt(prompt) catch |failure| capture: {
+            if (!self.config.fail_open) return failure;
+            break :capture null;
+        };
         self.run_start = self.now();
         try self.exportMetric(.{
             .name = "zigai.agent.runs",
@@ -197,11 +279,11 @@ pub const Run = struct {
             count += 1;
         }
         try self.exportSpan(makeSpan(
-            "gen_ai.invoke_agent",
+            "invoke_agent",
             .internal,
             self.trace_id,
             self.run_span_id,
-            null,
+            self.run_parent_span_id,
             start,
             end,
             status,
@@ -242,8 +324,16 @@ pub const Run = struct {
             count += 1;
         }
         const span_id = self.request_span_id orelse randomId(8, self.config.io);
+        const owned_span_name = if (self.request_model_name) |model_name|
+            self.operationSpanName("chat", model_name) catch |allocation_failure| name: {
+                if (!self.config.fail_open) return allocation_failure;
+                break :name null;
+            }
+        else
+            null;
+        defer if (owned_span_name) |name| self.allocator.free(name);
         try self.exportSpan(makeSpan(
-            "gen_ai.chat",
+            owned_span_name orelse "chat",
             .client,
             self.trace_id,
             span_id,
@@ -317,8 +407,13 @@ pub const Run = struct {
             attributes[count] = .{ .key = "error.type", .value = .{ .string = @errorName(value) } };
             count += 1;
         }
+        const owned_span_name = self.operationSpanName("execute_tool", item.name) catch |allocation_failure| name: {
+            if (!self.config.fail_open) return allocation_failure;
+            break :name null;
+        };
+        defer if (owned_span_name) |name| self.allocator.free(name);
         try self.exportSpan(makeSpan(
-            "gen_ai.execute_tool",
+            owned_span_name orelse "execute_tool",
             .internal,
             self.trace_id,
             item.span_id,
@@ -425,16 +520,42 @@ pub const Run = struct {
         };
     }
 
-    fn exportSpan(self: Run, value: Span) !void {
-        self.config.exporter.span(value) catch |failure| {
-            if (!self.config.fail_open) return failure;
+    fn capturePrompt(self: *Run, prompt: []const u8) !?[]u8 {
+        const policy = self.config.content;
+        if (policy.prompts == .omit or policy.max_bytes == 0 or
+            self.config.limits.max_attribute_value_bytes < encoded_empty_prompt.len)
+            return null;
+
+        const captured = switch (policy.prompts) {
+            .omit => unreachable,
+            .raw => prompt,
+            .redacted => redacted: {
+                const redactor = policy.redactor orelse return null;
+                break :redacted try redactor.redact(self.allocator, .prompt, prompt);
+            },
         };
+        defer if (policy.prompts == .redacted) self.allocator.free(captured);
+        const escaped_budget = (self.config.limits.max_attribute_value_bytes - encoded_empty_prompt.len) / 6;
+        const bounded = utf8Prefix(captured, @min(policy.max_bytes, escaped_budget));
+        return try encodePrompt(self.allocator, bounded);
+    }
+
+    fn operationSpanName(self: Run, operation: []const u8, detail: []const u8) ![]u8 {
+        return std.fmt.allocPrint(self.allocator, "{s} {s}", .{ operation, detail });
+    }
+
+    fn exportSpan(self: Run, value: Span) !void {
+        var storage: [maximum_export_attributes]Attribute = undefined;
+        var bounded = value;
+        bounded.attributes = boundedAttributes(value.attributes, self.config.limits, &storage);
+        try self.config.exporter.span(bounded);
     }
 
     fn exportMetric(self: Run, value: Metric) !void {
-        self.config.exporter.metric(value) catch |failure| {
-            if (!self.config.fail_open) return failure;
-        };
+        var storage: [maximum_export_attributes]Attribute = undefined;
+        var bounded = value;
+        bounded.attributes = boundedAttributes(value.attributes, self.config.limits, &storage);
+        try self.config.exporter.metric(bounded);
     }
 };
 
@@ -471,9 +592,35 @@ fn randomId(comptime length: usize, io: std.Io) [length]u8 {
     return id; // all-zero random fallback
 }
 
+fn allZero(value: []const u8) bool {
+    for (value) |byte| if (byte != 0) return false;
+    return true;
+}
+
 fn durationSeconds(start: Run.Start, end: Run.Start) f64 {
     const duration_ns = @max(@as(i128, 0), end.awake_ns - start.awake_ns);
     return @as(f64, @floatFromInt(duration_ns)) / std.time.ns_per_s;
+}
+
+const encoded_empty_prompt = "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"\"}]}]";
+const maximum_export_attributes = 64;
+
+fn boundedAttributes(source: []const Attribute, limits: Limits, storage: []Attribute) []const Attribute {
+    const count = @min(source.len, @min(limits.max_attributes, storage.len));
+    for (source[0..count], storage[0..count]) |attribute, *bounded| {
+        bounded.* = attribute;
+        if (bounded.value == .string) {
+            bounded.value.string = utf8Prefix(bounded.value.string, limits.max_attribute_value_bytes);
+        }
+    }
+    return storage[0..count];
+}
+
+fn utf8Prefix(value: []const u8, max_bytes: usize) []const u8 {
+    if (value.len <= max_bytes) return value;
+    var end = max_bytes;
+    while (end > 0 and value[end] & 0xc0 == 0x80) end -= 1;
+    return value[0..end];
 }
 
 fn encodePrompt(allocator: std.mem.Allocator, prompt: []const u8) ![]u8 {
@@ -540,7 +687,7 @@ test "telemetry records captured prompts and lifecycle failures" {
     var run = (OpenTelemetry{
         .io = std.testing.io,
         .exporter = .{ .context = &capture, .spanFn = Capture.span, .metricFn = Capture.metric },
-        .capture_prompts = true,
+        .content = .{ .prompts = .raw },
     }).start(std.testing.allocator);
     defer run.deinit();
 
@@ -578,4 +725,259 @@ test "telemetry records captured prompts and lifecycle failures" {
     try std.testing.expectEqual(@as(usize, 3), capture.error_spans);
     try std.testing.expectEqual(@as(usize, 2), capture.retries);
     try std.testing.expect(capture.saw_prompt);
+}
+
+test "telemetry propagates valid parents and bounds exporter attributes" {
+    const Capture = struct {
+        expected_trace_id: [16]u8,
+        expected_parent_id: [8]u8,
+        spans: usize = 0,
+
+        fn span(context: *anyopaque, value: Span) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.spans += 1;
+            try std.testing.expectEqualSlices(u8, &self.expected_trace_id, &value.trace_id);
+            if (std.mem.eql(u8, value.name, "invoke_agent")) {
+                try std.testing.expectEqualSlices(u8, &self.expected_parent_id, &value.parent_span_id.?);
+            }
+            try std.testing.expect(value.attributes.len <= 1);
+            for (value.attributes) |attribute| switch (attribute.value) {
+                .string => |text| try std.testing.expect(text.len <= 3),
+                else => {},
+            };
+        }
+
+        fn metric(_: *anyopaque, value: Metric) !void {
+            try std.testing.expect(value.attributes.len <= 1);
+            for (value.attributes) |attribute| switch (attribute.value) {
+                .string => |text| try std.testing.expect(text.len <= 3),
+                else => {},
+            };
+        }
+    };
+    const agent_types = @import("agent.zig");
+    var unused: u8 = 0;
+    const parent = SpanContext{
+        .trace_id = [_]u8{0x11} ** 16,
+        .span_id = [_]u8{0x22} ** 8,
+    };
+    var capture = Capture{ .expected_trace_id = parent.trace_id, .expected_parent_id = parent.span_id };
+    var run = (OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = .{ .context = &capture, .spanFn = Capture.span, .metricFn = Capture.metric },
+        .content = .{ .prompts = .raw },
+        .limits = .{ .max_attributes = 1, .max_attribute_value_bytes = 3 },
+    }).startWithParent(std.testing.allocator, parent);
+    defer run.deinit();
+    try std.testing.expect(run.spanContext().isValid());
+    try run.observe(agent_types.LifecycleEvent{
+        .run_start = .{
+            .prompt = "sensitive",
+            .model = .{
+                .context = &unused,
+                .profile = .{},
+                .provider_name = "provider",
+                .model_name = "model",
+                .requestFn = struct {
+                    fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+                        return .{ .parts = &.{} }; // kcov-ignore
+                    }
+                }.request,
+            },
+        },
+    });
+    try run.observe(agent_types.LifecycleEvent{ .run_end = .{ .output = "ok", .usage = .{}, .model_requests = 0 } });
+    try std.testing.expectEqual(@as(usize, 1), capture.spans);
+
+    var zero: SpanContext = .{ .trace_id = [_]u8{0} ** 16, .span_id = [_]u8{0} ** 8 };
+    try std.testing.expect(!zero.isValid());
+    zero.trace_id[0] = 1;
+    try std.testing.expect(!zero.isValid());
+    var independent = (OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = .{ .context = &capture, .spanFn = Capture.span, .metricFn = Capture.metric },
+    }).startWithParent(std.testing.allocator, zero);
+    defer independent.deinit();
+    try std.testing.expect(!std.mem.eql(u8, &independent.trace_id, &parent.trace_id));
+}
+
+test "telemetry redacts captured prompts and isolates capture failures" {
+    const Capture = struct {
+        prompts: usize = 0,
+
+        fn span(context: *anyopaque, value: Span) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            for (value.attributes) |attribute| {
+                if (!std.mem.eql(u8, attribute.key, "gen_ai.input.messages")) continue;
+                try std.testing.expect(std.mem.indexOf(u8, attribute.value.string, "secr") == null);
+                try std.testing.expect(std.mem.indexOf(u8, attribute.value.string, "mask") != null);
+                self.prompts += 1;
+            }
+        }
+
+        fn metric(_: *anyopaque, _: Metric) !void {}
+    };
+    const Redact = struct {
+        fn redact(
+            _: *anyopaque,
+            allocator: std.mem.Allocator,
+            kind: ContentKind,
+            _: []const u8,
+        ) ![]u8 {
+            try std.testing.expectEqual(ContentKind.prompt, kind);
+            return allocator.dupe(u8, "masked value");
+        }
+
+        fn fail(_: *anyopaque, _: std.mem.Allocator, _: ContentKind, _: []const u8) ![]u8 {
+            return error.RedactionFailed;
+        }
+    };
+    const agent_types = @import("agent.zig");
+    var capture: Capture = .{};
+    var unused: u8 = 0;
+    const model = model_types.Model{
+        .context = &unused,
+        .profile = .{},
+        .requestFn = struct {
+            fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+                return .{ .parts = &.{} }; // kcov-ignore
+            }
+        }.request,
+    };
+    var run = (OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = .{ .context = &capture, .spanFn = Capture.span, .metricFn = Capture.metric },
+        .content = .{
+            .prompts = .redacted,
+            .max_bytes = 6,
+            .redactor = .{ .context = &unused, .redactFn = Redact.redact },
+        },
+    }).start(std.testing.allocator);
+    defer run.deinit();
+    try run.observe(agent_types.LifecycleEvent{ .run_start = .{ .prompt = "secret", .model = model } });
+    try run.observe(agent_types.LifecycleEvent{ .run_end = .{ .output = "ok", .usage = .{}, .model_requests = 0 } });
+    try std.testing.expectEqual(@as(usize, 1), capture.prompts);
+
+    var fail_open = (OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = .{ .context = &capture, .spanFn = Capture.span, .metricFn = Capture.metric },
+        .content = .{ .prompts = .redacted, .redactor = .{ .context = &unused, .redactFn = Redact.fail } },
+    }).start(std.testing.allocator);
+    defer fail_open.deinit();
+    try fail_open.observe(agent_types.LifecycleEvent{ .run_start = .{ .prompt = "secret", .model = model } });
+    try std.testing.expect(fail_open.input_messages == null);
+
+    var fail_closed = (OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = .{ .context = &capture, .spanFn = Capture.span, .metricFn = Capture.metric },
+        .content = .{ .prompts = .redacted, .redactor = .{ .context = &unused, .redactFn = Redact.fail } },
+        .fail_open = false,
+    }).start(std.testing.allocator);
+    defer fail_closed.deinit();
+    try std.testing.expectError(
+        error.RedactionFailed,
+        fail_closed.observe(agent_types.LifecycleEvent{ .run_start = .{ .prompt = "secret", .model = model } }),
+    );
+
+    var no_redactor = (OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = .{ .context = &capture, .spanFn = Capture.span, .metricFn = Capture.metric },
+        .content = .{ .prompts = .redacted },
+    }).start(std.testing.allocator);
+    defer no_redactor.deinit();
+    try no_redactor.observe(agent_types.LifecycleEvent{ .run_start = .{ .prompt = "secret", .model = model } });
+    try std.testing.expect(no_redactor.input_messages == null);
+}
+
+test "telemetry UTF-8 bounds preserve complete code points" {
+    try std.testing.expectEqualStrings("full", utf8Prefix("full", 4));
+    try std.testing.expectEqualStrings("ab", utf8Prefix("abc", 2));
+    try std.testing.expectEqualStrings("a", utf8Prefix("a€b", 2));
+    const encoded = try encodePrompt(std.testing.allocator, "");
+    defer std.testing.allocator.free(encoded);
+    try std.testing.expectEqualStrings(encoded_empty_prompt, encoded);
+}
+
+test "telemetry exporter failures follow fail-open policy" {
+    const Failing = struct {
+        fn span(_: *anyopaque, _: Span) !void {
+            return error.ExportFailed;
+        }
+
+        fn metric(_: *anyopaque, _: Metric) !void {
+            return error.ExportFailed;
+        }
+    };
+    const agent_types = @import("agent.zig");
+    var unused: u8 = 0;
+    const model = model_types.Model{
+        .context = &unused,
+        .profile = .{},
+        .requestFn = struct {
+            fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+                return .{ .parts = &.{} }; // kcov-ignore
+            }
+        }.request,
+    };
+    const exporter = Exporter{ .context = &unused, .spanFn = Failing.span, .metricFn = Failing.metric };
+    var fail_open = (OpenTelemetry{ .io = std.testing.io, .exporter = exporter }).start(std.testing.allocator);
+    defer fail_open.deinit();
+    try fail_open.observe(agent_types.LifecycleEvent{ .run_start = .{ .prompt = "prompt", .model = model } });
+
+    var fail_closed = (OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = exporter,
+        .fail_open = false,
+    }).start(std.testing.allocator);
+    defer fail_closed.deinit();
+    try std.testing.expectError(
+        error.ExportFailed,
+        fail_closed.observe(agent_types.LifecycleEvent{ .run_start = .{ .prompt = "prompt", .model = model } }),
+    );
+}
+
+fn checkTelemetryAllocationFailure(allocator: std.mem.Allocator) !void {
+    const agent_types = @import("agent.zig");
+    const Sink = struct {
+        fn span(_: *anyopaque, _: Span) !void {}
+        fn metric(_: *anyopaque, _: Metric) !void {}
+    };
+    var unused: u8 = 0;
+    const model = model_types.Model{
+        .context = &unused,
+        .profile = .{},
+        .model_name = "allocation-model",
+        .requestFn = struct {
+            fn request(_: *anyopaque, _: std.mem.Allocator, _: model_types.ModelRequest) !model_types.ModelResponse {
+                return .{ .parts = &.{} }; // kcov-ignore
+            }
+        }.request,
+    };
+    var run = (OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = .{ .context = &unused, .spanFn = Sink.span, .metricFn = Sink.metric },
+        .content = .{ .prompts = .raw },
+    }).start(allocator);
+    defer run.deinit();
+    try run.observe(agent_types.LifecycleEvent{ .run_start = .{ .prompt = "prompt", .model = model } });
+    try run.observe(agent_types.LifecycleEvent{ .model_request_start = .{
+        .number = 1,
+        .request = .{ .messages = &.{} },
+        .streaming = false,
+    } });
+    try run.observe(agent_types.LifecycleEvent{ .model_request_end = .{
+        .number = 1,
+        .response = .{ .parts = &.{}, .model_name = "allocation-model" },
+    } });
+    const call = model_types.ToolCall{ .id = "call", .name = "allocation-tool", .arguments_json = "{}" };
+    try run.observe(agent_types.LifecycleEvent{ .tool_validation_start = .{ .call = call } });
+    try run.observe(agent_types.LifecycleEvent{ .tool_execution_end = .{ .call = call, .content = "ok" } });
+    try run.observe(agent_types.LifecycleEvent{ .run_end = .{ .output = "ok", .usage = .{}, .model_requests = 1 } });
+}
+
+test "telemetry fail-open processing releases failed allocations" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    try checkTelemetryAllocationFailure(failing.allocator());
+    try std.testing.expect(failing.has_induced_failure);
+    try std.testing.expectEqual(failing.allocated_bytes, failing.freed_bytes);
 }

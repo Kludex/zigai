@@ -902,8 +902,11 @@ usage, and optional cost. `cost_estimator` is a telemetry-only fallback when
 the agent has no provider-reported or price-table cost. The exporter is a small synchronous bridge to your
 OpenTelemetry SDK or OTLP pipeline.
 
-Prompt capture is disabled by default. Set `capture_prompts = true` only when
-the destination and data policy are ready for potentially sensitive content.
+Prompt capture is disabled by default. Set `content.prompts` to `.raw` or
+`.redacted` only when the destination and data policy are ready. Redacted mode
+uses an application callback, and both modes enforce configured content and
+attribute-size bounds before exporter callbacks run. Pass
+`RunOptions.telemetry_parent` to continue an upstream trace.
 Exporter failures are fail-open by default, so telemetry does not break an
 agent run.
 

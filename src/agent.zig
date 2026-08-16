@@ -432,6 +432,8 @@ pub const RunOptions = struct {
     context_budget: ?context_budget.Budget = null,
     /// Provider-facing correlation ID for every model request in this run.
     request_id: ?[]const u8 = null,
+    /// Upstream trace context used as the parent of this agent invocation.
+    telemetry_parent: ?telemetry_types.SpanContext = null,
     /// Tightens `Agent.run_timeout_ms` for this invocation.
     timeout_ms: ?u64 = null,
     /// A one-run, thread-safe queue for request messages submitted while the
@@ -1756,7 +1758,7 @@ pub const Agent = struct {
             break :validator .{ .context = &validator_adapter, .validateFn = ControlledOutputValidator.validate };
         } else null;
         var telemetry_run: ?telemetry_types.Run = if (self.telemetry) |configured|
-            configured.start(allocator)
+            configured.startWithParent(allocator, options.telemetry_parent)
         else
             null;
         defer if (telemetry_run) |*instrumentation| instrumentation.deinit();
