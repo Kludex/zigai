@@ -173,7 +173,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   provider with an available key.
   - [x] Cover buffered, streamed-text, and function-tool success paths for all
     eleven configured OpenAI-compatible providers with live recordings.
-  - [ ] Cover retry and provider-error behavior through reusable deterministic
+  - [x] Cover retry and provider-error behavior through reusable deterministic
     fixtures for each compatible wire contract.
   - [ ] Cover the applicable success and failure matrix for native Bedrock
     Converse, Azure Responses, Mistral Conversations, and Cohere v2 Chat.

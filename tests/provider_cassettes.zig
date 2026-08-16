@@ -280,32 +280,11 @@ test "Google error cassette covers retries exhaustion malformed success and boun
 }
 
 test "real OpenAI-compatible provider cassettes replay success scenarios" {
-    inline for (cassette_manifest.compatible_success) |entry| {
-        if (comptime std.mem.eql(u8, entry.provider, "azure-openai"))
-            try replayCompatibleProvider(zigai.providers.azure_openai.Provider, zigai.providers.azure_openai.Client, entry)
-        else if (comptime std.mem.eql(u8, entry.provider, "bedrock"))
-            try replayCompatibleProvider(zigai.providers.bedrock.MantleProvider, zigai.providers.bedrock.MantleClient, entry)
-        else if (comptime std.mem.eql(u8, entry.provider, "cerebras"))
-            try replayCompatibleProvider(zigai.providers.cerebras.Provider, zigai.providers.cerebras.Client, entry)
-        else if (comptime std.mem.eql(u8, entry.provider, "cohere"))
-            try replayCompatibleProvider(zigai.providers.cohere.Provider, zigai.providers.cohere.Client, entry)
-        else if (comptime std.mem.eql(u8, entry.provider, "deepseek"))
-            try replayCompatibleProvider(zigai.providers.deepseek.Provider, zigai.providers.deepseek.Client, entry)
-        else if (comptime std.mem.eql(u8, entry.provider, "doubleword"))
-            try replayCompatibleProvider(zigai.providers.doubleword.Provider, zigai.providers.doubleword.Client, entry)
-        else if (comptime std.mem.eql(u8, entry.provider, "groq"))
-            try replayCompatibleProvider(zigai.providers.groq.Provider, zigai.providers.groq.Client, entry)
-        else if (comptime std.mem.eql(u8, entry.provider, "huggingface"))
-            try replayCompatibleProvider(zigai.providers.huggingface.Provider, zigai.providers.huggingface.Client, entry)
-        else if (comptime std.mem.eql(u8, entry.provider, "mistral"))
-            try replayCompatibleProvider(zigai.providers.mistral.Provider, zigai.providers.mistral.Client, entry)
-        else if (comptime std.mem.eql(u8, entry.provider, "openrouter"))
-            try replayCompatibleProvider(zigai.providers.openrouter.Provider, zigai.providers.openrouter.Client, entry)
-        else if (comptime std.mem.eql(u8, entry.provider, "together"))
-            try replayCompatibleProvider(zigai.providers.together.Provider, zigai.providers.together.Client, entry)
-        else
-            @compileError("compatible cassette has no named provider client: " ++ entry.provider);
-    }
+    inline for (cassette_manifest.compatible_success) |entry| try replayNamedCompatible(entry);
+}
+
+test "OpenAI-compatible provider contracts replay retries and safe errors" {
+    inline for (cassette_manifest.compatible_errors) |entry| try replayNamedCompatible(entry);
 }
 
 test "real Bedrock Converse cassette replays a complete tool loop" {
@@ -401,8 +380,36 @@ fn replayCompatibleProvider(
         .buffered => try replayBufferedScenario(client.model(), &cassette),
         .streamed_text => try replayStreamTextScenario(client.model(), &cassette),
         .function_tool => try replayMatrixScenario(client.model(), &cassette),
+        .provider_error => try error_scenarios.replay(client.model(), &cassette, entry.provider),
         else => unreachable,
     }
+}
+
+fn replayNamedCompatible(comptime entry: cassette_manifest.Entry) !void {
+    if (comptime std.mem.eql(u8, entry.provider, "azure-openai"))
+        try replayCompatibleProvider(zigai.providers.azure_openai.Provider, zigai.providers.azure_openai.Client, entry)
+    else if (comptime std.mem.eql(u8, entry.provider, "bedrock"))
+        try replayCompatibleProvider(zigai.providers.bedrock.MantleProvider, zigai.providers.bedrock.MantleClient, entry)
+    else if (comptime std.mem.eql(u8, entry.provider, "cerebras"))
+        try replayCompatibleProvider(zigai.providers.cerebras.Provider, zigai.providers.cerebras.Client, entry)
+    else if (comptime std.mem.eql(u8, entry.provider, "cohere"))
+        try replayCompatibleProvider(zigai.providers.cohere.Provider, zigai.providers.cohere.Client, entry)
+    else if (comptime std.mem.eql(u8, entry.provider, "deepseek"))
+        try replayCompatibleProvider(zigai.providers.deepseek.Provider, zigai.providers.deepseek.Client, entry)
+    else if (comptime std.mem.eql(u8, entry.provider, "doubleword"))
+        try replayCompatibleProvider(zigai.providers.doubleword.Provider, zigai.providers.doubleword.Client, entry)
+    else if (comptime std.mem.eql(u8, entry.provider, "groq"))
+        try replayCompatibleProvider(zigai.providers.groq.Provider, zigai.providers.groq.Client, entry)
+    else if (comptime std.mem.eql(u8, entry.provider, "huggingface"))
+        try replayCompatibleProvider(zigai.providers.huggingface.Provider, zigai.providers.huggingface.Client, entry)
+    else if (comptime std.mem.eql(u8, entry.provider, "mistral"))
+        try replayCompatibleProvider(zigai.providers.mistral.Provider, zigai.providers.mistral.Client, entry)
+    else if (comptime std.mem.eql(u8, entry.provider, "openrouter"))
+        try replayCompatibleProvider(zigai.providers.openrouter.Provider, zigai.providers.openrouter.Client, entry)
+    else if (comptime std.mem.eql(u8, entry.provider, "together"))
+        try replayCompatibleProvider(zigai.providers.together.Provider, zigai.providers.together.Client, entry)
+    else
+        @compileError("compatible cassette has no named provider client: " ++ entry.provider);
 }
 
 fn replayBufferedScenario(model: zigai.Model, cassette: *cassettes.ReplayTransport) !void {

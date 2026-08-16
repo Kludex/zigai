@@ -339,6 +339,20 @@ pub const compatible_tools = [_]Entry{
 
 pub const compatible_success = compatible ++ compatible_streamed_text ++ compatible_tools;
 
+pub const compatible_errors = [_]Entry{
+    compatibleErrorEntry("azure-openai", .azure_openai),
+    compatibleErrorEntry("bedrock", .bedrock),
+    compatibleErrorEntry("cerebras", .cerebras),
+    compatibleErrorEntry("cohere", .cohere),
+    compatibleErrorEntry("deepseek", .deepseek),
+    compatibleErrorEntry("doubleword", .doubleword),
+    compatibleErrorEntry("groq", .groq),
+    compatibleErrorEntry("huggingface", .huggingface),
+    compatibleErrorEntry("mistral", .mistral),
+    compatibleErrorEntry("openrouter", .openrouter),
+    compatibleErrorEntry("together", .together),
+};
+
 const together_tool_model = compatibleEntry(
     "together/qwen-2.5-7b-instruct-turbo/buffered",
     "together",
@@ -372,7 +386,7 @@ pub const files = [_]Entry{
     scenarioEntry("google/files/file-lifecycle", "google", "", .file_lifecycle, "cassettes/files/google.yaml", .google_files, .google),
 };
 
-pub const all = openai ++ anthropic ++ google ++ first_party_buffered ++ first_party_streaming ++ first_party_capabilities ++ first_party_errors ++ compatible_success ++ native ++ rich ++ files;
+pub const all = openai ++ anthropic ++ google ++ first_party_buffered ++ first_party_streaming ++ first_party_capabilities ++ first_party_errors ++ compatible_success ++ compatible_errors ++ native ++ rich ++ files;
 
 fn modelEntry(
     id: []const u8,
@@ -454,6 +468,20 @@ fn entryWithId(comptime entry: Entry, id: []const u8) Entry {
     return renamed;
 }
 
+fn compatibleErrorEntry(provider: []const u8, credentials: CredentialSet) Entry {
+    return .{
+        .id = std.fmt.comptimePrint("{s}/chat-contract/provider-error", .{provider}),
+        .provider = provider,
+        .model = "contract-model",
+        .scenario = .provider_error,
+        .cassette = "cassettes/errors/openai_compatible.yaml",
+        .route = .compatible,
+        .credentials = credentials,
+        .base_url = "https://compatible.test/v1",
+        .source = .deterministic,
+    };
+}
+
 fn scenarioEntry(
     id: []const u8,
     provider: []const u8,
@@ -510,6 +538,8 @@ pub fn matches(entry: Entry, filter: []const u8) bool {
         entry.route == .compatible and entry.scenario == .streamed_text) return true;
     if (std.mem.eql(u8, filter, "compatible-tools") and
         entry.route == .compatible and entry.scenario == .function_tool) return true;
+    if (std.mem.eql(u8, filter, "compatible-errors") and
+        entry.route == .compatible and entry.scenario == .provider_error) return true;
     if (isNativeRecording(entry) and
         (std.mem.eql(u8, filter, "native-tools") or matchesNativeProvider(entry, filter)))
     {
@@ -608,7 +638,8 @@ test "manifest identifiers and fixture paths are unique" {
         try std.testing.expect(credentialRequirements(entry.credentials).len > 0);
         for (all[index + 1 ..]) |other| {
             try std.testing.expect(!std.mem.eql(u8, entry.id, other.id));
-            try std.testing.expect(!std.mem.eql(u8, entry.cassette, other.cassette));
+            const shared_contract = entry.source == .deterministic and other.source == .deterministic;
+            try std.testing.expect(shared_contract or !std.mem.eql(u8, entry.cassette, other.cassette));
         }
     }
 }

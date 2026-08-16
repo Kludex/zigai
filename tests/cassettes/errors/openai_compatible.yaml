@@ -1,0 +1,99 @@
+version: 1
+interactions:
+- request: &request
+    method: POST
+    uri: "https://compatible.test/v1/chat/completions"
+    headers: {}
+    body: &body
+      type: json
+      content:
+        model: "contract-model"
+        messages:
+          - role: "user"
+            content: "Reply with exactly: pong"
+        max_tokens: 64
+  response:
+    status: 429
+    headers:
+      retry-after:
+      - "3"
+      x-ratelimit-remaining-requests:
+      - "0"
+      x-ratelimit-remaining-tokens:
+      - "12"
+      x-request-id:
+      - "req_rate_compatible"
+    body:
+      type: json
+      content:
+        error:
+          code: "rate_limit"
+          message: "slow down"
+- request:
+    method: POST
+    uri: "https://compatible.test/v1/chat/completions"
+    headers: {}
+    body: *body
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        choices:
+          - message:
+              role: "assistant"
+              content: "pong"
+            finish_reason: "stop"
+        usage:
+          prompt_tokens: 1
+          completion_tokens: 1
+- request:
+    method: POST
+    uri: "https://compatible.test/v1/chat/completions"
+    headers: {}
+    body: *body
+  response: &server_error
+    status: 503
+    headers:
+      x-request-id:
+      - "req_server_compatible"
+    body:
+      type: json
+      content:
+        error:
+          code: "unavailable"
+          message: "temporarily unavailable"
+- request:
+    method: POST
+    uri: "https://compatible.test/v1/chat/completions"
+    headers: {}
+    body: *body
+  response: *server_error
+- request:
+    method: POST
+    uri: "https://compatible.test/v1/chat/completions"
+    headers: {}
+    body: *body
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content: {}
+- request:
+    method: POST
+    uri: "https://compatible.test/v1/chat/completions"
+    headers: {}
+    body: *body
+  response:
+    status: 400
+    headers:
+      x-request-id:
+      - "req_bad_compatible"
+    body:
+      type: json
+      content:
+        error:
+          code: "bad_request_code"
+          message: "provider failure message that is intentionally longer than the observer limit"

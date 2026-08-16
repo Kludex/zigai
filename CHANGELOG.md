@@ -55,6 +55,10 @@
   configured OpenAI-compatible providers. Recording and replay use the shared
   typed scenario manifest while retaining provider-specific models, endpoints,
   authentication, and response extensions.
+- Replay one deterministic Chat Completions failure contract through all eleven
+  named compatible providers, covering rate-limit recovery metadata, retry
+  exhaustion, malformed success, bounded observations, and provider identity
+  without duplicating protocol-equivalent fixtures.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

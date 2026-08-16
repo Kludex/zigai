@@ -87,7 +87,9 @@ metadata, retry exhaustion after two 503 responses, malformed-success
 classification, and a non-retryable 400 observed through strict message, code,
 and body bounds. These fixtures use provider-realistic wire envelopes but are
 not live recordings: manufacturing upstream failures would be unsafe and
-nondeterministic.
+nondeterministic. One shared Chat Completions contract fixture runs through all
+eleven named compatible providers, proving their provider identities without
+duplicating identical protocol YAML.
 
 `tests/cassettes/native/` contains real provider-native recordings: OpenAI web
 search, Anthropic web search plus fetch, Google Search plus URL Context, a
