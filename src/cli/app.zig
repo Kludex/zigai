@@ -508,7 +508,7 @@ pub fn execute(init: std.process.Init, args: []const []const u8) !ExitCode {
 
     const prompt: ?[]u8 = if (!arguments.resume_run)
         if (arguments.stdin_prompt)
-            try readStdin(init.gpa, init.io)
+            try readStdin(init.gpa, init.io) // kcov-ignore: piped stdin is exercised by scripts/test-cli
         else
             try init.gpa.dupe(u8, arguments.prompt.?)
     else
@@ -805,7 +805,10 @@ test "production CLI config history paused state and provider selection are owne
     mcp.deinit();
     const MCPAllocation = struct {
         fn run(gpa: std.mem.Allocator) !void {
-            var runtime = try MCPRuntime.init(gpa, std.testing.io, &.{}, &.{});
+            var runtime = MCPRuntime.init(gpa, std.testing.io, &.{.{ .command = &.{} }}, &.{}) catch |failure| {
+                if (failure == error.EmptyCommand) return;
+                return failure;
+            };
             runtime.deinit();
         }
     };
@@ -821,7 +824,7 @@ test "production CLI config history paused state and provider selection are owne
         std.testing.allocator,
         std.testing.io,
         &.{.{ .command = &.{ "/bin/sh", "-c", script } }},
-        &.{},
+        &.{"/bin/cat"},
     );
     var prepared_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer prepared_arena.deinit();
