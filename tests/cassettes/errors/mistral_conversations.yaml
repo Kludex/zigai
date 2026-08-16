@@ -1,0 +1,106 @@
+version: 1
+interactions:
+- request: &request
+    method: POST
+    uri: "https://api.mistral.ai/v1/conversations"
+    headers: {}
+    body: &body
+      type: json
+      content:
+        model: "mistral-small-latest"
+        inputs:
+          - object: "entry"
+            type: "message.input"
+            role: "user"
+            content: "Reply with exactly: pong"
+        completion_args:
+          max_tokens: 64
+        store: false
+        stream: false
+  response:
+    status: 429
+    headers:
+      retry-after:
+      - "3"
+      x-ratelimit-remaining-requests:
+      - "0"
+      x-ratelimit-remaining-tokens:
+      - "12"
+      x-request-id:
+      - "req_rate_mistral"
+    body:
+      type: json
+      content:
+        error:
+          code: "rate_limit"
+          message: "slow down"
+- request:
+    method: POST
+    uri: "https://api.mistral.ai/v1/conversations"
+    headers: {}
+    body: *body
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content:
+        conversation_id: "conv_contract"
+        outputs:
+          - object: "entry"
+            type: "message.output"
+            role: "assistant"
+            content: "pong"
+        usage:
+          prompt_tokens: 1
+          completion_tokens: 1
+          total_tokens: 2
+- request:
+    method: POST
+    uri: "https://api.mistral.ai/v1/conversations"
+    headers: {}
+    body: *body
+  response: &server_error
+    status: 503
+    headers:
+      x-request-id:
+      - "req_server_mistral"
+    body:
+      type: json
+      content:
+        error:
+          code: "unavailable"
+          message: "temporarily unavailable"
+- request:
+    method: POST
+    uri: "https://api.mistral.ai/v1/conversations"
+    headers: {}
+    body: *body
+  response: *server_error
+- request:
+    method: POST
+    uri: "https://api.mistral.ai/v1/conversations"
+    headers: {}
+    body: *body
+  response:
+    status: 200
+    headers: {}
+    body:
+      type: json
+      content: {}
+- request:
+    method: POST
+    uri: "https://api.mistral.ai/v1/conversations"
+    headers: {}
+    body: *body
+  response:
+    status: 400
+    headers:
+      x-request-id:
+      - "req_bad_mistral"
+    body:
+      type: json
+      content:
+        error:
+          code: "bad_request_code"
+          message: "provider failure message that is intentionally longer than the observer limit"

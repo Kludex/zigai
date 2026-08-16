@@ -63,6 +63,10 @@
   Converse, Azure Responses, Mistral Conversations, and Cohere v2 Chat, plus a
   complete Mistral Conversations function-tool loop. Stop replaying Mistral's
   provider-generated entry IDs because client inputs cannot specify them.
+- Add deterministic failure contracts for Bedrock Converse, Azure Responses,
+  Mistral Conversations, and Cohere v2 Chat. Each native request and response
+  codec now replays rate-limit recovery, retry exhaustion, malformed success,
+  and bounded provider-error observation.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

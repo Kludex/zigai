@@ -168,7 +168,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Record and replay rich-media and provider-managed-tool scenarios for every
   applicable native provider with an available key, including deterministic
   assertions for citations, references, usage, and provider extension metadata.
-- [ ] Record and replay buffered, streaming, function-tool, retry, and
+- [x] Record and replay buffered, streaming, function-tool, retry, and
   provider-error scenarios for every applicable compatible or specialized
   provider with an available key.
   - [x] Cover buffered, streamed-text, and function-tool success paths for all
@@ -177,7 +177,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
     fixtures for each compatible wire contract.
   - [x] Cover the applicable live success matrix for native Bedrock Converse,
     Azure Responses, Mistral Conversations, and Cohere v2 Chat.
-  - [ ] Cover deterministic retry and provider-error behavior for each of those
+  - [x] Cover deterministic retry and provider-error behavior for each of those
     four specialized native wire contracts.
 - [ ] Add a cassette audit gate that proves fixture completeness against the
   manifest, rejects credential-shaped values and unsafe headers, validates

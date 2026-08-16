@@ -363,6 +363,10 @@ test "real specialized provider cassettes replay applicable success scenarios" {
     inline for (cassette_manifest.specialized_success) |entry| try replaySpecializedEntry(entry);
 }
 
+test "specialized provider contracts replay retries and safe errors" {
+    inline for (cassette_manifest.specialized_errors) |entry| try replaySpecializedEntry(entry);
+}
+
 fn replayCompatibleProvider(
     comptime ProviderType: type,
     comptime ClientType: type,
@@ -431,7 +435,7 @@ fn replaySpecializedEntry(comptime entry: cassette_manifest.Entry) !void {
                 .model_name = entry.model,
                 .provider = provider_state.provider(),
             };
-            try replaySpecializedScenario(client.model(), &cassette, entry.scenario);
+            try replaySpecializedScenario(client.model(), &cassette, entry.provider, entry.scenario);
         },
         .azure_responses => {
             var provider_state = zigai.providers.azure_openai.Provider.initWithOptions(
@@ -443,7 +447,7 @@ fn replaySpecializedEntry(comptime entry: cassette_manifest.Entry) !void {
                 .model_name = entry.model,
                 .provider = provider_state.provider(),
             };
-            try replaySpecializedScenario(client.model(), &cassette, entry.scenario);
+            try replaySpecializedScenario(client.model(), &cassette, entry.provider, entry.scenario);
         },
         .mistral_conversations => {
             var provider_state = zigai.providers.mistral.ConversationsProvider.init("not-recorded", cassette.transport());
@@ -451,7 +455,7 @@ fn replaySpecializedEntry(comptime entry: cassette_manifest.Entry) !void {
                 .model_name = entry.model,
                 .provider = provider_state.provider(),
             };
-            try replaySpecializedScenario(client.model(), &cassette, entry.scenario);
+            try replaySpecializedScenario(client.model(), &cassette, entry.provider, entry.scenario);
         },
         .cohere_chat => {
             var provider_state = zigai.providers.cohere.ChatProvider.init("not-recorded", cassette.transport());
@@ -463,7 +467,7 @@ fn replaySpecializedEntry(comptime entry: cassette_manifest.Entry) !void {
                 else
                     .{},
             };
-            try replaySpecializedScenario(client.model(), &cassette, entry.scenario);
+            try replaySpecializedScenario(client.model(), &cassette, entry.provider, entry.scenario);
         },
         else => unreachable,
     }
@@ -472,12 +476,14 @@ fn replaySpecializedEntry(comptime entry: cassette_manifest.Entry) !void {
 fn replaySpecializedScenario(
     model: zigai.Model,
     cassette: *cassettes.ReplayTransport,
+    provider: []const u8,
     scenario: cassette_manifest.Scenario,
 ) !void {
     return switch (scenario) {
         .buffered => replayBufferedScenario(model, cassette),
         .streamed_text => replayStreamTextScenario(model, cassette),
         .function_tool => replayMatrixScenario(model, cassette),
+        .provider_error => error_scenarios.replay(model, cassette, provider),
         else => unreachable,
     };
 }

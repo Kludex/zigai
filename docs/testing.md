@@ -91,6 +91,12 @@ nondeterministic. One shared Chat Completions contract fixture runs through all
 eleven named compatible providers, proving their provider identities without
 duplicating identical protocol YAML.
 
+The same directory also contains one deterministic failure contract for each
+specialized native route: Bedrock Converse, Azure Responses, Mistral
+Conversations, and Cohere v2 Chat. Their provider-specific request and success
+shapes exercise rate-limit recovery, server-error exhaustion, malformed
+success classification, and bounded error observation without live failures.
+
 `tests/cassettes/native/` contains real provider-native recordings: OpenAI web
 search, Anthropic web search plus fetch, Google Search plus URL Context, a
 complete Amazon Bedrock Converse function-tool loop, and an Azure OpenAI v1
@@ -155,6 +161,7 @@ zig build record-cassettes -- native-bedrock
 zig build record-cassettes -- native-azure
 zig build record-cassettes -- native-cohere
 zig build record-cassettes -- specialized-success
+zig build record-cassettes -- specialized-errors
 zig build record-cassettes -- mistral
 zig build record-cassettes -- rich-content
 zig build record-cassettes -- rich-anthropic
