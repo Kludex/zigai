@@ -376,10 +376,9 @@ fn validateCommand(
     var sensitive_count: usize = 0;
     for (command.environment) |variable| {
         try validateEnvironmentName(variable.name);
-        if (variable.sensitive) {
-            if (!policy.allow_sensitive_environment) return error.SensitiveEnvironmentDenied;
-            sensitive_count += 1;
-        }
+        if (variable.sensitive and !policy.allow_sensitive_environment)
+            return error.SensitiveEnvironmentDenied;
+        sensitive_count += @intFromBool(variable.sensitive);
     }
     const sensitive_names = try gpa.alloc([]const u8, sensitive_count);
     var index: usize = 0;
@@ -593,6 +592,24 @@ test "disposable local and remote workspace contracts clean up" {
     command.deinit();
     try remote.environment.dispose();
     try std.testing.expect(remote_state.disposed);
+
+    const Allocation = struct {
+        fn run(gpa: std.mem.Allocator) !void {
+            var state: Remote = .{};
+            const remote_environment = Environment{
+                .context = &state,
+                .profile = .{ .network_isolated = true, .disposable = true },
+                .read_fn = Remote.read,
+                .write_fn = Remote.write,
+                .remove_fn = Remote.remove,
+                .execute_fn = Remote.execute,
+                .dispose_fn = Remote.dispose,
+            };
+            var result = try remote_environment.execute(gpa, .{ .argv = &.{"remote"} });
+            result.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Allocation.run, .{});
 }
 
 fn runLocalWithAllocator(gpa: std.mem.Allocator) !void {
