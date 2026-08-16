@@ -302,7 +302,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add a provider-neutral agent harness for reusable coder, researcher, and
   custom compositions, with typed capability configuration, lifecycle hooks,
   artifact ownership, bounded execution, and agent-spec integration.
-- [ ] Add execution-environment contracts for filesystem and shell access plus
+- [x] Add execution-environment contracts for filesystem and shell access plus
   remote sandboxes, with explicit roots, command/network policy, output limits,
   cancellation, audit events, secret handling, and disposable workspaces.
 - [ ] Add a reviewed built-in capability catalog for web search/fetch, browser
