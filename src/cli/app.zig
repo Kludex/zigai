@@ -595,10 +595,14 @@ fn decisionsForCalls(gpa: std.mem.Allocator, calls: anytype, mode: ApprovalMode)
     return decisions;
 }
 
-fn readStdin(gpa: std.mem.Allocator, io: std.Io) ![]u8 {
-    var buffer: [4096]u8 = undefined;
-    var reader = std.Io.File.stdin().readerStreaming(io, &buffer);
-    const input = try reader.interface.allocRemaining(gpa, .limited(1024 * 1024));
+fn readStdin(gpa: std.mem.Allocator, io: std.Io) ![]u8 { // kcov-ignore: piped stdin is exercised by scripts/test-cli
+    var buffer: [4096]u8 = undefined; // kcov-ignore: OS stdin wrapper
+    var reader = std.Io.File.stdin().readerStreaming(io, &buffer); // kcov-ignore: OS stdin wrapper
+    return readPrompt(gpa, &reader.interface); // kcov-ignore: OS stdin wrapper
+}
+
+fn readPrompt(gpa: std.mem.Allocator, reader: *std.Io.Reader) ![]u8 {
+    const input = try reader.allocRemaining(gpa, .limited(1024 * 1024));
     const trimmed = std.mem.trim(u8, input, " \t\r\n");
     if (trimmed.len == 0) {
         gpa.free(input);
@@ -699,6 +703,12 @@ test "production CLI parses overrides completions and exit codes" {
         error.InvalidArguments,
         parseArguments(std.testing.allocator, &.{ "zigai", "--unknown", "prompt" }),
     );
+    var prompt_reader = std.Io.Reader.fixed("  stdin prompt\n");
+    const prompt = try readPrompt(std.testing.allocator, &prompt_reader);
+    defer std.testing.allocator.free(prompt);
+    try std.testing.expectEqualStrings("stdin prompt", prompt);
+    var empty_reader = std.Io.Reader.fixed(" \n");
+    try std.testing.expectError(error.EmptyPrompt, readPrompt(std.testing.allocator, &empty_reader));
 }
 
 test "production CLI config history paused state and provider selection are owned" {
