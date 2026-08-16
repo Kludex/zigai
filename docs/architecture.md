@@ -782,6 +782,20 @@ collection and exact sensitive values are redacted before ownership transfers.
 Audit events deliberately contain secret names but not values. Disposable
 workspaces close their handle before deleting their complete child tree.
 
+## Built-in capability catalog
+
+The reviewed catalog contains composition data and small structural backend
+interfaces, not vendor clients. Native web search/fetch remain provider tools.
+Browser, image, skill, and repository capabilities become ordinary local tools,
+so they inherit the agent's validation, retries, deadlines, hooks, durable
+routing rules, and usage accounting.
+
+The catalog binds tool callback contexts only after reaching a stable address.
+Optional backends fail by capability absence. Browser URLs reuse `UrlPolicy`;
+repository reads reuse the rooted execution environment; every result is
+bounded before returning to the model. This prevents convenience capabilities
+from becoming alternate security or content paths.
+
 ## Production CLI
 
 The unified CLI is composition rather than a fourth agent runtime. Provider

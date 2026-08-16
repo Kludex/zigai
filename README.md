@@ -268,6 +268,13 @@ use rooted, non-following, resolve-beneath opens. Command policy controls
 executables, network requirements, environment secrets, output sizes,
 cancellation, audits, and disposable workspace cleanup.
 
+`zigai.builtin_capabilities.Catalog` provides reviewed `web_search`,
+`web_fetch`, `browser`, `image_generation`, `skills`, and
+`repository_context` bundles. Native web tools stay provider-managed. Optional
+browser/image/skill/repository backends are structural interfaces, keep vendor
+SDKs outside the core, and enforce the same URL, content, root, and output
+policies as ordinary tools.
+
 ## Providers
 
 The agent and tools stay the same when the provider changes.

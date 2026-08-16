@@ -48,6 +48,9 @@
 - Add execution-environment contracts for rooted local filesystems, bounded
   shell commands, remote sandboxes, network and secret policy, cancellation,
   audit events, redacted output, and disposable workspaces.
+- Add a reviewed capability catalog for provider web search/fetch and optional
+  browser, image generation, skills, and repository backends with shared URL,
+  content, filesystem-root, and output policies.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

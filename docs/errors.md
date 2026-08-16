@@ -429,6 +429,14 @@ identify policy failures. `WorkspaceNotDisposable` rejects disposal through a
 borrowed environment. Process, cancellation, deadline, output-limit, audit, and
 allocator failures retain their original errors.
 
+## Built-in capability errors
+
+`InvalidBuiltinCapabilityArguments`, `BuiltinCapabilityOutputTooLarge`, and
+`InvalidGeneratedImage` reject malformed or oversized local capability data.
+Browser URL failures preserve the shared security taxonomy. Repository
+filesystem/root failures preserve execution-environment errors. Optional
+backend and allocator failures retain their original errors.
+
 ## Production CLI errors
 
 `InvalidArguments`, `InvalidCLIConfig`, `InvalidPausedCLIState`, `EmptyPrompt`,

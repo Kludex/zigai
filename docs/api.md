@@ -137,6 +137,7 @@ Use these namespaces for the rest of the API:
 | `zigai.ui` | AG-UI and Vercel AI SDK browser event adapters |
 | `zigai.harness` | Reusable bounded coder, researcher, and custom compositions |
 | `zigai.execution` | Rooted filesystem, shell, remote sandbox, and disposable workspace contracts |
+| `zigai.builtin_capabilities` | Reviewed web, browser, image, skill, and repository bundles |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
 | `zigai.reflect` | Compile-time tools and JSON Schema derivation |
@@ -1237,6 +1238,28 @@ and drained before return. `CommandResult` owns stdout/stderr in one arena.
 Sensitive environment values are replaced with `[REDACTED]` in both streams by
 default. Audit events contain paths, executables, statuses, error names, and
 sensitive variable names only - never secret values.
+
+## Built-in capability catalog
+
+Keep a `builtin_capabilities.Catalog` at a stable address, configure optional
+backends, then pass `catalog.resolver()` to `agent_spec.resolve` or request
+individual capability values by ID. The catalog exposes `web_search`,
+`web_fetch`, `browser`, `image_generation`, `skills`, and
+`repository_context`. Missing optional backends make their capability ID
+unavailable instead of silently degrading behavior.
+
+Web search and fetch use the existing provider-neutral `BuiltinTool` vocabulary.
+Browser, image, skill, and repository features use ordinary local `Tool`
+callbacks. `BrowserBackend`, `ImageBackend`, `SkillStore`, and
+`RepositorySearch` are structural interfaces, so optional vendor packages can
+implement them without becoming ZigAI dependencies.
+
+Browser URLs pass the configured `UrlPolicy` before a callback. Browser, skill,
+repository, and image input/output are bounded. Generated media must be a
+non-empty `image/*` payload and is returned as explicit base64 JSON. Skill names
+accept only stable identifier bytes. Repository reads go through an
+`execution.Environment`, retaining its root, secret, audit, and cancellation
+policy; repository search is a separate optional backend.
 
 ## Production CLI
 
