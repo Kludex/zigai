@@ -84,6 +84,7 @@ pub const OpenTelemetry = telemetry.OpenTelemetry;
 pub const TelemetryExporter = telemetry.Exporter;
 pub const TelemetrySpan = telemetry.Span;
 pub const TelemetryMetric = telemetry.Metric;
+pub const TelemetryEvent = telemetry.Event;
 pub const TelemetrySpanContext = telemetry.SpanContext;
 pub const TelemetryContentPolicy = telemetry.ContentPolicy;
 pub const TelemetryRedactor = telemetry.Redactor;

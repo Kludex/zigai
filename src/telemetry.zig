@@ -97,11 +97,21 @@ pub const Metric = struct {
     pub const Kind = enum { counter, histogram };
 };
 
+/// Instantaneous signal correlated with an agent trace and active phase.
+pub const Event = struct {
+    name: []const u8,
+    trace_id: [16]u8,
+    span_id: [8]u8,
+    time_unix_nano: i128,
+    attributes: []const Attribute,
+};
+
 /// Synchronous bridge to an OpenTelemetry SDK or OTLP exporter.
 pub const Exporter = struct {
     context: *anyopaque,
     spanFn: *const fn (context: *anyopaque, span: Span) anyerror!void,
     metricFn: *const fn (context: *anyopaque, metric: Metric) anyerror!void,
+    eventFn: ?*const fn (context: *anyopaque, event: Event) anyerror!void = null,
 
     pub fn span(self: Exporter, value: Span) !void {
         return self.spanFn(self.context, value);
@@ -109,6 +119,11 @@ pub const Exporter = struct {
 
     pub fn metric(self: Exporter, value: Metric) !void {
         return self.metricFn(self.context, value);
+    }
+
+    pub fn event(self: Exporter, value: Event) !void {
+        const emit = self.eventFn orelse return;
+        return emit(self.context, value);
     }
 };
 
@@ -182,6 +197,8 @@ pub const Run = struct {
     last_request_span_id: ?[8]u8 = null,
     request_number: usize = 0,
     tool_starts: std.ArrayList(ToolStart) = .empty,
+    tool_validation_starts: std.ArrayList(ToolStart) = .empty,
+    output_validation_start: ?OutputValidationStart = null,
 
     const Start = struct {
         real_ns: i128,
@@ -196,9 +213,17 @@ pub const Run = struct {
         parent_span_id: ?[8]u8,
     };
 
+    const OutputValidationStart = struct {
+        retry_number: usize,
+        start: Start,
+        span_id: [8]u8,
+        parent_span_id: ?[8]u8,
+    };
+
     pub fn deinit(self: *Run) void {
         if (self.input_messages) |messages| self.allocator.free(messages);
         self.tool_starts.deinit(self.allocator);
+        self.tool_validation_starts.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -215,6 +240,9 @@ pub const Run = struct {
     }
 
     fn observeFallible(self: *Run, event: anytype) !void {
+        self.emitLifecycleEvent(event) catch |failure| {
+            if (!self.config.fail_open) return failure;
+        };
         switch (event) {
             .run_start => |value| try self.onRunStart(value.prompt, value.model),
             .run_end => try self.onRunEnd(.ok, null),
@@ -229,16 +257,22 @@ pub const Run = struct {
                 try self.onRequestEnd(.error_status, value.failure, .{});
                 if (value.will_retry) try self.retryMetric("model");
             },
-            .tool_validation_start => |value| try self.onToolStart(value.call.id, value.call.name),
-            .tool_validation_error => |value| try self.onToolEnd(value.call.id, .error_status, value.failure),
-            .tool_validation_end, .tool_execution_start => {},
+            .tool_validation_start => |value| try self.onToolValidationStart(value.call.id, value.call.name),
+            .tool_validation_end => |value| try self.onToolValidationEnd(value.call.id, .ok, null),
+            .tool_validation_error => |value| try self.onToolValidationEnd(value.call.id, .error_status, value.failure),
+            .tool_execution_start => |value| try self.onToolStart(value.call.id, value.call.name),
             .tool_execution_end => |value| try self.onToolEnd(value.call.id, .ok, null),
             .tool_execution_error => |value| {
                 try self.onToolEnd(value.call.id, .error_status, value.failure);
                 if (value.recoverable) try self.retryMetric("tool");
             },
-            .output_validation_error => |value| if (value.will_retry) try self.retryMetric("output"),
-            .output_validation_start, .output_validation_end, .stream_event => {},
+            .output_validation_start => |value| try self.onOutputValidationStart(value.retry_number),
+            .output_validation_end => |value| try self.onOutputValidationEnd(value.retry_number, .ok, null),
+            .output_validation_error => |value| {
+                try self.onOutputValidationEnd(value.retry_number, .error_status, value.failure);
+                if (value.will_retry) try self.retryMetric("output");
+            },
+            .stream_event => {},
         }
     }
 
@@ -374,6 +408,127 @@ pub const Run = struct {
         self.request_span_id = null;
     }
 
+    fn emitLifecycleEvent(self: Run, event: anytype) !void {
+        var attributes: [8]Attribute = undefined;
+        var count: usize = 0;
+        const name: []const u8 = switch (event) {
+            .run_start => "zigai.run.start",
+            .run_end => |value| event_name: {
+                attributes[count] = .{ .key = "zigai.model.request.count", .value = .{ .integer = @intCast(value.model_requests) } };
+                count += 1;
+                break :event_name "zigai.run.end";
+            },
+            .run_error => |value| event_name: {
+                addFailureAttribute(value.failure, &attributes, &count);
+                break :event_name "zigai.run.error";
+            },
+            .model_request_start => |value| event_name: {
+                addRequestAttributes(value.number, &attributes, &count);
+                attributes[count] = .{ .key = "zigai.request.streaming", .value = .{ .boolean = value.streaming } };
+                count += 1;
+                break :event_name "zigai.model.request.start";
+            },
+            .model_request_end => |value| event_name: {
+                addRequestAttributes(value.number, &attributes, &count);
+                break :event_name "zigai.model.request.end";
+            },
+            .model_request_error => |value| event_name: {
+                addRequestAttributes(value.number, &attributes, &count);
+                addFailureAttribute(value.failure, &attributes, &count);
+                attributes[count] = .{ .key = "zigai.retry.scheduled", .value = .{ .boolean = value.will_retry } };
+                count += 1;
+                break :event_name "zigai.model.request.error";
+            },
+            .tool_validation_start => |value| toolEvent("zigai.tool.validation.start", value.call, &attributes, &count),
+            .tool_validation_end => |value| toolEvent("zigai.tool.validation.end", value.call, &attributes, &count),
+            .tool_validation_error => |value| event_name: {
+                const result = toolEvent("zigai.tool.validation.error", value.call, &attributes, &count);
+                addFailureAttribute(value.failure, &attributes, &count);
+                break :event_name result;
+            },
+            .tool_execution_start => |value| toolEvent("zigai.tool.execution.start", value.call, &attributes, &count),
+            .tool_execution_end => |value| toolEvent("zigai.tool.execution.end", value.call, &attributes, &count),
+            .tool_execution_error => |value| event_name: {
+                const result = toolEvent("zigai.tool.execution.error", value.call, &attributes, &count);
+                addFailureAttribute(value.failure, &attributes, &count);
+                attributes[count] = .{ .key = "zigai.retry.scheduled", .value = .{ .boolean = value.recoverable } };
+                count += 1;
+                break :event_name result;
+            },
+            .output_validation_start => |value| outputEvent("zigai.output.validation.start", value.retry_number, &attributes, &count),
+            .output_validation_end => |value| outputEvent("zigai.output.validation.end", value.retry_number, &attributes, &count),
+            .output_validation_error => |value| event_name: {
+                const result = outputEvent("zigai.output.validation.error", value.retry_number, &attributes, &count);
+                addFailureAttribute(value.failure, &attributes, &count);
+                attributes[count] = .{ .key = "zigai.retry.scheduled", .value = .{ .boolean = value.will_retry } };
+                count += 1;
+                break :event_name result;
+            },
+            .stream_event => |value| event_name: {
+                attributes[count] = .{ .key = "zigai.stream.stage", .value = .{ .string = @tagName(value.stage) } };
+                count += 1;
+                attributes[count] = .{ .key = "zigai.stream.event.name", .value = .{ .string = streamEventName(value.event) } };
+                count += 1;
+                break :event_name "zigai.stream.event";
+            },
+        };
+        try self.exportEvent(.{
+            .name = name,
+            .trace_id = self.trace_id,
+            .span_id = self.run_span_id,
+            .time_unix_nano = self.now().real_ns,
+            .attributes = attributes[0..count],
+        });
+    }
+
+    fn onToolValidationStart(self: *Run, id: []const u8, name: []const u8) !void {
+        try self.tool_validation_starts.append(self.allocator, .{
+            .id = id,
+            .name = name,
+            .start = self.now(),
+            .span_id = randomId(8, self.config.io),
+            .parent_span_id = self.last_request_span_id,
+        });
+    }
+
+    fn onToolValidationEnd(self: *Run, id: []const u8, status: Span.Status, failure: ?anyerror) !void {
+        const item = takeToolStart(&self.tool_validation_starts, id) orelse return;
+        const end = self.now();
+        var attributes: [5]Attribute = undefined;
+        var count: usize = 0;
+        attributes[count] = .{ .key = "gen_ai.operation.name", .value = .{ .string = "validate_tool" } };
+        count += 1;
+        attributes[count] = .{ .key = "gen_ai.tool.name", .value = .{ .string = item.name } };
+        count += 1;
+        attributes[count] = .{ .key = "gen_ai.tool.call.id", .value = .{ .string = item.id } };
+        count += 1;
+        if (failure) |value| addFailureAttribute(value, &attributes, &count);
+        const owned_span_name = self.operationSpanName("validate_tool", item.name) catch |allocation_failure| name: {
+            if (!self.config.fail_open) return allocation_failure;
+            break :name null;
+        };
+        defer if (owned_span_name) |name| self.allocator.free(name);
+        try self.exportSpan(makeSpan(
+            owned_span_name orelse "validate_tool",
+            .internal,
+            self.trace_id,
+            item.span_id,
+            item.parent_span_id orelse self.run_span_id,
+            item.start,
+            end,
+            status,
+            attributes[0..count],
+        ));
+        try self.durationMetric("zigai.tool.validation.duration", item.start, end, "validate_tool");
+        try self.exportMetric(.{
+            .name = "zigai.tool.validations",
+            .kind = .counter,
+            .value = 1,
+            .unit = "{validation}",
+            .attributes = attributes[0..count],
+        });
+    }
+
     fn onToolStart(self: *Run, id: []const u8, name: []const u8) !void {
         try self.tool_starts.append(self.allocator, .{
             .id = id,
@@ -385,15 +540,7 @@ pub const Run = struct {
     }
 
     fn onToolEnd(self: *Run, id: []const u8, status: Span.Status, failure: ?anyerror) !void {
-        var index: ?usize = null;
-        for (self.tool_starts.items, 0..) |item, item_index| {
-            if (std.mem.eql(u8, item.id, id)) {
-                index = item_index;
-                break;
-            }
-        }
-        const item_index = index orelse return;
-        const item = self.tool_starts.swapRemove(item_index);
+        const item = takeToolStart(&self.tool_starts, id) orelse return;
         const end = self.now();
         var attributes: [6]Attribute = undefined;
         var count: usize = 0;
@@ -429,6 +576,53 @@ pub const Run = struct {
             .kind = .counter,
             .value = 1,
             .unit = "{call}",
+            .attributes = attributes[0..count],
+        });
+    }
+
+    fn onOutputValidationStart(self: *Run, retry_number: usize) !void {
+        self.output_validation_start = .{
+            .retry_number = retry_number,
+            .start = self.now(),
+            .span_id = randomId(8, self.config.io),
+            .parent_span_id = self.last_request_span_id,
+        };
+    }
+
+    fn onOutputValidationEnd(
+        self: *Run,
+        retry_number: usize,
+        status: Span.Status,
+        failure: ?anyerror,
+    ) !void {
+        const item = self.output_validation_start orelse return;
+        if (item.retry_number != retry_number) return;
+        self.output_validation_start = null;
+        const end = self.now();
+        var attributes: [4]Attribute = undefined;
+        var count: usize = 0;
+        attributes[count] = .{ .key = "gen_ai.operation.name", .value = .{ .string = "validate_output" } };
+        count += 1;
+        attributes[count] = .{ .key = "zigai.retry.number", .value = .{ .integer = @intCast(retry_number) } };
+        count += 1;
+        if (failure) |value| addFailureAttribute(value, &attributes, &count);
+        try self.exportSpan(makeSpan(
+            "validate_output",
+            .internal,
+            self.trace_id,
+            item.span_id,
+            item.parent_span_id orelse self.run_span_id,
+            item.start,
+            end,
+            status,
+            attributes[0..count],
+        ));
+        try self.durationMetric("zigai.output.validation.duration", item.start, end, "validate_output");
+        try self.exportMetric(.{
+            .name = "zigai.output.validations",
+            .kind = .counter,
+            .value = 1,
+            .unit = "{validation}",
             .attributes = attributes[0..count],
         });
     }
@@ -557,7 +751,64 @@ pub const Run = struct {
         bounded.attributes = boundedAttributes(value.attributes, self.config.limits, &storage);
         try self.config.exporter.metric(bounded);
     }
+
+    fn exportEvent(self: Run, value: Event) !void {
+        var storage: [maximum_export_attributes]Attribute = undefined;
+        var bounded = value;
+        bounded.attributes = boundedAttributes(value.attributes, self.config.limits, &storage);
+        try self.config.exporter.event(bounded);
+    }
 };
+
+fn takeToolStart(items: *std.ArrayList(Run.ToolStart), id: []const u8) ?Run.ToolStart {
+    for (items.items, 0..) |item, index| {
+        if (std.mem.eql(u8, item.id, id)) return items.swapRemove(index);
+    }
+    return null;
+}
+
+fn addRequestAttributes(number: usize, attributes: []Attribute, count: *usize) void {
+    attributes[count.*] = .{ .key = "zigai.request.number", .value = .{ .integer = @intCast(number) } };
+    count.* += 1;
+}
+
+fn addFailureAttribute(failure: anyerror, attributes: []Attribute, count: *usize) void {
+    attributes[count.*] = .{ .key = "error.type", .value = .{ .string = @errorName(failure) } };
+    count.* += 1;
+}
+
+fn toolEvent(
+    name: []const u8,
+    call: model_types.ToolCall,
+    attributes: []Attribute,
+    count: *usize,
+) []const u8 {
+    attributes[count.*] = .{ .key = "gen_ai.tool.name", .value = .{ .string = call.name } };
+    count.* += 1;
+    attributes[count.*] = .{ .key = "gen_ai.tool.call.id", .value = .{ .string = call.id } };
+    count.* += 1;
+    return name;
+}
+
+fn outputEvent(name: []const u8, retry_number: usize, attributes: []Attribute, count: *usize) []const u8 {
+    attributes[count.*] = .{ .key = "zigai.retry.number", .value = .{ .integer = @intCast(retry_number) } };
+    count.* += 1;
+    return name;
+}
+
+fn streamEventName(event: anytype) []const u8 {
+    return switch (event) {
+        .model => "model",
+        .function_tool_call => "function_tool_call",
+        .function_tool_result => "function_tool_result",
+        .tool_availability_delta => "tool_availability_delta",
+        .deferred_tool_requests => "deferred_tool_requests",
+        .deferred_tool_results => "deferred_tool_results",
+        .enqueued_messages => "enqueued_messages",
+        .partial_output => "partial_output",
+        .final_result => "final_result",
+    };
+}
 
 fn makeSpan(
     name: []const u8,
@@ -706,9 +957,13 @@ test "telemetry records captured prompts and lifecycle failures" {
     const third = model_types.ToolCall{ .id = "third", .name = "lookup", .arguments_json = "{}" };
     try run.observe(agent_types.LifecycleEvent{ .tool_validation_start = .{ .call = first } });
     try run.observe(agent_types.LifecycleEvent{ .tool_validation_start = .{ .call = second } });
+    try run.observe(agent_types.LifecycleEvent{ .tool_validation_end = .{ .call = second, .tool = undefined } });
+    try run.observe(agent_types.LifecycleEvent{ .tool_execution_start = .{ .call = second, .tool = undefined } });
     try run.observe(agent_types.LifecycleEvent{ .tool_execution_end = .{ .call = second, .content = "ok" } });
     try run.observe(agent_types.LifecycleEvent{ .tool_validation_error = .{ .call = first, .failure = error.InvalidToolArguments } });
     try run.observe(agent_types.LifecycleEvent{ .tool_validation_start = .{ .call = third } });
+    try run.observe(agent_types.LifecycleEvent{ .tool_validation_end = .{ .call = third, .tool = undefined } });
+    try run.observe(agent_types.LifecycleEvent{ .tool_execution_start = .{ .call = third, .tool = undefined } });
     try run.observe(agent_types.LifecycleEvent{ .tool_execution_error = .{
         .call = third,
         .failure = error.ToolFailed,
@@ -907,6 +1162,10 @@ test "telemetry exporter failures follow fail-open policy" {
         fn metric(_: *anyopaque, _: Metric) !void {
             return error.ExportFailed;
         }
+
+        fn event(_: *anyopaque, _: Event) !void {
+            return error.ExportFailed;
+        }
     };
     const agent_types = @import("agent.zig");
     var unused: u8 = 0;
@@ -919,10 +1178,16 @@ test "telemetry exporter failures follow fail-open policy" {
             }
         }.request,
     };
-    const exporter = Exporter{ .context = &unused, .spanFn = Failing.span, .metricFn = Failing.metric };
+    const exporter = Exporter{
+        .context = &unused,
+        .spanFn = Failing.span,
+        .metricFn = Failing.metric,
+        .eventFn = Failing.event,
+    };
     var fail_open = (OpenTelemetry{ .io = std.testing.io, .exporter = exporter }).start(std.testing.allocator);
     defer fail_open.deinit();
     try fail_open.observe(agent_types.LifecycleEvent{ .run_start = .{ .prompt = "prompt", .model = model } });
+    try std.testing.expect(fail_open.run_start != null);
 
     var fail_closed = (OpenTelemetry{
         .io = std.testing.io,
@@ -934,6 +1199,93 @@ test "telemetry exporter failures follow fail-open policy" {
         error.ExportFailed,
         fail_closed.observe(agent_types.LifecycleEvent{ .run_start = .{ .prompt = "prompt", .model = model } }),
     );
+}
+
+test "telemetry emits correlated lifecycle events and validation spans" {
+    const Capture = struct {
+        events: usize = 0,
+        output_spans: usize = 0,
+        output_errors: usize = 0,
+        saw_retry_event: bool = false,
+        saw_stream_event: bool = false,
+
+        fn span(context: *anyopaque, value: Span) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (!std.mem.eql(u8, value.name, "validate_output")) return;
+            self.output_spans += 1;
+            if (value.status == .error_status) self.output_errors += 1;
+        }
+
+        fn metric(_: *anyopaque, _: Metric) !void {}
+
+        fn event(context: *anyopaque, value: Event) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.events += 1;
+            try std.testing.expect(!allZero(&value.trace_id));
+            try std.testing.expect(!allZero(&value.span_id));
+            if (std.mem.eql(u8, value.name, "zigai.model.request.error")) {
+                for (value.attributes) |attribute| {
+                    if (std.mem.eql(u8, attribute.key, "zigai.retry.scheduled")) {
+                        self.saw_retry_event = attribute.value.boolean;
+                    }
+                }
+            }
+            if (std.mem.eql(u8, value.name, "zigai.stream.event")) self.saw_stream_event = true;
+        }
+    };
+    const agent_types = @import("agent.zig");
+    var capture: Capture = .{};
+    var run = (OpenTelemetry{
+        .io = std.testing.io,
+        .exporter = .{
+            .context = &capture,
+            .spanFn = Capture.span,
+            .metricFn = Capture.metric,
+            .eventFn = Capture.event,
+        },
+    }).start(std.testing.allocator);
+    defer run.deinit();
+
+    try run.observe(agent_types.LifecycleEvent{ .model_request_error = .{
+        .number = 2,
+        .failure = error.ProviderRateLimited,
+        .will_retry = true,
+    } });
+    try run.observe(agent_types.LifecycleEvent{ .output_validation_start = .{ .output = "ok", .retry_number = 0 } });
+    try run.observe(agent_types.LifecycleEvent{ .output_validation_end = .{ .output = "ok", .retry_number = 0 } });
+    try run.observe(agent_types.LifecycleEvent{ .output_validation_start = .{ .output = "bad", .retry_number = 1 } });
+    try run.observe(agent_types.LifecycleEvent{ .output_validation_error = .{
+        .output = "bad",
+        .failure = error.InvalidOutput,
+        .retry_number = 1,
+        .will_retry = true,
+    } });
+    try run.observe(agent_types.LifecycleEvent{ .output_validation_start = .{ .output = "later", .retry_number = 2 } });
+    try run.observe(agent_types.LifecycleEvent{ .output_validation_end = .{ .output = "mismatch", .retry_number = 3 } });
+    try run.observe(agent_types.LifecycleEvent{ .output_validation_end = .{ .output = "later", .retry_number = 2 } });
+    try run.observe(agent_types.LifecycleEvent{ .stream_event = .{
+        .stage = .before,
+        .event = .{ .deferred_tool_requests = undefined },
+    } });
+
+    try std.testing.expectEqual(@as(usize, 3), capture.output_spans);
+    try std.testing.expectEqual(@as(usize, 1), capture.output_errors);
+    try std.testing.expect(capture.events >= 9);
+    try std.testing.expect(capture.saw_retry_event);
+    try std.testing.expect(capture.saw_stream_event);
+}
+
+test "telemetry names every agent stream event" {
+    const agent_types = @import("agent.zig");
+    try std.testing.expectEqualStrings("model", streamEventName(agent_types.AgentStreamEvent{ .model = undefined }));
+    try std.testing.expectEqualStrings("function_tool_call", streamEventName(agent_types.AgentStreamEvent{ .function_tool_call = undefined }));
+    try std.testing.expectEqualStrings("function_tool_result", streamEventName(agent_types.AgentStreamEvent{ .function_tool_result = undefined }));
+    try std.testing.expectEqualStrings("tool_availability_delta", streamEventName(agent_types.AgentStreamEvent{ .tool_availability_delta = undefined }));
+    try std.testing.expectEqualStrings("deferred_tool_requests", streamEventName(agent_types.AgentStreamEvent{ .deferred_tool_requests = undefined }));
+    try std.testing.expectEqualStrings("deferred_tool_results", streamEventName(agent_types.AgentStreamEvent{ .deferred_tool_results = undefined }));
+    try std.testing.expectEqualStrings("enqueued_messages", streamEventName(agent_types.AgentStreamEvent{ .enqueued_messages = undefined }));
+    try std.testing.expectEqualStrings("partial_output", streamEventName(agent_types.AgentStreamEvent{ .partial_output = undefined }));
+    try std.testing.expectEqualStrings("final_result", streamEventName(agent_types.AgentStreamEvent{ .final_result = undefined }));
 }
 
 fn checkTelemetryAllocationFailure(allocator: std.mem.Allocator) !void {

@@ -6,6 +6,9 @@
   conventions; add explicit parent trace contexts, opt-in raw or callback-
   redacted prompt capture, UTF-8-safe content bounds, exporter attribute
   limits, and fail-open isolation for all telemetry processing failures.
+- Add correlated OpenTelemetry lifecycle events for every agent hook signal,
+  including retry, stream, deferred, and enqueued-message phases. Split tool
+  validation from execution spans and add output-validation spans and metrics.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model

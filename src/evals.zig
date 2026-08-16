@@ -1379,10 +1379,11 @@ test "trace evaluators receive owned forwarded OpenTelemetry spans and retry ind
             if (self.evaluations == 1) return error.TraceEvaluatorUnavailable;
             try std.testing.expectEqualStrings("ok", trace.run.output);
             try std.testing.expectEqual(trace.spans.ptr, trace.run.spans.ptr);
-            try std.testing.expectEqual(@as(usize, 2), trace.spans.len);
+            try std.testing.expectEqual(@as(usize, 3), trace.spans.len);
             try std.testing.expectEqualStrings("chat test-model", trace.spans[0].name);
-            try std.testing.expectEqualStrings("invoke_agent", trace.spans[1].name);
-            try std.testing.expectEqualSlices(u8, &trace.spans[0].trace_id, &trace.spans[1].trace_id);
+            try std.testing.expectEqualStrings("validate_output", trace.spans[1].name);
+            try std.testing.expectEqualStrings("invoke_agent", trace.spans[2].name);
+            try std.testing.expectEqualSlices(u8, &trace.spans[0].trace_id, &trace.spans[2].trace_id);
             try std.testing.expect(trace.spans[0].parent_span_id != null);
             return .{ .passed = true, .score = 1, .reason = "trace shape is valid" };
         }
@@ -1426,12 +1427,12 @@ test "trace evaluators receive owned forwarded OpenTelemetry spans and retry ind
     }, .{ .evaluator_retry = .{ .max_attempts = 2 } });
     defer report.deinit();
 
-    try std.testing.expectEqual(@as(usize, 2), report.cases[0].spans.len);
+    try std.testing.expectEqual(@as(usize, 3), report.cases[0].spans.len);
     try std.testing.expectEqual(@as(usize, 1), report.cases[0].evaluations.len);
     try std.testing.expectEqualStrings("trace_shape", report.cases[0].evaluations[0].evaluator);
     try std.testing.expectEqual(@as(usize, 2), report.cases[0].evaluations[0].attempts);
     try std.testing.expectEqualStrings("trace shape is valid", report.cases[0].evaluations[0].reason.?);
-    try std.testing.expectEqual(@as(usize, 2), state.exported_spans);
+    try std.testing.expectEqual(@as(usize, 3), state.exported_spans);
     try std.testing.expect(state.exported_metrics >= 4);
     try std.testing.expectEqual(@as(usize, 2), state.evaluations);
 

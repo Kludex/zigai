@@ -194,7 +194,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
   backpressure/failure isolation.
   - [x] Define semantic GenAI span naming, explicit parent/child trace context,
     opt-in raw/redacted prompt capture, and hard attribute/content bounds.
-  - [ ] Cover every agent model, tool, hook, retry, validation, stream, and
+  - [x] Cover every agent model, tool, hook, retry, validation, stream, and
     deferred phase with spans, events, and low-cardinality metrics.
   - [ ] Instrument MCP client and server operations with protocol, method,
     transport, session, task, and correlated trace attributes.

@@ -896,11 +896,14 @@ Configure `Agent.telemetry` to export OpenTelemetry-shaped spans and metrics:
 },
 ```
 
-Each run has one trace with child model-request and tool-call spans. Metrics
-cover latency, request and tool counts, retries, cached/reasoning/audio token
-usage, and optional cost. `cost_estimator` is a telemetry-only fallback when
-the agent has no provider-reported or price-table cost. The exporter is a small synchronous bridge to your
-OpenTelemetry SDK or OTLP pipeline.
+Each run has one trace with child model-request, tool-validation,
+tool-execution, and output-validation spans. Correlated lifecycle events cover
+model, tool, retry, stream, deferred, and enqueued-message phases. Metrics cover
+latency, request, validation, and tool counts, retries, cached/reasoning/audio
+token usage, and optional cost. `cost_estimator` is a telemetry-only fallback
+when the agent has no provider-reported or price-table cost. The exporter is a
+small synchronous bridge to your OpenTelemetry SDK or OTLP pipeline.
+`Exporter.eventFn` is optional for existing span-and-metric bridges.
 
 Prompt capture is disabled by default. Set `content.prompts` to `.raw` or
 `.redacted` only when the destination and data policy are ready. Redacted mode
