@@ -7,6 +7,8 @@ pub const schema_version = 1;
 pub const Error = error{
     InvalidBaseline,
     InvalidMeasurement,
+    InvalidRunnerOptions,
+    NondeterministicWorkload,
     WorkloadSetDrift,
     WorkloadChecksumDrift,
 };
@@ -52,6 +54,109 @@ pub const Measurement = struct {
     median_ns: u64,
     checksum: u64,
 };
+
+/// Encodes fresh measurements without implying that they are reviewed
+/// baselines. The output is stable so CI artifacts remain easy to diff.
+pub fn stringifyMeasurementsJson(
+    allocator: std.mem.Allocator,
+    measurements: []const Measurement,
+) ![]u8 {
+    var output: std.Io.Writer.Allocating = .init(allocator);
+    defer output.deinit();
+    var json: std.json.Stringify = .{
+        .writer = &output.writer,
+        .options = .{ .whitespace = .indent_2 },
+    };
+    try json.beginObject();
+    try json.objectField("version");
+    try json.write(schema_version);
+    try json.objectField("measurements");
+    try json.beginArray();
+    for (measurements) |measurement| {
+        try json.beginObject();
+        try json.objectField("name");
+        try json.write(measurement.name);
+        try json.objectField("median_ns");
+        try json.write(measurement.median_ns);
+        try json.objectField("checksum");
+        try json.write(measurement.checksum);
+        try json.endObject();
+    }
+    try json.endArray();
+    try json.endObject();
+    try output.writer.writeByte('\n');
+    return output.toOwnedSlice();
+}
+
+pub const Workload = struct {
+    name: []const u8,
+    context: *anyopaque,
+    runFn: *const fn (context: *anyopaque, allocator: std.mem.Allocator) anyerror!u64,
+
+    pub fn run(self: Workload, allocator: std.mem.Allocator) !u64 {
+        return self.runFn(self.context, allocator);
+    }
+};
+
+pub const RunnerOptions = struct {
+    warmup_iterations: usize = 8,
+    samples: usize = 21,
+    iterations_per_sample: usize = 32,
+
+    pub fn validate(self: RunnerOptions) !void {
+        if (self.samples == 0 or self.iterations_per_sample == 0 or
+            self.warmup_iterations > 1_000_000 or self.samples > 10_000 or
+            self.iterations_per_sample > 1_000_000)
+            return Error.InvalidRunnerOptions;
+    }
+};
+
+/// Runs sorted deterministic workloads and reports median nanoseconds per
+/// operation. Every callback result is checked and kept observable.
+pub fn measure(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    workloads: []const Workload,
+    options: RunnerOptions,
+) ![]Measurement {
+    try options.validate();
+    try validateWorkloads(workloads);
+    const measurements = try allocator.alloc(Measurement, workloads.len);
+    errdefer allocator.free(measurements);
+    const samples = try allocator.alloc(u64, options.samples);
+    defer allocator.free(samples);
+
+    for (workloads, measurements) |workload, *measurement| {
+        var expected_checksum: ?u64 = null;
+        for (0..options.warmup_iterations) |_| {
+            const checksum = try workload.run(allocator);
+            try acceptChecksum(&expected_checksum, checksum);
+            std.mem.doNotOptimizeAway(checksum);
+        }
+        for (samples) |*sample| {
+            const started = std.Io.Clock.Timestamp.now(io, .awake);
+            for (0..options.iterations_per_sample) |_| {
+                const checksum = try workload.run(allocator);
+                try acceptChecksum(&expected_checksum, checksum);
+                std.mem.doNotOptimizeAway(checksum);
+            }
+            const ended = std.Io.Clock.Timestamp.now(io, .awake);
+            const elapsed = started.durationTo(ended).raw.nanoseconds;
+            const positive: u64 = if (elapsed <= 0) 1 else @intCast(@min(
+                elapsed,
+                std.math.maxInt(u64),
+            ));
+            sample.* = @max(1, positive / options.iterations_per_sample);
+        }
+        std.mem.sort(u64, samples, {}, std.sort.asc(u64));
+        measurement.* = .{
+            .name = workload.name,
+            .median_ns = samples[samples.len / 2],
+            .checksum = expected_checksum.?,
+        };
+    }
+    return measurements;
+}
 
 pub const Status = enum { unreviewed, pass, regression };
 
@@ -180,6 +285,25 @@ fn validName(name: []const u8) bool {
     return true;
 }
 
+fn validateWorkloads(workloads: []const Workload) !void {
+    if (workloads.len == 0) return Error.InvalidRunnerOptions;
+    var previous: ?[]const u8 = null;
+    for (workloads) |workload| {
+        if (!validName(workload.name)) return Error.InvalidMeasurement;
+        if (previous) |name| if (std.mem.order(u8, name, workload.name) != .lt)
+            return Error.InvalidMeasurement;
+        previous = workload.name;
+    }
+}
+
+fn acceptChecksum(expected: *?u64, checksum: u64) !void {
+    if (expected.*) |value| {
+        if (value != checksum) return Error.NondeterministicWorkload;
+    } else {
+        expected.* = checksum;
+    }
+}
+
 fn exceedsThreshold(baseline_ns: u64, current_ns: u64, basis_points: u32) bool {
     const scale: u128 = 10_000;
     const allowed = @as(u128, baseline_ns) * (scale + basis_points);
@@ -277,4 +401,75 @@ test "benchmark comparison rejects structural and semantic drift" {
         Error.InvalidBaseline,
         invalid.validate(),
     );
+}
+
+test "benchmark runner warms samples and rejects nondeterminism" {
+    const State = struct {
+        calls: usize = 0,
+        vary: bool = false,
+
+        fn run(context: *anyopaque, _: std.mem.Allocator) !u64 {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.calls += 1;
+            return if (self.vary) self.calls else 42;
+        }
+    };
+    var state: State = .{};
+    const workloads = [_]Workload{.{ .name = "stable", .context = &state, .runFn = State.run }};
+    const measured = try measure(std.testing.allocator, std.testing.io, &workloads, .{
+        .warmup_iterations = 2,
+        .samples = 3,
+        .iterations_per_sample = 2,
+    });
+    defer std.testing.allocator.free(measured);
+    try std.testing.expectEqual(@as(usize, 8), state.calls);
+    try std.testing.expectEqual(@as(u64, 42), measured[0].checksum);
+    try std.testing.expect(measured[0].median_ns > 0);
+    const json = try stringifyMeasurementsJson(std.testing.allocator, measured);
+    defer std.testing.allocator.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "\"name\": \"stable\"") != null);
+    const stable_json = try stringifyMeasurementsJson(std.testing.allocator, &.{.{
+        .name = "stable",
+        .median_ns = 1,
+        .checksum = 42,
+    }});
+    defer std.testing.allocator.free(stable_json);
+    try std.testing.expectEqualStrings(
+        \\{
+        \\  "version": 1,
+        \\  "measurements": [
+        \\    {
+        \\      "name": "stable",
+        \\      "median_ns": 1,
+        \\      "checksum": 42
+        \\    }
+        \\  ]
+        \\}
+        \\
+    ,
+        stable_json,
+    );
+
+    state = .{ .vary = true };
+    try std.testing.expectError(Error.NondeterministicWorkload, measure(
+        std.testing.allocator,
+        std.testing.io,
+        &workloads,
+        .{ .warmup_iterations = 2, .samples = 1, .iterations_per_sample = 1 },
+    ));
+    try std.testing.expectError(Error.InvalidRunnerOptions, measure(
+        std.testing.allocator,
+        std.testing.io,
+        &workloads,
+        .{ .samples = 0 },
+    ));
+    try std.testing.expectError(Error.InvalidMeasurement, measure(
+        std.testing.allocator,
+        std.testing.io,
+        &.{
+            .{ .name = "b", .context = &state, .runFn = State.run },
+            .{ .name = "a", .context = &state, .runFn = State.run },
+        },
+        .{},
+    ));
 }

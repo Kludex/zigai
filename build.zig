@@ -208,15 +208,46 @@ pub fn build(b: *std.Build) void {
     const run_stress_tests = b.addRunArtifact(stress_tests);
     const stress_step = b.step("stress", "Run bounded stress and allocation-failure scenarios");
     stress_step.dependOn(&run_stress_tests.step);
+    const benchmark_harness_module = b.createModule(.{
+        .root_source_file = b.path("benchmarks/harness.zig"),
+        .target = target,
+        .optimize = optimize,
+        .error_tracing = error_tracing,
+    });
     const benchmark_harness_tests = b.addTest(.{
+        .root_module = benchmark_harness_module,
+    });
+    const run_benchmark_harness_tests = b.addRunArtifact(benchmark_harness_tests);
+    const benchmark_workloads_module = b.createModule(.{
+        .root_source_file = b.path("benchmarks/workloads.zig"),
+        .target = target,
+        .optimize = optimize,
+        .error_tracing = error_tracing,
+        .imports = &.{
+            .{ .name = "harness", .module = benchmark_harness_module },
+            .{ .name = "zigai", .module = zigai },
+        },
+    });
+    const benchmark_workload_tests = b.addTest(.{
+        .root_module = benchmark_workloads_module,
+    });
+    const run_benchmark_workload_tests = b.addRunArtifact(benchmark_workload_tests);
+    const benchmark_executable = b.addExecutable(.{
+        .name = "zigai-benchmarks",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("benchmarks/harness.zig"),
+            .root_source_file = b.path("benchmarks/main.zig"),
             .target = target,
             .optimize = optimize,
             .error_tracing = error_tracing,
+            .imports = &.{
+                .{ .name = "harness", .module = benchmark_harness_module },
+                .{ .name = "workloads", .module = benchmark_workloads_module },
+            },
         }),
     });
-    const run_benchmark_harness_tests = b.addRunArtifact(benchmark_harness_tests);
+    const run_benchmarks = b.addRunArtifact(benchmark_executable);
+    const benchmark_step = b.step("benchmark", "Run deterministic production benchmarks");
+    benchmark_step.dependOn(&run_benchmarks.step);
     const model_catalog_module = b.createModule(.{
         .root_source_file = b.path("src/model_catalog.zig"),
         .target = b.graph.host,
@@ -279,6 +310,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_fuzz_tests.step);
     test_step.dependOn(&run_model_catalog_tool_tests.step);
     test_step.dependOn(&run_benchmark_harness_tests.step);
+    test_step.dependOn(&run_benchmark_workload_tests.step);
 
     const check = b.step("check", "Compile all public packages");
     check.dependOn(&tests.step);
@@ -318,6 +350,8 @@ pub fn build(b: *std.Build) void {
     check.dependOn(&model_catalog_tool_tests.step);
     check.dependOn(&run_model_catalog_check.step);
     check.dependOn(&benchmark_harness_tests.step);
+    check.dependOn(&benchmark_workload_tests.step);
+    check.dependOn(&benchmark_executable.step);
 
     const examples = b.step("examples", "Compile runnable provider examples");
     inline for (.{ "openai", "anthropic", "google", "ollama", "crusoe", "snowflake", "zai", "custom_provider" }) |provider| {

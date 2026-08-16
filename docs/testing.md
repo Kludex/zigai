@@ -299,9 +299,32 @@ without gating CI; adding a number is the explicit review action that enables
 a regression check. The comparator rejects missing, extra, reordered, or
 checksum-changed workloads and emits stable JSON with `pass` or `fail`.
 
-The benchmark harness itself runs in the ordinary `zig build test` gate. Timed
-workloads and platform baselines are added through the dedicated benchmark
-steps documented below rather than being mixed into line coverage.
+Run the complete suite in the safety-checked release mode used for published
+baselines:
+
+```console
+zig build benchmark -Doptimize=ReleaseSafe
+```
+
+The command prints stable JSON measurements for seven sorted workloads:
+
+- provider-neutral history processing plus serialization and parsing;
+- MCP 2026-07-28 request validation, dispatch, and response encoding;
+- a complete agent turn with four parallel local tool calls;
+- OpenAI Responses request decoding;
+- OpenAI Responses request encoding;
+- reflected schema generation plus schema and output validation; and
+- OpenAI streaming request encoding, SSE event decoding, event delivery, and
+  final response accumulation.
+
+Every workload runs warmup iterations followed by 21 timed samples of 32
+operations. The median nanoseconds per operation is reported. Each operation
+also hashes its semantic result; the runner rejects a changing checksum and
+keeps it observable so optimized builds cannot discard the work.
+
+The harness and a two-run determinism smoke test for every workload run in the
+ordinary `zig build test` gate. Timed measurements remain in the dedicated
+benchmark step and are not mixed into line coverage.
 
 ## Fuzzing
 

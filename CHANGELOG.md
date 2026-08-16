@@ -26,6 +26,10 @@
 - Add a standalone benchmark comparison harness with strict versioned and
   sorted baselines, workload checksums, integer reviewed thresholds, structural
   drift rejection, and stable machine-readable CI reports.
+- Add deterministic ReleaseSafe workloads for provider request encoding and
+  decoding, provider streaming, history, schema reflection and validation, MCP
+  dispatch, and parallel agent tools, with warmup, median sampling, and
+  anti-optimization checksum verification.
 - Add an unauthenticated Ollama provider, explicit loopback policy, tagged
   model-family profiles, and a compiled local example.
 - Add a named Crusoe Serverless Inference provider with vendor-qualified model
