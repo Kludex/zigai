@@ -604,6 +604,20 @@ owned span slice. This makes offline assertions inspect the same telemetry
 shape used in production. Trace evaluation fails before execution when the
 agent has no OpenTelemetry configuration.
 
+Eval persistence is isolated in `eval_io` so the runtime callback API remains
+small. Dataset documents are data-only: they retain cases, metadata, and the
+ordered names of ordinary, trace, and report evaluators. Loading resolves each
+name against an application-owned registry and fails on missing or ambiguous
+entries. Non-default per-case run options are rejected because they may hold
+callbacks, process pointers, queues, or secrets.
+
+Report documents retain every durable result field, including aggregate usage,
+analyses, typed span attributes, timing, and parent relationships. Binary trace
+and span IDs use lowercase hexadecimal text. JSON is stable and indented; YAML
+uses the same strict schema with Cassetter-style indentation and quoted scalar
+strings. Both formats are explicitly versioned and parsed through bounded,
+arena-owned graphs.
+
 `evals.ModelGrader` is optional and is itself built from an `Agent`. It sends a
 JSON-quoted task, output, expected value, and rubric to that agent, requests a
 typed pass/score/reason object, and rejects non-finite or out-of-range scores.

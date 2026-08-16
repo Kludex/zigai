@@ -22,6 +22,7 @@ pub const reflect = @import("reflect.zig");
 pub const history = @import("history.zig");
 pub const context_budget = @import("context_budget.zig");
 pub const evals = @import("evals.zig");
+pub const eval_io = @import("eval_io.zig");
 pub const providers = @import("providers.zig");
 pub const models = @import("models.zig");
 pub const telemetry = @import("telemetry.zig");

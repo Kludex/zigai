@@ -123,6 +123,7 @@ Use these namespaces for the rest of the API:
 | `zigai.models` | Fallback and application-selected model routing |
 | `zigai.history` | Version-2 ZigAI history serialization, version-1 migration, and processors |
 | `zigai.evals` | Datasets, evaluators, reports, and model grading |
+| `zigai.eval_io` | Versioned JSON/YAML dataset and report documents |
 | `zigai.mcp` | MCP 2026 client, server, Streamable HTTP, and stdio |
 | `zigai.telemetry` | OpenTelemetry-shaped hooks and metrics |
 | `zigai.diagnostics` | Backend-neutral structured lifecycle diagnostics |
@@ -552,6 +553,26 @@ agent run, including typed attributes. The configured exporter still receives
 the original spans and all metrics. Trace results follow ordinary evaluator
 results and use `ExecutionOptions.evaluator_retry`.
 
+`eval_io.stringifyDatasetJson` and `stringifyDatasetYaml` encode version-1
+dataset documents. Files contain cases, metadata, and ordered evaluator names.
+`parseDatasetJson` and `parseDatasetYaml` require an `EvaluatorRegistry` and
+return an arena-owned runnable dataset. A missing name returns
+`UnknownEvaluator`; more than one registry entry with that name returns
+`AmbiguousEvaluator`. Names must also be unique across ordinary, trace, and
+report evaluator categories.
+
+Dataset serialization accepts only default per-case `RunOptions`. Those options
+may contain executable callbacks, pointers, queues, or credentials, so a
+non-default value returns `UnsupportedCaseOptions` instead of silently dropping
+state.
+
+`eval_io.stringifyReportJson`, `stringifyReportYaml`, `parseReportJson`, and
+`parseReportYaml` round-trip complete reports. The version-1 shape includes
+case/repetition identities, attempts, output, usage, evaluations, aggregate
+analyses, and typed OpenTelemetry spans. Trace and span IDs are lowercase hex.
+Parsers are strict, bounded by the CLI-config JSON limits, reject duplicate YAML
+keys, and return arena-owned values that must be deinitialized.
+
 ## Ownership
 
 ZigAI follows one rule for high-level operations: a returned type with a
@@ -563,6 +584,8 @@ ZigAI follows one rule for high-level operations: a returned type with a
 | `TypedResult(T)` | Owns the decoded value, JSON, and history until `deinit` |
 | `RunOutcome` / `PausedRun` | Owns completed or serialized paused state until `deinit` |
 | `OwnedResumeDecisions` | Owns parsed decisions until `deinit` |
+| `eval_io.OwnedDataset` | Owns a parsed dataset graph; registry callbacks remain borrowed |
+| Parsed `evals.Report` | Owns the complete deserialized report until `deinit` |
 | `history.Owned` | Owns parsed history until `deinit` |
 | `codecs.pydantic_ai.Owned` | Owns the complete PydanticAI JSON value graph until `deinit` |
 | `capability.LoadResolution` | Owns its dependency plan and diagnostic until `deinit` |

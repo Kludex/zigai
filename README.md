@@ -1190,6 +1190,21 @@ status into `CaseResult.spans`, and forwards spans and metrics unchanged. Trace
 evaluators use the ordinary evaluator retry policy and add results to the same
 ordered evaluation list after output evaluators.
 
+Persist portable datasets and complete reports with `zigai.eval_io`:
+
+```zig
+const yaml = try zigai.eval_io.stringifyDatasetYaml(allocator, dataset);
+defer allocator.free(yaml);
+
+var loaded = try zigai.eval_io.parseDatasetYaml(allocator, yaml, registry);
+defer loaded.deinit();
+```
+
+Dataset files store cases and evaluator names. Loading binds those names through
+an explicit `EvaluatorRegistry`; callbacks and non-default per-case `RunOptions`
+are never serialized. JSON and readable YAML report files retain usage,
+evaluations, analyses, and telemetry spans.
+
 ## Security
 
 Hosted endpoints use HTTPS-only URL validation by default. Local names,

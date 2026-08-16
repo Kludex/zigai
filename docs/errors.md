@@ -219,6 +219,13 @@ Provider construction and optional operations use these boundary errors:
 | `evals` | `ConcurrentExecutionUnavailable` | The supplied runtime could not admit eval work. |
 | `evals` | `InvalidReportAnalysis` | A report evaluator returned a non-finite scalar value. |
 | `evals` | `TraceEvaluationRequiresTelemetry` | Trace evaluators were configured on a dataset whose agent has no OpenTelemetry configuration. |
+| `eval_io` | `InvalidDataset` | Dataset shape, names, metadata, or uniqueness constraints are invalid. |
+| `eval_io` | `UnsupportedDatasetVersion` | The dataset document version is unsupported. |
+| `eval_io` | `UnsupportedCaseOptions` | A case contains non-portable run options that cannot be serialized safely. |
+| `eval_io` | `UnknownEvaluator` | A serialized evaluator name is absent from its registry category. |
+| `eval_io` | `AmbiguousEvaluator` | A registry contains more than one evaluator with the requested name. |
+| `eval_io` | `InvalidReport` | Report structure, identity, usage, score, span, or analysis data is invalid. |
+| `eval_io` | `UnsupportedReportVersion` | The report document version is unsupported. |
 
 ### Agent specification errors
 

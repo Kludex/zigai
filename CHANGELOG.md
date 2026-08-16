@@ -86,6 +86,10 @@
 - Add span-based evaluators over the production OpenTelemetry shape. Per-case
   exporter tees deep-copy spans into reports, forward application telemetry,
   share evaluator retries, and fail before model work when telemetry is absent.
+- Add versioned eval dataset and report documents in strict JSON and readable
+  Cassetter-style YAML. Dataset evaluator names resolve through an explicit
+  registry, reports retain usage, analyses, and typed spans, and trace IDs use
+  stable hexadecimal text.
 
 - Define a borrowed provider operations interface for authenticated requests,
   base URL policy, model discovery, file APIs, model profile lookup, and

@@ -199,7 +199,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add report evaluators and statistical summaries across repeated runs.
 - [x] Add span/trace evaluators that consume the same telemetry shape used in
   production.
-- [ ] Add versioned dataset and report serialization for JSON and readable
+- [x] Add versioned dataset and report serialization for JSON and readable
   Cassetter-style YAML.
 - [ ] Add comparison reports and stable machine-readable CI output.
 - [ ] Add online evaluation hooks and sampling policies that never block the
