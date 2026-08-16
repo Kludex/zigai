@@ -317,7 +317,7 @@ only after its API, ownership rules, tests, documentation, changelog entry, and
 - [x] Add execution-runtime services for step persistence, media/artifact
   stores, managed prompts, and bounded thread executors, with local interfaces
   that do not make hosted Pydantic services a core dependency.
-- [ ] Add Agent Client Protocol support with process lifecycle, initialization,
+- [x] Add Agent Client Protocol support with process lifecycle, initialization,
   sessions, prompts, streamed updates, tool approval, filesystem/terminal
   operations, cancellation, reconnect, capability negotiation, and fixtures
   against the official ACP implementations.
