@@ -88,6 +88,10 @@
   ownership, thread safety, cancellation, retries, tool and MCP security,
   telemetry redaction, persistence migrations, testing, and incident
   debugging.
+- Rewrite the README as a concise overview and reorganize its detailed
+  content into feature-oriented guides: agents, tools, providers, typed
+  output and streaming, capabilities, MCP, workflows, observability,
+  evaluations, and CLI.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.

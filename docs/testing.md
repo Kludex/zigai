@@ -442,3 +442,15 @@ Provider request tests inspect every portable setting at the wire boundary.
 Extra-body fixtures must be small inline JSON objects without credentials.
 Tests cover provider-tag mismatches, malformed or non-object JSON, attempts to
 shadow adapter-owned fields, reserved headers, and CR/LF injection.
+
+## Agentic maintenance
+
+Four GitHub Agentic Workflows watch CI, documentation, provider APIs, and
+test quality. Their agent jobs are read-only. The only repository write they
+can request is one file-scoped pull request for maintainer review.
+
+Recompile workflow lock files after changing their frontmatter:
+
+```console
+gh aw compile --strict --validate
+```
