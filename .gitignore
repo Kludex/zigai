@@ -1,6 +1,7 @@
 /.zig-cache/
 /.zig-global-cache/
 /zig-out/
+/site/
 /zig-pkg/
 tests/consumers/**/.zig-cache/
 tests/consumers/**/zig-out/

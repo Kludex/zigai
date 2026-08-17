@@ -325,4 +325,4 @@ Keep the sidecar on a private network or require
 `ZIGAI_TEMPORAL_SIDECAR_TOKEN`. Deploy it with the command workers, keep an old
 worker build polling until its workflows drain, and use a new handler ID or task
 queue for incompatible behavior. The reference deployment lives in
-[`integrations/temporal`](../integrations/temporal/).
+[`integrations/temporal`](https://github.com/Kludex/zigai/tree/main/integrations/temporal).

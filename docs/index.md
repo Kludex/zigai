@@ -29,7 +29,7 @@ the conversation.
 ## Requirements
 
 Zig 0.16.0. Linux x86_64, Apple Silicon macOS, and Windows x86_64 are the
-supported targets. See the [compatibility policy](docs/compatibility.md).
+supported targets. See the [compatibility policy](compatibility.md).
 
 ## Installation
 
@@ -116,66 +116,17 @@ var client = zigai.providers.anthropic.Client{
 
 The agent, tools, and everything else stay the same.
 
-## Documentation
+## Where to go next
 
-The complete documentation lives at
-[kludex.github.io/zigai](https://kludex.github.io/zigai/).
-
-Feature guides:
-
-- [Agents](docs/agents.md) - the loop, instructions, history, context
-  budgets, model routing and settings, deadlines
-- [Tools](docs/tools.md) - typed tools, toolsets, policies, approval,
+- [Agents](agents.md) - the loop, instructions, history, context budgets,
+  model routing and settings, deadlines
+- [Tools](tools.md) - typed tools, toolsets, policies, approval,
   provider-managed tools
-- [Providers](docs/providers.md) - all 23 providers, discovery, catalogs,
+- [Providers](providers.md) - all 23 providers, discovery, catalogs,
   profiles, rich content
-- [Typed output and streaming](docs/output-and-streaming.md) - structured
-  output, streaming events, retries and resilience
-- [Capabilities](docs/capabilities.md) - feature bundles, on-demand loading,
-  harness, execution environments, memory, planning
-- [MCP](docs/mcp.md) - client, server, transports, tasks, authorization
-- [Workflows](docs/workflows.md) - typed graphs, multi-agent, durable
-  execution, embeddings, realtime voice, UI protocols
-- [Observability](docs/observability.md) - hooks, diagnostics,
-  OpenTelemetry, usage and cost
-- [Evaluations](docs/evals.md) - datasets, graders, online evals, CI gating
-- [Command-line clients](docs/cli.md) - the production CLI and smoke clients
-
-Reference:
-
-- [Public API and ownership](docs/api.md)
-- [Architecture](docs/architecture.md)
-- [Production guide](docs/production.md)
-- [Security](docs/security.md)
-- [Errors](docs/errors.md)
-- [Durable execution](docs/durable-execution.md)
-- [Agent specifications](docs/agent-specs.md)
-- [MCP conformance](docs/mcp-conformance.md)
-- [Testing](docs/testing.md)
-- [Compatibility](docs/compatibility.md)
-- [Releasing](docs/releasing.md)
-- API reference: `zig build docs`
-- Runnable examples: `zig build examples`
-
-## Testing
-
-```console
-./scripts/check
-./scripts/test-cli
-./scripts/coverage   # Linux; the gate is 100% of executable lines
-```
-
-Provider tests replay checked-in YAML cassettes recorded from real APIs, so
-CI exercises the real agent, adapters, tool loop, and error paths without
-calling paid endpoints. See [Testing](docs/testing.md).
-
-## Security
-
-Hosted endpoints use HTTPS-only URL validation by default. Local names,
-non-public IPs, embedded URL credentials, and redirects are rejected unless
-the application opts in. Authentication headers are recognized as sensitive
-and never reach telemetry, diagnostics, or error observers. See
-[Security](docs/security.md) and [SECURITY.md](SECURITY.md).
+- [Typed output and streaming](output-and-streaming.md) - structured output,
+  streaming events, retries and resilience
+- [Production guide](production.md) - running agents in real services
 
 ## License
 

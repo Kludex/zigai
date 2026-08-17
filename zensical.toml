@@ -1,0 +1,104 @@
+[project]
+site_url = "https://kludex.github.io/zigai/"
+site_name = "ZigAI"
+site_description = "Build agents in Zig. Bring the model you want."
+site_author = "Marcelo Trylesinski"
+
+copyright = "Copyright &copy; 2026 Marcelo Trylesinski"
+
+repo_url = "https://github.com/Kludex/zigai"
+repo_name = "Kludex/zigai"
+edit_uri = "edit/main/docs/"
+
+nav = [
+  { "ZigAI" = "index.md" },
+  { "Features" = [
+    { "Agents" = "agents.md" },
+    { "Tools" = "tools.md" },
+    { "Providers" = "providers.md" },
+    { "Typed output and streaming" = "output-and-streaming.md" },
+    { "Capabilities" = "capabilities.md" },
+    { "MCP" = "mcp.md" },
+    { "Workflows and multi-agent" = "workflows.md" },
+    { "Observability" = "observability.md" },
+    { "Evaluations" = "evals.md" },
+    { "Command-line clients" = "cli.md" },
+  ] },
+  { "Reference" = [
+    { "Public API and ownership" = "api.md" },
+    { "Architecture" = "architecture.md" },
+    { "Production guide" = "production.md" },
+    { "Security" = "security.md" },
+    { "Errors" = "errors.md" },
+    { "Durable execution" = "durable-execution.md" },
+    { "Agent specifications" = "agent-specs.md" },
+    { "MCP conformance" = "mcp-conformance.md" },
+  ] },
+  { "Project" = [
+    { "Testing" = "testing.md" },
+    { "Compatibility" = "compatibility.md" },
+    { "Releasing" = "releasing.md" },
+  ] },
+]
+
+[project.theme]
+language = "en"
+features = [
+  "content.action.edit",
+  "content.code.annotate",
+  "content.code.copy",
+  "content.code.select",
+  "content.footnote.tooltips",
+  "content.tabs.link",
+  "content.tooltips",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.instant",
+  "navigation.instant.prefetch",
+  "navigation.path",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+  "toc.follow",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/Kludex/zigai"
+
+[project.markdown_extensions]
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+toc.permalink = true
+pymdownx.betterem = {}
+pymdownx.details = {}
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.line_spans = "__span"
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.magiclink = {}
+pymdownx.superfences = {}
+pymdownx.tabbed.alternate_style = true
+pymdownx.tabbed.combine_header_slug = true
+pymdownx.tilde = {}

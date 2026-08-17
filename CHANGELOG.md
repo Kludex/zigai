@@ -92,6 +92,9 @@
   content into feature-oriented guides: agents, tools, providers, typed
   output and streaming, capabilities, MCP, workflows, observability,
   evaluations, and CLI.
+- Publish the documentation as a Zensical site at
+  [kludex.github.io/zigai](https://kludex.github.io/zigai/), deployed to
+  GitHub Pages on every docs change.
 - Generate the built-in pricing table from a pinned pydantic/genai-prices v2
   snapshot, including provider fallbacks, all model match rules, tier cliffs,
   modalities, requests, and web searches.
